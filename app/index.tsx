@@ -84,14 +84,14 @@ export default function Screen() {
                 <Text>Continue with Google</Text>
               </Button>
 
-              {/* <Button
+              <Button
                 onPress={() => handleSocialLogin('apple')}
                 disabled={loading}
                 variant="outline"
                 className="flex-row items-center gap-3">
                 <AppleIcon width={20} height={20} />
                 <Text>Continue with Apple</Text>
-              </Button> */}
+              </Button>
             </View>
           </View>
         )}

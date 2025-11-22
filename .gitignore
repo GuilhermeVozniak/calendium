@@ -42,3 +42,6 @@ expo-env.d.ts
 
 # .env
 .env
+
+# apple keys
+AuthKey_*.p8
