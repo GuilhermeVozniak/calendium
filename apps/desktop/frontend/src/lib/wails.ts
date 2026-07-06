@@ -1,0 +1,65 @@
+/**
+ * Typed wrapper around the Wails v2 JS bridge (window.go / window.runtime).
+ *
+ * In `wails dev` / a packaged build the bridge is injected by the Go host; in
+ * a plain browser (`bun run dev` via vite) every call no-ops (or degrades to a
+ * sensible web behavior) so the frontend runs standalone.
+ */
+
+/** Bound methods of the Go `App` struct (apps/desktop/app.go). */
+export interface DesktopBindings {
+  /** Opens a URL in the system default browser (Stripe checkout et al.). */
+  OpenExternal(url: string): Promise<void>;
+  GetAppVersion(): Promise<string>;
+  /** Sets the dock/taskbar unread badge (stubbed host-side for now). */
+  NotifyBadge(count: number): Promise<void>;
+}
+
+/** Subset of the Wails runtime API the app uses. */
+export interface DesktopRuntime {
+  EventsOn(eventName: string, callback: (...data: unknown[]) => void): () => void;
+  EventsEmit(eventName: string, ...data: unknown[]): void;
+  WindowSetTitle(title: string): void;
+  BrowserOpenURL(url: string): void;
+}
+
+declare global {
+  interface Window {
+    go?: { main: { App: DesktopBindings } };
+    runtime?: DesktopRuntime;
+  }
+}
+
+/** True when running inside the Wails WebView (bridge present). */
+export const isDesktop: boolean = typeof window !== 'undefined' && !!window.go?.main?.App;
+
+const browserFallback: DesktopBindings = {
+  async OpenExternal(url: string) {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  },
+  async GetAppVersion() {
+    return 'dev (browser)';
+  },
+  async NotifyBadge() {
+    // no-op outside the desktop shell
+  },
+};
+
+const runtimeFallback: DesktopRuntime = {
+  EventsOn() {
+    return () => {};
+  },
+  EventsEmit() {},
+  WindowSetTitle(title: string) {
+    document.title = title;
+  },
+  BrowserOpenURL(url: string) {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  },
+};
+
+/** The bound Go App — always safe to call. */
+export const desktop: DesktopBindings = isDesktop ? window.go!.main.App : browserFallback;
+
+/** The Wails runtime — always safe to call. */
+export const wailsRuntime: DesktopRuntime = window.runtime ?? runtimeFallback;

@@ -1,0 +1,3 @@
+[install]
+# Hoist workspace dependencies to the root, standard bun monorepo behavior.
+linkWorkspacePackages = true

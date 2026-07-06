@@ -1,73 +1,26 @@
-# Minimal Template
+# Calendium
 
-This is a [React Native](https://reactnative.dev/) project built with [Expo](https://expo.dev/) and [React Native Reusables](https://reactnativereusables.com).
+An email + calendar manager designed around speed and keyboard-first UX — a Superhuman-class email client deeply integrated with a best-in-class calendar, on **web, desktop, and mobile**.
 
-It was initialized using the following command:
+## Monorepo layout (bun workspaces)
 
-```bash
-npx @react-native-reusables/cli@latest init -t calendium
-```
+| Path | What | Stack |
+| --- | --- | --- |
+| `backend/` | API + sync workers | Go (stdlib only), hexagonal architecture, Postgres |
+| `apps/web/` | Landing page + web app | Next.js (App Router), React, Tailwind, shadcn/ui |
+| `apps/desktop/` | Desktop app | Wails v2 (Go) + React/Vite frontend |
+| `apps/mobile/` | iOS / Android app | Expo + React Native, react-native-reusables, NativeWind |
+| `packages/shared/` | Shared domain types + API client | TypeScript |
+| `docs/` | Architecture, tech stack, feature map, payments | — |
 
-## Getting Started
-
-To run the development server:
-
-```bash
-    npm run dev
-    # or
-    yarn dev
-    # or
-    pnpm dev
-    # or
-    bun dev
-```
-
-This will start the Expo Dev Server. Open the app in:
-
-- **iOS**: press `i` to launch in the iOS simulator _(Mac only)_
-- **Android**: press `a` to launch in the Android emulator
-- **Web**: press `w` to run in a browser
-
-You can also scan the QR code using the [Expo Go](https://expo.dev/go) app on your device. This project fully supports running in Expo Go for quick testing on physical devices.
-
-## Adding components
-
-You can add more reusable components using the CLI:
+## Getting started
 
 ```bash
-npx react-native-reusables/cli@latest add [...components]
+bun install            # installs all JS workspaces
+bun run dev:api        # Go API on :8080
+bun run dev:web        # Next.js on :3000
+bun run dev:mobile     # Expo dev server
+bun run dev:desktop    # Wails dev (requires wails CLI)
 ```
 
-> e.g. `npx react-native-reusables/cli@latest add input textarea`
-
-If you don't specify any component names, you'll be prompted to select which components to add interactively. Use the `--all` flag to install all available components at once.
-
-## Project Features
-
-- ⚛️ Built with [Expo Router](https://expo.dev/router)
-- 🎨 Styled with [Tailwind CSS](https://tailwindcss.com/) via [Nativewind](https://www.nativewind.dev/)
-- 📦 UI powered by [React Native Reusables](https://github.com/founded-labs/react-native-reusables)
-- 🚀 New Architecture enabled
-- 🔥 Edge to Edge enabled
-- 📱 Runs on iOS, Android, and Web
-
-## Learn More
-
-To dive deeper into the technologies used:
-
-- [React Native Docs](https://reactnative.dev/docs/getting-started)
-- [Expo Docs](https://docs.expo.dev/)
-- [Nativewind Docs](https://www.nativewind.dev/)
-- [React Native Reusables](https://reactnativereusables.com)
-
-## Deploy with EAS
-
-The easiest way to deploy your app is with [Expo Application Services (EAS)](https://expo.dev/eas).
-
-- [EAS Build](https://docs.expo.dev/build/introduction/)
-- [EAS Updates](https://docs.expo.dev/eas-update/introduction/)
-- [EAS Submit](https://docs.expo.dev/submit/introduction/)
-
----
-
-If you enjoy using React Native Reusables, please consider giving it a ⭐ on [GitHub](https://github.com/founded-labs/react-native-reusables). Your support means a lot!
+See `docs/architecture.md` for the full system design, `docs/tech-stack.md` for the stack map, `docs/feature-map.md` for the Superhuman/calendar feature parity plan, and `docs/payments.md` for the Stripe subscription flow.

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "Calendium",
+  "outputfilename": "Calendium",
+  "frontend:dir": "frontend",
+  "frontend:install": "bun install",
+  "frontend:build": "bun run build",
+  "frontend:dev:watcher": "bun run dev",
+  "frontend:dev:serverUrl": "http://localhost:5173",
+  "author": {
+    "name": "Calendium"
+  },
+  "info": {
+    "productName": "Calendium",
+    "productVersion": "0.1.0"
+  }
+}

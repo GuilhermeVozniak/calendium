@@ -1,0 +1,225 @@
+import { Button } from '@/components/ui/button';
+import { Icon } from '@/components/ui/icon';
+import { Input } from '@/components/ui/input';
+import { Text } from '@/components/ui/text';
+import { api } from '@/lib/api';
+import { relativeTime } from '@/lib/format';
+import { isApiUnreachable, mockThreadDetail, withMockFallback } from '@/lib/mock';
+import type { Message, Page, Thread } from '@calendium/shared';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { ArchiveIcon, ChevronLeftIcon, ClockIcon, SendIcon } from 'lucide-react-native';
+import * as React from 'react';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, ScrollView, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+type ThreadDetail = { thread: Thread; messages: Message[] };
+
+export default function ThreadScreen() {
+  const params = useLocalSearchParams<{ id: string }>();
+  const threadId = typeof params.id === 'string' ? params.id : '';
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const queryClient = useQueryClient();
+  const [reply, setReply] = React.useState('');
+
+  const detailQuery = useQuery({
+    queryKey: ['thread', threadId],
+    enabled: threadId.length > 0,
+    queryFn: () =>
+      withMockFallback(
+        () => api.getThread(threadId),
+        () => mockThreadDetail(threadId)
+      ),
+  });
+
+  const goBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/(tabs)/inbox');
+    }
+  };
+
+  const removeFromInboxList = (thread: Thread) => {
+    queryClient.setQueryData<Page<Thread>>(['threads', thread.split], (page) =>
+      page ? { ...page, items: page.items.filter((t) => t.id !== thread.id) } : page
+    );
+  };
+
+  const archive = async () => {
+    const thread = detailQuery.data?.thread;
+    if (!thread) return;
+    removeFromInboxList(thread);
+    goBack();
+    try {
+      await api.actOnThread(thread.id, 'archive');
+    } catch {
+      // API unreachable: keep the optimistic removal (mock/offline mode).
+    }
+  };
+
+  const snooze = () => {
+    const thread = detailQuery.data?.thread;
+    if (!thread) return;
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(8, 0, 0, 0);
+    const nextWeek = new Date();
+    nextWeek.setDate(nextWeek.getDate() + 7);
+    nextWeek.setHours(8, 0, 0, 0);
+    const doSnooze = async (until: string) => {
+      removeFromInboxList(thread);
+      goBack();
+      try {
+        await api.snoozeThread(thread.id, until);
+      } catch {
+        // API unreachable: keep the optimistic removal.
+      }
+    };
+    Alert.alert('Snooze until', undefined, [
+      { text: 'Tomorrow 8 AM', onPress: () => doSnooze(tomorrow.toISOString()) },
+      { text: 'Next week', onPress: () => doSnooze(nextWeek.toISOString()) },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  const appendMessage = (message: Message) => {
+    queryClient.setQueryData<ThreadDetail>(['thread', threadId], (data) =>
+      data ? { ...data, messages: [...data.messages, message] } : data
+    );
+  };
+
+  const sendReply = useMutation({
+    mutationFn: async () => {
+      const data = detailQuery.data;
+      if (!data) throw new Error('Thread not loaded yet');
+      const lastInbound = [...data.messages].reverse().find((m) => !m.isDraft);
+      const draft = await api.saveDraft({
+        accountId: data.thread.accountId,
+        threadId: data.thread.id,
+        to: lastInbound ? [lastInbound.from] : data.thread.participants.slice(0, 1),
+        subject: data.thread.subject.startsWith('Re:')
+          ? data.thread.subject
+          : `Re: ${data.thread.subject}`,
+        bodyHtml: `<p>${reply.replace(/\n/g, '<br/>')}</p>`,
+      });
+      return api.sendDraft(draft.id);
+    },
+    onSuccess: (message) => {
+      appendMessage(message);
+      setReply('');
+    },
+    onError: (error) => {
+      const data = detailQuery.data;
+      if (isApiUnreachable(error) && data) {
+        // Offline/mock mode: append the reply locally.
+        appendMessage({
+          id: `local_${Date.now()}`,
+          threadId: data.thread.id,
+          accountId: data.thread.accountId,
+          from: { name: 'You', email: 'you@calendium.app' },
+          to: data.thread.participants.slice(0, 1),
+          cc: [],
+          bcc: [],
+          subject: data.thread.subject,
+          bodyHtml: `<p>${reply.replace(/\n/g, '<br/>')}</p>`,
+          bodyText: reply,
+          attachments: [],
+          sentAt: new Date().toISOString(),
+          isDraft: false,
+          openedAt: null,
+        });
+        setReply('');
+      } else {
+        Alert.alert('Could not send reply', error instanceof Error ? error.message : 'Unknown error');
+      }
+    },
+  });
+
+  const thread = detailQuery.data?.thread;
+  const messages = detailQuery.data?.messages ?? [];
+
+  return (
+    <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
+      {/* Header */}
+      <View className="flex-row items-center gap-1 border-b border-border px-2 pb-2 pt-1">
+        <Button size="icon" variant="ghost" className="rounded-full" onPress={goBack}>
+          <Icon as={ChevronLeftIcon} className="size-6" />
+        </Button>
+        <View className="flex-1">
+          <Text className="font-semibold" numberOfLines={1}>
+            {thread?.subject ?? 'Conversation'}
+          </Text>
+          {thread && (
+            <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+              {thread.messageCount} message{thread.messageCount === 1 ? '' : 's'}
+            </Text>
+          )}
+        </View>
+        <Button size="icon" variant="ghost" className="rounded-full" onPress={archive}>
+          <Icon as={ArchiveIcon} className="size-5" />
+        </Button>
+        <Button size="icon" variant="ghost" className="rounded-full" onPress={snooze}>
+          <Icon as={ClockIcon} className="size-5" />
+        </Button>
+      </View>
+
+      <KeyboardAvoidingView
+        className="flex-1"
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        {/* Message stack */}
+        {detailQuery.isLoading ? (
+          <View className="flex-1 items-center justify-center">
+            <ActivityIndicator size="large" />
+          </View>
+        ) : detailQuery.isError ? (
+          <View className="flex-1 items-center justify-center px-8">
+            <Text className="text-center text-sm text-muted-foreground">
+              Couldn't load this conversation.
+            </Text>
+          </View>
+        ) : (
+          <ScrollView contentContainerClassName="gap-3 p-4">
+            {messages.map((message) => (
+              <View key={message.id} className="gap-2 rounded-lg border border-border bg-card p-4">
+                <View className="flex-row items-baseline justify-between gap-2">
+                  <Text className="flex-1 text-sm font-semibold" numberOfLines={1}>
+                    {message.from.name ?? message.from.email}
+                  </Text>
+                  <Text className="text-xs text-muted-foreground">
+                    {relativeTime(message.sentAt)}
+                  </Text>
+                </View>
+                <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+                  to {message.to.map((t) => t.name ?? t.email).join(', ') || 'you'}
+                </Text>
+                <Text className="text-sm leading-6">{message.bodyText}</Text>
+              </View>
+            ))}
+          </ScrollView>
+        )}
+
+        {/* Reply box */}
+        <View
+          className="flex-row items-end gap-2 border-t border-border bg-background px-4 pt-3"
+          style={{ paddingBottom: Math.max(insets.bottom, 12) }}>
+          <Input
+            value={reply}
+            onChangeText={setReply}
+            placeholder="Reply…"
+            multiline
+            className="h-auto max-h-32 min-h-10 flex-1 rounded-2xl py-2.5"
+          />
+          <Button
+            size="icon"
+            className="rounded-full"
+            onPress={() => sendReply.mutate()}
+            disabled={!reply.trim() || sendReply.isPending || !detailQuery.data}>
+            <Icon as={SendIcon} className="size-4 text-primary-foreground" />
+          </Button>
+        </View>
+      </KeyboardAvoidingView>
+    </View>
+  );
+}

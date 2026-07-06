@@ -1,0 +1,185 @@
+// Command worker runs Calendium's background loops (port.SyncService):
+// incremental provider sync per active account, due scheduled sends (Send
+// Later / undo-send), and snooze/reminder wake-ups with push notifications.
+package main
+
+import (
+	"context"
+	"database/sql"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"calendium/backend/internal/adapter/out/googleapi"
+	"calendium/backend/internal/adapter/out/msgraph"
+	"calendium/backend/internal/adapter/out/postgres"
+	"calendium/backend/internal/adapter/out/push"
+	"calendium/backend/internal/config"
+	"calendium/backend/internal/domain"
+	"calendium/backend/internal/migrate"
+	"calendium/backend/internal/port"
+	"calendium/backend/internal/service"
+	"calendium/backend/migrations"
+)
+
+const (
+	// syncInterval paces incremental provider sync across all accounts.
+	syncInterval = time.Minute
+	// dueWorkInterval paces scheduled sends and snooze/reminder wake-ups;
+	// it bounds how late an undo-send delivery can fire, so keep it short.
+	dueWorkInterval = 5 * time.Second
+	// perAccountTimeout bounds one account's sync pass.
+	perAccountTimeout = 5 * time.Minute
+)
+
+func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := run(logger); err != nil {
+		logger.Error("worker: fatal", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run(logger *slog.Logger) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	cfg, err := config.FromEnv()
+	if err != nil {
+		return err
+	}
+
+	// --- Postgres + migrations ---
+	db, err := sql.Open("pgx", cfg.DB.URL)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	err = db.PingContext(pingCtx)
+	cancel()
+	if err != nil {
+		return err
+	}
+	if err := migrate.Apply(ctx, db, migrations.FS); err != nil {
+		return err
+	}
+	logger.Info("worker: migrations applied")
+
+	store := postgres.NewStore(db)
+	if err := store.SetTokenEncryptionKey(cfg.Crypto.TokenEncryptionKey); err != nil {
+		return err
+	}
+
+	// --- outbound gateways ---
+	hc := &http.Client{Timeout: 30 * time.Second}
+
+	oauth := map[domain.Provider]port.OAuthGateway{}
+	mailProviders := map[domain.Provider]port.MailProvider{}
+	calendarProviders := map[domain.Provider]port.CalendarProvider{}
+	if cfg.Google.ClientID != "" {
+		g := googleapi.NewClient(cfg.Google.ClientID, cfg.Google.ClientSecret, hc)
+		oauth[domain.ProviderGoogle] = g
+		mailProviders[domain.ProviderGoogle] = g
+		calendarProviders[domain.ProviderGoogle] = g
+	}
+	if cfg.Microsoft.ClientID != "" {
+		m := msgraph.NewClient(cfg.Microsoft.ClientID, cfg.Microsoft.ClientSecret, hc)
+		oauth[domain.ProviderMicrosoft] = m
+		mailProviders[domain.ProviderMicrosoft] = m
+		calendarProviders[domain.ProviderMicrosoft] = m
+	}
+
+	var pushSender port.PushSender
+	if cfg.Push != (config.Push{}) {
+		pushSender = push.NewDispatcher(cfg.Push, hc)
+	}
+
+	syncSvc := service.NewSyncService(service.SyncServiceDeps{
+		Accounts:          store.Accounts(),
+		Labels:            store.Labels(),
+		Threads:           store.Threads(),
+		Messages:          store.Messages(),
+		Drafts:            store.Drafts(),
+		Calendars:         store.Calendars(),
+		Events:            store.Events(),
+		Devices:           store.Devices(),
+		SyncState:         store.SyncStates(),
+		MailProviders:     mailProviders,
+		CalendarProviders: calendarProviders,
+		OAuth:             oauth,
+		Push:              pushSender,
+		Clock:             service.SystemClock{},
+	})
+
+	// --- loops ---
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		runLoop(ctx, syncInterval, func(ctx context.Context) {
+			syncAllAccounts(ctx, logger, store.Accounts(), syncSvc)
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		runLoop(ctx, dueWorkInterval, func(ctx context.Context) {
+			if err := syncSvc.ProcessDueWork(ctx); err != nil {
+				logger.Error("worker: process due work", "error", err)
+			}
+		})
+	}()
+
+	logger.Info("worker: loops started",
+		"sync_interval", syncInterval.String(),
+		"due_work_interval", dueWorkInterval.String(),
+		"providers", len(mailProviders))
+	wg.Wait()
+	logger.Info("worker: shut down cleanly")
+	return nil
+}
+
+// runLoop invokes fn immediately and then on every tick until ctx ends.
+func runLoop(ctx context.Context, interval time.Duration, fn func(context.Context)) {
+	fn(ctx)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			fn(ctx)
+		}
+	}
+}
+
+// syncAllAccounts runs one incremental mail + calendar pass per syncable
+// account. Accounts fail independently; one broken grant must not stall
+// the fleet.
+func syncAllAccounts(ctx context.Context, logger *slog.Logger, accounts port.AccountRepo, syncSvc port.SyncService) {
+	list, err := accounts.ListSyncable(ctx)
+	if err != nil {
+		logger.Error("worker: list syncable accounts", "error", err)
+		return
+	}
+	for _, account := range list {
+		if ctx.Err() != nil {
+			return
+		}
+		accountCtx, cancel := context.WithTimeout(ctx, perAccountTimeout)
+		err := syncSvc.SyncAccount(accountCtx, account.ID)
+		cancel()
+		if err != nil {
+			logger.Error("worker: sync account",
+				"account_id", account.ID, "provider", account.Provider, "error", err)
+		}
+	}
+}
