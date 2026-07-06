@@ -1,0 +1,32 @@
+# Calendium — run the docker compose stack on boot.
+#
+# An alternative to relying solely on the compose `restart: unless-stopped`
+# policy: this starts (and cleanly stops) the whole stack as a system service.
+#
+# Install:
+#   sudo cp deploy/systemd/calendium-compose.service /etc/systemd/system/
+#   # Place the repo (with a filled-in .env) at /opt/calendium, or edit
+#   # WorkingDirectory below.
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now calendium-compose.service
+#
+# Drop `--profile caddy` from the ExecStart/ExecStop/ExecReload lines if you
+# terminate TLS with your own nginx/proxy instead of the bundled Caddy.
+
+[Unit]
+Description=Calendium (self-hosted) via Docker Compose
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/calendium
+ExecStart=/usr/bin/docker compose --profile caddy up -d --remove-orphans
+ExecStop=/usr/bin/docker compose --profile caddy down
+ExecReload=/usr/bin/docker compose --profile caddy up -d --remove-orphans
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

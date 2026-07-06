@@ -3,6 +3,8 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import App from './App';
+import { ServerConfigProvider, useServerConfig } from './lib/server-config';
+import { ConnectView } from './views/ConnectView';
 import './styles.css';
 
 // Light + dark themes follow the OS (design language mandate: both are
@@ -24,10 +26,19 @@ const queryClient = new QueryClient({
   },
 });
 
+// Server-discovery gate: show Connect until a Calendium server is configured,
+// then mount the app (which builds Supabase + API clients from that config).
+function Root() {
+  const { isConfigured } = useServerConfig();
+  return isConfigured ? <App /> : <ConnectView />;
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <App />
+      <ServerConfigProvider>
+        <Root />
+      </ServerConfigProvider>
     </QueryClientProvider>
   </StrictMode>
 );

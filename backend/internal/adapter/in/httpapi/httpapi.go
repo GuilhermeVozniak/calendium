@@ -28,6 +28,10 @@ type Deps struct {
 	// applies events through Billing; the port is part of Deps so the
 	// composition surface matches the adapter contract.
 	Payments port.Payments
+	// Instance is the public self-configuration document served verbatim at
+	// GET /v1/instance; the composition root fills it from config + which
+	// gateways are wired.
+	Instance InstanceInfo
 }
 
 type server struct {
@@ -47,6 +51,7 @@ func New(deps Deps) http.Handler {
 
 	// Unauthenticated surface.
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /v1/instance", s.handleInstance)
 	mux.HandleFunc("POST /v1/webhooks/stripe", s.handleStripeWebhook)
 	mux.HandleFunc("GET /v1/accounts/callback/{provider}", s.handleAccountCallback)
 

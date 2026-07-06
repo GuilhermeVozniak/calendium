@@ -98,7 +98,7 @@ func run(logger *slog.Logger) error {
 	clock := service.SystemClock{}
 
 	users := service.NewUserService(store.Users(), clock)
-	billing := service.NewBillingService(store.Users(), store.Subscriptions(), store.StripeEvents(), stripe, clock, store)
+	billing := service.NewBillingService(store.Users(), store.Subscriptions(), store.StripeEvents(), stripe, clock, store, cfg.Instance.SelfHosted)
 	accounts := service.NewAccountService(store.Accounts(), store.OAuthStates(), store.SyncStates(), oauth, cfg.OAuth.AllowedRedirectURIs, clock)
 	mail := service.NewMailService(service.MailServiceDeps{
 		Subscriptions: store.Subscriptions(),
@@ -110,6 +110,7 @@ func run(logger *slog.Logger) error {
 		MailProviders: mailProviders,
 		OAuth:         oauth,
 		Clock:         clock,
+		SelfHosted:    cfg.Instance.SelfHosted,
 		UndoSendGrace: cfg.Mail.UndoSendGrace,
 	})
 	calendars := service.NewCalendarService(service.CalendarServiceDeps{
@@ -120,8 +121,9 @@ func run(logger *slog.Logger) error {
 		CalendarProviders: calendarProviders,
 		OAuth:             oauth,
 		Clock:             clock,
+		SelfHosted:        cfg.Instance.SelfHosted,
 	})
-	search := service.NewSearchService(store.Subscriptions(), store.Threads(), store.Events(), clock)
+	search := service.NewSearchService(store.Subscriptions(), store.Threads(), store.Events(), clock, cfg.Instance.SelfHosted)
 	aiSvc := service.NewAIService(service.AIServiceDeps{
 		Subscriptions: store.Subscriptions(),
 		Accounts:      store.Accounts(),
@@ -130,8 +132,32 @@ func run(logger *slog.Logger) error {
 		Drafts:        store.Drafts(),
 		AI:            ai,
 		Clock:         clock,
+		SelfHosted:    cfg.Instance.SelfHosted,
 	})
 	devices := service.NewDeviceService(store.Devices(), clock)
+
+	// --- instance discovery document (GET /v1/instance) ---
+	mode := httpapi.ModeCloud
+	if cfg.Instance.SelfHosted {
+		mode = httpapi.ModeSelfHost
+	}
+	pushConfigured := cfg.Push.APNs.KeyP8 != "" ||
+		cfg.Push.FCM.ServiceAccountJSON != "" ||
+		(cfg.Push.VAPID.PublicKey != "" && cfg.Push.VAPID.PrivateKey != "")
+	instance := httpapi.InstanceInfo{
+		Name:            cfg.Instance.Name,
+		Mode:            mode,
+		Version:         httpapi.Version,
+		SupabaseURL:     cfg.Supabase.URL,
+		SupabaseAnonKey: cfg.Supabase.AnonKey,
+		Features: httpapi.InstanceFeatures{
+			Billing:   !cfg.Instance.SelfHosted,
+			Google:    cfg.Google.ClientID != "",
+			Microsoft: cfg.Microsoft.ClientID != "",
+			AI:        cfg.OpenRouter.APIKey != "",
+			Push:      pushConfigured,
+		},
+	}
 
 	// --- HTTP server ---
 	handler := httpapi.New(httpapi.Deps{
@@ -146,6 +172,7 @@ func run(logger *slog.Logger) error {
 		AI:        aiSvc,
 		Devices:   devices,
 		Payments:  stripe,
+		Instance:  instance,
 	})
 
 	srv := &http.Server{

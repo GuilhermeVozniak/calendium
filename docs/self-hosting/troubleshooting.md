@@ -1,0 +1,272 @@
+# Troubleshooting
+
+Symptom → cause → fix for the failures self-hosters actually hit. Start by
+checking the two liveness endpoints and the logs:
+
+```bash
+curl -i https://your-domain/healthz          # API liveness (should be 200)
+curl -s https://your-domain/v1/instance | jq  # discovery payload clients rely on
+docker compose logs --tail=100 api worker web caddy
+```
+
+---
+
+## Quick index
+
+| Symptom | Jump to |
+| --- | --- |
+| Container won't start, `TOKEN_ENCRYPTION_KEY` error | [Boot fails: config validation](#boot-fails-config-validation) |
+| `DATABASE_URL is required` / connection refused / SSL | [Database connection](#database-connection) |
+| `migrate: apply ...` on startup | [Migration failure](#migration-failure) |
+| Login works but API returns 401 | [JWT / issuer mismatch](#jwt--issuer-mismatch) |
+| Client can't reach `/v1/instance` | [Clients can't discover the server](#clients-cant-discover-the-server) |
+| Web app calls the wrong API URL / CORS | [Wrong API URL baked into web](#wrong-api-url-baked-into-web) |
+| `redirect_uri_mismatch` connecting Gmail/Outlook | [OAuth redirect rejected](#oauth-redirect-rejected) |
+| Infinite HTTPS redirects behind a proxy | [Redirect loop behind a proxy](#redirect-loop-behind-a-proxy) |
+| No TLS certificate issued | [Certificate issuance fails](#certificate-issuance-fails) |
+| Dead "Subscribe" screen on self-host | [Billing UI on self-host](#billing-ui-on-self-host) |
+
+---
+
+## Boot fails: config validation
+
+**Symptom:** the `api` (and `worker`) container exits immediately; logs show
+`TOKEN_ENCRYPTION_KEY is required` or
+`TOKEN_ENCRYPTION_KEY must be exactly 64 hex chars (32 bytes)`.
+
+**Cause:** the key is empty or the wrong length. `FromEnv` validates it at boot
+and refuses to start otherwise (also for a missing `DATABASE_URL`, a
+non-boolean `SELF_HOSTED`, or a bad `UNDO_SEND_SECONDS`).
+
+**Fix:** generate exactly 32 bytes of hex and set it in `.env`:
+
+```bash
+make gen-secret            # or: openssl rand -hex 32
+# -> paste into TOKEN_ENCRYPTION_KEY=...
+docker compose up -d
+```
+
+Don't quote it or add spaces — it must decode to exactly 32 bytes.
+
+---
+
+## Database connection
+
+**Symptoms & fixes:**
+
+- `DATABASE_URL is required` — the var is empty. In the bundled stack it should
+  be `postgres://calendium:<password>@db:5432/calendium?sslmode=disable`, with
+  the host `db` (the compose service name) and the password matching
+  `POSTGRES_PASSWORD`.
+- **`connection refused` / `dial tcp` to `db`** — the API started before
+  Postgres was ready. The compose file already gates `api`/`worker` on
+  `db: condition: service_healthy`, so this usually means the DB itself failed
+  its healthcheck. Check `docker compose logs db` (bad `POSTGRES_PASSWORD`,
+  corrupt `db_data` volume, disk full).
+- **`password authentication failed`** — `DATABASE_URL`'s credentials drifted
+  from `POSTGRES_USER`/`POSTGRES_PASSWORD`. Keep them in sync. If you changed
+  the password *after* the volume was first initialized, Postgres kept the old
+  one — either set it back or reset the volume (destroys data).
+- **`SSL is not enabled on the server` or TLS errors against managed Postgres**
+  — `sslmode=disable` is only correct for the in-compose DB. For RDS / Cloud SQL
+  / Azure use `sslmode=require` (or `verify-full` with the provider CA bundle).
+- **`prepared statement "..." does not exist`** — you're behind a
+  transaction-mode pooler (PgBouncer, Supabase Supavisor `:6543`, RDS Proxy).
+  Append `default_query_exec_mode=simple_protocol` to `DATABASE_URL`, or connect
+  to the direct `:5432` port. Not needed for the bundled DB.
+
+---
+
+## Migration failure
+
+**Symptom:** `api` logs `migrate: apply 000X_...sql: ...` and the container
+exits.
+
+**Cause:** a migration couldn't apply — almost always because the schema was
+edited by hand, or a partial/failed prior run left conflicting objects.
+Migrations are embedded, applied at boot, tracked in `schema_migrations`, and
+run under an advisory lock, so concurrent api+worker startup is *not* the cause.
+
+**Fix:** read the specific SQL error. If it's from a manual change, reconcile it
+or restore your pre-upgrade snapshot (`make db-restore FILE=...`) and retry. Each
+migration runs in its own transaction, so a failure leaves the database at the
+last good version — you won't get a half-applied migration. See
+[Upgrading → How migrations run](./upgrades.md#how-migrations-run).
+
+---
+
+## JWT / issuer mismatch
+
+**Symptom:** users sign in fine (Supabase session works) but every
+`Authorization: Bearer` call to `/v1/*` returns `401`.
+
+**Causes & fixes:**
+
+- **Wrong verification material.** The backend needs `SUPABASE_JWT_SECRET`
+  (HS256) **or** `SUPABASE_JWKS_URL` (RS256/ES256) matching how your Supabase
+  project signs tokens. Newer projects use asymmetric keys → set the JWKS URL;
+  older ones use the shared secret. If you set the wrong one, verification
+  fails.
+- **Issuer pin mismatch.** When `SUPABASE_URL` is set, the backend requires the
+  token `iss` to equal `<SUPABASE_URL>/auth/v1`. If `SUPABASE_URL` points at a
+  *different* project than the one that issued the client's token (a common
+  copy-paste error, or mixing a self-hosted Supabase URL with cloud tokens),
+  every token is rejected. Make `SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`, and
+  the project your clients actually authenticate against all the same project.
+- **Clock skew** on the server can invalidate `exp`/`iat`. Ensure NTP is
+  running.
+
+---
+
+## Clients can't discover the server
+
+**Symptom:** a desktop/mobile client (or your browser) can't load
+`GET /v1/instance`, so the "connect to your server" step fails.
+
+**Causes & fixes:**
+
+- **Proxy routing.** `/v1/*` must route to `api:8080`. With the bundled Caddy
+  this is automatic; with nginx/Traefik confirm the `/v1/` location points at
+  the API upstream, not web. Test directly:
+  `curl -i https://your-domain/v1/instance`.
+- **It's unauthenticated — a 401 here means misrouting.** `/v1/instance` is
+  registered *outside* the auth middleware. If you get 401, the request is
+  hitting an authenticated route instead (wrong path or a proxy rewrite
+  mangling `/v1/instance`).
+- **TLS / mixed content.** Native apps require HTTPS. A self-signed or
+  untrusted cert makes the client refuse the connection — use a real domain +
+  Caddy, or trust your internal CA on the device.
+
+---
+
+## Wrong API URL baked into web
+
+**Symptom:** the web app calls `http://localhost:8080` (or the old URL) in
+production, or you see CORS/blocked-request errors in the browser console.
+
+**Cause:** `NEXT_PUBLIC_API_URL` (and the Supabase `NEXT_PUBLIC_*` values) are
+inlined into the browser bundle **at build time**. Setting them only as runtime
+env does nothing — the old value is already compiled in.
+
+**Fix:** set them in `.env` and **rebuild** the web image:
+
+```bash
+# behind the bundled proxy, this is just your domain (API lives under /v1):
+NEXT_PUBLIC_API_URL=https://your-domain
+docker compose up -d --build web     # or: make self-host-up
+```
+
+Note there's usually **no CORS to configure**: behind the proxy the web app and
+API share one origin (`https://your-domain`, API under `/v1`). CORS errors are a
+symptom that the web app is pointed at a *different* origin than it's served
+from — fix the URL rather than loosening CORS.
+
+---
+
+## OAuth redirect rejected
+
+**Symptom A — at the provider:** Google shows `redirect_uri_mismatch`, or
+Microsoft shows `AADSTS50011`, when connecting a mailbox.
+
+**Cause/fix:** the backend callback URL isn't registered in the provider
+console. Register it **exactly**:
+
+```
+https://your-domain/v1/accounts/callback/google
+https://your-domain/v1/accounts/callback/microsoft
+```
+
+in Google Cloud (Authorized redirect URIs) and Microsoft Entra (Web redirect
+URI). Scheme, host, and path must match character-for-character. See
+[Providers](./providers.md).
+
+**Symptom B — after the provider:** the flow completes at Google/Microsoft but
+Calendium then refuses to redirect the browser back to your web app.
+
+**Cause/fix:** the client's return URL isn't in the server allowlist. Add your
+web origin to `OAUTH_ALLOWED_REDIRECT_URIS` (comma-separated, appended to the
+built-in `localhost` + `calendium://` defaults) and restart the API:
+
+```bash
+OAUTH_ALLOWED_REDIRECT_URIS=https://your-domain
+```
+
+---
+
+## Redirect loop behind a proxy
+
+**Symptom:** the browser bounces between `http` and `https` forever, or OAuth
+URLs come back as `http://` behind your `https://` proxy.
+
+**Cause:** your proxy isn't telling the backend the original scheme.
+
+**Fix:** forward `X-Forwarded-Proto` (and `X-Real-IP` / `X-Forwarded-For`). The
+bundled Caddy and the sample `deploy/nginx/calendium.conf` already do. If you
+wrote your own nginx/Traefik config, add:
+
+```nginx
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+```
+
+This is the single most common self-host support ticket.
+
+---
+
+## Certificate issuance fails
+
+**Symptom:** Caddy logs ACME errors; the site has no valid certificate.
+
+**Causes & fixes:**
+
+- **DNS not pointing at the box yet.** The `A`/`AAAA` record for `your-domain`
+  must resolve to the server's public IP *before* you `up`. Verify with
+  `dig +short your-domain`.
+- **Ports 80/443 not reachable.** Let's Encrypt validates over 80/443 — open
+  them in your firewall/security group and make sure nothing else is bound to
+  them on the host.
+- **`DOMAIN` unset or `localhost`.** With `DOMAIN=localhost` Caddy issues a
+  local internal cert (no public ACME). Set a real `DOMAIN` in `.env`.
+- **Rate-limited.** If you wiped the `caddy_data` volume and restarted many
+  times, you may be temporarily blocked by Let's Encrypt. Wait it out, and keep
+  the `caddy_data` volume so certs persist across restarts.
+
+---
+
+## Billing UI on self-host
+
+**Symptom:** a self-hosted user lands on a dead "Subscribe" screen, or
+`POST /v1/billing/checkout` returns `501`.
+
+**This is expected.** With `SELF_HOSTED=true`, billing is disabled: checkout,
+portal, and the Stripe webhook return
+`501 {"error":{"code":"self_hosted","message":"Billing is disabled on self-hosted instances."}}`,
+and `GET /v1/billing/subscription` reports an active annual plan so clients treat
+the user as fully entitled. `GET /v1/instance` advertises `features.billing:
+false` so up-to-date clients **hide** the subscribe UI entirely.
+
+**If you still see a subscribe screen:** confirm `SELF_HOSTED=true` is actually
+in effect (`curl -s https://your-domain/v1/instance | jq '.mode, .features.billing'`
+should show `"self_host"` and `false`), and that your web client was **rebuilt**
+after setting it — a stale bundle may still show cloud-only UI.
+
+---
+
+## Still stuck?
+
+- Re-read the [Configuration & Environment Reference](./configuration.md) — most
+  issues are one wrong env var.
+- Confirm the whole stack is healthy: `docker compose ps` (every service `Up`,
+  `db` healthy).
+- Check the [Architecture](../architecture.md) doc for how a request flows
+  through auth → service → adapter.
+
+---
+
+## Related pages
+
+- [Configuration & Environment Reference](./configuration.md)
+- [Provider & Integration Setup](./providers.md)
+- [Reverse Proxy & HTTPS](./reverse-proxy-tls.md)
+- [Upgrading](./upgrades.md) · [Backups & Restore](./backups.md) · [Security](./security.md)

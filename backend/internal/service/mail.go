@@ -30,6 +30,8 @@ type MailServiceDeps struct {
 	MailProviders map[domain.Provider]port.MailProvider
 	OAuth         map[domain.Provider]port.OAuthGateway
 	Clock         port.Clock
+	// SelfHosted unlocks the paywall (open-core self-hosted mode).
+	SelfHosted bool
 	// UndoSendGrace <= 0 falls back to DefaultUndoSendGrace.
 	UndoSendGrace time.Duration
 }
@@ -56,7 +58,7 @@ func NewMailService(d MailServiceDeps) *MailService {
 		grace = DefaultUndoSendGrace
 	}
 	return &MailService{
-		ent:           entitlement{subs: d.Subscriptions, clock: d.Clock},
+		ent:           entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
 		accounts:      d.Accounts,
 		threads:       d.Threads,
 		messages:      d.Messages,

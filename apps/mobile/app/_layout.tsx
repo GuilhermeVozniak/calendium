@@ -18,6 +18,7 @@ export default function RootLayout() {
     <Providers>
       <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
       <Stack>
+        <Stack.Screen name="connect" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="thread/[id]" options={{ headerShown: false }} />
         <Stack.Screen name="compose" options={{ presentation: 'modal', headerShown: false }} />

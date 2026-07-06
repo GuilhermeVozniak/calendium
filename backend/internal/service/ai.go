@@ -24,6 +24,8 @@ type AIServiceDeps struct {
 	Drafts        port.DraftRepo
 	AI            port.AI
 	Clock         port.Clock
+	// SelfHosted unlocks the paywall (open-core self-hosted mode).
+	SelfHosted bool
 }
 
 // AIService implements port.AIService (OpenRouter-backed
@@ -41,7 +43,7 @@ var _ port.AIService = (*AIService)(nil)
 
 func NewAIService(d AIServiceDeps) *AIService {
 	return &AIService{
-		ent:      entitlement{subs: d.Subscriptions, clock: d.Clock},
+		ent:      entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
 		accounts: d.Accounts,
 		threads:  d.Threads,
 		messages: d.Messages,

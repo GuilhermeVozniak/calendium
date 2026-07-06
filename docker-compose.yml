@@ -1,0 +1,126 @@
+# Calendium — self-hosting stack.
+#
+#   cp .env.example .env    # then fill it in (see the file's header)
+#   docker compose up -d --build                 # db + api + worker + web
+#   docker compose --profile caddy up -d --build # + automatic-HTTPS proxy
+#
+# All tunables come from .env (auto-loaded for ${...} interpolation below and
+# passed into the api/worker containers via env_file).
+name: calendium
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-calendium}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-calendium}
+      POSTGRES_DB: ${POSTGRES_DB:-calendium}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-calendium} -d ${POSTGRES_DB:-calendium}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - calendium
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: calendium-backend:latest
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Bind inside the container; the host mapping is API_PORT below.
+      HTTP_ADDR: ":8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-8080}:8080"
+    networks:
+      - calendium
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: calendium-backend:latest
+    restart: unless-stopped
+    # Same image as api; run the worker binary instead of the default api.
+    command: ["worker"]
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+    # The worker serves no HTTP; the image's /healthz check does not apply.
+    healthcheck:
+      disable: true
+    networks:
+      - calendium
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+    image: calendium-web:latest
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+    depends_on:
+      - api
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    networks:
+      - calendium
+
+  # Optional reverse proxy with automatic HTTPS. Enable with:
+  #   docker compose --profile caddy up -d
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["caddy"]
+    restart: unless-stopped
+    depends_on:
+      - web
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - calendium
+
+volumes:
+  db_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  calendium:
+    driver: bridge

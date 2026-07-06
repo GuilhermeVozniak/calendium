@@ -9,6 +9,7 @@ import type {
   Event,
   EventInput,
   EventPatch,
+  InstanceInfo,
   Message,
   NotificationDevice,
   Page,
@@ -20,6 +21,29 @@ import type {
   ThreadAction,
   User,
 } from './types';
+
+/**
+ * Fetches the public instance descriptor (GET /v1/instance) from a bare server
+ * URL, without auth. Usable before an ApiClient exists — client apps call this
+ * during server discovery to learn a server's Supabase creds + capabilities.
+ */
+export async function fetchInstance(
+  baseUrl: string,
+  fetchImpl?: typeof fetch
+): Promise<InstanceInfo> {
+  const doFetch = fetchImpl ?? fetch;
+  const base = baseUrl.replace(/\/+$/, '');
+  const res = await doFetch(`${base}/v1/instance`, {
+    headers: { Accept: 'application/json' },
+  });
+  const json = await res.json().catch(() => null);
+  if (!res.ok) {
+    const code = json?.error?.code ?? 'unknown';
+    const message = json?.error?.message ?? `Request failed with status ${res.status}`;
+    throw new ApiRequestError(res.status, code, message);
+  }
+  return json as InstanceInfo;
+}
 
 export interface ApiClientOptions {
   baseUrl: string;
@@ -65,6 +89,12 @@ export class ApiClient {
       throw new ApiRequestError(res.status, code, message);
     }
     return json as T;
+  }
+
+  // --- Instance discovery (public, no auth) ---
+  /** Public instance descriptor — Supabase creds + enabled features. */
+  getInstance() {
+    return fetchInstance(this.opts.baseUrl, this.opts.fetch);
   }
 
   // --- Me & billing ---

@@ -9,6 +9,7 @@ import { Hero } from '@/components/marketing/hero';
 import { PlatformsSection } from '@/components/marketing/platforms-section';
 import { PricingTeaser } from '@/components/marketing/pricing-teaser';
 import { SectionHeading } from '@/components/marketing/section-heading';
+import { SelfHostingSection } from '@/components/marketing/self-hosting';
 import { SocialProof } from '@/components/marketing/social-proof';
 import { SpeedSection } from '@/components/marketing/speed-section';
 import { TriageSection } from '@/components/marketing/triage-section';
@@ -63,6 +64,7 @@ export default function LandingPage() {
       <AiSection />
       <CalendarSection />
       <PlatformsSection />
+      <SelfHostingSection />
       <SocialProof />
       <PricingTeaser />
       <section className="border-t">

@@ -1,6 +1,6 @@
 import React, { createContext, useEffect, useState } from 'react';
 import { unregisterPushDevice } from '@/hooks/use-push-registration';
-import { envErrorMessage, supabase } from '@/lib/supabase';
+import { useServerConfig } from '@/lib/server-config';
 import type { Session, User } from '@supabase/supabase-js';
 import { Alert } from 'react-native';
 import { makeRedirectUri } from 'expo-auth-session';
@@ -12,7 +12,7 @@ import { useAssertedContext } from './use-aserted-context';
 WebBrowser.maybeCompleteAuthSession();
 
 if (!process.env.EXPO_PUBLIC_SCHEME) {
-  throw new Error(`${envErrorMessage}: EXPO_PUBLIC_SCHEME`);
+  throw new Error('Missing environment variable: EXPO_PUBLIC_SCHEME');
 }
 
 interface AuthContextType {
@@ -34,6 +34,9 @@ AuthContext.displayName = 'AuthContext';
  * AuthProvider component
  */
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  // Supabase is built from the runtime-discovered server (lib/server-config);
+  // it is null until the user connects to a server. All auth calls guard on it.
+  const { supabase } = useServerConfig();
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
@@ -61,6 +64,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return null;
     }
 
+    if (!supabase) {
+      throw new Error('No Calendium server configured.');
+    }
+
     const { data, error } = await supabase.auth.setSession({
       access_token,
       refresh_token,
@@ -74,8 +81,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   useEffect(() => {
+    // No server yet — nothing to authenticate against.
+    if (!supabase) {
+      setSession(null);
+      setUser(null);
+      setLoading(false);
+      return;
+    }
+
+    let active = true;
+    setLoading(true);
+
     // Get initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!active) return;
       setSession(session);
       setUser(session?.user ?? null);
       setLoading(false);
@@ -90,10 +109,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
     });
 
-    return () => subscription.unsubscribe();
-  }, []);
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+    // Re-subscribe whenever the configured server (and thus client) changes.
+  }, [supabase]);
 
   const signInWithOAuth = async (provider: 'google' | 'apple') => {
+    if (!supabase) {
+      Alert.alert('Connect a server', 'Choose a Calendium server before signing in.');
+      return;
+    }
     try {
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider,
@@ -129,6 +156,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       // Remove this device's push token before dropping the session.
       await unregisterPushDevice();
+      if (!supabase) return;
       const { error } = await supabase.auth.signOut();
       if (error) {
         Alert.alert('Error', error.message);

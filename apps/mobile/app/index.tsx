@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Icon } from '@/components/ui/icon';
 import { Text } from '@/components/ui/text';
 import useAuth from '@/context/auth';
+import { useServerConfig } from '@/lib/server-config';
 import { Redirect, Stack } from 'expo-router';
 import { CalendarRangeIcon, MoonStarIcon, SunIcon } from 'lucide-react-native';
 import { useColorScheme } from 'nativewind';
@@ -17,6 +18,7 @@ const SCREEN_OPTIONS = {
 };
 
 export default function SignInScreen() {
+  const { isConfigured, isLoading: serverLoading } = useServerConfig();
   const { user, loading: authLoading, signInWithOAuth } = useAuth();
   const [loading, setLoading] = React.useState(false);
 
@@ -31,7 +33,7 @@ export default function SignInScreen() {
     }
   };
 
-  if (authLoading) {
+  if (serverLoading || authLoading) {
     return (
       <>
         <Stack.Screen options={SCREEN_OPTIONS} />
@@ -40,6 +42,11 @@ export default function SignInScreen() {
         </View>
       </>
     );
+  }
+
+  // Server discovery gates sign-in: pick a server before authenticating.
+  if (!isConfigured) {
+    return <Redirect href="/connect" />;
   }
 
   if (user) {

@@ -276,3 +276,35 @@ export interface ApiError {
     message: string;
   };
 }
+
+// ---------------------------------------------------------------------------
+// Instance discovery (open-core self-host vs cloud)
+// ---------------------------------------------------------------------------
+
+/** How a Calendium server is run: a self-hosted instance or Calendium Cloud. */
+export type InstanceMode = 'self_host' | 'cloud';
+
+/** Capabilities a server advertises so clients can adapt their UI. */
+export interface InstanceFeatures {
+  /** Stripe billing is available (false on self-hosted instances). */
+  billing: boolean;
+  google: boolean;
+  microsoft: boolean;
+  ai: boolean;
+  push: boolean;
+}
+
+/**
+ * Public, unauthenticated instance descriptor served at GET /v1/instance.
+ * A client that only knows the server URL fetches this to self-configure:
+ * it learns the Supabase project to authenticate against and which features
+ * are enabled. `supabaseUrl`/`supabaseAnonKey` may be "" when not configured.
+ */
+export interface InstanceInfo {
+  name: string;
+  mode: InstanceMode;
+  version: string;
+  supabaseUrl: string;
+  supabaseAnonKey: string;
+  features: InstanceFeatures;
+}

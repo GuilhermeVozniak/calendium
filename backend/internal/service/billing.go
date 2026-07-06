@@ -22,15 +22,29 @@ type BillingService struct {
 	payments port.Payments
 	clock    port.Clock
 	tx       port.TxRunner
+	// selfHosted disables Stripe entirely: GetSubscription reports an active
+	// annual plan and the checkout/portal/webhook operations return
+	// domain.ErrSelfHosted (open-core self-hosted mode).
+	selfHosted bool
 }
 
 var _ port.BillingService = (*BillingService)(nil)
 
-func NewBillingService(users port.UserRepo, subs port.SubscriptionRepo, events port.StripeEventRepo, payments port.Payments, clock port.Clock, tx port.TxRunner) *BillingService {
-	return &BillingService{users: users, subs: subs, events: events, payments: payments, clock: clock, tx: tx}
+func NewBillingService(users port.UserRepo, subs port.SubscriptionRepo, events port.StripeEventRepo, payments port.Payments, clock port.Clock, tx port.TxRunner, selfHosted bool) *BillingService {
+	return &BillingService{users: users, subs: subs, events: events, payments: payments, clock: clock, tx: tx, selfHosted: selfHosted}
 }
 
 func (s *BillingService) GetSubscription(ctx context.Context, userID string) (domain.Subscription, error) {
+	if s.selfHosted {
+		// No biller on self-hosted instances: report an active annual plan
+		// (nil period) so clients treat the user as fully entitled.
+		return domain.Subscription{
+			UserID:   userID,
+			Status:   domain.SubscriptionActive,
+			Plan:     domain.PlanAnnual,
+			PriceUSD: domain.PriceUSDAnnual,
+		}, nil
+	}
 	sub, err := s.subs.GetByUserID(ctx, userID)
 	if errors.Is(err, domain.ErrNotFound) {
 		return domain.Subscription{
@@ -44,6 +58,9 @@ func (s *BillingService) GetSubscription(ctx context.Context, userID string) (do
 }
 
 func (s *BillingService) CreateCheckoutSession(ctx context.Context, userID, successURL, cancelURL string) (string, error) {
+	if s.selfHosted {
+		return "", fmt.Errorf("%w: billing is disabled on self-hosted instances", domain.ErrSelfHosted)
+	}
 	if successURL == "" || cancelURL == "" {
 		return "", fmt.Errorf("%w: successUrl and cancelUrl are required", domain.ErrValidation)
 	}
@@ -79,6 +96,9 @@ func (s *BillingService) CreateCheckoutSession(ctx context.Context, userID, succ
 }
 
 func (s *BillingService) CreatePortalSession(ctx context.Context, userID, returnURL string) (string, error) {
+	if s.selfHosted {
+		return "", fmt.Errorf("%w: billing is disabled on self-hosted instances", domain.ErrSelfHosted)
+	}
 	if returnURL == "" {
 		return "", fmt.Errorf("%w: returnUrl is required", domain.ErrValidation)
 	}
@@ -93,6 +113,9 @@ func (s *BillingService) CreatePortalSession(ctx context.Context, userID, return
 }
 
 func (s *BillingService) HandleWebhook(ctx context.Context, payload []byte, sigHeader string) error {
+	if s.selfHosted {
+		return fmt.Errorf("%w: billing is disabled on self-hosted instances", domain.ErrSelfHosted)
+	}
 	ev, err := s.payments.ParseWebhook(payload, sigHeader)
 	if err != nil {
 		return fmt.Errorf("%w: webhook signature verification failed: %v", domain.ErrUnauthorized, err)
@@ -184,5 +207,5 @@ func (s *BillingService) applyWebhookEvent(ctx context.Context, ev port.WebhookE
 }
 
 func (s *BillingService) RequireActive(ctx context.Context, userID string) error {
-	return entitlement{subs: s.subs, clock: s.clock}.require(ctx, userID)
+	return entitlement{subs: s.subs, clock: s.clock, selfHost: s.selfHosted}.require(ctx, userID)
 }

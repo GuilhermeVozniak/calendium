@@ -4,16 +4,20 @@ import { Text } from '@/components/ui/text';
 import useAuth from '@/context/auth';
 import { api } from '@/lib/api';
 import { formatDate } from '@/lib/format';
+import { useServerConfig } from '@/lib/server-config';
 import { isApiUnreachable, mockAccounts, mockSubscription, withMockFallback } from '@/lib/mock';
 import type { ConnectedAccount, Provider, Subscription } from '@calendium/shared';
 import { useQuery } from '@tanstack/react-query';
 import * as Linking from 'expo-linking';
+import { useRouter } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import {
   ExternalLinkIcon,
   LogOutIcon,
   MoonStarIcon,
   PlusIcon,
+  RefreshCwIcon,
+  ServerIcon,
   SunIcon,
 } from 'lucide-react-native';
 import { useColorScheme } from 'nativewind';
@@ -35,9 +39,18 @@ const ACCOUNT_STATUS_LABEL: Record<ConnectedAccount['status'], string> = {
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { user, signOut } = useAuth();
+  const { config, clear: clearServer } = useServerConfig();
   const { colorScheme, toggleColorScheme } = useColorScheme();
   const [connecting, setConnecting] = React.useState<Provider | null>(null);
+
+  const isSelfHost = config?.mode === 'self_host';
+
+  const switchServer = async () => {
+    await clearServer();
+    router.replace('/connect');
+  };
 
   const accountsQuery = useQuery({
     queryKey: ['accounts'],
@@ -55,6 +68,8 @@ export default function SettingsScreen() {
         () => api.getSubscription(),
         () => mockSubscription
       ),
+    // Self-hosted instances have billing disabled — no subscription to fetch.
+    enabled: !isSelfHost,
   });
 
   const name =
@@ -166,16 +181,57 @@ export default function SettingsScreen() {
         </View>
       </Section>
 
-      {/* Subscription (read-only — Spotify model, no IAP) */}
-      <Section title="Subscription">
+      {/* Server (open-core: which Calendium instance this client talks to) */}
+      <Section title="Server">
         <View className="gap-3 p-4">
-          {subscriptionQuery.isLoading ? (
-            <ActivityIndicator />
-          ) : (
-            <SubscriptionCard subscription={subscriptionQuery.data ?? null} />
-          )}
+          <View className="flex-row items-center gap-3">
+            <Icon as={ServerIcon} className="size-5 text-muted-foreground" />
+            <View className="flex-1">
+              <Text className="text-sm font-medium" numberOfLines={1}>
+                {config?.name ?? 'Calendium'}
+              </Text>
+              <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+                {config?.serverUrl ?? '—'}
+              </Text>
+            </View>
+            <View className="rounded-full bg-secondary px-2 py-0.5">
+              <Text className="text-xs text-secondary-foreground">
+                {isSelfHost ? 'Self-hosted' : 'Cloud'}
+              </Text>
+            </View>
+          </View>
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex-row gap-2 self-start"
+            onPress={switchServer}>
+            <Icon as={RefreshCwIcon} className="size-4" />
+            <Text>Switch server</Text>
+          </Button>
         </View>
       </Section>
+
+      {/* Subscription — hidden on self-hosted instances (billing disabled). */}
+      {isSelfHost ? (
+        <Section title="Plan">
+          <View className="gap-1 p-4">
+            <Text className="text-sm font-medium">Self-hosted — all features included</Text>
+            <Text className="text-xs text-muted-foreground">
+              This instance runs Calendium open-source. There is no subscription to manage.
+            </Text>
+          </View>
+        </Section>
+      ) : (
+        <Section title="Subscription">
+          <View className="gap-3 p-4">
+            {subscriptionQuery.isLoading ? (
+              <ActivityIndicator />
+            ) : (
+              <SubscriptionCard subscription={subscriptionQuery.data ?? null} />
+            )}
+          </View>
+        </Section>
+      )}
 
       {/* Appearance */}
       <Section title="Appearance">

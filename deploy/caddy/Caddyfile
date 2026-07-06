@@ -1,0 +1,27 @@
+# Calendium reverse proxy with automatic HTTPS.
+#
+# Used by the `caddy` compose profile:
+#   docker compose --profile caddy up -d
+# DOMAIN and ACME_EMAIL come from .env. With DOMAIN=localhost Caddy serves a
+# locally-trusted internal cert; with a real domain it provisions a Let's
+# Encrypt certificate automatically over HTTP/TLS-ALPN.
+
+{
+	# ACME account email (blank is fine for local/internal certs).
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# API + health checks → Go backend.
+	@api path /v1/* /healthz
+	handle @api {
+		reverse_proxy api:8080
+	}
+
+	# Everything else → Next.js web app.
+	handle {
+		reverse_proxy web:3000
+	}
+}

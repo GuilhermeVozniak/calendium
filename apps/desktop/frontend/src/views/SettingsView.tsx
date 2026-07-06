@@ -1,11 +1,12 @@
 import type { SubscriptionStatus } from '@calendium/shared';
 import { useQuery } from '@tanstack/react-query';
 import { format } from 'date-fns';
-import { CreditCard, ExternalLink, Loader2, Mail } from 'lucide-react';
+import { CreditCard, ExternalLink, Loader2, Mail, RefreshCw, Server } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 
 import { api, apiConfigured, CHECKOUT_SUCCESS_URL, orMock, PRICING_URL } from '@/lib/api';
 import { mockAccounts, mockSubscription, mockUser, startMockCheckout } from '@/lib/mock';
+import { useServerConfig } from '@/lib/server-config';
 import { desktop, isDesktop } from '@/lib/wails';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
@@ -35,6 +36,10 @@ export function SettingsView() {
   // poll GET /v1/billing/subscription until the Stripe webhook lands.
   const [awaitingCheckout, setAwaitingCheckout] = useState(false);
 
+  // Open-core: billing is disabled on self-hosted instances.
+  const { config, clear: clearServer } = useServerConfig();
+  const isSelfHost = config?.mode === 'self_host';
+
   const { data: user } = useQuery({
     queryKey: ['me'],
     queryFn: () =>
@@ -59,6 +64,8 @@ export function SettingsView() {
         () => mockSubscription()
       ),
     refetchInterval: awaitingCheckout ? 3_000 : false,
+    // Self-hosted instances have billing disabled — no subscription to fetch.
+    enabled: !isSelfHost,
   });
   const { data: version } = useQuery({
     queryKey: ['app-version'],
@@ -76,7 +83,7 @@ export function SettingsView() {
     // session, open it in the default browser, then poll for the webhook.
     let url = PRICING_URL;
     try {
-      if (apiConfigured) {
+      if (apiConfigured()) {
         const session = await api.createCheckoutSession(CHECKOUT_SUCCESS_URL, PRICING_URL);
         url = session.url;
       } else {
@@ -92,7 +99,7 @@ export function SettingsView() {
   async function manageBilling() {
     let url = PRICING_URL;
     try {
-      if (apiConfigured) {
+      if (apiConfigured()) {
         const session = await api.createBillingPortalSession(PRICING_URL);
         url = session.url;
       }
@@ -141,11 +148,47 @@ export function SettingsView() {
           </ul>
         </Section>
 
-        <Section title="Billing">
+        <Section title="Server">
           <div className="flex flex-col gap-3 p-3">
-            <div className="flex items-center gap-2">
-              <CreditCard className="size-4 text-muted-foreground" />
-              <span className="text-sm font-medium">Calendium Annual — $50/year</span>
+            <div className="flex items-center gap-3">
+              <Server className="size-4 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">{config?.name ?? 'Calendium'}</div>
+                <div className="truncate text-xs text-muted-foreground">
+                  {config?.serverUrl ?? '—'}
+                </div>
+              </div>
+              <Badge variant="secondary">{isSelfHost ? 'Self-hosted' : 'Cloud'}</Badge>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="self-start"
+              onClick={() => clearServer()}
+            >
+              <RefreshCw /> Switch server
+            </Button>
+          </div>
+        </Section>
+
+        {isSelfHost ? (
+          <Section title="Plan">
+            <div className="flex flex-col gap-1 p-3">
+              <div className="flex items-center gap-2">
+                <CreditCard className="size-4 text-muted-foreground" />
+                <span className="text-sm font-medium">Self-hosted — all features included</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                This instance runs Calendium open-source. There is no subscription to manage.
+              </p>
+            </div>
+          </Section>
+        ) : (
+          <Section title="Billing">
+            <div className="flex flex-col gap-3 p-3">
+              <div className="flex items-center gap-2">
+                <CreditCard className="size-4 text-muted-foreground" />
+                <span className="text-sm font-medium">Calendium Annual — $50/year</span>
               {badge && <Badge variant={badge.variant}>{badge.label}</Badge>}
             </div>
             <p className="text-xs text-muted-foreground">
@@ -190,7 +233,8 @@ export function SettingsView() {
               </p>
             )}
           </div>
-        </Section>
+          </Section>
+        )}
 
         <Section title="About">
           <div className="flex flex-col gap-1 p-3 text-xs text-muted-foreground">
@@ -204,7 +248,7 @@ export function SettingsView() {
             </div>
             <div className="flex justify-between">
               <span>Data source</span>
-              <span className="text-foreground">{apiConfigured ? 'Calendium API' : 'Mock data'}</span>
+              <span className="text-foreground">{apiConfigured() ? 'Calendium API' : 'Mock data'}</span>
             </div>
           </div>
         </Section>

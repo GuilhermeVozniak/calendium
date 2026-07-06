@@ -2,6 +2,8 @@
 
 One plan: **Calendium Annual — $50/year**, 14-day free trial, all platforms unlocked by the one subscription. **No in-app purchases anywhere.** Stripe is the only biller.
 
+> **Cloud tier only.** Everything in this document applies to the managed **Calendium Cloud** tier (`SELF_HOSTED=false`). On self-hosted instances (`SELF_HOSTED=true`) billing is disabled: the paywall is off, `GET /v1/billing/subscription` reports a synthetic active plan, and `checkout`/`portal`/webhook return `501 self_hosted`. See [pricing-model.md](./pricing-model.md) and [self-hosting/README.md](./self-hosting/README.md).
+
 ## Why the Spotify model
 
 Like Spotify, purchases never go through Apple/Google IAP: web and desktop run the regular Stripe Checkout flow, and the mobile apps never show a purchase UI — they only reflect subscription state fetched from the backend (`GET /v1/billing/subscription`).

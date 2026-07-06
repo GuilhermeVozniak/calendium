@@ -1,13 +1,18 @@
 import { useEffect } from 'react';
 import { View, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
-import { supabase } from '@/lib/supabase';
+import { getSupabase } from '@/lib/supabase';
 
 export default function AuthCallback() {
   const router = useRouter();
 
   useEffect(() => {
     // Handle the OAuth callback
+    const supabase = getSupabase();
+    if (!supabase) {
+      router.replace('/');
+      return;
+    }
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event) => {

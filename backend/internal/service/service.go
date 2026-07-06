@@ -63,9 +63,16 @@ func (SystemClock) Now() time.Time { return time.Now().UTC() }
 type entitlement struct {
 	subs  port.SubscriptionRepo
 	clock port.Clock
+	// selfHost unlocks every gated use-case for open-core self-hosted
+	// deployments (SELF_HOSTED=true): require always succeeds and never
+	// touches the subscription repo.
+	selfHost bool
 }
 
 func (e entitlement) require(ctx context.Context, userID string) error {
+	if e.selfHost {
+		return nil
+	}
 	sub, err := e.subs.GetByUserID(ctx, userID)
 	if errors.Is(err, domain.ErrNotFound) {
 		return fmt.Errorf("%w: no subscription", domain.ErrPaymentRequired)

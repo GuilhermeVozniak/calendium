@@ -58,10 +58,11 @@ All endpoints JSON, Bearer-authenticated unless noted. Errors: `{ "error": { "co
 
 | Method & path | Purpose |
 | --- | --- |
+| `GET /v1/instance` | Public instance discovery (unauthenticated): `{name, mode: self_host\|cloud, version, supabaseUrl, supabaseAnonKey, features}` for client self-configuration |
 | `GET /v1/me` | Current user (upserts on first call) |
 | `GET /v1/billing/subscription` | Subscription status ($50/yr annual plan) |
-| `POST /v1/billing/checkout` | Create Stripe Checkout session `{successUrl, cancelUrl} → {url}` |
-| `POST /v1/billing/portal` | Stripe billing portal `{returnUrl} → {url}` |
+| `POST /v1/billing/checkout` | Create Stripe Checkout session `{successUrl, cancelUrl} → {url}` (501 `self_hosted` when `SELF_HOSTED`) |
+| `POST /v1/billing/portal` | Stripe billing portal `{returnUrl} → {url}` (501 `self_hosted` when `SELF_HOSTED`) |
 | `POST /v1/webhooks/stripe` | Stripe webhook (signature-verified, unauthenticated) |
 | `GET /v1/accounts` | List connected Google/Microsoft accounts |
 | `POST /v1/accounts/connect/{provider}` | Begin provider OAuth `{redirectUrl} → {url}` |
@@ -97,4 +98,27 @@ All endpoints JSON, Bearer-authenticated unless noted. Errors: `{ "error": { "co
 
 ## Environment
 
-Backend env vars (see `backend/.env.example`): `DATABASE_URL`, `SUPABASE_JWT_SECRET`, `SUPABASE_JWKS_URL`, `SUPABASE_URL` (issuer pinned to `<URL>/auth/v1`), `OAUTH_ALLOWED_REDIRECT_URIS` (redirect allowlist, added to localhost + `calendium://` defaults), `GOOGLE_CLIENT_ID/SECRET`, `MS_CLIENT_ID/SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID_ANNUAL`, `OPENROUTER_API_KEY`, `APNS_KEY_ID/TEAM_ID/KEY_P8`, `FCM_SERVICE_ACCOUNT_JSON`, `VAPID_PUBLIC/PRIVATE_KEY`, `TOKEN_ENCRYPTION_KEY` (32-byte hex for AES-GCM).
+Backend env vars (see `backend/.env.example`): `DATABASE_URL`, `SELF_HOSTED` (open-core: `true` unlocks all features and disables Stripe billing; default `false`), `INSTANCE_NAME` (shown to clients, default `Calendium`), `APP_URL`/`PUBLIC_WEB_URL` (public web origin), `SUPABASE_JWT_SECRET`, `SUPABASE_JWKS_URL`, `SUPABASE_URL` (issuer pinned to `<URL>/auth/v1`), `SUPABASE_ANON_KEY` (PUBLIC anon key served via `GET /v1/instance`), `OAUTH_ALLOWED_REDIRECT_URIS` (redirect allowlist, added to localhost + `calendium://` defaults), `GOOGLE_CLIENT_ID/SECRET`, `MS_CLIENT_ID/SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID_ANNUAL`, `OPENROUTER_API_KEY`, `APNS_KEY_ID/TEAM_ID/KEY_P8`, `FCM_SERVICE_ACCOUNT_JSON`, `VAPID_PUBLIC/PRIVATE_KEY`, `TOKEN_ENCRYPTION_KEY` (32-byte hex for AES-GCM).
+
+### Deployment modes (cloud vs self-hosted)
+
+Calendium is **open core**: the same binaries run in two modes, selected by the backend
+`SELF_HOSTED` env flag (default `false`).
+
+- **Cloud (`SELF_HOSTED=false`)** — our managed hosting; Stripe billing is live and the
+  paywall gates on subscription state (see [payments.md](./payments.md)).
+- **Self-hosted (`SELF_HOSTED=true`)** — the user runs the whole stack; entitlement gating
+  becomes a no-op (all features unlocked) and Stripe is switched off. `GET /v1/billing/subscription`
+  reports a synthetic active annual plan (nil period) so clients treat the user as fully
+  entitled, and the checkout/portal/webhook endpoints return `501 self_hosted`.
+
+The business/entitlement rationale lives in [pricing-model.md](./pricing-model.md); the
+operator guide (Docker Compose, HTTPS, providers, upgrades) lives in
+[self-hosting/README.md](./self-hosting/README.md).
+
+**Instance discovery.** `GET /v1/instance` is unauthenticated so a client that only knows
+the server base URL can self-configure. It returns `{ name, mode, version, supabaseUrl,
+supabaseAnonKey, features: { billing, google, microsoft, ai, push } }` where `mode` is
+`self_host` when `SELF_HOSTED=true` else `cloud`, `features.billing = !SELF_HOSTED`, and
+the remaining feature flags reflect which gateways/credentials are configured. Clients read
+`features.billing` to decide whether to show any billing/paywall UI at all.

@@ -1,0 +1,12 @@
+# Used only when building with apps/web as the context. The production build
+# uses the repo root as context (see apps/web/Dockerfile), so the root
+# .dockerignore governs that build; this file mirrors it for local one-offs.
+node_modules
+.next
+out
+*.tsbuildinfo
+.env
+.env.*
+.DS_Store
+Dockerfile
+.dockerignore

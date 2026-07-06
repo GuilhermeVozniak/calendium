@@ -14,10 +14,15 @@ import "errors"
 //	ErrPaymentRequired → 402
 //	ErrValidation      → 400
 //	ErrConflict        → 409
+//	ErrSelfHosted      → 501
 var (
 	ErrNotFound        = errors.New("not found")
 	ErrUnauthorized    = errors.New("unauthorized")
 	ErrPaymentRequired = errors.New("payment required")
 	ErrValidation      = errors.New("validation failed")
 	ErrConflict        = errors.New("conflict")
+	// ErrSelfHosted marks an operation that is unavailable on self-hosted
+	// instances (the Stripe billing endpoints). The HTTP adapter maps it to
+	// 501 Not Implemented.
+	ErrSelfHosted = errors.New("self-hosted")
 )

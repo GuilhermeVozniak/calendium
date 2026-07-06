@@ -51,6 +51,8 @@ func statusFor(err error) (int, string) {
 		return http.StatusNotFound, "not_found"
 	case errors.Is(err, domain.ErrConflict):
 		return http.StatusConflict, "conflict"
+	case errors.Is(err, domain.ErrSelfHosted):
+		return http.StatusNotImplemented, "self_hosted"
 	default:
 		return http.StatusInternalServerError, "internal"
 	}
@@ -71,6 +73,8 @@ func safeMessage(code string) string {
 		return "The requested resource was not found."
 	case "conflict":
 		return "The request conflicts with the current state of the resource."
+	case "self_hosted":
+		return "Billing is disabled on self-hosted instances."
 	default:
 		return "Internal server error."
 	}

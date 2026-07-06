@@ -20,6 +20,8 @@ type CalendarServiceDeps struct {
 	CalendarProviders map[domain.Provider]port.CalendarProvider
 	OAuth             map[domain.Provider]port.OAuthGateway
 	Clock             port.Clock
+	// SelfHosted unlocks the paywall (open-core self-hosted mode).
+	SelfHosted bool
 }
 
 // CalendarService implements port.CalendarService. Event mutations write
@@ -38,7 +40,7 @@ var _ port.CalendarService = (*CalendarService)(nil)
 
 func NewCalendarService(d CalendarServiceDeps) *CalendarService {
 	return &CalendarService{
-		ent:       entitlement{subs: d.Subscriptions, clock: d.Clock},
+		ent:       entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
 		accounts:  d.Accounts,
 		calendars: d.Calendars,
 		events:    d.Events,

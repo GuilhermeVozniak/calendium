@@ -31,6 +31,10 @@ type Supabase struct {
 	// URL is the Supabase project URL (SUPABASE_URL); the expected token
 	// issuer is derived from it as <URL>/auth/v1.
 	URL string
+	// AnonKey is the PUBLIC Supabase anon key (SUPABASE_ANON_KEY). Unlike
+	// JWTSecret it is safe to serve to clients (GET /v1/instance) so they can
+	// self-configure; it is distinct from the secret JWTSecret.
+	AnonKey string
 }
 
 // Issuer returns the expected JWT `iss` claim (<URL>/auth/v1), or "" when no
@@ -124,6 +128,21 @@ var defaultRedirectAllowlist = []string{
 	"calendium://",
 }
 
+// Instance describes the deployment mode surfaced to clients via the public
+// GET /v1/instance discovery endpoint (open-core: self-hosted vs. cloud).
+type Instance struct {
+	// SelfHosted (SELF_HOSTED, default false) marks a free self-hosted
+	// deployment: entitlement gating becomes a no-op (all features unlocked)
+	// and the billing endpoints return domain.ErrSelfHosted instead of
+	// calling Stripe.
+	SelfHosted bool
+	// Name (INSTANCE_NAME, default "Calendium") is shown to clients.
+	Name string
+	// PublicWebURL (APP_URL, falling back to PUBLIC_WEB_URL) is the public web
+	// origin used to build absolute links; optional.
+	PublicWebURL string
+}
+
 // Config is the full backend configuration.
 type Config struct {
 	HTTP       HTTP
@@ -137,6 +156,7 @@ type Config struct {
 	Crypto     Crypto
 	Mail       Mail
 	OAuth      OAuth
+	Instance   Instance
 }
 
 // FromEnv builds a Config from environment variables. DATABASE_URL and a
@@ -152,6 +172,7 @@ func FromEnv() (Config, error) {
 			JWTSecret: os.Getenv("SUPABASE_JWT_SECRET"),
 			JWKSURL:   os.Getenv("SUPABASE_JWKS_URL"),
 			URL:       os.Getenv("SUPABASE_URL"),
+			AnonKey:   os.Getenv("SUPABASE_ANON_KEY"),
 		},
 		Google: Google{
 			ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
@@ -217,6 +238,23 @@ func FromEnv() (Config, error) {
 			errs = append(errs, fmt.Errorf("UNDO_SEND_SECONDS must be a non-negative integer, got %q", v))
 		} else {
 			cfg.Mail.UndoSendGrace = time.Duration(n) * time.Second
+		}
+	}
+
+	cfg.Instance.Name = os.Getenv("INSTANCE_NAME")
+	if cfg.Instance.Name == "" {
+		cfg.Instance.Name = "Calendium"
+	}
+	cfg.Instance.PublicWebURL = os.Getenv("APP_URL")
+	if cfg.Instance.PublicWebURL == "" {
+		cfg.Instance.PublicWebURL = os.Getenv("PUBLIC_WEB_URL")
+	}
+	if v := os.Getenv("SELF_HOSTED"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("SELF_HOSTED must be true or false, got %q", v))
+		} else {
+			cfg.Instance.SelfHosted = b
 		}
 	}
 

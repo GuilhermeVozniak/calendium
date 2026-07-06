@@ -1,0 +1,43 @@
+# Build-context excludes for the api/worker and web images (context = repo root).
+
+# Git
+.git
+.gitignore
+
+# JS dependencies (reinstalled inside the image)
+node_modules
+node_modules*/
+**/node_modules
+
+# Build outputs
+**/.next
+apps/web/out
+apps/desktop/build
+apps/desktop/frontend/dist
+backend/bin
+backend/tmp
+**/dist
+**/*.tsbuildinfo
+
+# Env & secrets — never bake into an image
+**/.env
+**/.env.*
+**/*.p8
+**/*.p12
+**/*.pem
+**/*.key
+**/*.jks
+**/*.mobileprovision
+
+# Editor / OS noise
+**/.DS_Store
+.vscode
+.idea
+
+# Docker & deploy meta (Dockerfiles are read via -f, not from the context)
+**/Dockerfile
+.dockerignore
+docker-compose.yml
+
+# CI
+.github

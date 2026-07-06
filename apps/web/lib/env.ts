@@ -19,6 +19,13 @@ export const env = {
     return required('NEXT_PUBLIC_SUPABASE_ANON_KEY', process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
   },
   get apiUrl(): string {
-    return required('NEXT_PUBLIC_API_URL', process.env.NEXT_PUBLIC_API_URL);
+    // Self-hosted deployments serve the web app and the API behind a single
+    // origin (via Caddy), so an unset NEXT_PUBLIC_API_URL means "same origin".
+    // Return an empty base so the ApiClient builds same-origin relative paths
+    // (`/v1/…`); a literal '/' would produce protocol-relative `//v1/…`.
+    // Supabase vars stay required (see above).
+    const raw = process.env.NEXT_PUBLIC_API_URL;
+    if (!raw || raw === '/') return '';
+    return raw.replace(/\/+$/, '');
   },
 };
