@@ -1,7 +1,7 @@
 import { ApiClient, ApiRequestError } from '@calendium/shared';
 
 import { getActiveServerConfig } from './server-config';
-import { getAccessToken } from './supabase';
+import { getAccessToken } from './auth';
 
 /** Public pricing page — the fallback target for the desktop checkout flow. */
 export const PRICING_URL = 'https://calendium.app/pricing';

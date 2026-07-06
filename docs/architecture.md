@@ -8,7 +8,7 @@ Calendium is an email + calendar manager (Superhuman-class email UX, deeply inte
 └──────────┬───────────┘  └──────────┬────────────┘  └───────────┬────────────┘
            │                        │                          │
            └─────── @calendium/shared (types + ApiClient) ───┘
-                                    │  HTTPS + Supabase JWT
+                                    │  HTTPS + Better Auth JWT (EdDSA)
                         ┌──────────▼──────────┐
                         │   backend/ (Go API)   │  hexagonal, stdlib-only
                         └─┬─────┬─────┬─────┬─┘
@@ -19,9 +19,10 @@ Calendium is an email + calendar manager (Superhuman-class email UX, deeply inte
 
 ## Auth model
 
-- **Supabase Auth** is the identity provider on every platform (Google / Apple OAuth, email). Clients hold a Supabase session and send the access token as `Authorization: Bearer <jwt>`.
-- The backend **verifies the JWT locally** (stdlib crypto against the Supabase JWT secret / JWKS — no Supabase SDK) and upserts a `users` row keyed by the JWT `sub` claim on first request.
-- Connecting mail/calendar providers is separate from login: the backend runs its own **Google / Microsoft OAuth flows** (offline access) and stores refresh tokens encrypted (AES-GCM) in Postgres.
+- **Better Auth** (npm `better-auth`) is the identity provider for web, desktop, and mobile. It is **hosted by the Next.js web app** at `${BETTER_AUTH_URL}/api/auth/*` (a catch-all route) and backed by the **same Postgres** as the Go API, in its own tables (`user`, `session`, `account`, `verification`, `jwks`). That schema is committed as `backend/migrations/0002_better_auth.sql` and applied by the Go migrate runner at boot — there is **no separate JS migration step** at deploy. Auth methods: email + password and social **Google / Apple**. This is a win for self-hosting: no external auth service to run, auth is built into the web app.
+- The `jwt()` plugin mints short-lived (default 15m) **asymmetric EdDSA (Ed25519) JWTs** — payload `sub=userId`, `iss=BETTER_AUTH_URL`, plus `email` / `name` / `image` — and publishes the public keys as JWKS at `/api/auth/jwks`. Native clients (desktop, mobile) use the `bearer()` plugin; mobile also uses the `@better-auth/expo` server plugin. Every client fetches a fresh token from `GET ${BETTER_AUTH_URL}/api/auth/token` (minted per request, not cached) and sends it as `Authorization: Bearer <jwt>`.
+- The Go backend is a **pure resource server** (`adapter/out/authjwt`): it fetches JWKS from `AUTH_JWKS_URL`, verifies the EdDSA (Ed25519) signature with stdlib `crypto/ed25519` (RS256/ES256 still supported), pins `iss == AUTH_ISSUER`, requires `sub` + `exp`, and upserts a `users` row keyed by the `sub` claim (mapping `email` / `name` / `image`) on first request. No Supabase, no shared HS256 secret for API auth.
+- Connecting mail/calendar providers is separate from login: the backend runs its own **Google / Microsoft OAuth flows** (offline access) and stores refresh tokens encrypted (AES-GCM) in Postgres. The Google **login** credentials and the mailbox-**connect** credentials share `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (both redirect URIs registered on one OAuth client).
 
 ## Backend — hexagonal, no framework
 
@@ -45,7 +46,7 @@ backend/
 │    ├─ out/stripeapi/        # Stripe REST client + webhook HMAC verification (stdlib)
 │    ├─ out/push/             # APNs (HTTP/2 + ES256 JWT), FCM (OAuth2 SA JWT), Web Push (VAPID)
 │    ├─ out/openrouter/       # chat-completions client
-│    └─ out/supabasejwt/      # JWT verification (HS256 + RS256/ES256 via JWKS)
+│    └─ out/authjwt/          # Better Auth JWT verification (EdDSA/Ed25519 + RS256/ES256 via JWKS)
 ├─ internal/config/           # env-based config
 └─ migrations/                # plain SQL, applied by cmd/api at boot (embedded via embed.FS)
 ```
@@ -58,7 +59,7 @@ All endpoints JSON, Bearer-authenticated unless noted. Errors: `{ "error": { "co
 
 | Method & path | Purpose |
 | --- | --- |
-| `GET /v1/instance` | Public instance discovery (unauthenticated): `{name, mode: self_host\|cloud, version, supabaseUrl, supabaseAnonKey, features}` for client self-configuration |
+| `GET /v1/instance` | Public instance discovery (unauthenticated): `{name, mode: self_host\|cloud, version, authBaseUrl, authProviders, features}` for client self-configuration |
 | `GET /v1/me` | Current user (upserts on first call) |
 | `GET /v1/billing/subscription` | Subscription status ($50/yr annual plan) |
 | `POST /v1/billing/checkout` | Create Stripe Checkout session `{successUrl, cancelUrl} → {url}` (501 `self_hosted` when `SELF_HOSTED`) |
@@ -98,7 +99,9 @@ All endpoints JSON, Bearer-authenticated unless noted. Errors: `{ "error": { "co
 
 ## Environment
 
-Backend env vars (see `backend/.env.example`): `DATABASE_URL`, `SELF_HOSTED` (open-core: `true` unlocks all features and disables Stripe billing; default `false`), `INSTANCE_NAME` (shown to clients, default `Calendium`), `APP_URL`/`PUBLIC_WEB_URL` (public web origin), `SUPABASE_JWT_SECRET`, `SUPABASE_JWKS_URL`, `SUPABASE_URL` (issuer pinned to `<URL>/auth/v1`), `SUPABASE_ANON_KEY` (PUBLIC anon key served via `GET /v1/instance`), `OAUTH_ALLOWED_REDIRECT_URIS` (redirect allowlist, added to localhost + `calendium://` defaults), `GOOGLE_CLIENT_ID/SECRET`, `MS_CLIENT_ID/SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID_ANNUAL`, `OPENROUTER_API_KEY`, `APNS_KEY_ID/TEAM_ID/KEY_P8`, `FCM_SERVICE_ACCOUNT_JSON`, `VAPID_PUBLIC/PRIVATE_KEY`, `TOKEN_ENCRYPTION_KEY` (32-byte hex for AES-GCM).
+Backend env vars (see `backend/.env.example`): `DATABASE_URL` (shared with the web app, which hosts Better Auth against the same Postgres), `SELF_HOSTED` (open-core: `true` unlocks all features and disables Stripe billing; default `false`), `INSTANCE_NAME` (shown to clients, default `Calendium`), `APP_URL`/`PUBLIC_WEB_URL` (public web origin), `BETTER_AUTH_URL` (public web origin hosting Better Auth, no trailing slash), `AUTH_JWKS_URL` (Better Auth JWKS endpoint; default `${BETTER_AUTH_URL}/api/auth/jwks`), `AUTH_ISSUER` (expected JWT `iss`; default `${BETTER_AUTH_URL}`), `OAUTH_ALLOWED_REDIRECT_URIS` (redirect allowlist, added to localhost + `calendium://` defaults), `GOOGLE_CLIENT_ID/SECRET` (shared between login + mailbox connect), `APPLE_CLIENT_ID/SECRET` (Apple login), `MS_CLIENT_ID/SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID_ANNUAL`, `OPENROUTER_API_KEY`, `APNS_KEY_ID/TEAM_ID/KEY_P8`, `FCM_SERVICE_ACCOUNT_JSON`, `VAPID_PUBLIC/PRIVATE_KEY`, `TOKEN_ENCRYPTION_KEY` (32-byte hex for AES-GCM).
+
+The Next.js web app additionally reads `BETTER_AUTH_SECRET` (`openssl rand -base64 32`), `BETTER_AUTH_URL`, `DATABASE_URL`, and `GOOGLE_*`/`APPLE_*` at **runtime** (not `NEXT_PUBLIC_*`) to run Better Auth. It talks to Better Auth **same-origin** (`/api/auth`), so it needs no `NEXT_PUBLIC` auth var; `NEXT_PUBLIC_API_URL` (default same-origin) still points clients at the Go API. All `SUPABASE_*` / `NEXT_PUBLIC_SUPABASE_*` vars are removed.
 
 ### Deployment modes (cloud vs self-hosted)
 
@@ -117,8 +120,11 @@ operator guide (Docker Compose, HTTPS, providers, upgrades) lives in
 [self-hosting/README.md](./self-hosting/README.md).
 
 **Instance discovery.** `GET /v1/instance` is unauthenticated so a client that only knows
-the server base URL can self-configure. It returns `{ name, mode, version, supabaseUrl,
-supabaseAnonKey, features: { billing, google, microsoft, ai, push } }` where `mode` is
-`self_host` when `SELF_HOSTED=true` else `cloud`, `features.billing = !SELF_HOSTED`, and
-the remaining feature flags reflect which gateways/credentials are configured. Clients read
-`features.billing` to decide whether to show any billing/paywall UI at all.
+the server base URL can self-configure. It returns `{ name, mode, version, authBaseUrl,
+authProviders, features: { billing, google, microsoft, ai, push } }` where `mode` is
+`self_host` when `SELF_HOSTED=true` else `cloud`, `authBaseUrl` is `${PUBLIC_WEB_URL||APP_URL}/api/auth`
+(where Better Auth is hosted), `authProviders` lists enabled sign-in methods (`["email"]`, plus
+`"google"`/`"apple"` when their credentials are configured), `features.billing = !SELF_HOSTED`,
+and the remaining feature flags reflect which gateways/credentials are configured. Clients build
+their Better Auth client against `authBaseUrl` and read `features.billing` to decide whether to
+show any billing/paywall UI at all.

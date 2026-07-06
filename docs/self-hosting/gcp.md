@@ -87,8 +87,9 @@ curl https://<your-domain>/v1/instance      # mode: self_host
 ```
 
 Set the rest of `.env` (`SELF_HOSTED=true`, `TOKEN_ENCRYPTION_KEY`, `DOMAIN`,
-`ACME_EMAIL`, Supabase, provider OAuth, loopback `API_PORT`/`WEB_PORT`) exactly as
-in the [VPS guide](./vps.md#step-6--clone-and-configure). Everything else
+`ACME_EMAIL`, Better Auth (`BETTER_AUTH_SECRET`/`BETTER_AUTH_URL`), provider OAuth,
+loopback `API_PORT`/`WEB_PORT`) exactly as in the
+[VPS guide](./vps.md#step-6--clone-and-configure). Everything else
 (updating, backups, pointing apps at your server) is identical.
 
 ---
@@ -122,8 +123,6 @@ docker buildx build --platform linux/amd64 -f backend/Dockerfile \
 
 docker buildx build --platform linux/amd64 -f apps/web/Dockerfile \
   --build-arg NEXT_PUBLIC_API_URL=https://api.<your-domain> \
-  --build-arg NEXT_PUBLIC_SUPABASE_URL=https://<ref>.supabase.co \
-  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon key> \
   -t $REG/web:$TAG --push .
 ```
 
@@ -131,7 +130,7 @@ docker buildx build --platform linux/amd64 -f apps/web/Dockerfile \
 
 ```bash
 printf '%s' "$TOKEN_KEY" | gcloud secrets create TOKEN_ENCRYPTION_KEY --data-file=-
-# ...repeat for SUPABASE_JWT_SECRET, GOOGLE_CLIENT_SECRET, MS_CLIENT_SECRET, etc.
+# ...repeat for BETTER_AUTH_SECRET, GOOGLE_CLIENT_SECRET, MS_CLIENT_SECRET, etc.
 ```
 
 ### B4. Deploy the API
@@ -146,16 +145,19 @@ INSTANCE=$PROJECT:$REGION:calendium-db
 gcloud run deploy calendium-api \
   --image $REG/backend:$TAG --region $REGION --allow-unauthenticated \
   --add-cloudsql-instances $INSTANCE \
-  --set-env-vars "SELF_HOSTED=true,INSTANCE_NAME=Calendium,SUPABASE_URL=https://<ref>.supabase.co,DATABASE_URL=postgres://calendium:<pw>@/calendium?host=/cloudsql/$INSTANCE&sslmode=disable" \
-  --set-secrets "TOKEN_ENCRYPTION_KEY=TOKEN_ENCRYPTION_KEY:latest,SUPABASE_JWT_SECRET=SUPABASE_JWT_SECRET:latest"
+  --set-env-vars "SELF_HOSTED=true,INSTANCE_NAME=Calendium,BETTER_AUTH_URL=https://app.<your-domain>,DATABASE_URL=postgres://calendium:<pw>@/calendium?host=/cloudsql/$INSTANCE&sslmode=disable" \
+  --set-secrets "TOKEN_ENCRYPTION_KEY=TOKEN_ENCRYPTION_KEY:latest"
 ```
 
 ### B5. Deploy the web app and the worker
 
 ```bash
-# Web (stateless)
+# Web — hosts Better Auth, so it needs Cloud SQL + the auth secret at runtime
 gcloud run deploy calendium-web --image $REG/web:$TAG \
-  --region $REGION --allow-unauthenticated
+  --region $REGION --allow-unauthenticated \
+  --add-cloudsql-instances $INSTANCE \
+  --set-env-vars "BETTER_AUTH_URL=https://app.<your-domain>,DATABASE_URL=postgres://calendium:<pw>@/calendium?host=/cloudsql/$INSTANCE&sslmode=disable" \
+  --set-secrets "BETTER_AUTH_SECRET=BETTER_AUTH_SECRET:latest"
 
 # Worker — same backend image, run the worker binary, always on, single instance
 gcloud run deploy calendium-worker --image $REG/backend:$TAG \
@@ -186,6 +188,6 @@ The shipped backend image's default command is `api`; overriding it with
 ## See also
 
 - [Configuration & Environment Variables](./configuration.md) · [Database](./configuration.md#core--database)
-- [Authentication Setup](./providers.md#1-supabase-authentication--required) · [Connecting Provider Accounts](./providers.md)
+- [Authentication Setup](./providers.md#1-authentication-better-auth--built-in) · [Connecting Provider Accounts](./providers.md)
 - [Backups & Restore](./backups.md) · [Upgrading](./upgrades.md) · [Troubleshooting](./troubleshooting.md)
 - Other targets: [VPS](./vps.md) · [AWS](./aws.md) · [Azure](./azure.md) · [Home server](./local.md)

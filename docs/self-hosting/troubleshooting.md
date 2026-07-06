@@ -18,7 +18,7 @@ docker compose logs --tail=100 api worker web caddy
 | Container won't start, `TOKEN_ENCRYPTION_KEY` error | [Boot fails: config validation](#boot-fails-config-validation) |
 | `DATABASE_URL is required` / connection refused / SSL | [Database connection](#database-connection) |
 | `migrate: apply ...` on startup | [Migration failure](#migration-failure) |
-| Login works but API returns 401 | [JWT / issuer mismatch](#jwt--issuer-mismatch) |
+| Web sign-in works but API returns 401 | [JWT / issuer mismatch](#jwt--issuer-mismatch) |
 | Client can't reach `/v1/instance` | [Clients can't discover the server](#clients-cant-discover-the-server) |
 | Web app calls the wrong API URL / CORS | [Wrong API URL baked into web](#wrong-api-url-baked-into-web) |
 | `redirect_uri_mismatch` connecting Gmail/Outlook | [OAuth redirect rejected](#oauth-redirect-rejected) |
@@ -97,24 +97,38 @@ last good version — you won't get a half-applied migration. See
 
 ## JWT / issuer mismatch
 
-**Symptom:** users sign in fine (Supabase session works) but every
-`Authorization: Bearer` call to `/v1/*` returns `401`.
+**Symptom:** users sign in fine in the web app (the Better Auth session works)
+but every `Authorization: Bearer` call to `/v1/*` returns `401`.
+
+Auth is **Better Auth**, hosted by the *web* service at
+`${BETTER_AUTH_URL}/api/auth/*`. The Go API is a pure resource server: it fetches
+the public JWKS and verifies the EdDSA (Ed25519) token locally. A 401 *after* a
+good login almost always means the API can't verify the token, not that login
+failed.
 
 **Causes & fixes:**
 
-- **Wrong verification material.** The backend needs `SUPABASE_JWT_SECRET`
-  (HS256) **or** `SUPABASE_JWKS_URL` (RS256/ES256) matching how your Supabase
-  project signs tokens. Newer projects use asymmetric keys → set the JWKS URL;
-  older ones use the shared secret. If you set the wrong one, verification
-  fails.
-- **Issuer pin mismatch.** When `SUPABASE_URL` is set, the backend requires the
-  token `iss` to equal `<SUPABASE_URL>/auth/v1`. If `SUPABASE_URL` points at a
-  *different* project than the one that issued the client's token (a common
-  copy-paste error, or mixing a self-hosted Supabase URL with cloud tokens),
-  every token is rejected. Make `SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`, and
-  the project your clients actually authenticate against all the same project.
-- **Clock skew** on the server can invalidate `exp`/`iat`. Ensure NTP is
-  running.
+- **The API can't reach the JWKS endpoint.** The backend fetches public keys
+  from `AUTH_JWKS_URL` (default `${BETTER_AUTH_URL}/api/auth/jwks`)
+  **server-to-server**, so it must be reachable from the `api` container to the
+  `web` service — not just from a browser. Inside the bundled compose network,
+  point it at the internal service: `AUTH_JWKS_URL=http://web:3000/api/auth/jwks`.
+  Externally it must resolve and not be blocked by a firewall or a proxy that
+  only allows browser traffic. Test from inside the container:
+  `docker compose exec api wget -qO- "$AUTH_JWKS_URL"` — you should get a JSON
+  JWKS containing `"kty":"OKP","crv":"Ed25519"`.
+- **Issuer pin mismatch.** The backend requires the token `iss` to equal
+  `AUTH_ISSUER` (default `BETTER_AUTH_URL`). If `AUTH_ISSUER` doesn't match the
+  `BETTER_AUTH_URL` the web app is configured with, every token is rejected.
+  Keep `AUTH_ISSUER` and `BETTER_AUTH_URL` the same public origin, with **no
+  trailing slash**.
+- **"Auth works in the web app but the API returns 401."** This is the classic
+  shape of the two problems above: the browser holds a valid Better Auth session
+  (so same-origin `/api/auth/*` and login work), but the API rejects the bearer
+  token because it can't fetch JWKS or the issuer doesn't match. Check
+  `AUTH_JWKS_URL` reachability first, then `AUTH_ISSUER`.
+- **Clock skew** on the server can invalidate the short-lived (default 15m)
+  token's `exp`/`iat`. Ensure NTP is running.
 
 ---
 
@@ -144,11 +158,13 @@ last good version — you won't get a half-applied migration. See
 **Symptom:** the web app calls `http://localhost:8080` (or the old URL) in
 production, or you see CORS/blocked-request errors in the browser console.
 
-**Cause:** `NEXT_PUBLIC_API_URL` (and the Supabase `NEXT_PUBLIC_*` values) are
-inlined into the browser bundle **at build time**. Setting them only as runtime
-env does nothing — the old value is already compiled in.
+**Cause:** `NEXT_PUBLIC_API_URL` is inlined into the browser bundle **at build
+time**. Setting it only as runtime env does nothing — the old value is already
+compiled in. (Better Auth needs no `NEXT_PUBLIC_*` var: the web app talks to it
+same-origin at `/api/auth`, and `BETTER_AUTH_SECRET`/`BETTER_AUTH_URL` are read
+at runtime.)
 
-**Fix:** set them in `.env` and **rebuild** the web image:
+**Fix:** set it in `.env` and **rebuild** the web image:
 
 ```bash
 # behind the bundled proxy, this is just your domain (API lives under /v1):
@@ -190,6 +206,24 @@ built-in `localhost` + `calendium://` defaults) and restart the API:
 ```bash
 OAUTH_ALLOWED_REDIRECT_URIS=https://your-domain
 ```
+
+**Symptom C — social sign-in (Google / Apple *login*):** the Google or Apple
+consent screen shows `redirect_uri_mismatch` when a user tries to **sign in**
+(not connect a mailbox).
+
+**Cause/fix:** Better Auth's social callback isn't registered on the OAuth
+client. Better Auth handles sign-in at the web app, so the callback lives under
+`/api/auth`, not `/v1`. Register these **exactly**:
+
+```
+https://your-domain/api/auth/callback/google
+https://your-domain/api/auth/callback/apple
+```
+
+Because `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` are **shared** between login
+and mailbox-connect, the *same* Google OAuth client must list **both**
+`/api/auth/callback/google` (Better Auth sign-in) and
+`/v1/accounts/callback/google` (mailbox connect) as authorized redirect URIs.
 
 ---
 

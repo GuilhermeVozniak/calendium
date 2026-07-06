@@ -297,14 +297,17 @@ export interface InstanceFeatures {
 /**
  * Public, unauthenticated instance descriptor served at GET /v1/instance.
  * A client that only knows the server URL fetches this to self-configure:
- * it learns the Supabase project to authenticate against and which features
- * are enabled. `supabaseUrl`/`supabaseAnonKey` may be "" when not configured.
+ * it learns the Better Auth base URL to authenticate against and which
+ * features are enabled. Clients build their Better Auth client against
+ * `authBaseUrl` (e.g. `${authBaseUrl}/jwks`, sign-in endpoints, etc.).
  */
 export interface InstanceInfo {
   name: string;
   mode: InstanceMode;
   version: string;
-  supabaseUrl: string;
-  supabaseAnonKey: string;
+  /** Better Auth base URL, e.g. https://app.calendium.com/api/auth. */
+  authBaseUrl: string;
+  /** Enabled sign-in methods, e.g. ["email", "google", "apple"]. */
+  authProviders: string[];
   features: InstanceFeatures;
 }

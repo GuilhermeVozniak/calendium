@@ -22,7 +22,7 @@ func userFrom(r *http.Request) domain.User {
 	return u
 }
 
-// requireAuth verifies the Supabase bearer token and upserts the user row
+// requireAuth verifies the Better Auth bearer JWT and upserts the user row
 // (docs/architecture.md: users are keyed by the JWT sub and created on
 // first authenticated request).
 func (s *server) requireAuth(next http.HandlerFunc) http.Handler {

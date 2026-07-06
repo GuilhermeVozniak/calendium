@@ -76,7 +76,7 @@ into the compose file on the `calendium` network pointed at `db:5432`, with
 | --- | --- | --- |
 | Database | `db_data` volume | `pg_dump` (preferred; see above) or volume snapshot |
 | `TOKEN_ENCRYPTION_KEY` | `.env` | store in a password manager / secrets vault, offline |
-| Rest of `.env` | `.env` | back up with the key; contains Supabase + provider secrets |
+| Rest of `.env` | `.env` | back up with the key; contains `BETTER_AUTH_SECRET` + provider secrets |
 | TLS certs (optional) | `caddy_data` volume | not essential — Caddy re-issues; snapshot to avoid rate limits on frequent rebuilds |
 
 A logical `pg_dump` (above) is the portable, restore-anywhere option and is what

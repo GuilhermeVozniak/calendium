@@ -18,7 +18,7 @@ export default function Providers({ children }: { children: React.ReactNode }) {
   const { colorScheme } = useColorScheme();
 
   return (
-    // ServerConfig sits ABOVE auth so the Supabase/API clients are built from
+    // ServerConfig sits ABOVE auth so the Better Auth/API clients are built from
     // the runtime-discovered server before auth reads them.
     <ServerConfigProvider>
       <AuthProvider>

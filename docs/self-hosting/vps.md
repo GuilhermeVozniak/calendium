@@ -193,12 +193,12 @@ DATABASE_URL=postgres://calendium:<same-password>@db:5432/calendium?sslmode=disa
 # ── Secrets at rest (REQUIRED) ───────────────────────
 TOKEN_ENCRYPTION_KEY=<paste the make gen-secret output — exactly 64 hex chars>
 
-# ── Supabase auth (identity — see ./authentication.md) ─
-SUPABASE_URL=https://<ref>.supabase.co
-SUPABASE_ANON_KEY=<public anon key>
-SUPABASE_JWT_SECRET=<project JWT secret>       # or set SUPABASE_JWKS_URL instead
-NEXT_PUBLIC_SUPABASE_URL=https://<ref>.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=<public anon key>
+# ── Authentication (Better Auth — built into the web app; see ./providers.md) ─
+BETTER_AUTH_SECRET=<openssl rand -base64 32>   # signing secret — keep it stable
+BETTER_AUTH_URL=https://calendium.example.com  # public web origin, no trailing slash
+# Optional social login (the Google app also connects Gmail/Calendar below):
+# GOOGLE_CLIENT_ID=...   GOOGLE_CLIENT_SECRET=...
+# APPLE_CLIENT_ID=...    APPLE_CLIENT_SECRET=...
 
 # ── Where the browser reaches the API (same origin as the site) ──
 NEXT_PUBLIC_API_URL=https://calendium.example.com
@@ -223,9 +223,10 @@ Notes that trip people up:
 - `TOKEN_ENCRYPTION_KEY` must be **exactly 64 hex characters** (32 bytes) or the
   API refuses to boot. **Back it up separately** — if you lose it, every stored
   provider refresh token becomes undecryptable and all users must reconnect.
-- `NEXT_PUBLIC_*` values are **baked into the browser bundle at build time**, so
-  they're passed as Docker build args by compose. If you change them later you
-  must rebuild the web image (`docker compose build web`).
+- `NEXT_PUBLIC_API_URL` is **baked into the browser bundle at build time** (passed
+  as a Docker build arg by compose); change it later and you must rebuild the web
+  image (`docker compose build web`). Better Auth's own secrets are read at
+  **runtime**, not baked.
 - Self-hosters register their **own** Google Cloud / Microsoft Entra OAuth apps —
   you can't reuse Calendium Cloud's. See [Connecting Provider Accounts](./providers.md).
 
@@ -260,8 +261,8 @@ curl https://calendium.example.com/v1/instance      # -> instance discovery JSON
   "name": "Calendium",
   "mode": "self_host",
   "version": "0.1.0",
-  "supabaseUrl": "https://<ref>.supabase.co",
-  "supabaseAnonKey": "<public anon key>",
+  "authBaseUrl": "https://calendium.example.com/api/auth",
+  "authProviders": ["email", "google"],
   "features": { "billing": false, "google": true, "microsoft": false, "ai": false, "push": false }
 }
 ```
@@ -276,7 +277,7 @@ Calendium web app with a valid certificate.
 
 Your instance is now the source of truth. In the desktop and mobile apps, choose
 **"Use a custom server"** and enter `https://calendium.example.com`; the client
-hits `GET /v1/instance` to self-configure (Supabase auth details, which features to
+hits `GET /v1/instance` to self-configure (Better Auth base URL, which features to
 show). The web app is already wired via `NEXT_PUBLIC_API_URL`. Full walkthrough:
 [Pointing the Apps at Your Server](./clients.md).
 
@@ -333,7 +334,7 @@ More in [Troubleshooting](./troubleshooting.md).
 ## Where to next
 
 - [Configuration & Environment Variable Reference](./configuration.md)
-- [Authentication Setup for Your Instance](./providers.md#1-supabase-authentication--required)
+- [Authentication Setup for Your Instance](./providers.md#1-authentication-better-auth--built-in)
 - [Connecting Provider Accounts](./providers.md)
 - [Reverse Proxy & HTTPS](./reverse-proxy-tls.md) (nginx / Traefik alternates)
 - [Backups & Restore](./backups.md) · [Upgrading](./upgrades.md) · [Security Hardening](./security.md)

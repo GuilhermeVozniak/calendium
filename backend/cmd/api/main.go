@@ -11,18 +11,19 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"calendium/backend/internal/adapter/in/httpapi"
+	"calendium/backend/internal/adapter/out/authjwt"
 	"calendium/backend/internal/adapter/out/googleapi"
 	"calendium/backend/internal/adapter/out/msgraph"
 	"calendium/backend/internal/adapter/out/openrouter"
 	"calendium/backend/internal/adapter/out/postgres"
 	"calendium/backend/internal/adapter/out/stripeapi"
-	"calendium/backend/internal/adapter/out/supabasejwt"
 	"calendium/backend/internal/config"
 	"calendium/backend/internal/domain"
 	"calendium/backend/internal/migrate"
@@ -74,7 +75,7 @@ func run(logger *slog.Logger) error {
 	// --- outbound gateways ---
 	hc := &http.Client{Timeout: 30 * time.Second}
 
-	verifier := supabasejwt.NewVerifier(cfg.Supabase.JWTSecret, cfg.Supabase.JWKSURL, cfg.Supabase.Issuer(), hc)
+	verifier := authjwt.NewVerifier(cfg.Auth.JWKSURL, cfg.Auth.Issuer, hc)
 	stripe := stripeapi.NewClient(cfg.Stripe.SecretKey, cfg.Stripe.WebhookSecret, cfg.Stripe.AnnualPriceID, hc)
 	ai := openrouter.NewClient(cfg.OpenRouter.APIKey, cfg.OpenRouter.Model, hc)
 
@@ -144,12 +145,22 @@ func run(logger *slog.Logger) error {
 	pushConfigured := cfg.Push.APNs.KeyP8 != "" ||
 		cfg.Push.FCM.ServiceAccountJSON != "" ||
 		(cfg.Push.VAPID.PublicKey != "" && cfg.Push.VAPID.PrivateKey != "")
+
+	// authBaseUrl is where clients reach Better Auth (hosted by the web app).
+	authBaseURL := strings.TrimRight(cfg.Instance.PublicWebURL, "/") + "/api/auth"
+	authProviders := []string{"email"}
+	if cfg.Google.ClientID != "" {
+		authProviders = append(authProviders, "google")
+	}
+	if cfg.Apple.ClientID != "" {
+		authProviders = append(authProviders, "apple")
+	}
 	instance := httpapi.InstanceInfo{
-		Name:            cfg.Instance.Name,
-		Mode:            mode,
-		Version:         httpapi.Version,
-		SupabaseURL:     cfg.Supabase.URL,
-		SupabaseAnonKey: cfg.Supabase.AnonKey,
+		Name:          cfg.Instance.Name,
+		Mode:          mode,
+		Version:       httpapi.Version,
+		AuthBaseURL:   authBaseURL,
+		AuthProviders: authProviders,
 		Features: httpapi.InstanceFeatures{
 			Billing:   !cfg.Instance.SelfHosted,
 			Google:    cfg.Google.ClientID != "",

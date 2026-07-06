@@ -19,7 +19,8 @@ You need:
   (see [requirements](./README.md#requirements)).
 - A domain with a **DNS A/AAAA record** pointing at the host, and ports
   **80 + 443** open (only needed for real HTTPS).
-- A **Supabase project** (free Supabase Cloud is fine) — set up in step 4.
+- No external auth service — authentication (**Better Auth**) is built into the
+  web app; you just set a secret in step 4.
 
 ---
 
@@ -76,36 +77,31 @@ DATABASE_URL=postgres://calendium:<same password>@db:5432/calendium?sslmode=disa
 (`sslmode=disable` is correct here — traffic never leaves the private Docker
 network. If you point at a *managed* Postgres instead, use `sslmode=require`.)
 
-## 4. Set up Supabase authentication
+## 4. Set up authentication (Better Auth)
 
-Calendium uses Supabase for login on every client, and the backend verifies
-Supabase JWTs locally. Create a project (the free tier is enough):
-
-1. Create a project at [supabase.com](https://supabase.com) (or point at your
-   own self-hosted Supabase/GoTrue).
-2. In **Project Settings → API**, copy the **Project URL** and the **anon**
-   (public) key.
-3. In **Project Settings → API → JWT Settings**, copy the **JWT secret**.
-4. Enable the sign-in methods you want (Google/Apple OAuth, email) under
-   **Authentication → Providers**.
-
-Fill these into `.env`:
+Authentication is **built into the web app** — [Better Auth](https://better-auth.com)
+runs at `${BETTER_AUTH_URL}/api/auth/*` on the same Postgres you already
+configured. There's **no external auth service** to create. Email + password
+sign-in works out of the box; you just need a secret and your public URL:
 
 ```dotenv
-# Backend verifies JWTs with the secret (HS256). Set this OR SUPABASE_JWKS_URL.
-SUPABASE_URL=https://<ref>.supabase.co
-SUPABASE_JWT_SECRET=<the JWT secret>
-SUPABASE_ANON_KEY=<the anon/public key>       # served to clients via /v1/instance
+BETTER_AUTH_SECRET=<openssl rand -base64 32>   # signing secret — keep it stable
+BETTER_AUTH_URL=https://mail.example.com       # your public web origin, no trailing slash
 
-# The web app bakes these into the browser bundle at build time:
-NEXT_PUBLIC_SUPABASE_URL=https://<ref>.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=<the anon/public key>
-NEXT_PUBLIC_API_URL=https://mail.example.com  # or leave blank to use same-origin (behind Caddy)
+# The browser reaches the API same-origin behind Caddy; set explicitly otherwise:
+NEXT_PUBLIC_API_URL=https://mail.example.com   # or leave blank to use same-origin
 ```
 
-`SUPABASE_ANON_KEY` is public and safe to serve — the desktop and mobile apps
-fetch it from **your** server via `GET /v1/instance` so they can configure
-Supabase per-instance (see [clients](./clients.md)).
+The Go API verifies Better Auth's JWTs by fetching its JWKS; it derives
+`AUTH_JWKS_URL` (`${BETTER_AUTH_URL}/api/auth/jwks`) and `AUTH_ISSUER`
+(`${BETTER_AUTH_URL}`) automatically, so you don't set those unless your setup is
+unusual.
+
+> **Want Google / Apple sign-in too?** Add `GOOGLE_CLIENT_ID/SECRET` and/or
+> `APPLE_CLIENT_ID/SECRET`, and register the login redirect URIs
+> `${BETTER_AUTH_URL}/api/auth/callback/google` and `.../callback/apple`. The
+> Google app is the **same one** you use to connect Gmail/Calendar (step 5).
+> Details: [Providers → Authentication](./providers.md#1-authentication-better-auth--built-in).
 
 ## 5. (Optional) connect Gmail / Outlook and other providers
 
@@ -169,8 +165,8 @@ You should see something like:
   "name": "Acme Mail",
   "mode": "self_host",
   "version": "0.1.0",
-  "supabaseUrl": "https://<ref>.supabase.co",
-  "supabaseAnonKey": "<anon key>",
+  "authBaseUrl": "https://mail.example.com/api/auth",
+  "authProviders": ["email", "google"],
   "features": { "billing": false, "google": true, "microsoft": true, "ai": true, "push": false }
 }
 ```
@@ -184,11 +180,11 @@ set. (Full contract: [configuration → discovery](./configuration.md#the-v1inst
 Open `https://mail.example.com` in a browser to use the web app, or point the
 desktop/mobile apps at your server:
 
-- **Web:** just visit your domain — the image you built already targets your API
-  and Supabase.
+- **Web:** just visit your domain — the web app hosts Better Auth at `/api/auth`
+  and already targets your API.
 - **Desktop / Mobile:** on the **Connect** screen, choose *"Use a custom
   server"* and enter `https://mail.example.com`. The app calls `GET /v1/instance`
-  to self-configure (Supabase creds, feature flags), then you sign in.
+  to self-configure (Better Auth base URL, feature flags), then you sign in.
 
 See [Pointing the apps at your server](./clients.md) for the full client flow and
 for building the desktop/mobile apps from source.
@@ -211,7 +207,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8080
 TOKEN_ENCRYPTION_KEY=<make gen-secret>
 POSTGRES_PASSWORD=<anything>
 DATABASE_URL=postgres://calendium:<same>@db:5432/calendium?sslmode=disable
-# plus your Supabase URL / anon key / JWT secret from step 4
+# plus BETTER_AUTH_SECRET + BETTER_AUTH_URL from step 4
 ```
 
 Start **without** the proxy:

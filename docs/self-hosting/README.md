@@ -8,7 +8,8 @@ two ways to run it:
   hardware (a VPS, home server, or a cloud VM) and point the desktop and mobile
   apps at *your* server. No Stripe, no paywall, **every feature unlocked**.
 - **Calendium Cloud ($50/year).** We run and operate everything for you — the
-  Go API, Postgres, Supabase, push infrastructure — and bill through Stripe. See
+  Go API, Postgres, the web app (Better Auth built in), push infrastructure — and
+  bill through Stripe. See
   [`../payments.md`](../payments.md).
 
 Self-hosting is free the way a puppy is free: you own the backups, upgrades, and
@@ -97,22 +98,26 @@ This mirrors the backend layout in [`../architecture.md`](../architecture.md):
   start so the ACME challenge can issue a certificate. (You can skip this for a
   local, no-TLS trial — see the Quickstart.)
 
-**A Supabase project (for identity)**
-- Auth is Supabase on every client, and the backend verifies Supabase JWTs
-  locally. You need **a** Supabase — a free [Supabase Cloud](https://supabase.com)
-  project is the recommended path; self-hosted Supabase/GoTrue works too. This is
-  the one hard external dependency; see the Quickstart's auth step.
+**Authentication (built in — no external service)**
+- Auth is **[Better Auth](https://better-auth.com)**, hosted by the web app on the
+  same Postgres. Email + password works out of the box; you only set
+  `BETTER_AUTH_SECRET` (`openssl rand -base64 32`) and `BETTER_AUTH_URL` (your
+  domain). No Supabase, no external identity provider to run. Social Google/Apple
+  login is optional — see the Quickstart's auth step.
 
 **Optional credentials (unlock their features when set)**
-- **Google** (`GOOGLE_CLIENT_ID/SECRET`) and/or **Microsoft**
-  (`MS_CLIENT_ID/SECRET`) OAuth apps to connect Gmail/Calendar and Outlook. You
-  register your **own** apps — Cloud's cannot be shared.
+- **Google** (`GOOGLE_CLIENT_ID/SECRET`) and/or **Apple** (`APPLE_CLIENT_ID/SECRET`)
+  for social sign-in. The Google app doubles as the Gmail/Calendar mailbox
+  connector.
+- **Google** and/or **Microsoft** (`MS_CLIENT_ID/SECRET`) OAuth apps to connect
+  Gmail/Calendar and Outlook mailboxes. You register your **own** apps — Cloud's
+  cannot be shared.
 - **OpenRouter** (`OPENROUTER_API_KEY`) for AI compose/reply/summarize.
 - **Push**: APNs, FCM, and/or Web Push (VAPID) keys.
 
-Everything except `DATABASE_URL` and `TOKEN_ENCRYPTION_KEY` (plus Supabase for a
-usable login) is optional — unwired adapters are simply left out, so partial
-deployments boot fine.
+Everything except `DATABASE_URL`, `TOKEN_ENCRYPTION_KEY`, and the web app's
+`BETTER_AUTH_SECRET`/`BETTER_AUTH_URL` is optional — unwired adapters are simply
+left out, so partial deployments boot fine.
 
 ---
 
@@ -130,9 +135,10 @@ deployments boot fine.
    Desktop, and Mobile clients connect to a self-hosted server: the "enter your
    server URL" flow, instance discovery, the Cloud preset, and building the
    apps from source to distribute internally.
-4. **[Provider & integration setup →](./providers.md)** — Supabase auth, Google
-   Cloud + Microsoft Entra OAuth apps (exact scopes & redirect URIs), OpenRouter
-   AI, and APNs/FCM/Web-Push keys; what's required vs. optional.
+4. **[Provider & integration setup →](./providers.md)** — authentication
+   (Better Auth, built in), Google Cloud + Microsoft Entra OAuth apps (exact
+   scopes & redirect URIs), OpenRouter AI, and APNs/FCM/Web-Push keys; what's
+   required vs. optional.
 5. **[Reverse proxy & HTTPS →](./reverse-proxy-tls.md)** — the bundled Caddy
    auto-TLS path, plus nginx+certbot and Traefik alternates.
 6. **[Backups & restore →](./backups.md)** — `pg_dump`/`pg_restore`, cron,
@@ -250,9 +256,10 @@ is not part of what you must distribute.
 **Can I use my own domain?** Yes — set `DOMAIN` (and `ACME_EMAIL`) in `.env` and
 Caddy handles HTTPS. See the Quickstart.
 
-**Do I still need Supabase?** Yes, for identity. The backend only *verifies*
-Supabase JWTs locally (it never calls Supabase), but clients need a real Supabase
-auth endpoint. A free Supabase Cloud project is the simplest option.
+**Do I need Supabase or any external auth service?** No — that dependency is gone.
+Authentication is **Better Auth**, built into the web app and backed by your own
+Postgres. Email + password works out of the box; set `BETTER_AUTH_SECRET` and
+`BETTER_AUTH_URL`, and optionally add Google/Apple OAuth creds for social login.
 
 **Can I migrate between Cloud and self-host?** Yes — same API and data model.
 Repoint the desktop/mobile apps at the other server URL (see

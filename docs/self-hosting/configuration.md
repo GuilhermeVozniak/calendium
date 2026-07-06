@@ -3,7 +3,7 @@
 Every Calendium container reads its settings from a single `.env` file. Start
 from [`.env.example`](../../.env.example) (the compose/self-host template) and
 fill it in. Only **`DATABASE_URL`** and **`TOKEN_ENCRYPTION_KEY`** are required
-to boot; a usable login also needs Supabase; everything else unlocks its own
+to boot; authentication (Better Auth) is built into the web app and needs only `BETTER_AUTH_SECRET`; everything else unlocks its own
 adapter when set and is otherwise ignored.
 
 > **Two `.env.example` files.** The **repo-root**
@@ -42,42 +42,48 @@ See also: [Quickstart](./quickstart.md) · [Clients](./clients.md) ·
 | `DOMAIN` | No | `localhost` | Domain the bundled Caddy proxy serves (automatic HTTPS). With `localhost`, Caddy serves a locally-trusted internal cert. |
 | `ACME_EMAIL` | No | — | Email Let's Encrypt uses for expiry notices (Caddy profile). Set it for a real domain. |
 
-## Supabase auth (identity)
+## Authentication (Better Auth)
 
-Auth is Supabase on every client; the backend verifies JWTs **locally** (it never
-calls Supabase). Set **one** of `SUPABASE_JWT_SECRET` (HS256 shared secret) or
-`SUPABASE_JWKS_URL` (RS256/ES256 via JWKS).
-
-| Variable | Required | Default | Description |
-| --- | --- | --- | --- |
-| `SUPABASE_URL` | Recommended | — | Supabase project URL, e.g. `https://<ref>.supabase.co`. When set, the expected token issuer is pinned to `<URL>/auth/v1`. Returned to clients via `GET /v1/instance`. |
-| `SUPABASE_ANON_KEY` | Recommended | — | **Public** anon key. Safe to serve — returned by `GET /v1/instance` so desktop/mobile clients configure Supabase per-instance. |
-| `SUPABASE_JWT_SECRET` | One of these two | — | HS256 shared secret. **Secret — never expose.** |
-| `SUPABASE_JWKS_URL` | One of these two | — | JWKS endpoint for RS256/ES256 verification, e.g. `https://<ref>.supabase.co/auth/v1/.well-known/jwks.json`. |
-
-## Web app (Next.js) — baked at build time
-
-`NEXT_PUBLIC_*` values are **inlined into the browser bundle when the `web` image
-is built** (passed as Docker build args by compose), not read at runtime. Change
-them → rebuild the `web` image.
+Auth is **[Better Auth](https://better-auth.com)**, hosted by the web app at
+`${BETTER_AUTH_URL}/api/auth/*` on the same Postgres; the Go backend is a resource
+server that verifies its EdDSA (Ed25519) JWTs against the published JWKS (RS256/
+ES256 also supported). Email + password works out of the box. Full setup:
+[Providers → Authentication](./providers.md#1-authentication-better-auth--built-in).
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `NEXT_PUBLIC_SUPABASE_URL` | **Yes** (web) | — | Supabase project URL for the browser client. |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | **Yes** (web) | — | Supabase anon key for the browser client. |
-| `NEXT_PUBLIC_API_URL` | No | `http://localhost:8080` | Where the browser reaches the API. Behind the bundled proxy set it to your domain, or **leave blank** to use same-origin relative `/v1/…` requests. |
+| `BETTER_AUTH_SECRET` | **Yes** (web) | — | Better Auth signing/encryption secret. Generate with `openssl rand -base64 32`. **Secret — never expose.** The web app won't start without it. |
+| `BETTER_AUTH_URL` | **Yes** | — | Public web origin hosting Better Auth (your domain, **no trailing slash**), e.g. `https://mail.example.com`. Read by the web app, and by the Go API to derive JWKS/issuer. |
+| `AUTH_JWKS_URL` | No | `${BETTER_AUTH_URL}/api/auth/jwks` | JWKS endpoint the backend fetches Better Auth's public keys from. Override only if served from a different origin. |
+| `AUTH_ISSUER` | No | `${BETTER_AUTH_URL}` | Expected token `iss`, pinned by the backend. Empty disables issuer pinning. |
 
-## Provider OAuth apps (mail + calendar)
+## Web app (Next.js)
+
+Better Auth's settings (`BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `DATABASE_URL`,
+`GOOGLE_*`, `APPLE_*`) are read at **runtime** by the web server — not baked into
+the browser bundle — so there are **no `NEXT_PUBLIC_*` auth variables**. The web
+app talks to Better Auth **same-origin** at `/api/auth`. The only build-time value
+is `NEXT_PUBLIC_API_URL`.
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `NEXT_PUBLIC_API_URL` | No | `http://localhost:8080` | Where the browser reaches the Go API. **Inlined at build time** (Docker build arg) — rebuild the `web` image to change it. Behind the bundled proxy set it to your domain, or **leave blank** to use same-origin relative `/v1/…` requests. |
+
+## Provider OAuth apps (mail + calendar) & social login
 
 Register your **own** Google Cloud and Microsoft Entra OAuth apps — per
-deployment, not shared with Cloud. See [clients](./clients.md) and the Quickstart
-for redirect-URI setup.
+deployment, not shared with Cloud. The **Google** app does double duty: Better
+Auth "Continue with Google" login **and** Gmail/Calendar mailbox-connect (register
+both redirect URIs on the one client). See [providers](./providers.md) for
+redirect-URI setup.
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `OAUTH_ALLOWED_REDIRECT_URIS` | No | — | Comma-separated extra allowed OAuth redirect targets, **appended** to the built-in `localhost` + `calendium://` defaults. Add your web origin here or provider connect flows are rejected. |
-| `GOOGLE_CLIENT_ID` | No | — | Enables Gmail + Google Calendar. Sets `features.google` when present. |
+| `GOOGLE_CLIENT_ID` | No | — | Enables Google **login** (`authProviders` gains `google`) **and** Gmail + Google Calendar connect (`features.google`). Shared between both. |
 | `GOOGLE_CLIENT_SECRET` | No | — | Google OAuth client secret. |
+| `APPLE_CLIENT_ID` | No | — | Enables **Sign in with Apple** (`authProviders` gains `apple`). Apple Services ID. |
+| `APPLE_CLIENT_SECRET` | No | — | Apple OAuth client secret. |
 | `MS_CLIENT_ID` | No | — | Enables Microsoft Graph mail + calendar. Sets `features.microsoft` when present. |
 | `MS_CLIENT_SECRET` | No | — | Microsoft OAuth client secret. |
 
@@ -133,16 +139,14 @@ POSTGRES_PASSWORD=<strong password>
 DATABASE_URL=postgres://calendium:<same password>@db:5432/calendium?sslmode=disable
 TOKEN_ENCRYPTION_KEY=<openssl rand -hex 32>
 
-# Identity (login won't work without these):
-SUPABASE_URL=https://<ref>.supabase.co
-SUPABASE_JWT_SECRET=<jwt secret>
-SUPABASE_ANON_KEY=<anon key>
-NEXT_PUBLIC_SUPABASE_URL=https://<ref>.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon key>
+# Authentication (Better Auth — built into the web app; email+password out of the box):
+BETTER_AUTH_SECRET=<openssl rand -base64 32>
+BETTER_AUTH_URL=https://mail.example.com   # your public web origin, no trailing slash
 ```
 
-Add `GOOGLE_*` / `MS_*` to connect mailboxes, `OPENROUTER_API_KEY` for AI, and
-push keys as needed — each unlocks its adapter without touching the rest.
+Add `GOOGLE_*` / `APPLE_*` for social sign-in (the Google creds also connect
+Gmail/Calendar), `MS_*` for Outlook, `OPENROUTER_API_KEY` for AI, and push keys as
+needed — each unlocks its adapter without touching the rest.
 
 ---
 
@@ -171,7 +175,7 @@ Setting `SELF_HOSTED=true` flips the instance into open-core self-host mode:
 
 `GET /v1/instance` is **unauthenticated** (registered outside the auth
 middleware) so a client that only knows the server's base URL can self-configure
-— fetch Supabase credentials and feature flags before anyone logs in. Exact
+— discover the Better Auth base URL and feature flags before anyone logs in. Exact
 shape:
 
 ```json
@@ -179,8 +183,8 @@ shape:
   "name": "Calendium",
   "mode": "self_host",
   "version": "0.1.0",
-  "supabaseUrl": "",
-  "supabaseAnonKey": "",
+  "authBaseUrl": "https://mail.example.com/api/auth",
+  "authProviders": ["email", "google", "apple"],
   "features": {
     "billing": false,
     "google": true,
@@ -196,8 +200,8 @@ shape:
 | `name` | `INSTANCE_NAME` (default `Calendium`). |
 | `mode` | `self_host` when `SELF_HOSTED=true`, else `cloud`. |
 | `version` | The running API build constant (currently `0.1.0`). |
-| `supabaseUrl` | `SUPABASE_URL` (`""` if unset). |
-| `supabaseAnonKey` | `SUPABASE_ANON_KEY` (public; `""` if unset). |
+| `authBaseUrl` | `${PUBLIC_WEB_URL\|\|APP_URL}/api/auth` — the Better Auth base clients build their auth client against. |
+| `authProviders` | Sign-in methods: `["email"]`, plus `"google"` when `GOOGLE_CLIENT_ID` is set and `"apple"` when `APPLE_CLIENT_ID` is set. |
 | `features.billing` | `!SELF_HOSTED` — `false` on self-host. |
 | `features.google` | `true` when `GOOGLE_CLIENT_ID` is set. |
 | `features.microsoft` | `true` when `MS_CLIENT_ID` is set. |

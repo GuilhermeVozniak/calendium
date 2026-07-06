@@ -3,7 +3,6 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import type { User as SupabaseUser } from '@supabase/supabase-js';
 import {
   CalendarDays,
   CalendarRange,
@@ -49,36 +48,23 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Kbd } from '@/components/ui/kbd';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { authClient, signOut } from '@/lib/auth-client';
 import { useShortcuts } from '@/lib/shortcuts';
-import { createClient } from '@/lib/supabase/client';
 import { useApiOnline } from '@/lib/use-mail';
 import { cn } from '@/lib/utils';
 
-type AuthStatus = 'loading' | 'authed' | 'anon';
+type SessionUser = typeof authClient.$Infer.Session.user;
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const [status, setStatus] = React.useState<AuthStatus>('loading');
-  const [user, setUser] = React.useState<SupabaseUser | null>(null);
+  const { data: session, isPending } = authClient.useSession();
+  const user = session?.user ?? null;
 
   React.useEffect(() => {
-    const supabase = createClient();
-    supabase.auth.getSession().then(({ data }) => {
-      setUser(data.session?.user ?? null);
-      setStatus(data.session ? 'authed' : 'anon');
-    });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-      setStatus(session ? 'authed' : 'anon');
-    });
-    return () => listener.subscription.unsubscribe();
-  }, []);
+    if (!isPending && !session) router.replace('/signin');
+  }, [isPending, session, router]);
 
-  React.useEffect(() => {
-    if (status === 'anon') router.replace('/signin');
-  }, [status, router]);
-
-  if (status !== 'authed') return <Splash />;
+  if (isPending || !session) return <Splash />;
 
   return (
     <ComposeProvider>
@@ -197,7 +183,7 @@ function RailLink({ item }: { item: RailItem }) {
   );
 }
 
-function SideRail({ user }: { user: SupabaseUser | null }) {
+function SideRail({ user }: { user: SessionUser | null }) {
   const { openCompose } = useCompose();
   const pathname = usePathname();
 
@@ -274,12 +260,12 @@ function SideRail({ user }: { user: SupabaseUser | null }) {
   );
 }
 
-function AccountSwitcher({ user }: { user: SupabaseUser | null }) {
+function AccountSwitcher({ user }: { user: SessionUser | null }) {
   const router = useRouter();
   const { theme, setTheme } = useTheme();
   const email = user?.email ?? 'you@calendium.app';
-  const name = (user?.user_metadata?.full_name as string | undefined) ?? email;
-  const avatarUrl = user?.user_metadata?.avatar_url as string | undefined;
+  const name = user?.name || email;
+  const avatarUrl = user?.image ?? undefined;
 
   return (
     <div className="border-t p-2">
@@ -342,7 +328,7 @@ function AccountSwitcher({ user }: { user: SupabaseUser | null }) {
           <DropdownMenuItem
             className="gap-2"
             onSelect={async () => {
-              await createClient().auth.signOut();
+              await signOut();
               router.replace('/signin');
             }}
           >

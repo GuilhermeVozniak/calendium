@@ -10,7 +10,7 @@ worked top to bottom.
 
 - [ ] Real secrets in `.env`, never committed to git
 - [ ] `TOKEN_ENCRYPTION_KEY` generated fresh, backed up, and kept stable
-- [ ] `SUPABASE_JWT_SECRET` treated as secret; only `SUPABASE_ANON_KEY` is public
+- [ ] `BETTER_AUTH_SECRET` treated as secret; the JWKS endpoint is public by design
 - [ ] Only ports 80/443 exposed to the internet; Postgres never published
 - [ ] TLS everywhere (Caddy auto-HTTPS or your own proxy)
 - [ ] Firewall (UFW / cloud security group) with a default-deny inbound policy
@@ -22,7 +22,7 @@ worked top to bottom.
 
 ## 1. Secrets management
 
-**Never commit `.env`.** It holds your Supabase JWT secret, provider client
+**Never commit `.env`.** It holds your `BETTER_AUTH_SECRET`, provider client
 secrets, Stripe keys (cloud only), and the token-encryption key. The repo's
 `.gitignore` excludes `.env`; keep it that way and distribute secrets out of
 band (a secrets manager, `scp`, your provider's secret store).
@@ -59,20 +59,23 @@ length, so you can't accidentally run without it.
 
 ## 3. Auth secrets: what's secret vs. public
 
-Calendium deliberately exposes some Supabase config to clients and keeps the
-rest secret. Don't mix them up:
+Better Auth (hosted by the web app at `${BETTER_AUTH_URL}/api/auth/*`) is the
+identity provider for web, desktop, and mobile. Some of its config is meant to
+be public and some is a signing secret — don't mix them up:
 
 | Value | Exposure | Notes |
 | --- | --- | --- |
-| `SUPABASE_ANON_KEY` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` | **Public** | Served to clients via `GET /v1/instance` and baked into the web bundle. Safe by design. |
-| `SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_URL` | **Public** | Also used to pin the JWT issuer. |
-| `SUPABASE_JWT_SECRET` | **SECRET** | HS256 signing secret. Anyone with it can forge valid sessions. Never serve it, never log it, never put it in `NEXT_PUBLIC_*`. |
-| `SUPABASE_JWKS_URL` | Public | Public key endpoint; fine to expose. |
-| `GOOGLE_CLIENT_SECRET`, `MS_CLIENT_SECRET`, `STRIPE_*` | **SECRET** | Backend-only. |
+| `BETTER_AUTH_URL` | **Public** | Public web origin; also the JWT issuer (`iss`) the backend pins. |
+| `${BETTER_AUTH_URL}/api/auth/jwks` (JWKS) | **Public** | Public Ed25519 verification keys the backend fetches. Meant to be reachable — expected to be public, fine to expose. |
+| `BETTER_AUTH_SECRET` | **SECRET** | Better Auth's root secret. Anyone with it can forge sessions and mint valid tokens. Never serve it, never log it, never put it in `NEXT_PUBLIC_*`. |
+| `GOOGLE_CLIENT_SECRET`, `APPLE_CLIENT_SECRET`, `MS_CLIENT_SECRET`, `STRIPE_*` | **SECRET** | Backend / server-only. |
 
-The backend verifies JWTs locally against `SUPABASE_JWT_SECRET` (or the JWKS
-keys) and pins the issuer to `<SUPABASE_URL>/auth/v1`. Keeping the issuer pinned
-(set `SUPABASE_URL`) narrows what a stolen-token attacker can present.
+The Go backend is a pure resource server: it fetches the public JWKS from
+`AUTH_JWKS_URL` (default `${BETTER_AUTH_URL}/api/auth/jwks`), verifies the
+EdDSA (Ed25519) signature, and pins the issuer to `AUTH_ISSUER` (default
+`BETTER_AUTH_URL`). Keeping the issuer pinned narrows what a stolen-token
+attacker can present. The backend never holds `BETTER_AUTH_SECRET` — only the
+web service (which hosts Better Auth) does, so guard it there.
 
 ---
 

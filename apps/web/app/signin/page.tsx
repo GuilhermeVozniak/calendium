@@ -6,9 +6,11 @@ import { CalendarRange, Loader2, Zap } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Kbd } from '@/components/ui/kbd';
+import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
-import { createClient } from '@/lib/supabase/client';
+import { authClient, signIn, signUp } from '@/lib/auth-client';
 
 function GoogleIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -41,33 +43,54 @@ function AppleIcon(props: React.SVGProps<SVGSVGElement>) {
   );
 }
 
+type SocialProvider = 'google' | 'apple';
+type Pending = SocialProvider | 'email' | null;
+
 export default function SignInPage() {
   const router = useRouter();
-  const [pending, setPending] = React.useState<'google' | 'apple' | null>(null);
+  const [mode, setMode] = React.useState<'signin' | 'signup'>('signin');
+  const [pending, setPending] = React.useState<Pending>(null);
+  const [name, setName] = React.useState('');
+  const [email, setEmail] = React.useState('');
+  const [password, setPassword] = React.useState('');
 
   // Already signed in → straight to the inbox.
+  const { data: session } = authClient.useSession();
   React.useEffect(() => {
-    createClient()
-      .auth.getSession()
-      .then(({ data }) => {
-        if (data.session) router.replace('/mail');
-      });
-  }, [router]);
+    if (session) router.replace('/mail');
+  }, [session, router]);
 
-  async function signIn(provider: 'google' | 'apple') {
+  async function social(provider: SocialProvider) {
     setPending(provider);
     try {
-      const { error } = await createClient().auth.signInWithOAuth({
-        provider,
-        options: { redirectTo: `${window.location.origin}/mail` },
-      });
-      if (error) throw error;
+      const { error } = await signIn.social({ provider, callbackURL: '/mail' });
+      if (error) throw new Error(error.message ?? 'Sign-in failed');
       // Success → the browser is being redirected to the provider.
     } catch (err) {
       setPending(null);
       toast.error(err instanceof Error ? err.message : 'Could not start sign-in. Try again.');
     }
   }
+
+  async function submitEmail(e: React.FormEvent) {
+    e.preventDefault();
+    setPending('email');
+    try {
+      if (mode === 'signup') {
+        const { error } = await signUp.email({ name: name || email, email, password });
+        if (error) throw new Error(error.message ?? 'Could not create account');
+      } else {
+        const { error } = await signIn.email({ email, password });
+        if (error) throw new Error(error.message ?? 'Invalid email or password');
+      }
+      router.replace('/mail');
+    } catch (err) {
+      setPending(null);
+      toast.error(err instanceof Error ? err.message : 'Something went wrong. Try again.');
+    }
+  }
+
+  const busy = pending !== null;
 
   return (
     <main className="relative flex min-h-svh flex-col items-center justify-center overflow-hidden px-6">
@@ -92,8 +115,8 @@ export default function SignInPage() {
             variant="outline"
             size="lg"
             className="w-full"
-            disabled={pending !== null}
-            onClick={() => signIn('google')}
+            disabled={busy}
+            onClick={() => social('google')}
           >
             {pending === 'google' ? (
               <Loader2 className="animate-spin" />
@@ -106,8 +129,8 @@ export default function SignInPage() {
             variant="outline"
             size="lg"
             className="w-full"
-            disabled={pending !== null}
-            onClick={() => signIn('apple')}
+            disabled={busy}
+            onClick={() => social('apple')}
           >
             {pending === 'apple' ? (
               <Loader2 className="animate-spin" />
@@ -118,13 +141,72 @@ export default function SignInPage() {
           </Button>
         </div>
 
-        <div className="mt-8 flex w-full items-center gap-3">
+        <div className="mt-6 flex w-full items-center gap-3">
           <Separator className="flex-1" />
-          <span className="text-muted-foreground text-xs">built for speed</span>
+          <span className="text-muted-foreground text-xs">or with email</span>
           <Separator className="flex-1" />
         </div>
 
-        <div className="text-muted-foreground mt-4 flex items-center gap-2 text-xs">
+        <form onSubmit={submitEmail} className="mt-6 flex w-full flex-col gap-3">
+          {mode === 'signup' && (
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="name">Name</Label>
+              <Input
+                id="name"
+                type="text"
+                autoComplete="name"
+                placeholder="Ada Lovelace"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                disabled={busy}
+              />
+            </div>
+          )}
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="email">Email</Label>
+            <Input
+              id="email"
+              type="email"
+              autoComplete="email"
+              required
+              placeholder="you@calendium.app"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              disabled={busy}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="password">Password</Label>
+            <Input
+              id="password"
+              type="password"
+              autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+              required
+              minLength={8}
+              placeholder="••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={busy}
+            />
+          </div>
+          <Button type="submit" size="lg" className="w-full" disabled={busy}>
+            {pending === 'email' ? <Loader2 className="animate-spin" /> : null}
+            {mode === 'signup' ? 'Create account' : 'Sign in'}
+          </Button>
+        </form>
+
+        <button
+          type="button"
+          className="text-muted-foreground hover:text-foreground mt-4 text-xs transition-colors"
+          onClick={() => setMode((m) => (m === 'signin' ? 'signup' : 'signin'))}
+          disabled={busy}
+        >
+          {mode === 'signin'
+            ? "Don't have an account? Sign up"
+            : 'Already have an account? Sign in'}
+        </button>
+
+        <div className="text-muted-foreground mt-6 flex items-center gap-2 text-xs">
           <Zap className="size-3.5" />
           <span>
             Every action is a keystroke away — hit <Kbd size="sm">⌘</Kbd> <Kbd size="sm">K</Kbd>{' '}
@@ -132,7 +214,7 @@ export default function SignInPage() {
           </span>
         </div>
 
-        <p className="text-muted-foreground mt-10 text-center text-xs text-balance">
+        <p className="text-muted-foreground mt-8 text-center text-xs text-balance">
           14-day free trial, then $50/year. By continuing you agree to the{' '}
           <span className="underline underline-offset-2">Terms</span> and{' '}
           <span className="underline underline-offset-2">Privacy Policy</span>.

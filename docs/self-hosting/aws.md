@@ -69,8 +69,9 @@ DATABASE_URL=postgres://calendium:<pw>@<endpoint>:5432/calendium?sslmode=verify-
 
 (Mount it via a small override — see the `volumes:` in the external-DB override
 below.) Keep the other required vars (`SELF_HOSTED=true`, `TOKEN_ENCRYPTION_KEY`,
-`DOMAIN`, `ACME_EMAIL`, Supabase, provider OAuth, and the loopback
-`API_PORT`/`WEB_PORT`) exactly as in the [VPS guide](./vps.md#step-6--clone-and-configure).
+`DOMAIN`, `ACME_EMAIL`, Better Auth (`BETTER_AUTH_SECRET`/`BETTER_AUTH_URL`),
+provider OAuth, and the loopback `API_PORT`/`WEB_PORT`) exactly as in the
+[VPS guide](./vps.md#step-6--clone-and-configure).
 
 ### A6. Skip the bundled Postgres
 
@@ -152,11 +153,9 @@ aws ecr get-login-password --region $R \
 docker buildx build --platform linux/amd64 -f backend/Dockerfile \
   -t $ACC.dkr.ecr.$R.amazonaws.com/calendium/backend:$TAG --push .
 
-# Web (NEXT_PUBLIC_* are compile-time build args)
+# Web (NEXT_PUBLIC_API_URL is the only compile-time build arg; Better Auth is runtime)
 docker buildx build --platform linux/amd64 -f apps/web/Dockerfile \
   --build-arg NEXT_PUBLIC_API_URL=https://api.<your-domain> \
-  --build-arg NEXT_PUBLIC_SUPABASE_URL=https://<ref>.supabase.co \
-  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon key> \
   -t $ACC.dkr.ecr.$R.amazonaws.com/calendium/web:$TAG --push .
 ```
 
@@ -175,11 +174,13 @@ Put each secret in Secrets Manager and reference it from the task definition's
 "secrets": [
   { "name": "DATABASE_URL",         "valueFrom": "arn:aws:secretsmanager:...:secret:calendium/DATABASE_URL" },
   { "name": "TOKEN_ENCRYPTION_KEY", "valueFrom": "arn:aws:secretsmanager:...:secret:calendium/TOKEN_ENCRYPTION_KEY" },
-  { "name": "SUPABASE_JWT_SECRET",  "valueFrom": "arn:aws:secretsmanager:...:secret:calendium/SUPABASE_JWT_SECRET" }
+  { "name": "BETTER_AUTH_SECRET",   "valueFrom": "arn:aws:secretsmanager:...:secret:calendium/BETTER_AUTH_SECRET" }
 ]
 ```
 
-Also set `SELF_HOSTED=true`, `SUPABASE_URL`, and provider OAuth vars.
+Also set `SELF_HOSTED=true`, `BETTER_AUTH_URL` (public web origin), and provider
+OAuth vars; the `web` task reads `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, and
+`DATABASE_URL` at runtime to run Better Auth.
 
 ### B4. Three ECS services on Fargate
 
@@ -215,6 +216,6 @@ directly. This does **not** apply to the in-VPC direct connection in Path A. See
 ## See also
 
 - [Configuration & Environment Variables](./configuration.md) · [Database](./configuration.md#core--database)
-- [Authentication Setup](./providers.md#1-supabase-authentication--required) · [Connecting Provider Accounts](./providers.md)
+- [Authentication Setup](./providers.md#1-authentication-better-auth--built-in) · [Connecting Provider Accounts](./providers.md)
 - [Backups & Restore](./backups.md) · [Upgrading](./upgrades.md) · [Troubleshooting](./troubleshooting.md)
 - Other targets: [VPS](./vps.md) · [GCP](./gcp.md) · [Azure](./azure.md) · [Home server](./local.md)

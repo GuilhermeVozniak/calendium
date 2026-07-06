@@ -22,6 +22,9 @@ config.resolver = {
   ...config.resolver,
   assetExts: config.resolver.assetExts.filter((ext) => ext !== 'svg'),
   sourceExts: [...config.resolver.sourceExts, 'svg'],
+  // Better Auth ships ESM "exports" — Metro must honor package.json exports
+  // or the `better-auth`/`@better-auth/expo` imports fail to resolve.
+  unstable_enablePackageExports: true,
 };
 
 module.exports = withNativeWind(config, { input: './global.css', inlineRem: 16 });

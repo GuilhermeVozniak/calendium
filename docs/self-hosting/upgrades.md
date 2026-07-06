@@ -51,9 +51,11 @@ docker compose logs -f api
 curl -fsS https://your-domain/healthz     # -> 200
 ```
 
-That's it. `NEXT_PUBLIC_*` values are baked into the web bundle at build time, so
-`--build` (which `make self-host-up` does) picks up any changed Supabase/API
-URLs automatically.
+That's it. `NEXT_PUBLIC_API_URL` is baked into the web bundle at build time, so
+`--build` (which `make self-host-up` does) picks up a changed API URL
+automatically. Better Auth's own vars (`BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`,
+`GOOGLE_*`, `APPLE_*`) are read at **runtime**, so changing them only needs a
+restart, not a rebuild.
 
 ---
 
@@ -75,13 +77,38 @@ Key properties:
   runs in its own transaction together with its bookkeeping row, so a failed
   migration rolls back cleanly.
 - **Ordered lexicographically.** Files are applied in filename order
-  (`0001_init.sql`, `0002_subscription_event_order.sql`, …).
+  (`0001_init.sql`, `0002_better_auth.sql`, `0002_subscription_event_order.sql`,
+  …). The Better Auth schema (`0002_better_auth.sql`) is applied by the same
+  boot migrator — there is no separate JS migration step at deploy.
 - **Forward-only.** There are no down-migrations. Rolling *back* schema means
   restoring a dump (below).
 
 If a migration fails, the container exits non-zero and logs
 `migrate: apply <file>: ...`. Fix the cause (usually a manual DB edit that
 conflicts) or restore your pre-upgrade snapshot, then restart.
+
+---
+
+## Better Auth schema
+
+Better Auth's tables (`user`, `session`, `account`, `verification`, `jwks`) are
+owned by the Go backend's boot migrations, committed as
+[`backend/migrations/0002_better_auth.sql`](../../backend/migrations). There is
+**no separate JS migration step** at deploy — the Go migrator applies it like
+any other file, so `backend/migrations/*.sql` owns the entire schema.
+
+When you bump the `better-auth` version, its required schema can change. Most
+upgrades are code-only, but if the changelog calls for a schema change,
+regenerate the migration and re-adapt it to plain idempotent Postgres DDL before
+deploying:
+
+```bash
+# from apps/web, pointed at the Better Auth config (apps/web/lib/auth.ts)
+bunx @better-auth/cli generate
+# review the diff, fold it into backend/migrations/0002_better_auth.sql as
+# idempotent DDL (CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS),
+# commit, then upgrade as usual — the backend applies it at boot.
+```
 
 ---
 

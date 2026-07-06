@@ -1,22 +1,20 @@
 import { ApiClient } from '@calendium/shared';
 
+import { getAccessToken } from '@/lib/auth-client';
 import { env } from '@/lib/env';
-import { createClient } from '@/lib/supabase/client';
 
 let client: ApiClient | undefined;
 
 /**
  * Browser-side Calendium API client (see packages/shared/src/client.ts).
- * Sends the current Supabase access token as the Bearer credential; lazily
- * constructed singleton, safe to call from components, hooks, and queries.
+ * Mints a fresh Better Auth JWT (GET /api/auth/token) per request and sends it
+ * as the Bearer credential; lazily constructed singleton, safe to call from
+ * components, hooks, and queries.
  */
 export function getApiClient(): ApiClient {
   client ??= new ApiClient({
     baseUrl: env.apiUrl,
-    getAccessToken: async () => {
-      const { data } = await createClient().auth.getSession();
-      return data.session?.access_token ?? null;
-    },
+    getAccessToken,
   });
   return client;
 }

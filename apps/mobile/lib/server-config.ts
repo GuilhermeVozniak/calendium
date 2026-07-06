@@ -1,8 +1,7 @@
 import { configureApi } from '@/lib/api';
-import { configureSupabase, getSupabase } from '@/lib/supabase';
+import { configureAuthClient, getAuthClient, type AuthClient } from '@/lib/auth-client';
 import { fetchInstance, type InstanceMode } from '@calendium/shared';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { SupabaseClient } from '@supabase/supabase-js';
 import * as React from 'react';
 
 /**
@@ -10,7 +9,7 @@ import * as React from 'react';
  *
  * The user connects to a Calendium server by URL; we fetch its public
  * `/v1/instance` descriptor and persist the resulting config to AsyncStorage.
- * The Supabase + API clients are rebuilt from this config at runtime, so a
+ * The Better Auth + API clients are rebuilt from this config at runtime, so a
  * single build can point at any server — a self-hosted instance or Calendium
  * Cloud.
  */
@@ -25,8 +24,8 @@ export const CLOUD_PRESET = {
 export interface ServerConfig {
   /** Base URL of the Calendium backend the client talks to. */
   serverUrl: string;
-  supabaseUrl: string;
-  supabaseAnonKey: string;
+  /** Better Auth base URL (e.g. https://host/api/auth) discovered from /v1/instance. */
+  authBaseUrl: string;
   mode: InstanceMode;
   /** Human-readable instance name (INSTANCE_NAME on the server). */
   name: string;
@@ -66,28 +65,27 @@ export async function discoverServer(serverUrl: string): Promise<ServerConfig> {
   const info = await fetchInstance(normalized);
   return {
     serverUrl: normalized,
-    supabaseUrl: info.supabaseUrl,
-    supabaseAnonKey: info.supabaseAnonKey,
+    authBaseUrl: info.authBaseUrl,
     mode: info.mode,
     name: info.name,
   };
 }
 
-/** Applies (or clears) a config on the runtime Supabase + API clients. */
-function applyConfig(config: ServerConfig | null): SupabaseClient | null {
+/** Applies (or clears) a config on the runtime Better Auth + API clients. */
+function applyConfig(config: ServerConfig | null): AuthClient | null {
   if (config) {
     configureApi(config.serverUrl);
-    return configureSupabase(config.supabaseUrl, config.supabaseAnonKey);
+    return configureAuthClient(config.authBaseUrl);
   }
-  return configureSupabase('', '');
+  return configureAuthClient('');
 }
 
 interface ServerConfigContextValue {
   config: ServerConfig | null;
   isConfigured: boolean;
   isLoading: boolean;
-  /** Supabase client bound to the configured server (null when unconfigured). */
-  supabase: SupabaseClient | null;
+  /** Better Auth client bound to the configured server (null when unconfigured). */
+  authClient: AuthClient | null;
   save: (config: ServerConfig) => Promise<void>;
   clear: () => Promise<void>;
 }
@@ -98,7 +96,7 @@ ServerConfigContext.displayName = 'ServerConfigContext';
 export function ServerConfigProvider({ children }: { children: React.ReactNode }) {
   const [config, setConfig] = React.useState<ServerConfig | null>(null);
   const [isLoading, setIsLoading] = React.useState(true);
-  const [supabase, setSupabase] = React.useState<SupabaseClient | null>(() => getSupabase());
+  const [authClient, setAuthClient] = React.useState<AuthClient | null>(() => getAuthClient());
 
   // Rehydrate persisted config on boot and rebuild the runtime clients from it.
   React.useEffect(() => {
@@ -106,7 +104,7 @@ export function ServerConfigProvider({ children }: { children: React.ReactNode }
     getStoredServerConfig().then((stored) => {
       if (!active) return;
       if (stored) {
-        setSupabase(applyConfig(stored));
+        setAuthClient(applyConfig(stored));
         setConfig(stored);
       }
       setIsLoading(false);
@@ -118,19 +116,19 @@ export function ServerConfigProvider({ children }: { children: React.ReactNode }
 
   const save = React.useCallback(async (next: ServerConfig) => {
     await setStoredServerConfig(next);
-    setSupabase(applyConfig(next));
+    setAuthClient(applyConfig(next));
     setConfig(next);
   }, []);
 
   const clear = React.useCallback(async () => {
     await clearStoredServerConfig();
-    setSupabase(applyConfig(null));
+    setAuthClient(applyConfig(null));
     setConfig(null);
   }, []);
 
   const value = React.useMemo<ServerConfigContextValue>(
-    () => ({ config, isConfigured: config !== null, isLoading, supabase, save, clear }),
-    [config, isLoading, supabase, save, clear]
+    () => ({ config, isConfigured: config !== null, isLoading, authClient, save, clear }),
+    [config, isLoading, authClient, save, clear]
   );
 
   // JSX-free (this is a .ts module): render the provider via createElement.

@@ -1,10 +1,11 @@
 import type { SubscriptionStatus } from '@calendium/shared';
 import { useQuery } from '@tanstack/react-query';
 import { format } from 'date-fns';
-import { CreditCard, ExternalLink, Loader2, Mail, RefreshCw, Server } from 'lucide-react';
+import { CreditCard, ExternalLink, Loader2, LogOut, Mail, RefreshCw, Server } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 
 import { api, apiConfigured, CHECKOUT_SUCCESS_URL, orMock, PRICING_URL } from '@/lib/api';
+import { clearStoredToken, signOut } from '@/lib/auth';
 import { mockAccounts, mockSubscription, mockUser, startMockCheckout } from '@/lib/mock';
 import { useServerConfig } from '@/lib/server-config';
 import { desktop, isDesktop } from '@/lib/wails';
@@ -125,6 +126,14 @@ export function SettingsView() {
               <div className="truncate text-sm font-medium">{user?.name ?? 'Signed out'}</div>
               <div className="truncate text-xs text-muted-foreground">{user?.email ?? '—'}</div>
             </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="ml-auto"
+              onClick={() => void signOut()}
+            >
+              <LogOut /> Sign out
+            </Button>
           </div>
         </Section>
 
@@ -164,7 +173,11 @@ export function SettingsView() {
               variant="outline"
               size="sm"
               className="self-start"
-              onClick={() => clearServer()}
+              onClick={() => {
+                // Drop the session token too — it's scoped to the old server.
+                clearStoredToken();
+                clearServer();
+              }}
             >
               <RefreshCw /> Switch server
             </Button>

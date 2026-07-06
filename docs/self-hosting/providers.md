@@ -4,12 +4,15 @@ Calendium talks to a handful of external services. This page walks through
 setting up every one of them for a **self-hosted** instance, which values to put
 in your `.env`, and — importantly — **what breaks if you skip each one**.
 
-Only two things are truly required for a *usable* instance:
+Only one thing is truly required for a *usable* instance:
 
-1. **Supabase** — the identity provider clients log in with (and whose JWTs the
-   backend verifies). Without it, nobody can sign in.
-2. **At least one mail/calendar provider** (Google *or* Microsoft) — otherwise
+1. **At least one mail/calendar provider** (Google *or* Microsoft) — otherwise
    there is no mailbox to sync.
+
+Authentication is **built in**: [Better Auth](https://better-auth.com) runs inside
+the web app on your own Postgres, so email + password sign-in works out of the box
+with no external service. Social **Google / Apple** login is an optional add-on
+(§1).
 
 Everything else (AI, push) is optional; the composition root simply leaves the
 unconfigured adapter unwired and the app boots fine without it. The public
@@ -18,7 +21,7 @@ exactly which of these you configured so the apps can hide the UI they can't use
 
 | Integration | Required? | Env vars | What breaks if unset |
 | --- | --- | --- | --- |
-| Supabase auth | **Yes** (for login) | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_JWT_SECRET` **or** `SUPABASE_JWKS_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | No one can authenticate; every `/v1/*` call returns 401 |
+| Authentication (Better Auth) | Built in | `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` (+ `GOOGLE_*`/`APPLE_*` for social login) | Web app won't start without `BETTER_AUTH_SECRET`; without social creds only email + password is available |
 | Google OAuth app | One provider required | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Can't connect Gmail / Google Calendar; `features.google=false` |
 | Microsoft Entra app | One provider required | `MS_CLIENT_ID`, `MS_CLIENT_SECRET` | Can't connect Outlook / Microsoft 365; `features.microsoft=false` |
 | OpenRouter (AI) | Optional | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | `POST /v1/ai/compose` disabled; `features.ai=false` |
@@ -30,74 +33,83 @@ exactly which of these you configured so the apps can hide the UI they can't use
 
 ---
 
-## 1. Supabase (authentication) — required
+## 1. Authentication (Better Auth — built in)
 
-Calendium uses **Supabase Auth** as the identity provider on web, desktop, and
-mobile. Clients hold a Supabase session and send the access token as
-`Authorization: Bearer <jwt>`; the Go backend **verifies that JWT locally** with
-stdlib crypto and never calls Supabase. So you need *a* Supabase project, but it
-stays lightweight.
+Calendium's identity provider is **[Better Auth](https://better-auth.com)**, and
+it runs **inside the Next.js web app** at `${BETTER_AUTH_URL}/api/auth/*`, backed
+by the **same Postgres** as the Go API (its own tables: `user`, `session`,
+`account`, `verification`, `jwks`). There is **no external auth service to run** —
+the big self-hosting win over the old Supabase setup.
 
-Two ways to get one:
+Clients sign in against Better Auth, which mints a short-lived (15m) EdDSA
+(Ed25519) JWT; they send it to the Go API as `Authorization: Bearer <jwt>`. The
+backend is a pure **resource server**: it fetches Better Auth's public keys from
+`${BETTER_AUTH_URL}/api/auth/jwks` and verifies the signature locally — it never
+holds a shared secret and never calls out to validate a token.
 
-- **Supabase Cloud free tier (recommended).** Fastest path; free for a personal
-  instance. Create a project at <https://supabase.com/dashboard>.
-- **Self-hosted Supabase / GoTrue (advanced).** Run your own Supabase stack next
-  to Calendium. Follow Supabase's own guide at
-  <https://supabase.com/docs/guides/self-hosting/docker>. The only thing
-  Calendium needs from it is a JWT-issuing auth endpoint plus the signing
-  secret/JWKS — everything below still applies, just swap the URLs for your
-  self-hosted ones.
+**Email + password works out of the box** with zero extra configuration. Social
+**Google** and **Apple** sign-in are optional add-ons (§1c).
 
-### 1a. Create the project & enable login providers
+### 1a. Required: the Better Auth secret & URL
 
-1. Create a project. Note its **Project URL** (e.g. `https://abcd1234.supabase.co`).
-2. In **Authentication → Providers**, enable the sign-in methods you want your
-   users to log in with — typically **Google** and **Apple** (and/or email).
-   These are *login* providers, separate from the *mailbox* providers in §2/§3.
-   - For Google/Apple login you register OAuth clients with Google/Apple and
-     paste their client ID/secret into Supabase, then add Supabase's callback
-     (`https://<ref>.supabase.co/auth/v1/callback`) to those OAuth apps. See
-     Supabase's [social login docs](https://supabase.com/docs/guides/auth/social-login).
-3. In **Authentication → URL Configuration**, add your Calendium web origin
-   (e.g. `https://your-domain`) and the `calendium://` redirect to the allowed
-   redirect URLs so desktop/mobile deep-links resolve.
+Set these two in `.env` — the web app reads them at **runtime** (they are *not*
+`NEXT_PUBLIC_*` and are never shipped to the browser):
 
-### 1b. Collect the four values Calendium needs
-
-From **Project Settings → API** (and **→ API → JWT Settings**):
-
-| `.env` var | Where to find it | Secret? |
+| `.env` var | What | Secret? |
 | --- | --- | --- |
-| `SUPABASE_URL` | Project URL | public |
-| `SUPABASE_ANON_KEY` | Project API keys → `anon` `public` | **public** (safe to serve to clients) |
-| `SUPABASE_JWT_SECRET` | API → JWT Settings → JWT Secret (HS256 projects) | **SECRET** — never expose |
-| `SUPABASE_JWKS_URL` | `https://<ref>.supabase.co/auth/v1/.well-known/jwks.json` (RS256/ES256 projects) | public |
-
-Set **one** of `SUPABASE_JWT_SECRET` (legacy HS256 shared secret) **or**
-`SUPABASE_JWKS_URL` (asymmetric RS256/ES256 keys) depending on your project's
-signing algorithm. Newer Supabase projects use asymmetric keys → prefer the JWKS
-URL.
-
-`SUPABASE_URL` does double duty: when set, the backend **pins the expected token
-issuer** to `<SUPABASE_URL>/auth/v1`. A mismatch here is the usual cause of
-"valid token but still 401" — see
-[Troubleshooting → JWT / issuer mismatch](./troubleshooting.md#jwt--issuer-mismatch).
-
-### 1c. The `NEXT_PUBLIC_*` twins (web app)
-
-The Next.js web app needs the same Supabase URL and anon key, but **baked into
-the browser bundle at build time**:
+| `BETTER_AUTH_SECRET` | Signing/encryption secret for Better Auth. Generate with `openssl rand -base64 32`. | **SECRET** — never expose |
+| `BETTER_AUTH_URL` | Public web origin where Better Auth is reachable (your domain as an `https://` URL, **no trailing slash**). Dev: `http://localhost:3000`. | public |
 
 ```bash
-NEXT_PUBLIC_SUPABASE_URL=https://abcd1234.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=<same anon key>
+BETTER_AUTH_SECRET=$(openssl rand -base64 32)
+BETTER_AUTH_URL=https://your-domain
 ```
 
-Because these are compile-time (Next.js inlines them), changing them means
-**rebuilding the web image** (`docker compose up -d --build web`), not just
-restarting it. `docker-compose.yml` passes them as build args *and* runtime env
-for you — you only set them once in `.env`.
+The Go backend derives its verification settings from `BETTER_AUTH_URL`:
+`AUTH_JWKS_URL` defaults to `${BETTER_AUTH_URL}/api/auth/jwks` and `AUTH_ISSUER`
+(the pinned token `iss`) to `${BETTER_AUTH_URL}`. Set them explicitly only if the
+JWKS is served from a different origin than the issuer Better Auth stamps.
+
+### 1b. The database schema (no JS migration step)
+
+Better Auth's tables live in the **same Postgres** as everything else and are
+created by the **Go migrate runner at boot** from
+[`backend/migrations/0002_better_auth.sql`](../../backend/migrations/0002_better_auth.sql)
+(`user`, `session`, `account`, `verification`, `jwks`). You do **not** run any
+Node/JS migration at deploy — bringing up the `api` container owns the whole
+schema.
+
+If you upgrade Better Auth and its schema changes, regenerate that file from the
+web app's auth config and fold the diff back in:
+
+```bash
+bunx @better-auth/cli generate --config apps/web/lib/auth.ts
+# review the output, then update backend/migrations/0002_better_auth.sql
+```
+
+### 1c. Optional: Google & Apple social sign-in
+
+Email + password needs nothing more. To offer **"Continue with Google/Apple"**,
+register OAuth apps and set their credentials — Better Auth advertises each
+provider in `GET /v1/instance` (`authProviders`) only when both its id and secret
+are present.
+
+| `.env` var | For |
+| --- | --- |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google sign-in (**shared** with Gmail/Calendar mailbox-connect — see §2) |
+| `APPLE_CLIENT_ID` / `APPLE_CLIENT_SECRET` | Sign in with Apple (Services ID + secret) |
+
+Register these **login** redirect URIs on the respective OAuth apps:
+
+```
+${BETTER_AUTH_URL}/api/auth/callback/google
+${BETTER_AUTH_URL}/api/auth/callback/apple
+```
+
+> **One Google app for both jobs.** The Google OAuth client used for *login* here
+> is the same one used to *connect a Gmail/Calendar mailbox* (§2). Register
+> **both** redirect URIs on it: the Better Auth login callback above **and** the
+> backend mailbox-connect callback `https://YOUR_DOMAIN/v1/accounts/callback/google`.
 
 ### How clients discover what you configured
 
@@ -108,22 +120,24 @@ unauthenticated:
 GET /v1/instance
 ```
 
-which returns your instance's public config so the apps can self-configure their
-Supabase client and hide features you didn't enable:
+which returns your instance's public config so the apps can build their Better
+Auth client and hide features you didn't enable:
 
 ```json
 {
   "name": "Calendium",
   "mode": "self_host",
   "version": "0.1.0",
-  "supabaseUrl": "https://abcd1234.supabase.co",
-  "supabaseAnonKey": "eyJ...",
+  "authBaseUrl": "https://your-domain/api/auth",
+  "authProviders": ["email", "google", "apple"],
   "features": { "billing": false, "google": true, "microsoft": false, "ai": true, "push": false }
 }
 ```
 
-This is why `SUPABASE_ANON_KEY` is set on the **backend** too (not just the web
-app): it's the value handed to native clients here. See
+`authBaseUrl` is `${PUBLIC_WEB_URL||APP_URL}/api/auth` — the base a client builds
+its Better Auth client against (e.g. `${authBaseUrl}/jwks`, the sign-in
+endpoints). `authProviders` always includes `"email"`, plus `"google"`/`"apple"`
+when you configured their credentials. See
 [Pointing the Apps at Your Server](./clients.md) for the client flow.
 
 ---
@@ -328,6 +342,6 @@ Both halves are required for Web Push to activate.
 - [Configuration & Environment Reference](./configuration.md) — every variable in one table
 - [Reverse Proxy & HTTPS](./reverse-proxy-tls.md) — get `YOUR_DOMAIN` serving over TLS first
 - [Pointing the Apps at Your Server](./clients.md) — how clients consume `GET /v1/instance`
-- [Security Hardening](./security.md) — keeping `SUPABASE_JWT_SECRET` and provider secrets safe
+- [Security Hardening](./security.md) — keeping `BETTER_AUTH_SECRET` and provider secrets safe
 - [Troubleshooting](./troubleshooting.md) — OAuth redirect and JWT issuer errors
 - [Architecture](../architecture.md) · [Payments](../payments.md)

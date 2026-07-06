@@ -12,7 +12,7 @@ import (
 // ---------------------------------------------------------------------------
 
 // Identity is the authenticated principal extracted from a verified
-// Supabase JWT.
+// Better Auth JWT.
 type Identity struct {
 	Subject   string // stable user id (JWT `sub` claim)
 	Email     string
@@ -20,8 +20,8 @@ type Identity struct {
 	AvatarURL string
 }
 
-// TokenVerifier verifies a Supabase access token locally (HS256 secret or
-// RS256/ES256 via JWKS) and returns the caller's identity.
+// TokenVerifier verifies a Better Auth access token locally (EdDSA/RS256/ES256
+// via JWKS) and returns the caller's identity.
 type TokenVerifier interface {
 	Verify(ctx context.Context, jwt string) (Identity, error)
 }
@@ -42,7 +42,7 @@ type TxRunner interface {
 // All lookups scoped by id return domain.ErrNotFound when absent.
 // ---------------------------------------------------------------------------
 
-// UserRepo persists users keyed by the Supabase subject id.
+// UserRepo persists users keyed by the Better Auth subject id.
 type UserRepo interface {
 	// Upsert inserts the user or refreshes email/name/avatar on conflict.
 	Upsert(ctx context.Context, u domain.User) (domain.User, error)
@@ -238,7 +238,7 @@ type OAuthStateRepo interface {
 }
 
 // ---------------------------------------------------------------------------
-// Gateways (implemented by internal/adapter/out/{googleapi,msgraph,stripeapi,openrouter,push,supabasejwt})
+// Gateways (implemented by internal/adapter/out/{googleapi,msgraph,stripeapi,openrouter,push,authjwt})
 // ---------------------------------------------------------------------------
 
 // OAuthToken is the result of an authorization-code exchange or refresh.

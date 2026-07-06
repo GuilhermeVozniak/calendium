@@ -13,7 +13,7 @@ Calendium is **open core** (like Supabase, Cal.com, Plausible, n8n): the softwar
 Run Calendium yourself in minutes with Docker Compose — the Go backend, Postgres, and the web app on your own VPS, home server, or cloud — then point the desktop & mobile clients at **your** server. Every feature is unlocked, no Stripe, no license keys.
 
 ```bash
-cp .env.example .env   # fill in Supabase + a token key
+cp .env.example .env   # fill in Better Auth secrets + a token key
 docker compose up -d --build
 ```
 

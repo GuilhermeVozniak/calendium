@@ -14,10 +14,12 @@ Pick the scenario that fits:
 
 First do the common setup: install Docker (see [VPS Step 3](./vps.md#step-3--install-docker-engine--compose-plugin)),
 `git clone` the repo, `cp .env.example .env`, and fill in the required values
-(`SELF_HOSTED=true`, a `make gen-secret` `TOKEN_ENCRYPTION_KEY`, Supabase, provider
-OAuth). Reference: [Configuration](./configuration.md). You still need **a Supabase
-project** for identity — a free Supabase Cloud project is the simplest path. See
-[Authentication Setup](./providers.md#1-supabase-authentication--required).
+(`SELF_HOSTED=true`, a `make gen-secret` `TOKEN_ENCRYPTION_KEY`, and Better Auth's
+`BETTER_AUTH_SECRET` + `BETTER_AUTH_URL`; provider OAuth is optional). Reference:
+[Configuration](./configuration.md). Authentication is **built in** — Better Auth
+runs in the web app on your own Postgres, so there's no external auth service and
+email + password works out of the box. See
+[Authentication Setup](./providers.md#1-authentication-better-auth--built-in).
 
 ---
 
@@ -183,8 +185,6 @@ public internet. Set `NEXT_PUBLIC_API_URL` to that hostname and rebuild `web`.
   docker buildx build --platform linux/arm64 -f backend/Dockerfile -t calendium-backend:latest .
   docker buildx build --platform linux/arm64 -f apps/web/Dockerfile \
     --build-arg NEXT_PUBLIC_API_URL=https://calendium.example.com \
-    --build-arg NEXT_PUBLIC_SUPABASE_URL=https://<ref>.supabase.co \
-    --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon key> \
     -t calendium-web:latest .
   # then `docker save | ssh pi docker load`, or push to a registry and pull on the Pi
   ```
@@ -213,7 +213,7 @@ sudo systemctl enable --now calendium-compose.service
 
 ## See also
 
-- [Configuration & Environment Variables](./configuration.md) · [Authentication Setup](./providers.md#1-supabase-authentication--required)
+- [Configuration & Environment Variables](./configuration.md) · [Authentication Setup](./providers.md#1-authentication-better-auth--built-in)
 - [Reverse Proxy & HTTPS](./reverse-proxy-tls.md) · [Connecting Provider Accounts](./providers.md)
 - [Backups & Restore](./backups.md) · [Pointing the Apps at Your Server](./clients.md) · [Troubleshooting](./troubleshooting.md)
 - Other targets: [VPS](./vps.md) · [AWS](./aws.md) · [GCP](./gcp.md) · [Azure](./azure.md)

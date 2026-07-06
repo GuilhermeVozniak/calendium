@@ -25,7 +25,7 @@ import type {
 /**
  * Fetches the public instance descriptor (GET /v1/instance) from a bare server
  * URL, without auth. Usable before an ApiClient exists — client apps call this
- * during server discovery to learn a server's Supabase creds + capabilities.
+ * during server discovery to learn a server's Better Auth base URL + capabilities.
  */
 export async function fetchInstance(
   baseUrl: string,
@@ -47,7 +47,7 @@ export async function fetchInstance(
 
 export interface ApiClientOptions {
   baseUrl: string;
-  /** Returns the current Supabase access token (JWT) or null when signed out. */
+  /** Returns the current Better Auth access token (JWT) or null when signed out. */
   getAccessToken: () => Promise<string | null>;
   fetch?: typeof fetch;
 }
@@ -92,7 +92,7 @@ export class ApiClient {
   }
 
   // --- Instance discovery (public, no auth) ---
-  /** Public instance descriptor — Supabase creds + enabled features. */
+  /** Public instance descriptor — Better Auth base URL + enabled features. */
   getInstance() {
     return fetchInstance(this.opts.baseUrl, this.opts.fetch);
   }

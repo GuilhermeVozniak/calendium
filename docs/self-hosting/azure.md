@@ -72,8 +72,9 @@ curl https://<your-domain>/v1/instance      # mode: self_host
 ```
 
 Set the remaining `.env` values (`SELF_HOSTED=true`, `TOKEN_ENCRYPTION_KEY`,
-`DOMAIN`, `ACME_EMAIL`, Supabase, provider OAuth, loopback `API_PORT`/`WEB_PORT`)
-exactly as in the [VPS guide](./vps.md#step-6--clone-and-configure). Updating,
+`DOMAIN`, `ACME_EMAIL`, Better Auth (`BETTER_AUTH_SECRET`/`BETTER_AUTH_URL`),
+provider OAuth, loopback `API_PORT`/`WEB_PORT`) exactly as in the
+[VPS guide](./vps.md#step-6--clone-and-configure). Updating,
 backups, and pointing apps at your server are identical.
 
 ---
@@ -105,8 +106,6 @@ docker buildx build --platform linux/amd64 -f backend/Dockerfile \
 
 docker buildx build --platform linux/amd64 -f apps/web/Dockerfile \
   --build-arg NEXT_PUBLIC_API_URL=https://api.<your-domain> \
-  --build-arg NEXT_PUBLIC_SUPABASE_URL=https://<ref>.supabase.co \
-  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon key> \
   -t $ACR/calendium/web:$TAG --push .
 ```
 
@@ -122,16 +121,22 @@ az containerapp create -g calendium-rg -n calendium-api --environment calendium-
   --secrets "token-key=keyvaultref:https://<vault>.vault.azure.net/secrets/token-key,identityref:$IDENTITY_ID" \
             "db-url=keyvaultref:https://<vault>.vault.azure.net/secrets/db-url,identityref:$IDENTITY_ID" \
   --env-vars "SELF_HOSTED=true" "TOKEN_ENCRYPTION_KEY=secretref:token-key" \
-             "DATABASE_URL=secretref:db-url" "SUPABASE_URL=https://<ref>.supabase.co" \
-             "SUPABASE_JWT_SECRET=secretref:supabase-jwt"
+             "DATABASE_URL=secretref:db-url" "BETTER_AUTH_URL=https://app.<your-domain>"
+# The api only needs BETTER_AUTH_URL (it derives AUTH_JWKS_URL/AUTH_ISSUER and
+# verifies tokens against the public JWKS — no auth secret on the backend).
 ```
 
 ### B4. Web and worker apps
 
 ```bash
-# Web — external ingress on port 3000
+# Web — hosts Better Auth, so it needs Postgres + the auth secret at runtime
 az containerapp create -g calendium-rg -n calendium-web --environment calendium-env \
-  --image $ACR/calendium/web:$TAG --ingress external --target-port 3000
+  --image $ACR/calendium/web:$TAG --ingress external --target-port 3000 \
+  --user-assigned $IDENTITY_ID \
+  --secrets "auth-secret=keyvaultref:https://<vault>.vault.azure.net/secrets/auth-secret,identityref:$IDENTITY_ID" \
+            "db-url=keyvaultref:https://<vault>.vault.azure.net/secrets/db-url,identityref:$IDENTITY_ID" \
+  --env-vars "BETTER_AUTH_URL=https://app.<your-domain>" "BETTER_AUTH_SECRET=secretref:auth-secret" \
+             "DATABASE_URL=secretref:db-url"
 
 # Worker — no ingress, exactly one always-on replica, runs the worker binary
 az containerapp create -g calendium-rg -n calendium-worker --environment calendium-env \
@@ -161,6 +166,6 @@ The shipped backend image defaults to the `api` binary; `--command worker` runs
 ## See also
 
 - [Configuration & Environment Variables](./configuration.md) · [Database](./configuration.md#core--database)
-- [Authentication Setup](./providers.md#1-supabase-authentication--required) · [Connecting Provider Accounts](./providers.md)
+- [Authentication Setup](./providers.md#1-authentication-better-auth--built-in) · [Connecting Provider Accounts](./providers.md)
 - [Backups & Restore](./backups.md) · [Upgrading](./upgrades.md) · [Troubleshooting](./troubleshooting.md)
 - Other targets: [VPS](./vps.md) · [AWS](./aws.md) · [GCP](./gcp.md) · [Home server](./local.md)

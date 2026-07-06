@@ -4,7 +4,8 @@
 # the repo root so bun workspaces (@calendium/shared) resolve:
 #   docker build -f apps/web/Dockerfile .
 # NEXT_PUBLIC_* values are inlined into the browser bundle at BUILD time and
-# are passed as build args by docker-compose.yml.
+# are passed as build args by docker-compose.yml. Auth is Better Auth, hosted
+# by this app at /api/auth/*; its secrets are runtime env, not build args.
 
 # ── deps: install the whole bun workspace (cached on the manifests) ─────────
 FROM oven/bun:1 AS deps
@@ -29,12 +30,11 @@ ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app ./
 COPY . .
 
-ARG NEXT_PUBLIC_SUPABASE_URL
-ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+# Only NEXT_PUBLIC_* are inlined at build time. Better Auth's secrets
+# (BETTER_AUTH_SECRET/BETTER_AUTH_URL/DATABASE_URL/GOOGLE_*/APPLE_*) are read at
+# RUNTIME and supplied by docker-compose to the runner stage — never baked here.
 ARG NEXT_PUBLIC_API_URL
-ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
-    NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
-    NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 
 RUN bun run --cwd apps/web build
 

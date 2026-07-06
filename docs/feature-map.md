@@ -72,7 +72,7 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | **Platform** | | | | |
 | Gmail and Outlook support | Full client on Gmail/Google Workspace and Outlook/Microsoft 365 (OAuth connect endpoints + provider ports modeled; live sync is M1) | P0 | planned | web, desktop, mobile |
 | macOS and Windows desktop apps | Native-feeling Wails v2 desktop apps with the flagship keyboard-driven experience | P1 | planned | desktop |
-| iOS app | Full-featured iPhone app with AI drafts, summaries, splits, swipe triage (Expo shell + Supabase auth exists; product surface planned) | P1 | planned | mobile |
+| iOS app | Full-featured iPhone app with AI drafts, summaries, splits, swipe triage (Expo shell + Better Auth exists; product surface planned) | P1 | planned | mobile |
 | Android app | Android app with splits, AI features, and fast triage (same Expo codebase) | P1 | planned | mobile |
 | Multiple account switching | Connect several accounts and jump between them instantly with shortcuts (`ConnectedAccount` model supports many) | P1 | planned | web, desktop, mobile |
 | Concierge onboarding | White-glove 1:1 coaching session teaching shortcuts and reaching inbox zero | P1 | planned | web, desktop |
@@ -163,9 +163,9 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 
 - Bun monorepo with `apps/*` + `packages/*` workspaces; contracts locked in `docs/architecture.md`, `docs/tech-stack.md`, `docs/payments.md`.
 - `packages/shared`: full TypeScript domain model + typed `ApiClient` mirroring the Go domain and REST v1 contract.
-- Go backend skeleton (hexagonal, stdlib-only): REST v1 surface, Supabase JWT verification, Stripe $50/yr checkout/portal/webhooks, OpenRouter AI adapter, APNs/FCM/WebPush adapters, Postgres migrations.
+- Go backend skeleton (hexagonal, stdlib-only): REST v1 surface, Better Auth JWT verification (EdDSA/Ed25519 via JWKS), Stripe $50/yr checkout/portal/webhooks, OpenRouter AI adapter, APNs/FCM/WebPush adapters, Postgres migrations.
 - Product surface scaffolded end to end (mock/local data where provider sync is not yet live): split inbox model, thread list with j/k/e shortcuts, Cmd+K command palette, snooze, send later, follow-up reminders, snippets, AI compose/summarize via OpenRouter, read statuses, unified search, undo-send window, share availability.
-- Expo mobile shell with Supabase auth (Google + Apple sign-in, deep linking) and the reader-mode payments treatment (no IAP).
+- Expo mobile shell with Better Auth (email+password + Google/Apple sign-in, deep linking) and the reader-mode payments treatment (no IAP).
 - One design system everywhere: shadcn/ui new-york, neutral HSL tokens, radius 0.625rem, lucide icons, light + dark.
 
 ### M1 — Live provider sync

@@ -72,14 +72,8 @@ export default function SettingsScreen() {
     enabled: !isSelfHost,
   });
 
-  const name =
-    (user?.user_metadata?.full_name as string | undefined) ??
-    (user?.user_metadata?.name as string | undefined) ??
-    null;
-  const avatarUrl =
-    (user?.user_metadata?.avatar_url as string | undefined) ??
-    (user?.user_metadata?.picture as string | undefined) ??
-    null;
+  const name = user?.name ?? null;
+  const avatarUrl = user?.image ?? null;
   const initials = (name ?? user?.email ?? '?')
     .split(/[\s@.]+/)
     .filter(Boolean)

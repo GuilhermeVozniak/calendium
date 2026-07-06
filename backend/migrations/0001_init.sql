@@ -1,6 +1,6 @@
 -- 0001_init.sql — Calendium initial schema.
 -- IDs are app-generated random hex strings (see internal/service newID),
--- except users.id which is the Supabase JWT `sub`.
+-- except users.id which is the Better Auth JWT `sub`.
 
 -- Trigram matching backs the thread-search subject ILIKE predicate.
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -8,7 +8,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 -- --- Identity & billing -----------------------------------------------------
 
 CREATE TABLE users (
-    id         text PRIMARY KEY, -- Supabase JWT sub
+    id         text PRIMARY KEY, -- Better Auth JWT sub
     email      text NOT NULL,
     name       text,
     avatar_url text,

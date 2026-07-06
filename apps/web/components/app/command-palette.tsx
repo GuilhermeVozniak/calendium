@@ -34,8 +34,8 @@ import {
 } from '@/components/ui/command';
 import { Kbd, KbdGroup } from '@/components/ui/kbd';
 import { dispatchMailCommand, queueMailCommand, type MailCommand } from '@/lib/mail-utils';
+import { signOut } from '@/lib/auth-client';
 import { MOD_KEY, useShortcuts } from '@/lib/shortcuts';
-import { createClient } from '@/lib/supabase/client';
 
 /** ⌘K command palette — every Calendium action, one keystroke away. */
 export function CommandPalette() {
@@ -196,7 +196,7 @@ export function CommandPalette() {
           <CommandItem
             onSelect={() =>
               run(async () => {
-                await createClient().auth.signOut();
+                await signOut();
                 router.replace('/signin');
               })
             }

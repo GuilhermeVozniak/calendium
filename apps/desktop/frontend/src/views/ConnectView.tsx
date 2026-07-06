@@ -14,7 +14,7 @@ import { Input } from '@/ui/input';
  * Server-discovery gate (open-core): shown until the desktop client is pointed
  * at a Calendium server. The user enters a server URL (or picks Calendium
  * Cloud); we fetch its public /v1/instance descriptor, confirm the instance,
- * and persist the config so the Supabase + API clients build at runtime.
+ * and persist the config so the Better Auth + API clients build at runtime.
  */
 export function ConnectView() {
   const { save } = useServerConfig();

@@ -7,20 +7,22 @@ const Version = "0.1.0"
 
 // InstanceInfo is the public self-configuration document served at
 // GET /v1/instance (unauthenticated). A client that only knows the server base
-// URL fetches this to discover the Supabase credentials to authenticate with
-// and which capabilities the deployment has enabled. It mirrors InstanceInfo in
-// packages/shared/src/types.ts — keep the two in sync.
+// URL fetches this to discover the Better Auth base URL to authenticate
+// against and which capabilities the deployment has enabled. It mirrors
+// InstanceInfo in packages/shared/src/types.ts — keep the two in sync.
 type InstanceInfo struct {
 	Name string `json:"name"`
 	// Mode is "self_host" for a free self-hosted deployment or "cloud" for
 	// the managed offering.
 	Mode    string `json:"mode"`
 	Version string `json:"version"`
-	// SupabaseURL / SupabaseAnonKey are the PUBLIC Supabase project URL and
-	// anon key; either may be "" when not configured.
-	SupabaseURL     string           `json:"supabaseUrl"`
-	SupabaseAnonKey string           `json:"supabaseAnonKey"`
-	Features        InstanceFeatures `json:"features"`
+	// AuthBaseURL is the Better Auth base URL clients build their auth client
+	// against, ${PublicWebURL}/api/auth.
+	AuthBaseURL string `json:"authBaseUrl"`
+	// AuthProviders lists enabled sign-in methods, always including "email"
+	// plus "google"/"apple" when their credentials are configured.
+	AuthProviders []string         `json:"authProviders"`
+	Features      InstanceFeatures `json:"features"`
 }
 
 // InstanceFeatures reports which optional capabilities are wired on this

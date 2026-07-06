@@ -23,27 +23,28 @@ type DB struct {
 	URL string // DATABASE_URL
 }
 
-// Supabase configures local JWT verification. At least one of JWTSecret
-// (HS256) or JWKSURL (RS256/ES256) must be set for authenticated routes.
-type Supabase struct {
-	JWTSecret string // SUPABASE_JWT_SECRET
-	JWKSURL   string // SUPABASE_JWKS_URL
-	// URL is the Supabase project URL (SUPABASE_URL); the expected token
-	// issuer is derived from it as <URL>/auth/v1.
-	URL string
-	// AnonKey is the PUBLIC Supabase anon key (SUPABASE_ANON_KEY). Unlike
-	// JWTSecret it is safe to serve to clients (GET /v1/instance) so they can
-	// self-configure; it is distinct from the secret JWTSecret.
-	AnonKey string
+// Auth configures verification of Better Auth JWTs. Better Auth is hosted by
+// the Next.js web app at ${BetterAuthURL}/api/auth/*; the Go backend is a pure
+// resource server that fetches the JWKS and verifies EdDSA/RS256/ES256
+// signatures offline. JWKSURL and Issuer are derived from BetterAuthURL when
+// not set explicitly.
+type Auth struct {
+	// BetterAuthURL is the public web origin hosting Better Auth
+	// (BETTER_AUTH_URL), e.g. https://app.calendium.com (no trailing slash).
+	BetterAuthURL string
+	// JWKSURL is the Better Auth JWKS endpoint (AUTH_JWKS_URL); defaults to
+	// ${BetterAuthURL}/api/auth/jwks.
+	JWKSURL string
+	// Issuer is the expected token `iss` claim (AUTH_ISSUER); defaults to
+	// ${BetterAuthURL}. "" disables issuer pinning.
+	Issuer string
 }
 
-// Issuer returns the expected JWT `iss` claim (<URL>/auth/v1), or "" when no
-// project URL is configured (issuer pinning is then disabled).
-func (s Supabase) Issuer() string {
-	if s.URL == "" {
-		return ""
-	}
-	return strings.TrimRight(s.URL, "/") + "/auth/v1"
+// Apple configures Sign in with Apple. The backend does not perform the login
+// itself (Better Auth does), but reports it in GET /v1/instance when set.
+type Apple struct {
+	ClientID     string // APPLE_CLIENT_ID (Services ID)
+	ClientSecret string // APPLE_CLIENT_SECRET
 }
 
 // Google configures the Google OAuth app (Gmail + Google Calendar).
@@ -147,8 +148,9 @@ type Instance struct {
 type Config struct {
 	HTTP       HTTP
 	DB         DB
-	Supabase   Supabase
+	Auth       Auth
 	Google     Google
+	Apple      Apple
 	Microsoft  Microsoft
 	Stripe     Stripe
 	Push       Push
@@ -168,15 +170,18 @@ func FromEnv() (Config, error) {
 
 	cfg := Config{
 		DB: DB{URL: os.Getenv("DATABASE_URL")},
-		Supabase: Supabase{
-			JWTSecret: os.Getenv("SUPABASE_JWT_SECRET"),
-			JWKSURL:   os.Getenv("SUPABASE_JWKS_URL"),
-			URL:       os.Getenv("SUPABASE_URL"),
-			AnonKey:   os.Getenv("SUPABASE_ANON_KEY"),
+		Auth: Auth{
+			BetterAuthURL: strings.TrimRight(os.Getenv("BETTER_AUTH_URL"), "/"),
+			JWKSURL:       os.Getenv("AUTH_JWKS_URL"),
+			Issuer:        os.Getenv("AUTH_ISSUER"),
 		},
 		Google: Google{
 			ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 			ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		},
+		Apple: Apple{
+			ClientID:     os.Getenv("APPLE_CLIENT_ID"),
+			ClientSecret: os.Getenv("APPLE_CLIENT_SECRET"),
 		},
 		Microsoft: Microsoft{
 			ClientID:     os.Getenv("MS_CLIENT_ID"),
@@ -213,6 +218,15 @@ func FromEnv() (Config, error) {
 
 	if cfg.DB.URL == "" {
 		errs = append(errs, errors.New("DATABASE_URL is required"))
+	}
+
+	// Derive the Better Auth JWKS URL and issuer from BETTER_AUTH_URL unless
+	// they were set explicitly.
+	if cfg.Auth.JWKSURL == "" && cfg.Auth.BetterAuthURL != "" {
+		cfg.Auth.JWKSURL = cfg.Auth.BetterAuthURL + "/api/auth/jwks"
+	}
+	if cfg.Auth.Issuer == "" {
+		cfg.Auth.Issuer = cfg.Auth.BetterAuthURL
 	}
 
 	switch key := os.Getenv("TOKEN_ENCRYPTION_KEY"); key {

@@ -14,11 +14,11 @@ import (
 // the exact InstanceInfo JSON shape from the shared contract.
 func TestHandleInstance(t *testing.T) {
 	info := InstanceInfo{
-		Name:            "Calendium",
-		Mode:            ModeSelfHost,
-		Version:         Version,
-		SupabaseURL:     "https://demo.supabase.co",
-		SupabaseAnonKey: "public-anon-key",
+		Name:          "Calendium",
+		Mode:          ModeSelfHost,
+		Version:       Version,
+		AuthBaseURL:   "https://app.calendium.com/api/auth",
+		AuthProviders: []string{"email", "google"},
 		Features: InstanceFeatures{
 			Billing:   false,
 			Google:    true,
@@ -55,7 +55,7 @@ func TestHandleInstance(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
 		t.Fatalf("decode raw: %v", err)
 	}
-	for _, k := range []string{"name", "mode", "version", "supabaseUrl", "supabaseAnonKey", "features"} {
+	for _, k := range []string{"name", "mode", "version", "authBaseUrl", "authProviders", "features"} {
 		if _, ok := raw[k]; !ok {
 			t.Fatalf("missing top-level key %q in %s", k, rec.Body.String())
 		}

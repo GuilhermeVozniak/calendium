@@ -6,8 +6,9 @@ import * as React from 'react';
  *
  * The user connects to a Calendium server by URL; we fetch its public
  * `/v1/instance` descriptor and persist the resulting config to localStorage.
- * The Supabase + API clients are built from this config at runtime, so a single
- * build can point at any server — a self-hosted instance or Calendium Cloud.
+ * The Better Auth + API clients are built from this config at runtime, so a
+ * single build can point at any server — a self-hosted instance or Calendium
+ * Cloud.
  */
 
 const STORAGE_KEY = 'calendium.serverConfig';
@@ -20,8 +21,10 @@ export const CLOUD_PRESET = {
 export interface ServerConfig {
   /** Base URL of the Calendium backend the client talks to. */
   serverUrl: string;
-  supabaseUrl: string;
-  supabaseAnonKey: string;
+  /** Better Auth base URL for this server, e.g. https://…/api/auth. */
+  authBaseUrl: string;
+  /** Sign-in methods this server enables, e.g. ["email", "google", "apple"]. */
+  authProviders: string[];
   mode: InstanceMode;
   /** Human-readable instance name (INSTANCE_NAME on the server). */
   name: string;
@@ -43,30 +46,13 @@ function readStored(): ServerConfig | null {
   }
 }
 
-/**
- * Optional env-seeded default (dev convenience): when VITE_API_URL and the
- * Supabase vars are all present, treat them as a pre-connected server so local
- * dev skips the Connect screen. See .env.example.
- */
-function envDefault(): ServerConfig | null {
-  const serverUrl = import.meta.env.VITE_API_URL as string | undefined;
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-  const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
-  if (serverUrl && supabaseUrl && supabaseAnonKey) {
-    return {
-      serverUrl: normalizeServerUrl(serverUrl),
-      supabaseUrl,
-      supabaseAnonKey,
-      mode: 'cloud',
-      name: 'Calendium',
-    };
-  }
-  return null;
-}
-
-// Module-level "active" config, read synchronously by the Supabase + API
-// clients (lib/supabase, lib/api). Kept in sync with React state below.
-let activeConfig: ServerConfig | null = readStored() ?? envDefault();
+// Module-level "active" config, read synchronously by the Better Auth + API
+// clients (lib/auth, lib/api). Kept in sync with React state below.
+//
+// There is no env-seeded default anymore: a server's Better Auth base URL is
+// only known after fetching its /v1/instance descriptor, so dev always goes
+// through the Connect screen (which pre-fills VITE_API_URL). See .env.example.
+let activeConfig: ServerConfig | null = readStored();
 
 export function getActiveServerConfig(): ServerConfig | null {
   return activeConfig;
@@ -100,8 +86,8 @@ export async function discoverServer(serverUrl: string): Promise<ServerConfig> {
   const info = await fetchInstance(normalized);
   return {
     serverUrl: normalized,
-    supabaseUrl: info.supabaseUrl,
-    supabaseAnonKey: info.supabaseAnonKey,
+    authBaseUrl: info.authBaseUrl,
+    authProviders: info.authProviders,
     mode: info.mode,
     name: info.name,
   };

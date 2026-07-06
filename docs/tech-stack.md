@@ -15,7 +15,7 @@
 | Architecture | Hexagonal (ports & adapters); `domain ← port ← service`, adapters at the edges |
 | HTTP | stdlib `net/http` with Go 1.22+ method/pattern routing — **no framework** |
 | DB | Postgres via `database/sql` + `pgx/v5/stdlib` driver (only external dep); embedded SQL migrations |
-| Auth | Supabase JWT verified locally with stdlib crypto (HS256 secret or RS256/ES256 JWKS) |
+| Auth | Pure resource server: verifies Better Auth JWTs locally with stdlib crypto — EdDSA/Ed25519 (default) via JWKS, RS256/ES256 also supported; `iss` pinned, `sub`→user upsert |
 | Mail/calendar providers | Gmail API + Google Calendar API, Microsoft Graph — raw REST via `net/http` |
 | Billing | Stripe REST via `net/http`; webhook HMAC-SHA256 verification via `crypto/hmac` |
 | Push | APNs (HTTP/2, ES256 JWT), FCM v1 (service-account JWT), Web Push (VAPID) — all stdlib |
@@ -29,7 +29,7 @@
 | Framework | Next.js 15 App Router, React 19, TypeScript |
 | Styling | Tailwind CSS v4 + shadcn/ui (**new-york style, neutral base** — same design language as react-native-reusables on mobile) |
 | Structure | `(marketing)` route group: landing page; `(app)` route group: the mail + calendar client |
-| Auth | `@supabase/supabase-js` (Google/Apple OAuth) |
+| Auth | **Hosts Better Auth** (`better-auth`) at `/api/auth/*` — email+password + Google/Apple, `jwt()` (EdDSA/Ed25519 JWKS) + `bearer()` + `@better-auth/expo` plugins; own tables in the shared Postgres |
 | Data | `@calendium/shared` ApiClient + TanStack Query |
 | Icons / fonts | lucide-react; `next/font` (Inter / Geist) |
 | Push | Web Push via service worker + VAPID |
@@ -41,7 +41,7 @@
 | Shell | Wails v2 (Go host, native WebView; menu bar, global shortcuts, badge counts) |
 | Frontend | React 19 + Vite + TypeScript in `apps/desktop/frontend` (bun workspace member) |
 | Styling | Tailwind v4 + the same shadcn/ui new-york components as web |
-| Auth/data | Same Supabase session + `@calendium/shared` ApiClient; deep-link `calendium://` for OAuth callbacks |
+| Auth/data | Better Auth client (bearer tokens) + `@calendium/shared` ApiClient; deep-link `calendium://` for OAuth callbacks |
 | Payments | No in-app purchase — opens the web checkout in the default browser (Spotify model) |
 
 ## apps/mobile — Expo / React Native
@@ -50,7 +50,7 @@
 | --- | --- |
 | Runtime | Expo SDK 54, React Native 0.81, New Architecture, Expo Router |
 | UI | **react-native-reusables** (shadcn new-york port) + NativeWind 4 — the design system of record |
-| Auth | Supabase (`expo-auth-session` deep-link flow, already implemented) |
+| Auth | Better Auth via `@better-auth/expo` (email+password + Google/Apple, deep-link flow) |
 | Data | `@calendium/shared` ApiClient + TanStack Query |
 | Push | `expo-notifications` → APNs / FCM tokens registered at `/v1/devices` |
 | Payments | **No IAP.** Subscription managed on the web (Spotify model); app shows plan state + link out |

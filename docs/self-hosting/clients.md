@@ -16,9 +16,10 @@ Every Calendium server exposes an **unauthenticated** `GET /v1/instance` endpoin
 (see [the discovery contract](./configuration.md#the-v1instance-discovery-contract)).
 When you enter a server URL, the app calls it and reads back:
 
-- the **Supabase URL + anon key** for that instance (so the app configures its
-  own Supabase auth client — these differ per deployment and cannot be
-  hardcoded), and
+- the **Better Auth base URL** (`authBaseUrl`, e.g. `https://mail.example.com/api/auth`)
+  for that instance — the app builds its Better Auth client against it (it differs
+  per deployment and can't be hardcoded) — plus `authProviders` listing the enabled
+  sign-in methods, and
 - the **feature flags** (`billing`, `google`, `microsoft`, `ai`, `push`) so the
   UI adapts — e.g. on a self-host server `features.billing` is `false` and the
   billing/subscribe UI is hidden.
@@ -31,20 +32,19 @@ validate a URL and self-configure before you sign in.
 
 ## Web
 
-The web app is **served by your own deployment**, so it's configured at build
-time rather than at runtime. Its `NEXT_PUBLIC_*` values are baked into the
-browser bundle when the `web` image is built:
+The web app is **served by your own deployment**. Authentication runs
+**same-origin** — the web app hosts Better Auth at `/api/auth` and reads
+`BETTER_AUTH_SECRET` / `BETTER_AUTH_URL` at **runtime**, so there's no auth value
+to bake into the bundle. The one build-time value is:
 
-- `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` — your Supabase
-  project.
 - `NEXT_PUBLIC_API_URL` — where the browser reaches the API. Behind the bundled
   Caddy proxy the web app and API share one origin, so you can **leave it
   blank** and the client issues same-origin `/v1/…` requests. Set it explicitly
   (e.g. `https://mail.example.com`) if the API is on a different origin.
 
-Because these are compile-time, **changing them means rebuilding the `web`
-image** (`make self-host-up` rebuilds). Users just open your domain — there's no
-"enter a server" step on web; the deployment *is* the server.
+Because `NEXT_PUBLIC_API_URL` is compile-time, **changing it means rebuilding the
+`web` image** (`make self-host-up` rebuilds). Users just open your domain —
+there's no "enter a server" step on web; the deployment *is* the server.
 
 ---
 
@@ -57,16 +57,16 @@ The desktop app opens on a **Connect** screen before login. Two choices:
 - **Use a custom server** — type your server URL (e.g.
   `https://mail.example.com`). The app runs discovery
   (`fetchInstance` → `GET /v1/instance`), shows the instance name + mode, stores
-  the config, and lets you sign in via that instance's Supabase.
+  the config, and lets you sign in via that instance's Better Auth.
 
-The chosen server is persisted (server URL + its Supabase URL/anon key + mode),
-the shared `ApiClient`'s `baseUrl` is a getter that always targets the active
-server, and the Supabase client is rebuilt from the active config — so you can
+The chosen server is persisted (server URL + its `authBaseUrl` + mode), the shared
+`ApiClient`'s `baseUrl` is a getter that always targets the active server, and the
+Better Auth client is rebuilt from the discovered `authBaseUrl` — so you can
 **switch servers at runtime** from **Settings**.
 
 For local development you can pre-seed a server and skip the Connect screen by
-setting all three of `VITE_API_URL`, `VITE_SUPABASE_URL`, and
-`VITE_SUPABASE_ANON_KEY` in the desktop frontend's env.
+setting `VITE_API_URL` in the desktop frontend's env; the app discovers the Better
+Auth base URL from `GET /v1/instance`.
 
 OAuth callbacks use the `calendium://` deep-link scheme regardless of which
 server you connect to.
@@ -79,8 +79,6 @@ Build a desktop binary your team can install and point at your server:
 cd apps/desktop
 # optional: pre-seed the server so the Connect screen is skipped
 export VITE_API_URL=https://mail.example.com
-export VITE_SUPABASE_URL=https://<ref>.supabase.co
-export VITE_SUPABASE_ANON_KEY=<anon key>
 wails build          # produces a native app in build/bin
 ```
 
@@ -93,14 +91,14 @@ Users can still switch to another server from Settings after install.
 The mobile app has the same **Connect** screen: a **Calendium Cloud** button
 (preset `https://api.calendium.app`) and a **custom server** field. Entering a
 URL runs `discoverServer()` → `fetchInstance()` → `GET /v1/instance`, points the
-shared client at it (`configureApi(serverUrl)`), and rebuilds the Supabase client
-from the discovered URL/anon key. The active server URL is shown in **Settings**.
+shared client at it (`configureApi(serverUrl)`), and rebuilds the Better Auth
+client from the discovered `authBaseUrl`. The active server URL is shown in
+**Settings**.
 
-Defaults can be seeded for development via `EXPO_PUBLIC_API_URL`,
-`EXPO_PUBLIC_SUPABASE_URL`, and `EXPO_PUBLIC_SUPABASE_ANON_KEY`; deep-linking
+Defaults can be seeded for development via `EXPO_PUBLIC_API_URL`; deep-linking
 uses `EXPO_PUBLIC_SCHEME` (and `EXPO_PUBLIC_AUTH_REDIRECT_MODE`) — these seed a
-default so the client exists before discovery finishes, but are no longer
-required once you connect.
+default so the client exists before discovery finishes, but are no longer required
+once you connect. The Better Auth base URL comes from `GET /v1/instance`.
 
 > Because purchases never go through the app (Spotify model), and a self-host
 > server reports `features.billing: false`, the mobile app shows **no subscribe
@@ -114,10 +112,8 @@ config). Use EAS or a local prebuild, seeding your server as the default:
 
 ```bash
 cd apps/mobile
-# seed your server + Supabase as the default connection
+# seed your server as the default connection
 export EXPO_PUBLIC_API_URL=https://mail.example.com
-export EXPO_PUBLIC_SUPABASE_URL=https://<ref>.supabase.co
-export EXPO_PUBLIC_SUPABASE_ANON_KEY=<anon key>
 
 bun install
 npx expo run:ios        # or: npx expo run:android
@@ -149,8 +145,8 @@ Whatever you enter must be reachable from the device and must serve
 
 Both run the same API and data model. To migrate a client, open **Connect** (or
 **Settings → switch server**) and enter the other server's URL — the app
-re-discovers Supabase creds and feature flags and signs you in against that
-instance. (Account *data* migration is a server-side concern — export/import via
+re-discovers the Better Auth base URL and feature flags and signs you in against
+that instance. (Account *data* migration is a server-side concern — export/import via
 your Postgres dumps; see [backups in the overview](./README.md#backups).)
 
 ---

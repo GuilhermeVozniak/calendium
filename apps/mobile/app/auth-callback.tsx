@@ -1,34 +1,11 @@
-import { useEffect } from 'react';
-import { View, ActivityIndicator } from 'react-native';
-import { useRouter } from 'expo-router';
-import { getSupabase } from '@/lib/supabase';
+import { Redirect } from 'expo-router';
 
+/**
+ * OAuth deep-link landing route. With @better-auth/expo the social sign-in flow
+ * completes inline (the plugin opens the system browser and resolves on the
+ * "calendium://" callback), so this route only needs to bounce any stray
+ * callback deep link back to the app entry, which routes to inbox once signed in.
+ */
 export default function AuthCallback() {
-  const router = useRouter();
-
-  useEffect(() => {
-    // Handle the OAuth callback
-    const supabase = getSupabase();
-    if (!supabase) {
-      router.replace('/');
-      return;
-    }
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_IN') {
-        router.replace('/'); // Redirect to your main app
-      }
-    });
-
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, [router]);
-
-  return (
-    <View className="flex-1 items-center justify-center">
-      <ActivityIndicator size="large" />
-    </View>
-  );
+  return <Redirect href="/" />;
 }
