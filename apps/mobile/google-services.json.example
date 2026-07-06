@@ -1,0 +1,30 @@
+{
+  "_comment": "TEMPLATE ONLY. Download the real google-services.json from your Firebase project (Project settings -> Your apps -> Android app) and save it as apps/mobile/google-services.json (git-ignored; auto-wired by app.config.js). The android_client_info.package_name MUST equal app.calendium.mobile to match app.json. See apps/mobile/docs/push.md.",
+  "project_info": {
+    "project_number": "REPLACE_WITH_FIREBASE_PROJECT_NUMBER",
+    "project_id": "REPLACE_WITH_FIREBASE_PROJECT_ID",
+    "storage_bucket": "REPLACE_WITH_FIREBASE_PROJECT_ID.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:REPLACE_WITH_PROJECT_NUMBER:android:REPLACE_WITH_APP_ID_HASH",
+        "android_client_info": {
+          "package_name": "app.calendium.mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "REPLACE_WITH_ANDROID_API_KEY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -46,8 +46,8 @@ export function initials(addr: EmailAddress): string {
 }
 
 /** "Priya, Jordan 3" — sender line for a dense thread row. */
-export function participantsLine(thread: Thread, selfEmail?: string): string {
-  const others = thread.participants.filter((p) => p.email !== selfEmail);
+export function participantsLine(thread: Thread, selfEmails?: ReadonlySet<string>): string {
+  const others = thread.participants.filter((p) => !selfEmails?.has(p.email.toLowerCase()));
   const shown = (others.length > 0 ? others : thread.participants).slice(0, 3);
   return shown.map(firstName).join(', ');
 }

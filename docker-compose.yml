@@ -39,6 +39,11 @@ services:
     environment:
       # Bind inside the container; the host mapping is API_PORT below.
       HTTP_ADDR: ":8080"
+      # api + worker verify Better Auth JWTs by fetching its JWKS server-to-server.
+      # BETTER_AUTH_URL is a *public* origin the api container usually can't reach
+      # from inside this network, so default the JWKS to the in-network web
+      # service. Override in .env only if web is reachable at another URL.
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://web:3000/api/auth/jwks}
     depends_on:
       db:
         condition: service_healthy
@@ -58,6 +63,9 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      # Same JWKS default as api — the worker also verifies Better Auth JWTs.
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://web:3000/api/auth/jwks}
     depends_on:
       db:
         condition: service_healthy

@@ -71,6 +71,23 @@ Auth base URL from `GET /v1/instance`.
 OAuth callbacks use the `calendium://` deep-link scheme regardless of which
 server you connect to.
 
+**Google / Apple sign-in on desktop** runs in the system browser, because the
+social consent screens can't load inside the desktop webview. The app opens
+`${webOrigin}/signin?next=/desktop-callback` in your browser; you sign in there,
+and the `/desktop-callback` page mints a short-lived **one-time token** and hands
+it back to the app two ways:
+
+- **Deep link** — it redirects to `calendium://auth/callback?ott=<token>`, which
+  the app catches and exchanges for a session (verifying the token against the
+  instance's Better Auth `one-time-token/verify` endpoint, then storing the
+  session token exactly like an email/password sign-in).
+- **Copy-paste fallback** — if the deep link doesn't fire (the browser didn't
+  hand off to the app), the page also shows the code with a **Copy** button;
+  paste it into the app's "enter this code" field to finish sign-in.
+
+Email + password sign-in stays inside the app — this handoff is only for the
+social providers.
+
 ### Build the desktop app from source (internal distribution)
 
 Build a desktop binary your team can install and point at your server:
@@ -95,10 +112,11 @@ shared client at it (`configureApi(serverUrl)`), and rebuilds the Better Auth
 client from the discovered `authBaseUrl`. The active server URL is shown in
 **Settings**.
 
-Defaults can be seeded for development via `EXPO_PUBLIC_API_URL`; deep-linking
-uses `EXPO_PUBLIC_SCHEME` (and `EXPO_PUBLIC_AUTH_REDIRECT_MODE`) — these seed a
-default so the client exists before discovery finishes, but are no longer required
-once you connect. The Better Auth base URL comes from `GET /v1/instance`.
+Defaults can be seeded for development via `EXPO_PUBLIC_API_URL` (the only
+`EXPO_PUBLIC_*` var the app reads) so a client exists before discovery finishes;
+it's overridable on the Connect screen. The deep-link scheme is fixed to
+`calendium://` (hardcoded in `app.json`), and the Better Auth base URL comes from
+`GET /v1/instance`.
 
 > Because purchases never go through the app (Spotify model), and a self-host
 > server reports `features.billing: false`, the mobile app shows **no subscribe

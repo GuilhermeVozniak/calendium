@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { format } from 'date-fns';
-import { Archive, Clock, MailOpen, Star } from 'lucide-react';
+import { Archive, Clock, MailOpen, Reply, Star } from 'lucide-react';
 
 import { api, orMock } from '@/lib/api';
+import { openCompose } from '@/lib/compose';
 import { mockThread } from '@/lib/mock';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
@@ -49,6 +50,17 @@ export function ThreadPane({
           {thread.split}
         </Badge>
         <div className="ml-auto flex items-center gap-1">
+          <Button
+            variant="outline"
+            size="sm"
+            className="mr-1"
+            disabled={messages.length === 0}
+            onClick={() =>
+              openCompose({ kind: 'reply', thread, message: messages[messages.length - 1]! })
+            }
+          >
+            <Reply /> Reply
+          </Button>
           <Tooltip
             label={
               <>

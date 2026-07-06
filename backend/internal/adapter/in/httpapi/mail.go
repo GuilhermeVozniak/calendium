@@ -27,6 +27,14 @@ func (s *server) handleListThreads(w http.ResponseWriter, r *http.Request) {
 		}
 		q.Split = split
 	}
+	if v := qs.Get("view"); v != "" {
+		view, err := domain.ParseThreadView(v)
+		if err != nil {
+			s.writeError(w, r, err)
+			return
+		}
+		q.View = view
+	}
 	if v := qs.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n <= 0 {
@@ -71,6 +79,14 @@ func (s *server) handleThreadAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, thread)
+}
+
+func (s *server) handleMarkThreadOpened(w http.ResponseWriter, r *http.Request) {
+	if err := s.deps.Mail.MarkThreadOpened(r.Context(), userFrom(r).ID, r.PathValue("id")); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *server) handleSnoozeThread(w http.ResponseWriter, r *http.Request) {
@@ -172,6 +188,15 @@ func (s *server) handleSendDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, msg)
+}
+
+func (s *server) handleUnsendDraft(w http.ResponseWriter, r *http.Request) {
+	draft, err := s.deps.Mail.UnsendDraft(r.Context(), userFrom(r).ID, r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, draft)
 }
 
 // --- snippets ------------------------------------------------------------

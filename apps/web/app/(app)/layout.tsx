@@ -4,6 +4,7 @@ import * as React from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
+  AtSign,
   CalendarDays,
   CalendarRange,
   Check,
@@ -49,7 +50,8 @@ import {
 import { Kbd } from '@/components/ui/kbd';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { authClient, signOut } from '@/lib/auth-client';
-import { useShortcuts } from '@/lib/shortcuts';
+import { DEMO_MODE } from '@/lib/demo';
+import { useChords, useShortcuts } from '@/lib/shortcuts';
 import { useApiOnline } from '@/lib/use-mail';
 import { cn } from '@/lib/utils';
 
@@ -95,10 +97,17 @@ function Splash() {
   );
 }
 
-/** App-wide single-key shortcuts that need the compose context. */
+/** App-wide single-key shortcuts + navigation chords that need the compose context. */
 function GlobalShortcuts() {
+  const router = useRouter();
   const { openCompose } = useCompose();
   const pathname = usePathname();
+  // Chords must register before the single-key bindings so a completed "g c"
+  // preventDefaults the plain "c" (compose) that would otherwise also fire.
+  useChords([
+    { keys: 'g i', description: 'Go to Inbox', handler: () => router.push('/mail') },
+    { keys: 'g c', description: 'Go to Calendar', handler: () => router.push('/calendar') },
+  ]);
   useShortcuts([
     {
       keys: 'c',
@@ -117,10 +126,17 @@ function OfflineBanner() {
   return (
     <div className="bg-muted text-muted-foreground flex shrink-0 items-center gap-2 border-b px-4 py-1.5 text-xs">
       <WifiOff className="size-3.5 shrink-0" />
-      <span>
-        <span className="text-foreground font-medium">Offline demo mode</span> — the Calendium API
-        is unreachable. Showing sample data; actions apply locally.
-      </span>
+      {DEMO_MODE ? (
+        <span>
+          <span className="text-foreground font-medium">Offline demo mode</span> — the Calendium
+          API is unreachable. Showing sample data; actions apply locally.
+        </span>
+      ) : (
+        <span>
+          <span className="text-foreground font-medium">Can’t reach Calendium</span> — the API
+          server is unavailable. Your data will load once the connection is back.
+        </span>
+      )}
     </div>
   );
 }
@@ -152,6 +168,7 @@ const SPLIT_ITEMS: RailItem[] = [
     isActive: (p, s, v) => p === '/mail' && !v && s === 'calendar',
   },
   { label: 'News', href: '/mail?split=news', icon: Newspaper, isActive: (p, s, v) => p === '/mail' && !v && s === 'news' },
+  { label: 'Social', href: '/mail?split=social', icon: AtSign, isActive: (p, s, v) => p === '/mail' && !v && s === 'social' },
   { label: 'Other', href: '/mail?split=other', icon: Layers, isActive: (p, s, v) => p === '/mail' && !v && s === 'other' },
 ];
 

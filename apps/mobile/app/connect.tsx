@@ -4,12 +4,13 @@ import { Input } from '@/components/ui/input';
 import { Text } from '@/components/ui/text';
 import {
   CLOUD_PRESET,
+  DEMO_CONFIG,
   discoverServer,
   useServerConfig,
   type ServerConfig,
 } from '@/lib/server-config';
 import { Stack, useRouter } from 'expo-router';
-import { CheckCircle2Icon, CloudIcon, ServerIcon } from 'lucide-react-native';
+import { CheckCircle2Icon, CloudIcon, PlayIcon, ServerIcon } from 'lucide-react-native';
 import * as React from 'react';
 import {
   ActivityIndicator,
@@ -47,6 +48,13 @@ export default function ConnectScreen() {
     } finally {
       setBusy(null);
     }
+  };
+
+  // Explicit opt-in to the offline demo (deterministic mock data, no backend).
+  const tryDemo = async () => {
+    setError(null);
+    await save(DEMO_CONFIG);
+    setConnected(DEMO_CONFIG);
   };
 
   if (connected) {
@@ -146,6 +154,16 @@ export default function ConnectScreen() {
                 <Icon as={CloudIcon} className="size-4" />
               )}
               <Text>Use Calendium Cloud</Text>
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              className="flex-row gap-2"
+              onPress={tryDemo}
+              disabled={busy !== null}>
+              <Icon as={PlayIcon} className="size-4 text-muted-foreground" />
+              <Text className="text-muted-foreground">Try the demo (sample data)</Text>
             </Button>
           </View>
         </ScrollView>

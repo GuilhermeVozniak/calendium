@@ -21,6 +21,8 @@ next-env.d.ts
 # Wails (apps/desktop)
 apps/desktop/build/bin/
 apps/desktop/frontend/dist/
+apps/desktop/frontend/package.json.md5
+apps/desktop/desktop
 
 # Go (backend)
 backend/bin/

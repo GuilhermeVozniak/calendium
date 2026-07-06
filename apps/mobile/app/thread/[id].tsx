@@ -4,9 +4,14 @@ import { Input } from '@/components/ui/input';
 import { Text } from '@/components/ui/text';
 import { api } from '@/lib/api';
 import { relativeTime } from '@/lib/format';
-import { isApiUnreachable, mockThreadDetail, withMockFallback } from '@/lib/mock';
+import { isDemoMode, mockThreadDetail, withMockFallback } from '@/lib/mock';
 import type { Message, Page, Thread } from '@calendium/shared';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+} from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ArchiveIcon, ChevronLeftIcon, ClockIcon, SendIcon } from 'lucide-react-native';
 import * as React from 'react';
@@ -14,6 +19,8 @@ import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, ScrollView, V
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type ThreadDetail = { thread: Thread; messages: Message[] };
+// The inbox list is cursor-paginated, so its cache is InfiniteData<Page<Thread>>.
+type ThreadsData = InfiniteData<Page<Thread>>;
 
 export default function ThreadScreen() {
   const params = useLocalSearchParams<{ id: string }>();
@@ -42,20 +49,82 @@ export default function ThreadScreen() {
   };
 
   const removeFromInboxList = (thread: Thread) => {
-    queryClient.setQueryData<Page<Thread>>(['threads', thread.split], (page) =>
-      page ? { ...page, items: page.items.filter((t) => t.id !== thread.id) } : page
+    queryClient.setQueryData<ThreadsData>(['threads', thread.split], (data) =>
+      data
+        ? {
+            ...data,
+            pages: data.pages.map((page) => ({
+              ...page,
+              items: page.items.filter((t) => t.id !== thread.id),
+            })),
+          }
+        : data
     );
   };
+
+  // Reflect a persisted "opened" (read) into both this detail and the inbox list
+  // so the unread dot clears from real state, not a guess.
+  const markThreadRead = React.useCallback(
+    (thread: Thread) => {
+      const openedAt = new Date().toISOString();
+      queryClient.setQueryData<ThreadDetail>(['thread', thread.id], (data) =>
+        data ? { ...data, thread: { ...data.thread, unread: false, openedAt } } : data
+      );
+      queryClient.setQueryData<ThreadsData>(['threads', thread.split], (data) =>
+        data
+          ? {
+              ...data,
+              pages: data.pages.map((page) => ({
+                ...page,
+                items: page.items.map((t) =>
+                  t.id === thread.id ? { ...t, unread: false, openedAt } : t
+                ),
+              })),
+            }
+          : data
+      );
+    },
+    [queryClient]
+  );
+
+  // Records the open server-side (POST .../open, idempotent); read state is then
+  // reconciled from the real result.
+  const markOpened = useMutation({
+    mutationFn: (id: string) => api.markThreadOpened(id),
+    onSuccess: () => {
+      const thread = detailQuery.data?.thread;
+      if (thread) markThreadRead(thread);
+    },
+  });
+
+  // Fire once per thread as soon as it loads, when it isn't already read.
+  const openedRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    const thread = detailQuery.data?.thread;
+    if (!thread || openedRef.current === thread.id) return;
+    openedRef.current = thread.id;
+    if (thread.openedAt && !thread.unread) return; // already read
+    if (isDemoMode()) {
+      markThreadRead(thread); // demo: reflect locally, no backend
+      return;
+    }
+    markOpened.mutate(thread.id);
+    // markOpened.mutate is stable; markThreadRead is memoized.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailQuery.data?.thread, markThreadRead]);
 
   const archive = async () => {
     const thread = detailQuery.data?.thread;
     if (!thread) return;
+    const previous = queryClient.getQueryData<ThreadsData>(['threads', thread.split]);
     removeFromInboxList(thread);
     goBack();
     try {
       await api.actOnThread(thread.id, 'archive');
-    } catch {
-      // API unreachable: keep the optimistic removal (mock/offline mode).
+    } catch (error) {
+      if (isDemoMode()) return; // demo: keep the optimistic removal
+      if (previous) queryClient.setQueryData(['threads', thread.split], previous);
+      Alert.alert('Could not archive', error instanceof Error ? error.message : 'Please try again.');
     }
   };
 
@@ -69,12 +138,15 @@ export default function ThreadScreen() {
     nextWeek.setDate(nextWeek.getDate() + 7);
     nextWeek.setHours(8, 0, 0, 0);
     const doSnooze = async (until: string) => {
+      const previous = queryClient.getQueryData<ThreadsData>(['threads', thread.split]);
       removeFromInboxList(thread);
       goBack();
       try {
         await api.snoozeThread(thread.id, until);
-      } catch {
-        // API unreachable: keep the optimistic removal.
+      } catch (error) {
+        if (isDemoMode()) return; // demo: keep the optimistic removal
+        if (previous) queryClient.setQueryData(['threads', thread.split], previous);
+        Alert.alert('Could not snooze', error instanceof Error ? error.message : 'Please try again.');
       }
     };
     Alert.alert('Snooze until', undefined, [
@@ -112,8 +184,8 @@ export default function ThreadScreen() {
     },
     onError: (error) => {
       const data = detailQuery.data;
-      if (isApiUnreachable(error) && data) {
-        // Offline/mock mode: append the reply locally.
+      if (isDemoMode() && data) {
+        // Demo mode only: reflect the reply locally (there is no backend).
         appendMessage({
           id: `local_${Date.now()}`,
           threadId: data.thread.id,
@@ -132,6 +204,7 @@ export default function ThreadScreen() {
         });
         setReply('');
       } else {
+        // A real failure never looks like success — surface it, keep the draft.
         Alert.alert('Could not send reply', error instanceof Error ? error.message : 'Unknown error');
       }
     },

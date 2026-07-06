@@ -2,15 +2,17 @@
 
 import * as React from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import type { InboxSplit, Thread } from '@calendium/shared';
-import { Search, Sparkles, Star } from 'lucide-react';
+import type { Draft, InboxSplit, Thread } from '@calendium/shared';
+import { Loader2, Search, Sparkles, Star, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { htmlToText, useCompose } from '@/components/app/compose';
 import { TimePickerDialog } from '@/components/app/snooze-menu';
 import { ThreadView } from '@/components/app/thread-view';
 import { Kbd, KbdGroup } from '@/components/ui/kbd';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { getApiClient } from '@/lib/api';
 import {
   formatListTime,
   formatOptionTime,
@@ -22,9 +24,9 @@ import {
   type MailboxView,
   type MailCommand,
 } from '@/lib/mail-utils';
-import { MOCK_ME } from '@/lib/mail-mock';
+import { useSelfEmails } from '@/lib/use-identity';
 import { MOD_KEY, useShortcuts } from '@/lib/shortcuts';
-import { useMailActions, useThreadList } from '@/lib/use-mail';
+import { useDraftActions, useDrafts, useMailActions, useThreadList } from '@/lib/use-mail';
 import { cn } from '@/lib/utils';
 
 const SPLITS: { value: InboxSplit; label: string }[] = [
@@ -33,6 +35,7 @@ const SPLITS: { value: InboxSplit; label: string }[] = [
   { value: 'team', label: 'Team' },
   { value: 'calendar', label: 'Calendar' },
   { value: 'news', label: 'News' },
+  { value: 'social', label: 'Social' },
   { value: 'other', label: 'Other' },
 ];
 
@@ -84,12 +87,18 @@ function MailClient() {
   const deferredQ = React.useDeferredValue(q);
   const searchRef = React.useRef<HTMLInputElement>(null);
 
-  const { data, isLoading } = useThreadList({
+  const isDrafts = view === 'drafts';
+  const selfEmails = useSelfEmails();
+  const { data, isLoading, isError } = useThreadList({
     split: view ? undefined : split,
-    view: view ?? undefined,
+    view: isDrafts ? undefined : (view ?? undefined),
     q: deferredQ.trim() || undefined,
+    enabled: !isDrafts,
   });
-  const threads = React.useMemo(() => data?.page.items ?? [], [data]);
+  const threads = React.useMemo(
+    () => (isDrafts ? [] : (data?.page.items ?? [])),
+    [data, isDrafts]
+  );
 
   // --- Selection -----------------------------------------------------------
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
@@ -292,14 +301,18 @@ function MailClient() {
           </div>
         </div>
 
-        {/* Thread list */}
+        {/* Thread list (or the Drafts pseudo-view) */}
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {isLoading ? (
+          {isDrafts ? (
+            <DraftsPane />
+          ) : isLoading ? (
             <div className="flex flex-col gap-px p-2">
               {Array.from({ length: 12 }).map((_, i) => (
                 <Skeleton key={i} className="h-11 w-full" />
               ))}
             </div>
+          ) : isError ? (
+            <ErrorState />
           ) : threads.length === 0 ? (
             <EmptyState view={view} q={deferredQ} />
           ) : (
@@ -312,6 +325,7 @@ function MailClient() {
                     else rowRefs.current.delete(thread.id);
                   }}
                   thread={thread}
+                  selfEmails={selfEmails}
                   selected={thread.id === selectedId}
                   open={thread.id === openThreadId}
                   compact={!!openThreadId}
@@ -386,6 +400,7 @@ function MailClient() {
 
 interface ThreadRowProps {
   thread: Thread;
+  selfEmails: ReadonlySet<string>;
   selected: boolean;
   open: boolean;
   compact: boolean;
@@ -394,7 +409,7 @@ interface ThreadRowProps {
 }
 
 const ThreadRow = React.forwardRef<HTMLLIElement, ThreadRowProps>(function ThreadRow(
-  { thread, selected, open, compact, onSelect, onOpen },
+  { thread, selfEmails, selected, open, compact, onSelect, onOpen },
   ref
 ) {
   return (
@@ -428,7 +443,7 @@ const ThreadRow = React.forwardRef<HTMLLIElement, ThreadRowProps>(function Threa
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="flex items-baseline justify-between gap-2">
               <span className={cn('truncate text-sm', thread.unread ? 'font-semibold' : 'font-medium')}>
-                {participantsLine(thread, MOCK_ME.email)}
+                {participantsLine(thread, selfEmails)}
                 {thread.messageCount > 1 && (
                   <span className="text-muted-foreground ml-1 text-xs font-normal">
                     {thread.messageCount}
@@ -454,7 +469,7 @@ const ThreadRow = React.forwardRef<HTMLLIElement, ThreadRowProps>(function Threa
                 thread.unread ? 'font-semibold' : 'font-medium'
               )}
             >
-              {participantsLine(thread, MOCK_ME.email)}
+              {participantsLine(thread, selfEmails)}
               {thread.messageCount > 1 && (
                 <span className="text-muted-foreground ml-1 text-xs font-normal">
                   {thread.messageCount}
@@ -483,8 +498,121 @@ const ThreadRow = React.forwardRef<HTMLLIElement, ThreadRowProps>(function Threa
 });
 
 // ---------------------------------------------------------------------------
-// Empty states
+// Drafts pseudo-view
 // ---------------------------------------------------------------------------
+
+function draftRecipients(draft: Draft): string {
+  const names = draft.to.map((a) => a.name ?? a.email);
+  return names.length === 0 ? 'No recipients' : names.join(', ');
+}
+
+function DraftsPane() {
+  const draftsQuery = useDrafts(true);
+  const { remove } = useDraftActions();
+  const { openCompose } = useCompose();
+  const [openingId, setOpeningId] = React.useState<string | null>(null);
+  const drafts = draftsQuery.data?.drafts ?? [];
+
+  async function open(draft: Draft) {
+    setOpeningId(draft.id);
+    let full = draft;
+    try {
+      full = await getApiClient().getDraft(draft.id);
+    } catch {
+      // Fall back to the list copy if the fresh fetch fails.
+    } finally {
+      setOpeningId(null);
+    }
+    openCompose({
+      accountId: full.accountId,
+      draftId: full.id,
+      to: full.to,
+      cc: full.cc,
+      bcc: full.bcc,
+      subject: full.subject,
+      body: htmlToText(full.bodyHtml),
+      threadId: full.threadId,
+    });
+  }
+
+  if (draftsQuery.isLoading) {
+    return (
+      <div className="flex flex-col gap-px p-2">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <Skeleton key={i} className="h-14 w-full" />
+        ))}
+      </div>
+    );
+  }
+  if (draftsQuery.isError) return <ErrorState />;
+  if (drafts.length === 0) return <EmptyState view="drafts" q="" />;
+
+  return (
+    <ul>
+      {drafts.map((draft) => {
+        const preview = htmlToText(draft.bodyHtml).replace(/\s+/g, ' ').trim();
+        return (
+          <li key={draft.id} className="group relative border-b">
+            <button
+              type="button"
+              onClick={() => void open(draft)}
+              className="hover:bg-accent/40 flex w-full items-center gap-2.5 py-2.5 pr-12 pl-4 text-left"
+            >
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="flex items-baseline justify-between gap-2">
+                  <span className="truncate text-sm font-medium">
+                    {draft.subject.trim() || '(no subject)'}
+                  </span>
+                  <span className="text-muted-foreground shrink-0 text-xs">
+                    {formatListTime(draft.updatedAt)}
+                  </span>
+                </span>
+                <span className="text-muted-foreground truncate text-xs">
+                  <span className="text-foreground/70">{draftRecipients(draft)}</span>
+                  {preview && <> — {preview}</>}
+                </span>
+                {draft.lastError && (
+                  <span className="text-destructive truncate text-xs">
+                    Last send failed: {draft.lastError}
+                  </span>
+                )}
+              </span>
+              {openingId === draft.id && (
+                <Loader2 className="text-muted-foreground size-3.5 shrink-0 animate-spin" />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => void remove(draft.id)}
+              aria-label="Delete draft"
+              className="text-muted-foreground hover:text-destructive absolute top-1/2 right-3 -translate-y-1/2 opacity-0 group-hover:opacity-100"
+            >
+              <Trash2 className="size-4" />
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Empty / error states
+// ---------------------------------------------------------------------------
+
+function ErrorState() {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+      <div className="bg-muted text-muted-foreground flex size-12 items-center justify-center rounded-full">
+        <Sparkles className="size-5" />
+      </div>
+      <p className="text-sm font-medium">Couldn’t load your mail</p>
+      <p className="text-muted-foreground max-w-xs text-xs text-balance">
+        The Calendium API is unreachable right now. Check your connection and try again.
+      </p>
+    </div>
+  );
+}
 
 function EmptyState({ view, q }: { view: MailboxView | null; q: string }) {
   let headline = "You're at Inbox Zero";

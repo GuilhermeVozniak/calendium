@@ -1,5 +1,6 @@
-// Deterministic mock data served when the Calendium API is unreachable
-// (offline development, demos, Expo Go without a backend).
+// Deterministic mock data served ONLY in explicit demo mode ("Try the demo" on
+// the connect screen). Outside demo mode the app never fabricates data: screens
+// show honest loading / empty / error states and mutations surface failures.
 import { addDays, dayKey, startOfDay } from '@/lib/format';
 import {
   ApiRequestError,
@@ -32,17 +33,29 @@ export function isApiUnreachable(error: unknown): boolean {
   return !(error instanceof ApiRequestError);
 }
 
-/** Runs an API request, serving mock data when the API is unreachable. */
+// Explicit demo mode: set from lib/server-config when the user picks "Try the
+// demo". Only in this mode does the app serve the deterministic mock data below;
+// otherwise every screen talks to the real backend and tells the truth.
+let demoMode = false;
+
+/** Enables/disables explicit demo mode. Driven by the persisted server config. */
+export function setDemoMode(enabled: boolean): void {
+  demoMode = enabled;
+}
+
+/** True when the app is running the offline "Try the demo" experience. */
+export function isDemoMode(): boolean {
+  return demoMode;
+}
+
+/**
+ * In demo mode, serves deterministic mock data without any backend. Outside demo
+ * mode it is a pass-through to the real request, so honest loading/empty/error
+ * states surface (no fabricated success).
+ */
 export async function withMockFallback<T>(request: () => Promise<T>, mock: () => T): Promise<T> {
-  try {
-    return await request();
-  } catch (error) {
-    if (isApiUnreachable(error)) {
-      console.warn('[calendium] API unreachable — serving mock data');
-      return mock();
-    }
-    throw error;
-  }
+  if (!demoMode) return request();
+  return mock();
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +85,7 @@ function thread(partial: {
     unread: partial.unread ?? false,
     starred: partial.starred ?? false,
     lastMessageAt: minutesAgo(partial.minutesAgo),
+    openedAt: null,
     snoozedUntil: null,
     remindAt: null,
   };

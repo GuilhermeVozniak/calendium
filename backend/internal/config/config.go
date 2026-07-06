@@ -16,6 +16,10 @@ import (
 type HTTP struct {
 	// Addr is the listen address (HTTP_ADDR, or ":$PORT"; default ":8080").
 	Addr string
+	// CORSAllowedOrigins is the extra browser-CORS allowlist
+	// (CORS_ALLOWED_ORIGINS, comma-separated) reflected in addition to the
+	// built-in localhost-dev and Wails WebView origins.
+	CORSAllowedOrigins []string
 }
 
 // DB configures Postgres.
@@ -139,9 +143,13 @@ type Instance struct {
 	SelfHosted bool
 	// Name (INSTANCE_NAME, default "Calendium") is shown to clients.
 	Name string
-	// PublicWebURL (APP_URL, falling back to PUBLIC_WEB_URL) is the public web
-	// origin used to build absolute links; optional.
+	// PublicWebURL (PUBLIC_WEB_URL, falling back to APP_URL) is the public web
+	// origin advertised to clients (Better Auth base URL); optional.
 	PublicWebURL string
+	// PublicAPIURL (PUBLIC_API_URL) is the API's own public origin, used to
+	// build the provider OAuth redirect_uri (${PublicAPIURL}/v1/accounts/
+	// callback/{provider}). When empty it is derived per-request. Optional.
+	PublicAPIURL string
 }
 
 // Config is the full backend configuration.
@@ -259,10 +267,13 @@ func FromEnv() (Config, error) {
 	if cfg.Instance.Name == "" {
 		cfg.Instance.Name = "Calendium"
 	}
-	cfg.Instance.PublicWebURL = os.Getenv("APP_URL")
+	// PUBLIC_WEB_URL wins over APP_URL when both are set (the public origin
+	// advertised to clients); APP_URL is the fallback for older deployments.
+	cfg.Instance.PublicWebURL = os.Getenv("PUBLIC_WEB_URL")
 	if cfg.Instance.PublicWebURL == "" {
-		cfg.Instance.PublicWebURL = os.Getenv("PUBLIC_WEB_URL")
+		cfg.Instance.PublicWebURL = os.Getenv("APP_URL")
 	}
+	cfg.Instance.PublicAPIURL = os.Getenv("PUBLIC_API_URL")
 	if v := os.Getenv("SELF_HOSTED"); v != "" {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
@@ -277,6 +288,14 @@ func FromEnv() (Config, error) {
 		for _, part := range strings.Split(v, ",") {
 			if p := strings.TrimSpace(part); p != "" {
 				cfg.OAuth.AllowedRedirectURIs = append(cfg.OAuth.AllowedRedirectURIs, p)
+			}
+		}
+	}
+
+	if v := os.Getenv("CORS_ALLOWED_ORIGINS"); v != "" {
+		for _, part := range strings.Split(v, ",") {
+			if p := strings.TrimSpace(part); p != "" {
+				cfg.HTTP.CORSAllowedOrigins = append(cfg.HTTP.CORSAllowedOrigins, p)
 			}
 		}
 	}

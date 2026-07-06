@@ -95,3 +95,83 @@ export function useShortcuts(shortcuts: Shortcut[]): void {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 }
+
+// ---------------------------------------------------------------------------
+// Chord sequences (Gmail/Superhuman "G then I", "G then C")
+// ---------------------------------------------------------------------------
+
+export interface Chord {
+  /** Space-separated key sequence, e.g. `"g i"` or `"g c"` (single letters). */
+  keys: string;
+  handler: () => void;
+  enabled?: boolean;
+  description?: string;
+}
+
+/** How long (ms) a chord prefix stays armed waiting for the second key. */
+const CHORD_TIMEOUT = 1200;
+
+/**
+ * Registers multi-key chord sequences. The first key arms a prefix; a matching
+ * second key within the timeout fires the handler. Modifier keys, editable
+ * targets, and open dialogs cancel the prefix. This hook must be mounted BEFORE
+ * any single-key `useShortcuts` in the same tree so its `preventDefault` on a
+ * completed chord suppresses a colliding single-key binding (e.g. "c").
+ */
+export function useChords(chords: Chord[]): void {
+  const ref = React.useRef(chords);
+  ref.current = chords;
+
+  React.useEffect(() => {
+    let prefix: string | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    function reset() {
+      prefix = null;
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) {
+        reset();
+        return;
+      }
+      if (isEditableTarget(event.target)) {
+        reset();
+        return;
+      }
+      if (document.querySelector('[role="dialog"][data-state="open"]')) {
+        reset();
+        return;
+      }
+      const key = event.key.toLowerCase();
+      const active = ref.current.filter((c) => c.enabled !== false);
+
+      if (prefix) {
+        const combo = `${prefix} ${key}`;
+        const match = active.find((c) => c.keys.toLowerCase() === combo);
+        reset();
+        if (match) {
+          event.preventDefault();
+          match.handler();
+          return;
+        }
+        // Fall through: this key may itself start a new chord.
+      }
+
+      if (active.some((c) => c.keys.toLowerCase().split(' ')[0] === key)) {
+        event.preventDefault();
+        prefix = key;
+        timer = setTimeout(reset, CHORD_TIMEOUT);
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      reset();
+    };
+  }, []);
+}

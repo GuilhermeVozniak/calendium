@@ -44,7 +44,7 @@ const included = [
   'Full calendar with availability sharing',
   'Unified search across mail & events',
   'Web, desktop, iOS & Android apps',
-  'Push notifications on every platform',
+  'Push notifications on web, iOS & Android',
 ];
 
 const comparison: { label: string; selfHost: string; cloud: string }[] = [

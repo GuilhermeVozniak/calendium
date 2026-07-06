@@ -9,9 +9,13 @@ import {
   CheckCheck,
   Clock,
   Forward,
+  Loader2,
   Reply,
   ReplyAll,
+  Send,
+  Sparkles,
   Star,
+  X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -20,12 +24,12 @@ import { TimePickerDialog } from '@/components/app/snooze-menu';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Kbd } from '@/components/ui/kbd';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { MOCK_ME } from '@/lib/mail-mock';
 import {
   displayName,
   firstName,
@@ -36,9 +40,13 @@ import {
   reminderOptions,
   snoozeOptions,
 } from '@/lib/mail-utils';
+import { useSelfEmails } from '@/lib/use-identity';
 import { useShortcuts } from '@/lib/shortcuts';
-import { useMailActions, useThreadDetail } from '@/lib/use-mail';
+import { useInstance } from '@/lib/use-instance';
+import { runAiAsk, runAiSummarize, useMailActions, useThreadDetail } from '@/lib/use-mail';
 import { cn } from '@/lib/utils';
+
+type IsMe = (addr: EmailAddress) => boolean;
 
 /** Splits a plain-text body into visible text and collapsed quoted history. */
 function splitQuoted(bodyText: string): { main: string; quoted: string | null } {
@@ -53,14 +61,105 @@ function splitQuoted(bodyText: string): { main: string; quoted: string | null } 
   };
 }
 
-function isMe(addr: EmailAddress): boolean {
-  return addr.email === MOCK_ME.email;
-}
-
-function recipientsLine(message: Message): string {
+function recipientsLine(message: Message, isMe: IsMe): string {
   const names = message.to.map((addr) => (isMe(addr) ? 'me' : firstName(addr)));
   const cc = message.cc.map((addr) => (isMe(addr) ? 'me' : firstName(addr)));
   return `to ${names.join(', ')}${cc.length ? `, cc ${cc.join(', ')}` : ''}`;
+}
+
+// ---------------------------------------------------------------------------
+// AI panel — Summarize / Ask (gated on the server's features.ai)
+// ---------------------------------------------------------------------------
+
+function ThreadAiPanel({ threadId }: { threadId: string }) {
+  const [busy, setBusy] = React.useState(false);
+  const [result, setResult] = React.useState<string | null>(null);
+  const [question, setQuestion] = React.useState('');
+
+  async function summarize() {
+    setBusy(true);
+    setResult(null);
+    try {
+      const res = await runAiSummarize(threadId);
+      setResult(res.text);
+    } catch {
+      toast.error('AI is unavailable right now. Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function ask() {
+    const prompt = question.trim();
+    if (!prompt) return;
+    setBusy(true);
+    setResult(null);
+    try {
+      const res = await runAiAsk(threadId, prompt);
+      setResult(res.text);
+    } catch {
+      toast.error('AI is unavailable right now. Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="bg-muted/30 shrink-0 border-b px-4 py-2">
+      <div className="mx-auto flex max-w-3xl flex-col gap-2">
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => void summarize()}
+            disabled={busy}
+          >
+            {busy ? <Loader2 className="animate-spin" /> : <Sparkles />}
+            Summarize
+          </Button>
+          <div className="relative flex-1">
+            <Input
+              value={question}
+              onChange={(event) => setQuestion(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  void ask();
+                }
+              }}
+              placeholder="Ask AI about this thread…"
+              className="h-8 pr-8"
+              disabled={busy}
+            />
+            <button
+              type="button"
+              onClick={() => void ask()}
+              disabled={busy || !question.trim()}
+              aria-label="Ask AI"
+              className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2 disabled:opacity-40"
+            >
+              <Send className="size-3.5" />
+            </button>
+          </div>
+        </div>
+        {result !== null && (
+          <div className="bg-background flex items-start gap-2 rounded-md border p-3 text-sm">
+            <Sparkles className="text-muted-foreground mt-0.5 size-3.5 shrink-0" />
+            <p className="min-w-0 flex-1 whitespace-pre-wrap">{result}</p>
+            <button
+              type="button"
+              onClick={() => setResult(null)}
+              aria-label="Dismiss"
+              className="text-muted-foreground hover:text-foreground shrink-0"
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 interface ThreadViewProps {
@@ -75,8 +174,14 @@ interface ThreadViewProps {
  */
 export function ThreadView({ threadId, onClose }: ThreadViewProps) {
   const { data, isLoading } = useThreadDetail(threadId);
-  const { act, snooze, remind } = useMailActions();
+  const { act, snooze, remind, markOpened } = useMailActions();
   const { openCompose } = useCompose();
+  const selfEmails = useSelfEmails();
+  const isMe = React.useCallback<IsMe>(
+    (addr) => selfEmails.has(addr.email.toLowerCase()),
+    [selfEmails]
+  );
+  const aiEnabled = useInstance().data?.features.ai ?? false;
 
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
   const [quotedShown, setQuotedShown] = React.useState<Set<string>>(new Set());
@@ -93,17 +198,18 @@ export function ThreadView({ threadId, onClose }: ThreadViewProps) {
     setQuotedShown(new Set());
   }, [threadId, lastMessage?.id]);
 
-  // Opening a thread marks it read (Superhuman behavior).
+  // Opening a thread records a real open (POST .../open): marks it read
+  // server-side and stamps openedAt. Fire once per thread open.
   React.useEffect(() => {
-    if (thread?.unread) void act(thread.id, 'read');
+    if (thread?.id) void markOpened(thread.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [thread?.id, thread?.unread]);
+  }, [thread?.id]);
 
   const replyRecipients = React.useCallback((): { to: EmailAddress[]; cc: EmailAddress[] } => {
     if (!lastMessage) return { to: [], cc: [] };
     const counterpart = isMe(lastMessage.from) ? lastMessage.to : [lastMessage.from];
     return { to: counterpart, cc: [] };
-  }, [lastMessage]);
+  }, [lastMessage, isMe]);
 
   const openReply = React.useCallback(
     (mode: 'reply' | 'reply-all' | 'forward') => {
@@ -128,7 +234,7 @@ export function ThreadView({ threadId, onClose }: ThreadViewProps) {
         threadId: thread.id,
       });
     },
-    [thread, lastMessage, openCompose, replyRecipients]
+    [thread, lastMessage, openCompose, replyRecipients, isMe]
   );
 
   useShortcuts([
@@ -253,6 +359,9 @@ export function ThreadView({ threadId, onClose }: ThreadViewProps) {
         </div>
       </div>
 
+      {/* AI (summarize / ask) */}
+      {aiEnabled && <ThreadAiPanel threadId={thread.id} />}
+
       {/* Message stack */}
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto flex max-w-3xl flex-col px-4 py-2">
@@ -306,7 +415,7 @@ export function ThreadView({ threadId, onClose }: ThreadViewProps) {
                           </span>
                         </div>
                         <p className="text-muted-foreground truncate text-xs">
-                          {recipientsLine(message)}
+                          {recipientsLine(message, isMe)}
                         </p>
                       </div>
                     </div>
@@ -338,14 +447,11 @@ export function ThreadView({ threadId, onClose }: ThreadViewProps) {
                       </div>
                     )}
 
-                    {mine && (
+                    {/* Read receipts only when the backend has real openedAt data. */}
+                    {mine && message.openedAt && (
                       <p className="text-muted-foreground mt-3 flex items-center gap-1.5 text-xs">
-                        <CheckCheck
-                          className={cn('size-3.5', message.openedAt && 'text-emerald-500')}
-                        />
-                        {message.openedAt
-                          ? `Seen ${formatListTime(message.openedAt)}`
-                          : 'Delivered · not yet seen'}
+                        <CheckCheck className="size-3.5 text-emerald-500" />
+                        Seen {formatListTime(message.openedAt)}
                       </p>
                     )}
                   </div>

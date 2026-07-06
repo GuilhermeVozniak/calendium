@@ -19,9 +19,14 @@ const SCREEN_OPTIONS = {
 };
 
 export default function SignInScreen() {
-  const { isConfigured, isLoading: serverLoading } = useServerConfig();
+  const { isConfigured, isLoading: serverLoading, config } = useServerConfig();
   const { user, loading: authLoading, signInWithOAuth, signInWithEmail, signUpWithEmail } =
     useAuth();
+  // Only offer the social providers the connected server actually configured.
+  const authProviders = config?.authProviders ?? [];
+  const showGoogle = authProviders.includes('google');
+  const showApple = authProviders.includes('apple');
+  const showSocial = showGoogle || showApple;
   const [loading, setLoading] = React.useState(false);
   const [mode, setMode] = React.useState<'sign-in' | 'sign-up'>('sign-in');
   const [name, setName] = React.useState('');
@@ -146,35 +151,43 @@ export default function SignInScreen() {
             </Button>
           </View>
 
-          {/* Divider */}
-          <View className="w-full max-w-xs flex-row items-center gap-3">
-            <View className="h-px flex-1 bg-border" />
-            <Text className="text-xs uppercase tracking-wider text-muted-foreground">or</Text>
-            <View className="h-px flex-1 bg-border" />
-          </View>
+          {/* Divider — only when the server advertises a social provider. */}
+          {showSocial && (
+            <View className="w-full max-w-xs flex-row items-center gap-3">
+              <View className="h-px flex-1 bg-border" />
+              <Text className="text-xs uppercase tracking-wider text-muted-foreground">or</Text>
+              <View className="h-px flex-1 bg-border" />
+            </View>
+          )}
 
-          {/* Social sign-in */}
-          <View className="w-full max-w-xs gap-3">
-            <Button
-              onPress={() => handleSocialLogin('google')}
-              disabled={loading}
-              variant="outline"
-              className="flex-row items-center gap-3">
-              <GoogleIcon width={20} height={20} />
-              <Text>Continue with Google</Text>
-            </Button>
+          {/* Social sign-in — each button gated on the server's authProviders. */}
+          {showSocial && (
+            <View className="w-full max-w-xs gap-3">
+              {showGoogle && (
+                <Button
+                  onPress={() => handleSocialLogin('google')}
+                  disabled={loading}
+                  variant="outline"
+                  className="flex-row items-center gap-3">
+                  <GoogleIcon width={20} height={20} />
+                  <Text>Continue with Google</Text>
+                </Button>
+              )}
 
-            <Button
-              onPress={() => handleSocialLogin('apple')}
-              disabled={loading}
-              variant="outline"
-              className="flex-row items-center gap-3">
-              <AppleIcon width={20} height={20} />
-              <Text>Continue with Apple</Text>
-            </Button>
+              {showApple && (
+                <Button
+                  onPress={() => handleSocialLogin('apple')}
+                  disabled={loading}
+                  variant="outline"
+                  className="flex-row items-center gap-3">
+                  <AppleIcon width={20} height={20} />
+                  <Text>Continue with Apple</Text>
+                </Button>
+              )}
 
-            {loading && <ActivityIndicator className="mt-2" />}
-          </View>
+              {loading && <ActivityIndicator className="mt-2" />}
+            </View>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
     </>

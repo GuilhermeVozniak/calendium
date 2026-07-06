@@ -1,9 +1,11 @@
 'use client';
 
 import * as React from 'react';
-import type { EmailAddress, Snippet } from '@calendium/shared';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { DraftInput, EmailAddress, Snippet } from '@calendium/shared';
+import { ApiRequestError } from '@calendium/shared';
 import { format } from 'date-fns';
-import { BellRing, ChevronDown, Clock, Loader2, Send, Sparkles, X } from 'lucide-react';
+import { BellRing, Check, ChevronDown, Clock, Loader2, Send, Sparkles, X } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { TimePickerDialog } from '@/components/app/snooze-menu';
@@ -22,8 +24,11 @@ import { Kbd } from '@/components/ui/kbd';
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Textarea } from '@/components/ui/textarea';
 import { getApiClient } from '@/lib/api';
+import { DEMO_MODE } from '@/lib/demo';
 import { formatOptionTime, reminderOptions, sendLaterOptions } from '@/lib/mail-utils';
+import { fetchAccounts } from '@/lib/settings-data';
 import { MOD_KEY } from '@/lib/shortcuts';
+import { useInstance } from '@/lib/use-instance';
 import { runAiCompose, useSnippets } from '@/lib/use-mail';
 import { cn } from '@/lib/utils';
 
@@ -34,10 +39,15 @@ import { cn } from '@/lib/utils';
 export interface ComposeInitial {
   to?: EmailAddress[];
   cc?: EmailAddress[];
+  bcc?: EmailAddress[];
   subject?: string;
   body?: string;
   /** Set when replying/forwarding — enables “remind me if no reply”. */
   threadId?: string | null;
+  /** Preselect the sending account (e.g. when reopening a draft). */
+  accountId?: string;
+  /** When reopening a server draft, edit it in place instead of creating a new one. */
+  draftId?: string;
 }
 
 interface ComposeContextValue {
@@ -193,8 +203,6 @@ function ChipsRow({
 // Compose form
 // ---------------------------------------------------------------------------
 
-const DEMO_ACCOUNT_ID = 'acc_demo';
-
 function ComposeForm({
   initial,
   close,
@@ -202,11 +210,34 @@ function ComposeForm({
   initial: ComposeInitial | null;
   close: () => void;
 }) {
+  const queryClient = useQueryClient();
+  const instance = useInstance();
+  const aiEnabled = instance.data?.features.ai ?? false;
+  const undoSeconds = instance.data?.undoSendSeconds ?? 15;
+
+  // Real connected accounts drive the From picker; no send is possible without
+  // one. (Demo mode seeds a mock account through fetchAccounts.)
+  const accountsQuery = useQuery({
+    queryKey: ['accounts'],
+    queryFn: fetchAccounts,
+    staleTime: 5 * 60_000,
+  });
+  const accounts = React.useMemo(() => accountsQuery.data ?? [], [accountsQuery.data]);
+  const [fromAccountId, setFromAccountId] = React.useState(initial?.accountId ?? '');
+  React.useEffect(() => {
+    if (accounts.length === 0) return;
+    if (!fromAccountId || !accounts.some((a) => a.id === fromAccountId)) {
+      setFromAccountId(accounts[0]!.id);
+    }
+  }, [accounts, fromAccountId]);
+  const fromAccount = accounts.find((a) => a.id === fromAccountId) ?? null;
+  const noAccounts = !accountsQuery.isLoading && accounts.length === 0;
+
   const [to, setTo] = React.useState<EmailAddress[]>(initial?.to ?? []);
   const [cc, setCc] = React.useState<EmailAddress[]>(initial?.cc ?? []);
-  const [bcc, setBcc] = React.useState<EmailAddress[]>([]);
+  const [bcc, setBcc] = React.useState<EmailAddress[]>(initial?.bcc ?? []);
   const [showCc, setShowCc] = React.useState((initial?.cc?.length ?? 0) > 0);
-  const [showBcc, setShowBcc] = React.useState(false);
+  const [showBcc, setShowBcc] = React.useState((initial?.bcc?.length ?? 0) > 0);
   const [subject, setSubject] = React.useState(initial?.subject ?? '');
   const [body, setBody] = React.useState(initial?.body ?? '');
   const [sending, setSending] = React.useState(false);
@@ -282,23 +313,48 @@ function ComposeForm({
   async function handleAi() {
     if (!aiPrompt.trim()) return;
     setAiBusy(true);
-    const res = await runAiCompose({
-      action: initial?.threadId ? 'reply' : 'compose',
-      prompt: aiPrompt.trim(),
-      threadId: initial?.threadId ?? undefined,
-    });
-    setAiBusy(false);
-    setBody((prev) => (prev.trim() ? `${prev.trimEnd()}\n\n${res.text}` : res.text));
-    setAiOpen(false);
-    setAiPrompt('');
-    if (res.source === 'demo') {
-      toast.info('AI is offline — drafted locally.');
+    try {
+      const res = await runAiCompose({
+        action: initial?.threadId ? 'reply' : 'compose',
+        prompt: aiPrompt.trim(),
+        threadId: initial?.threadId ?? undefined,
+      });
+      setBody((prev) => (prev.trim() ? `${prev.trimEnd()}\n\n${res.text}` : res.text));
+      setAiOpen(false);
+      setAiPrompt('');
+      if (res.source === 'demo') {
+        toast.info('AI is offline — drafted locally.');
+      }
+      bodyRef.current?.focus();
+    } catch {
+      toast.error('AI is unavailable right now. Please try again.');
+    } finally {
+      setAiBusy(false);
     }
-    bodyRef.current?.focus();
+  }
+
+  // --- Undo send ------------------------------------------------------------
+  async function handleUndo(draftId: string) {
+    try {
+      await getApiClient().unsendDraft(draftId);
+      void queryClient.invalidateQueries({ queryKey: ['drafts'] });
+      toast.success('Send undone — the message is back in your drafts.');
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.status === 409) {
+        toast.error('Too late — that message already went out.');
+      } else {
+        toast.error('Could not undo the send.');
+      }
+    }
   }
 
   // --- Send -----------------------------------------------------------------
   async function handleSend() {
+    if (accounts.length === 0) {
+      toast.error('Connect a mailbox in Settings before sending.');
+      return;
+    }
+    if (!fromAccountId) return;
     if (to.length === 0) {
       toast.error('Add at least one recipient.');
       return;
@@ -308,28 +364,48 @@ function ComposeForm({
     const successMessage = scheduledIso
       ? `Scheduled for ${format(scheduledAt!, 'EEE p')}`
       : 'Sent';
+    const input: DraftInput = {
+      accountId: fromAccountId,
+      threadId: initial?.threadId ?? null,
+      to,
+      cc,
+      bcc,
+      subject,
+      bodyHtml: textToHtml(body),
+      scheduledAt: scheduledIso,
+    };
     try {
       const api = getApiClient();
-      const draft = await api.saveDraft({
-        accountId: DEMO_ACCOUNT_ID,
-        threadId: initial?.threadId ?? null,
-        to,
-        cc,
-        bcc,
-        subject,
-        bodyHtml: textToHtml(body),
-        scheduledAt: scheduledIso,
-      });
+      // Reopened drafts are edited in place (full-replace PUT) then sent, so a
+      // reopened draft isn't left behind as a duplicate.
+      const draft = initial?.draftId
+        ? await api.updateDraft(initial.draftId, input)
+        : await api.saveDraft(input);
       await api.sendDraft(draft.id);
       if (remindAt && initial?.threadId) {
         await api.setThreadReminder(initial.threadId, remindAt.when.toISOString());
       }
-      toast.success(successMessage);
-    } catch {
-      toast.success(`${successMessage} (demo mode)`);
+      void queryClient.invalidateQueries({ queryKey: ['drafts'] });
+      toast.success(successMessage, {
+        duration: undoSeconds * 1000,
+        action: { label: 'Undo', onClick: () => void handleUndo(draft.id) },
+      });
+      close();
+    } catch (err) {
+      if (DEMO_MODE) {
+        toast.success(`${successMessage} (demo mode)`);
+        close();
+        return;
+      }
+      // Never fake success: keep the dialog open with the composed text intact
+      // and surface the real failure.
+      const message =
+        err instanceof ApiRequestError
+          ? err.message
+          : 'The message could not be sent. Please try again.';
+      toast.error(message);
+      setSending(false);
     }
-    setSending(false);
-    close();
   }
 
   const remindChoices = reminderOptions();
@@ -349,6 +425,43 @@ function ComposeForm({
             <X className="size-4" />
           </Button>
         </div>
+      </div>
+
+      {/* From account */}
+      <div className="flex min-h-9 items-center gap-1.5 border-b px-4 py-1.5">
+        <span className="text-muted-foreground w-8 shrink-0 text-xs">From</span>
+        {accountsQuery.isLoading ? (
+          <span className="text-muted-foreground text-sm">Loading accounts…</span>
+        ) : noAccounts ? (
+          <span className="text-destructive text-sm">
+            {accountsQuery.isError
+              ? "Couldn't load your accounts — check your connection."
+              : 'Connect a mailbox in Settings to send.'}
+          </span>
+        ) : accounts.length === 1 ? (
+          <span className="truncate text-sm">{fromAccount?.email}</span>
+        ) : (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="hover:text-foreground flex items-center gap-1 text-sm"
+              >
+                <span className="truncate">{fromAccount?.email}</span>
+                <ChevronDown className="size-3 shrink-0 opacity-60" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              <DropdownMenuLabel>Send from</DropdownMenuLabel>
+              {accounts.map((account) => (
+                <DropdownMenuItem key={account.id} onSelect={() => setFromAccountId(account.id)}>
+                  <span className="truncate">{account.email}</span>
+                  {account.id === fromAccountId && <Check className="ml-auto size-3.5" />}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
 
       {/* Recipients */}
@@ -453,7 +566,11 @@ function ComposeForm({
       {/* Footer */}
       <div className="flex items-center justify-between gap-2 border-t px-3 py-2.5">
         <div className="flex items-center gap-1">
-          <Button size="sm" onClick={() => void handleSend()} disabled={sending}>
+          <Button
+            size="sm"
+            onClick={() => void handleSend()}
+            disabled={sending || accounts.length === 0}
+          >
             {sending ? <Loader2 className="animate-spin" /> : <Send />}
             {scheduledAt ? 'Schedule' : 'Send'}
             <span className="ml-1 hidden items-center gap-0.5 opacity-60 sm:flex">
@@ -515,7 +632,8 @@ function ComposeForm({
           </DropdownMenu>
         </div>
 
-        {/* AI assist */}
+        {/* AI assist (gated on server AI capability) */}
+        {aiEnabled && (
         <Popover open={aiOpen} onOpenChange={setAiOpen}>
           <PopoverTrigger asChild>
             <Button variant="outline" size="sm" className="gap-1.5">
@@ -548,6 +666,7 @@ function ComposeForm({
             </div>
           </PopoverContent>
         </Popover>
+        )}
       </div>
 
       <TimePickerDialog

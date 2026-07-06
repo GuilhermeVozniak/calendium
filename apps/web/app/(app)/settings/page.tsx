@@ -3,7 +3,19 @@
 import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format, formatDistanceToNow } from 'date-fns';
-import { CreditCard, ExternalLink, Monitor, Moon, Plus, Sun, Trash2 } from 'lucide-react';
+import {
+  Bell,
+  CreditCard,
+  Crown,
+  ExternalLink,
+  Loader2,
+  Monitor,
+  Moon,
+  Plus,
+  Sun,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { toast } from 'sonner';
 
 import type {
@@ -52,23 +64,61 @@ import {
   fetchAccounts,
   fetchSnippets,
   fetchSubscription,
+  setVipSendersApi,
   startConnect,
 } from '@/lib/settings-data';
+import { useInstance } from '@/lib/use-instance';
+import {
+  disableWebPush,
+  enableWebPush,
+  getPushSubscription,
+  isWebPushSupported,
+} from '@/lib/web-push';
 import { cn } from '@/lib/utils';
 
-type SettingsTab = 'accounts' | 'snippets' | 'appearance' | 'billing';
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-const TABS: SettingsTab[] = ['accounts', 'snippets', 'appearance', 'billing'];
+type SettingsTab = 'accounts' | 'snippets' | 'appearance' | 'notifications' | 'billing';
+
+const KNOWN_TABS: SettingsTab[] = [
+  'accounts',
+  'snippets',
+  'appearance',
+  'notifications',
+  'billing',
+];
 
 export default function SettingsPage() {
-  const [tab, setTab] = React.useState<SettingsTab>('accounts');
-  const subscriptionQuery = useQuery({ queryKey: ['subscription'], queryFn: fetchSubscription });
+  const instance = useInstance();
+  const billingEnabled = !!instance.data?.features.billing;
+  const pushEnabled = !!instance.data?.features.push;
+  const vapidPublicKey = instance.data?.vapidPublicKey;
 
-  // Deep-link section via #hash, and surface Stripe Checkout redirect results.
+  const availableTabs = React.useMemo<SettingsTab[]>(
+    () => [
+      'accounts',
+      'snippets',
+      'appearance',
+      ...(pushEnabled ? (['notifications'] as SettingsTab[]) : []),
+      ...(billingEnabled ? (['billing'] as SettingsTab[]) : []),
+    ],
+    [pushEnabled, billingEnabled]
+  );
+
+  const [tab, setTab] = React.useState<SettingsTab>('accounts');
+  const subscriptionQuery = useQuery({
+    queryKey: ['subscription'],
+    queryFn: fetchSubscription,
+    enabled: billingEnabled,
+  });
+
+  // Deep-link section via ?tab= (primary) or #hash, and surface Stripe Checkout
+  // redirect results. Validation against availability happens at render, so a
+  // ?tab=billing that arrives before /v1/instance loads still lands correctly.
   React.useEffect(() => {
-    const hash = window.location.hash.replace('#', '');
-    if ((TABS as string[]).includes(hash)) setTab(hash as SettingsTab);
     const params = new URLSearchParams(window.location.search);
+    const requested = params.get('tab') || window.location.hash.replace('#', '');
+    if ((KNOWN_TABS as string[]).includes(requested)) setTab(requested as SettingsTab);
     const checkout = params.get('checkout');
     if (checkout === 'success') {
       toast.success('Subscription active - welcome to Calendium!');
@@ -85,22 +135,29 @@ export default function SettingsPage() {
     window.history.replaceState(null, '', `#${value}`);
   };
 
+  // Fall back to Accounts when the requested tab isn't available on this server.
+  const activeTab = availableTabs.includes(tab) ? tab : 'accounts';
+
   return (
     <div className="h-full flex-1 overflow-y-auto">
       <div className="mx-auto max-w-3xl px-6 py-8">
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Accounts, snippets, appearance, and billing.
+          Accounts, snippets, appearance{pushEnabled ? ', notifications' : ''}
+          {billingEnabled ? ', and billing' : ''}.
         </p>
 
-        <PaywallBanner subscription={subscriptionQuery.data} className="mt-4" />
+        {billingEnabled && (
+          <PaywallBanner subscription={subscriptionQuery.data} className="mt-4" />
+        )}
 
-        <Tabs value={tab} onValueChange={changeTab} className="mt-6">
+        <Tabs value={activeTab} onValueChange={changeTab} className="mt-6">
           <TabsList>
             <TabsTrigger value="accounts">Accounts</TabsTrigger>
             <TabsTrigger value="snippets">Snippets</TabsTrigger>
             <TabsTrigger value="appearance">Appearance</TabsTrigger>
-            <TabsTrigger value="billing">Billing</TabsTrigger>
+            {pushEnabled && <TabsTrigger value="notifications">Notifications</TabsTrigger>}
+            {billingEnabled && <TabsTrigger value="billing">Billing</TabsTrigger>}
           </TabsList>
           <TabsContent value="accounts" className="mt-4">
             <AccountsSection />
@@ -111,12 +168,19 @@ export default function SettingsPage() {
           <TabsContent value="appearance" className="mt-4">
             <AppearanceSection />
           </TabsContent>
-          <TabsContent value="billing" className="mt-4">
-            <BillingSection
-              subscription={subscriptionQuery.data}
-              loading={subscriptionQuery.isLoading}
-            />
-          </TabsContent>
+          {pushEnabled && (
+            <TabsContent value="notifications" className="mt-4">
+              <NotificationsSection vapidPublicKey={vapidPublicKey} />
+            </TabsContent>
+          )}
+          {billingEnabled && (
+            <TabsContent value="billing" className="mt-4">
+              <BillingSection
+                subscription={subscriptionQuery.data}
+                loading={subscriptionQuery.isLoading}
+              />
+            </TabsContent>
+          )}
         </Tabs>
       </div>
     </div>
@@ -137,6 +201,7 @@ const STATUS_META: Record<AccountStatus, { label: string; dot: string }> = {
 function AccountsSection() {
   const queryClient = useQueryClient();
   const accountsQuery = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts });
+  const [vipAccount, setVipAccount] = React.useState<ConnectedAccount | null>(null);
 
   const connect = useMutation({
     mutationFn: (provider: Provider) =>
@@ -159,6 +224,7 @@ function AccountsSection() {
   const accounts = accountsQuery.data ?? [];
 
   return (
+    <>
     <Card>
       <CardHeader>
         <CardTitle>Connected accounts</CardTitle>
@@ -203,6 +269,15 @@ function AccountsSection() {
               <Button
                 variant="ghost"
                 size="sm"
+                className="text-muted-foreground gap-1.5"
+                onClick={() => setVipAccount(account)}
+              >
+                <Crown className="size-3.5" />
+                VIP{account.vipSenders.length > 0 ? ` · ${account.vipSenders.length}` : ''}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
                 className="text-muted-foreground hover:text-destructive"
                 onClick={() => disconnect.mutate(account.id)}
                 disabled={disconnect.isPending}
@@ -232,6 +307,109 @@ function AccountsSection() {
         </Button>
       </CardFooter>
     </Card>
+    {vipAccount && (
+      <VipSendersDialog
+        account={vipAccount}
+        onOpenChange={(open) => {
+          if (!open) setVipAccount(null);
+        }}
+      />
+    )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// VIP senders editor (routes matching senders into the "vip" split)
+// ---------------------------------------------------------------------------
+
+function VipSendersDialog({
+  account,
+  onOpenChange,
+}: {
+  account: ConnectedAccount;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [senders, setSenders] = React.useState<string[]>(account.vipSenders);
+  const [draft, setDraft] = React.useState('');
+
+  const save = useMutation({
+    mutationFn: () => setVipSendersApi(account.id, senders),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<ConnectedAccount[]>(['accounts'], (prev) =>
+        prev?.map((a) => (a.id === updated.id ? updated : a))
+      );
+      toast.success('VIP senders updated');
+      onOpenChange(false);
+    },
+    onError: () => toast.error('Could not update VIP senders'),
+  });
+
+  const add = () => {
+    const email = draft.trim().replace(/,+$/, '').toLowerCase();
+    if (!email) return;
+    if (!EMAIL_RE.test(email)) {
+      toast.error(`"${email}" is not a valid email address`);
+      return;
+    }
+    if (!senders.includes(email)) setSenders((prev) => [...prev, email]);
+    setDraft('');
+  };
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>VIP senders</DialogTitle>
+          <DialogDescription>
+            Mail from these addresses is routed to your VIP split - {account.email}.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-2">
+          <div className="border-input dark:bg-input/30 focus-within:border-ring focus-within:ring-ring/50 flex min-h-9 flex-wrap items-center gap-1 rounded-md border bg-transparent px-2 py-1 shadow-xs transition-[color,box-shadow] focus-within:ring-[3px]">
+            {senders.map((email) => (
+              <Badge key={email} variant="secondary" className="gap-1 font-normal">
+                {email}
+                <button
+                  type="button"
+                  aria-label={`Remove ${email}`}
+                  className="opacity-60 hover:opacity-100"
+                  onClick={() => setSenders((prev) => prev.filter((s) => s !== email))}
+                >
+                  <X className="size-3" />
+                </button>
+              </Badge>
+            ))}
+            <input
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ',') {
+                  e.preventDefault();
+                  add();
+                } else if (e.key === 'Backspace' && !draft && senders.length > 0) {
+                  setSenders((prev) => prev.slice(0, -1));
+                }
+              }}
+              onBlur={add}
+              placeholder={senders.length === 0 ? 'name@example.com (Enter)' : ''}
+              aria-label="Add VIP sender"
+              className="placeholder:text-muted-foreground h-6 min-w-40 flex-1 bg-transparent text-sm outline-none"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button onClick={() => save.mutate()} disabled={save.isPending}>
+            {save.isPending && <Loader2 className="animate-spin" />}
+            Save VIP senders
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -447,6 +625,105 @@ function AppearanceSection() {
           ))}
         </div>
       </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Notifications (Web Push)
+// ---------------------------------------------------------------------------
+
+const PUSH_DEVICE_KEY = 'calendium.web-push.device-id';
+
+function NotificationsSection({ vapidPublicKey }: { vapidPublicKey?: string }) {
+  const [supported, setSupported] = React.useState(false);
+  const [enabled, setEnabled] = React.useState(false);
+  const [permission, setPermission] = React.useState<NotificationPermission>('default');
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    const ok = isWebPushSupported();
+    setSupported(ok);
+    if (!ok) return;
+    setPermission(Notification.permission);
+    void getPushSubscription().then((sub) => setEnabled(!!sub));
+  }, []);
+
+  async function enable() {
+    if (!vapidPublicKey) return;
+    setBusy(true);
+    try {
+      const deviceId = await enableWebPush(vapidPublicKey);
+      window.localStorage.setItem(PUSH_DEVICE_KEY, deviceId);
+      setEnabled(true);
+      setPermission(Notification.permission);
+      toast.success('Push notifications enabled on this device');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not enable push notifications');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disable() {
+    setBusy(true);
+    try {
+      await disableWebPush(window.localStorage.getItem(PUSH_DEVICE_KEY));
+      window.localStorage.removeItem(PUSH_DEVICE_KEY);
+      setEnabled(false);
+      toast.success('Push notifications disabled on this device');
+    } catch {
+      toast.error('Could not disable push notifications');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Bell className="size-4" />
+          Push notifications
+        </CardTitle>
+        <CardDescription>
+          Get notified on this device for important and VIP mail - even when Calendium is closed.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="text-sm">
+        {!supported ? (
+          <p className="text-muted-foreground">
+            This browser doesn&apos;t support web push notifications.
+          </p>
+        ) : !vapidPublicKey ? (
+          <p className="text-muted-foreground">Web push isn&apos;t configured on this server.</p>
+        ) : permission === 'denied' ? (
+          <p className="text-muted-foreground">
+            Notifications are blocked for this site in your browser settings. Re-enable them there
+            to receive push.
+          </p>
+        ) : enabled ? (
+          <p>Push notifications are on for this device.</p>
+        ) : (
+          <p>Turn on push to get a heads-up the moment important mail arrives.</p>
+        )}
+      </CardContent>
+      <CardFooter className="border-t pt-6">
+        {enabled ? (
+          <Button variant="outline" onClick={() => void disable()} disabled={busy}>
+            {busy && <Loader2 className="animate-spin" />}
+            Disable notifications
+          </Button>
+        ) : (
+          <Button
+            onClick={() => void enable()}
+            disabled={busy || !supported || !vapidPublicKey || permission === 'denied'}
+          >
+            {busy ? <Loader2 className="animate-spin" /> : <Bell />}
+            Enable notifications
+          </Button>
+        )}
+      </CardFooter>
     </Card>
   );
 }

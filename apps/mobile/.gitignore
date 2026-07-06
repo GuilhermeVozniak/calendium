@@ -1,0 +1,6 @@
+# Operator-specific Firebase / push config (tied to each Firebase project and
+# Apple/Google account — never commit these to the open-source tree). Drop the
+# real files here; app.config.js auto-wires google-services.json for Android FCM.
+google-services.json
+GoogleService-Info.plist
+!google-services.json.example

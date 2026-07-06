@@ -1,14 +1,24 @@
-import type { SubscriptionStatus } from '@calendium/shared';
-import { useQuery } from '@tanstack/react-query';
+import type { Provider, SubscriptionStatus } from '@calendium/shared';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
-import { CreditCard, ExternalLink, Loader2, LogOut, Mail, RefreshCw, Server } from 'lucide-react';
+import {
+  CreditCard,
+  ExternalLink,
+  Loader2,
+  LogOut,
+  Mail,
+  Plus,
+  RefreshCw,
+  Server,
+} from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 
-import { api, apiConfigured, CHECKOUT_SUCCESS_URL, orMock, PRICING_URL } from '@/lib/api';
+import { api, apiConfigured, orMock } from '@/lib/api';
 import { clearStoredToken, signOut } from '@/lib/auth';
-import { mockAccounts, mockSubscription, mockUser, startMockCheckout } from '@/lib/mock';
-import { useServerConfig } from '@/lib/server-config';
-import { desktop, isDesktop } from '@/lib/wails';
+import { mockAccounts, mockSubscription, mockUser } from '@/lib/mock';
+import { useServerConfig, webOrigin } from '@/lib/server-config';
+import { errorMessage, toast } from '@/lib/toast';
+import { desktop, isDesktop, onDeepLink } from '@/lib/wails';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 
@@ -33,13 +43,13 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 export function SettingsView() {
-  // Spotify desktop flow: after opening checkout in the system browser we
-  // poll GET /v1/billing/subscription until the Stripe webhook lands.
-  const [awaitingCheckout, setAwaitingCheckout] = useState(false);
+  const queryClient = useQueryClient();
+  const { config, clear: clearServer, demoMode, exitDemo } = useServerConfig();
 
-  // Open-core: billing is disabled on self-hosted instances.
-  const { config, clear: clearServer } = useServerConfig();
-  const isSelfHost = config?.mode === 'self_host';
+  // Capabilities gate the UI (contract item 12): billing only when the server
+  // advertises it, mailbox-connect only for enabled providers.
+  const billingEnabled = config?.features?.billing ?? false;
+  const [connecting, setConnecting] = useState<Provider | null>(null);
 
   const { data: user } = useQuery({
     queryKey: ['me'],
@@ -64,52 +74,101 @@ export function SettingsView() {
         () => api.getSubscription(),
         () => mockSubscription()
       ),
-    refetchInterval: awaitingCheckout ? 3_000 : false,
-    // Self-hosted instances have billing disabled — no subscription to fetch.
-    enabled: !isSelfHost,
+    // Servers without billing (self-host) advertise no subscription to fetch.
+    enabled: billingEnabled,
   });
   const { data: version } = useQuery({
     queryKey: ['app-version'],
     queryFn: () => desktop.GetAppVersion(),
   });
 
+  // Mailbox OAuth returns via a calendium://accounts/connected deep link
+  // (backend callback 302 -> client). Refresh the account list on return.
+  useEffect(
+    () =>
+      onDeepLink((url) => {
+        if (!url.startsWith('calendium://accounts')) return;
+        let status = '';
+        try {
+          status = new URL(url).searchParams.get('status') ?? '';
+        } catch {
+          // Ignore malformed deep links.
+        }
+        if (status === 'error') {
+          toast({
+            title: 'Connection failed',
+            description: 'The mailbox was not connected.',
+            variant: 'destructive',
+          });
+        } else {
+          toast({ title: 'Mailbox connected' });
+        }
+        void queryClient.invalidateQueries({ queryKey: ['accounts'] });
+      }),
+    [queryClient]
+  );
+
+  async function connect(provider: Provider) {
+    if (demoMode) {
+      toast({ title: 'Demo mode', description: 'Connect a mailbox from a real server.' });
+      return;
+    }
+    setConnecting(provider);
+    try {
+      const { url } = await api.connectAccount(provider, 'calendium://accounts/connected');
+      desktop.OpenExternal(url);
+      toast({ title: 'Continue in your browser', description: 'Authorize access, then return to Calendium.' });
+    } catch (e) {
+      toast({ title: 'Could not start connect', description: errorMessage(e), variant: 'destructive' });
+    } finally {
+      setConnecting(null);
+    }
+  }
+
+  async function disconnect(id: string) {
+    if (demoMode) {
+      toast({ title: 'Demo mode', description: 'This mailbox is part of the demo.' });
+      return;
+    }
+    try {
+      await api.disconnectAccount(id);
+      toast({ title: 'Account disconnected' });
+      void queryClient.invalidateQueries({ queryKey: ['accounts'] });
+    } catch (e) {
+      toast({ title: 'Could not disconnect', description: errorMessage(e), variant: 'destructive' });
+    }
+  }
+
+  // Never bill in-app (docs/payments.md): hand billing to the web app.
+  function openBilling() {
+    if (demoMode) {
+      toast({ title: 'Demo mode', description: 'Billing happens on the web in a real workspace.' });
+      return;
+    }
+    const origin = webOrigin(config);
+    if (!origin) {
+      toast({ title: 'Billing unavailable', description: 'No web URL for this server.', variant: 'destructive' });
+      return;
+    }
+    desktop.OpenExternal(`${origin}/settings?tab=billing`);
+  }
+
+  function handleSignOut() {
+    if (demoMode) exitDemo();
+    else void signOut();
+  }
+
+  function handleSwitchServer() {
+    if (demoMode) {
+      exitDemo();
+      return;
+    }
+    // Drop the session token too — it's scoped to the old server.
+    clearStoredToken();
+    clearServer();
+  }
+
   const subscribed = subscription?.status === 'active' || subscription?.status === 'trialing';
-
-  useEffect(() => {
-    if (awaitingCheckout && subscribed) setAwaitingCheckout(false);
-  }, [awaitingCheckout, subscribed]);
-
-  async function subscribeOnTheWeb() {
-    // Never bill in-app (docs/payments.md): create the Stripe Checkout
-    // session, open it in the default browser, then poll for the webhook.
-    let url = PRICING_URL;
-    try {
-      if (apiConfigured()) {
-        const session = await api.createCheckoutSession(CHECKOUT_SUCCESS_URL, PRICING_URL);
-        url = session.url;
-      } else {
-        startMockCheckout(); // standalone demo: mock flips to active in ~8s
-      }
-    } catch {
-      // Checkout session failed — fall back to the public pricing page.
-    }
-    setAwaitingCheckout(true);
-    void desktop.OpenExternal(url);
-  }
-
-  async function manageBilling() {
-    let url = PRICING_URL;
-    try {
-      if (apiConfigured()) {
-        const session = await api.createBillingPortalSession(PRICING_URL);
-        url = session.url;
-      }
-    } catch {
-      // Fall back to the public pricing page.
-    }
-    void desktop.OpenExternal(url);
-  }
-
   const badge = subscription ? STATUS_BADGE[subscription.status] : null;
 
   return (
@@ -126,35 +185,68 @@ export function SettingsView() {
               <div className="truncate text-sm font-medium">{user?.name ?? 'Signed out'}</div>
               <div className="truncate text-xs text-muted-foreground">{user?.email ?? '—'}</div>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="ml-auto"
-              onClick={() => void signOut()}
-            >
-              <LogOut /> Sign out
+            <Button variant="outline" size="sm" className="ml-auto" onClick={handleSignOut}>
+              <LogOut /> {demoMode ? 'Exit demo' : 'Sign out'}
             </Button>
           </div>
         </Section>
 
         <Section title="Connected accounts">
-          <ul className="divide-y">
-            {accounts.map((account) => (
-              <li key={account.id} className="flex items-center gap-2 p-3">
-                <Mail className="size-4 text-muted-foreground" />
-                <span className="truncate text-sm">{account.email}</span>
-                <Badge variant="outline" className="capitalize">
-                  {account.provider}
-                </Badge>
-                <Badge
-                  variant={account.status === 'active' ? 'secondary' : 'outline'}
-                  className="ml-auto capitalize"
-                >
-                  {account.status.replace('_', ' ')}
-                </Badge>
-              </li>
-            ))}
-          </ul>
+          {accounts.length > 0 && (
+            <ul className="divide-y">
+              {accounts.map((account) => (
+                <li key={account.id} className="flex items-center gap-2 p-3">
+                  <Mail className="size-4 text-muted-foreground" />
+                  <span className="truncate text-sm">{account.email}</span>
+                  <Badge variant="outline" className="capitalize">
+                    {account.provider}
+                  </Badge>
+                  <Badge
+                    variant={account.status === 'active' ? 'secondary' : 'outline'}
+                    className="ml-auto capitalize"
+                  >
+                    {account.status.replace('_', ' ')}
+                  </Badge>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground"
+                    onClick={() => void disconnect(account.id)}
+                  >
+                    Disconnect
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="flex flex-wrap items-center gap-2 border-t p-3">
+            {config?.features?.google && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={connecting !== null}
+                onClick={() => void connect('google')}
+              >
+                {connecting === 'google' ? <Loader2 className="animate-spin" /> : <Plus />} Connect Google
+              </Button>
+            )}
+            {config?.features?.microsoft && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={connecting !== null}
+                onClick={() => void connect('microsoft')}
+              >
+                {connecting === 'microsoft' ? <Loader2 className="animate-spin" /> : <Plus />} Connect
+                Microsoft
+              </Button>
+            )}
+            {!config?.features?.google && !config?.features?.microsoft && (
+              <p className="text-xs text-muted-foreground">
+                No mailbox providers are enabled on this server.
+              </p>
+            )}
+          </div>
         </Section>
 
         <Section title="Server">
@@ -164,27 +256,48 @@ export function SettingsView() {
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-medium">{config?.name ?? 'Calendium'}</div>
                 <div className="truncate text-xs text-muted-foreground">
-                  {config?.serverUrl ?? '—'}
+                  {demoMode ? 'Demo — no server' : config?.serverUrl ?? '—'}
                 </div>
               </div>
-              <Badge variant="secondary">{isSelfHost ? 'Self-hosted' : 'Cloud'}</Badge>
+              <Badge variant="secondary">
+                {demoMode ? 'Demo' : config?.mode === 'self_host' ? 'Self-hosted' : 'Cloud'}
+              </Badge>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="self-start"
-              onClick={() => {
-                // Drop the session token too — it's scoped to the old server.
-                clearStoredToken();
-                clearServer();
-              }}
-            >
-              <RefreshCw /> Switch server
+            <Button variant="outline" size="sm" className="self-start" onClick={handleSwitchServer}>
+              <RefreshCw /> {demoMode ? 'Leave demo' : 'Switch server'}
             </Button>
           </div>
         </Section>
 
-        {isSelfHost ? (
+        {billingEnabled ? (
+          <Section title="Billing">
+            <div className="flex flex-col gap-3 p-3">
+              <div className="flex items-center gap-2">
+                <CreditCard className="size-4 text-muted-foreground" />
+                <span className="text-sm font-medium">Calendium Annual — $50/year</span>
+                {badge && <Badge variant={badge.variant}>{badge.label}</Badge>}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                One subscription unlocks every platform. Billing always happens on the web via
+                Stripe — there are no in-app purchases.
+              </p>
+              {subscription?.trialEndsAt && subscription.status === 'trialing' && (
+                <p className="text-xs text-muted-foreground">
+                  Trial ends {format(new Date(subscription.trialEndsAt), 'MMM d, yyyy')}.
+                </p>
+              )}
+              {subscription?.currentPeriodEnd && subscription.status === 'active' && (
+                <p className="text-xs text-muted-foreground">
+                  {subscription.cancelAtPeriodEnd ? 'Access until' : 'Renews'}{' '}
+                  {format(new Date(subscription.currentPeriodEnd), 'MMM d, yyyy')}.
+                </p>
+              )}
+              <Button variant="outline" size="sm" className="self-start" onClick={openBilling}>
+                <ExternalLink /> {subscribed ? 'Manage billing on the web' : 'Subscribe on the web'}
+              </Button>
+            </div>
+          </Section>
+        ) : (
           <Section title="Plan">
             <div className="flex flex-col gap-1 p-3">
               <div className="flex items-center gap-2">
@@ -195,57 +308,6 @@ export function SettingsView() {
                 This instance runs Calendium open-source. There is no subscription to manage.
               </p>
             </div>
-          </Section>
-        ) : (
-          <Section title="Billing">
-            <div className="flex flex-col gap-3 p-3">
-              <div className="flex items-center gap-2">
-                <CreditCard className="size-4 text-muted-foreground" />
-                <span className="text-sm font-medium">Calendium Annual — $50/year</span>
-              {badge && <Badge variant={badge.variant}>{badge.label}</Badge>}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              One subscription unlocks every platform. Billing always happens on the web via
-              Stripe — there are no in-app purchases.
-            </p>
-            {subscription?.trialEndsAt && subscription.status === 'trialing' && (
-              <p className="text-xs text-muted-foreground">
-                Trial ends {format(new Date(subscription.trialEndsAt), 'MMM d, yyyy')}.
-              </p>
-            )}
-            {subscription?.currentPeriodEnd && subscription.status === 'active' && (
-              <p className="text-xs text-muted-foreground">
-                {subscription.cancelAtPeriodEnd ? 'Access until' : 'Renews'}{' '}
-                {format(new Date(subscription.currentPeriodEnd), 'MMM d, yyyy')}.
-              </p>
-            )}
-            <div className="flex items-center gap-2">
-              {subscribed ? (
-                <Button variant="outline" size="sm" onClick={manageBilling}>
-                  <ExternalLink /> Manage billing on the web
-                </Button>
-              ) : awaitingCheckout ? (
-                <>
-                  <Button size="sm" disabled>
-                    <Loader2 className="animate-spin" /> Waiting for confirmation…
-                  </Button>
-                  <Button variant="ghost" size="sm" onClick={() => setAwaitingCheckout(false)}>
-                    Cancel
-                  </Button>
-                </>
-              ) : (
-                <Button size="sm" onClick={subscribeOnTheWeb}>
-                  <ExternalLink /> Subscribe on the web
-                </Button>
-              )}
-            </div>
-            {awaitingCheckout && !subscribed && (
-              <p className="text-xs text-muted-foreground">
-                Complete checkout in your browser — this app unlocks automatically once Stripe
-                confirms the payment.
-              </p>
-            )}
-          </div>
           </Section>
         )}
 
@@ -261,7 +323,9 @@ export function SettingsView() {
             </div>
             <div className="flex justify-between">
               <span>Data source</span>
-              <span className="text-foreground">{apiConfigured() ? 'Calendium API' : 'Mock data'}</span>
+              <span className="text-foreground">
+                {demoMode ? 'Demo data' : apiConfigured() ? 'Calendium API' : 'Mock data'}
+              </span>
             </div>
           </div>
         </Section>

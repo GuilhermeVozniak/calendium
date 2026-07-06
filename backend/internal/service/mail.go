@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -125,8 +126,10 @@ func (s *MailService) ActOnThread(ctx context.Context, userID, threadID string, 
 	switch action {
 	case domain.ThreadActionArchive:
 		remove = []string{port.LabelKeyInbox}
+		t.InInbox = false // leaves the inbox list so it stops reappearing
 	case domain.ThreadActionTrash:
 		add, remove = []string{port.LabelKeyTrash}, []string{port.LabelKeyInbox}
+		t.InInbox = false
 	case domain.ThreadActionStar:
 		add = []string{port.LabelKeyStarred}
 		t.Starred = true
@@ -141,8 +144,10 @@ func (s *MailService) ActOnThread(ctx context.Context, userID, threadID string, 
 		t.Unread = true
 	case domain.ThreadActionSpam:
 		add, remove = []string{port.LabelKeySpam}, []string{port.LabelKeyInbox}
+		t.InInbox = false
 	case domain.ThreadActionMoveToInbox:
 		add, remove = []string{port.LabelKeyInbox}, []string{port.LabelKeyTrash, port.LabelKeySpam}
+		t.InInbox = true
 	default:
 		return domain.Thread{}, fmt.Errorf("%w: unknown thread action %q", domain.ErrValidation, action)
 	}
@@ -162,6 +167,32 @@ func (s *MailService) ActOnThread(ctx context.Context, userID, threadID string, 
 		}
 	}
 	return t, nil
+}
+
+// MarkThreadOpened records the first open of a thread (real read state) and
+// writes the read status through to the provider. Idempotent: repeated opens
+// keep the original OpenedAt and re-assert read state.
+func (s *MailService) MarkThreadOpened(ctx context.Context, userID, threadID string) error {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return err
+	}
+	t, acct, err := ownedThread(ctx, s.threads, s.accounts, userID, threadID)
+	if err != nil {
+		return err
+	}
+	if err := s.threads.MarkOpened(ctx, t.ID); err != nil {
+		return err
+	}
+	if provider, ok := s.mail[acct.Provider]; ok {
+		token, err := s.tokens.accessToken(ctx, acct)
+		if err != nil {
+			return err
+		}
+		if err := provider.ModifyLabels(ctx, token, t.ProviderThreadID, nil, []string{port.LabelKeyUnread}); err != nil {
+			return fmt.Errorf("provider write-through failed: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *MailService) SnoozeThread(ctx context.Context, userID, threadID string, until time.Time) (domain.Thread, error) {
@@ -330,6 +361,40 @@ func (s *MailService) SendDraft(ctx context.Context, userID, draftID string) (do
 		msg.ThreadID = *d.ThreadID
 	}
 	return msg, nil
+}
+
+// UnsendDraft undoes a queued send within the grace window: it atomically
+// clears the draft's scheduled_at (the worker's claim token) so delivery
+// never happens, and returns the reverted draft. If the worker already
+// claimed and delivered the draft (grace elapsed, draft deleted, or a
+// concurrent claim won), it returns domain.ErrConflict.
+func (s *MailService) UnsendDraft(ctx context.Context, userID, draftID string) (domain.Draft, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.Draft{}, err
+	}
+	d, _, err := ownedDraft(ctx, s.drafts, s.accounts, userID, draftID)
+	if errors.Is(err, domain.ErrNotFound) {
+		// Delivered and deleted by the worker — nothing left to undo.
+		return domain.Draft{}, fmt.Errorf("%w: draft already delivered", domain.ErrConflict)
+	}
+	if err != nil {
+		return domain.Draft{}, err
+	}
+	if d.ScheduledAt == nil {
+		return domain.Draft{}, fmt.Errorf("%w: draft is not scheduled to send", domain.ErrConflict)
+	}
+	// Clearing scheduled_at wins the race against the worker's ClaimScheduled:
+	// exactly one of unsend/deliver succeeds.
+	claimed, err := s.drafts.ClaimScheduled(ctx, d.ID)
+	if err != nil {
+		return domain.Draft{}, err
+	}
+	if !claimed {
+		return domain.Draft{}, fmt.Errorf("%w: draft already being delivered", domain.ErrConflict)
+	}
+	d.ScheduledAt = nil
+	d.UpdatedAt = s.clock.Now()
+	return d, nil
 }
 
 // --- Snippets ---

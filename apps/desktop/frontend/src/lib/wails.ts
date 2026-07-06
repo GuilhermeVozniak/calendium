@@ -11,8 +11,6 @@ export interface DesktopBindings {
   /** Opens a URL in the system default browser (Stripe checkout et al.). */
   OpenExternal(url: string): Promise<void>;
   GetAppVersion(): Promise<string>;
-  /** Sets the dock/taskbar unread badge (stubbed host-side for now). */
-  NotifyBadge(count: number): Promise<void>;
 }
 
 /** Subset of the Wails runtime API the app uses. */
@@ -40,9 +38,6 @@ const browserFallback: DesktopBindings = {
   async GetAppVersion() {
     return 'dev (browser)';
   },
-  async NotifyBadge() {
-    // no-op outside the desktop shell
-  },
 };
 
 const runtimeFallback: DesktopRuntime = {
@@ -63,3 +58,17 @@ export const desktop: DesktopBindings = isDesktop ? window.go!.main.App : browse
 
 /** The Wails runtime — always safe to call. */
 export const wailsRuntime: DesktopRuntime = window.runtime ?? runtimeFallback;
+
+/** Event the Go host emits (runtime.EventsOn) on a calendium:// deep link. */
+export const DEEP_LINK_EVENT = 'deep-link';
+
+/**
+ * Subscribe to calendium:// deep links forwarded by the host (OAuth OTT handoff,
+ * mailbox-connect return). Returns an unsubscribe function; no-ops in a browser.
+ */
+export function onDeepLink(handler: (url: string) => void): () => void {
+  return wailsRuntime.EventsOn(DEEP_LINK_EVENT, (...data: unknown[]) => {
+    const url = data[0];
+    if (typeof url === 'string') handler(url);
+  });
+}

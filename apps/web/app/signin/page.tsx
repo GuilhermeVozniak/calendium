@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { CalendarRange, Loader2, Zap } from 'lucide-react';
 import { toast } from 'sonner';
@@ -11,6 +12,26 @@ import { Kbd } from '@/components/ui/kbd';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { authClient, signIn, signUp } from '@/lib/auth-client';
+import { useInstance } from '@/lib/use-instance';
+import { cn } from '@/lib/utils';
+
+/**
+ * Post-sign-in destination from `?next=`, restricted to same-site relative
+ * paths (no protocol-relative `//` — prevents open redirects). Defaults to the
+ * inbox. Read from the live URL so this stays a pure client page (no Suspense
+ * boundary needed, unlike useSearchParams).
+ */
+function nextDestination(): string {
+  if (typeof window === 'undefined') return '/mail';
+  const next = new URLSearchParams(window.location.search).get('next');
+  if (next && next.startsWith('/') && !next.startsWith('//')) return next;
+  return '/mail';
+}
+
+const PROVIDER_LABELS: Record<SocialProvider, string> = {
+  google: 'Google',
+  apple: 'Apple',
+};
 
 function GoogleIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -54,16 +75,29 @@ export default function SignInPage() {
   const [email, setEmail] = React.useState('');
   const [password, setPassword] = React.useState('');
 
-  // Already signed in → straight to the inbox.
+  // Only offer the social providers the server actually advertises (a
+  // self-host without Google/Apple creds omits them from /v1/instance), so we
+  // never render a button that can only fail.
+  const { data: instance } = useInstance();
+  const providers = instance?.authProviders ?? [];
+  const showGoogle = providers.includes('google');
+  const showApple = providers.includes('apple');
+  const showSocial = showGoogle || showApple;
+
+  // Already signed in → honor ?next=, else straight to the inbox.
   const { data: session } = authClient.useSession();
   React.useEffect(() => {
-    if (session) router.replace('/mail');
+    if (session) router.replace(nextDestination());
   }, [session, router]);
 
   async function social(provider: SocialProvider) {
+    if (!providers.includes(provider)) {
+      toast.error(`${PROVIDER_LABELS[provider]} sign-in isn't enabled on this server.`);
+      return;
+    }
     setPending(provider);
     try {
-      const { error } = await signIn.social({ provider, callbackURL: '/mail' });
+      const { error } = await signIn.social({ provider, callbackURL: nextDestination() });
       if (error) throw new Error(error.message ?? 'Sign-in failed');
       // Success → the browser is being redirected to the provider.
     } catch (err) {
@@ -83,7 +117,7 @@ export default function SignInPage() {
         const { error } = await signIn.email({ email, password });
         if (error) throw new Error(error.message ?? 'Invalid email or password');
       }
-      router.replace('/mail');
+      router.replace(nextDestination());
     } catch (err) {
       setPending(null);
       toast.error(err instanceof Error ? err.message : 'Something went wrong. Try again.');
@@ -110,44 +144,55 @@ export default function SignInPage() {
           The fastest email and calendar experience. One inbox, one calendar, zero friction.
         </p>
 
-        <div className="mt-8 flex w-full flex-col gap-2.5">
-          <Button
-            variant="outline"
-            size="lg"
-            className="w-full"
-            disabled={busy}
-            onClick={() => social('google')}
-          >
-            {pending === 'google' ? (
-              <Loader2 className="animate-spin" />
-            ) : (
-              <GoogleIcon className="size-4" />
-            )}
-            Continue with Google
-          </Button>
-          <Button
-            variant="outline"
-            size="lg"
-            className="w-full"
-            disabled={busy}
-            onClick={() => social('apple')}
-          >
-            {pending === 'apple' ? (
-              <Loader2 className="animate-spin" />
-            ) : (
-              <AppleIcon className="size-4" />
-            )}
-            Continue with Apple
-          </Button>
-        </div>
+        {showSocial && (
+          <>
+            <div className="mt-8 flex w-full flex-col gap-2.5">
+              {showGoogle && (
+                <Button
+                  variant="outline"
+                  size="lg"
+                  className="w-full"
+                  disabled={busy}
+                  onClick={() => social('google')}
+                >
+                  {pending === 'google' ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <GoogleIcon className="size-4" />
+                  )}
+                  Continue with Google
+                </Button>
+              )}
+              {showApple && (
+                <Button
+                  variant="outline"
+                  size="lg"
+                  className="w-full"
+                  disabled={busy}
+                  onClick={() => social('apple')}
+                >
+                  {pending === 'apple' ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <AppleIcon className="size-4" />
+                  )}
+                  Continue with Apple
+                </Button>
+              )}
+            </div>
 
-        <div className="mt-6 flex w-full items-center gap-3">
-          <Separator className="flex-1" />
-          <span className="text-muted-foreground text-xs">or with email</span>
-          <Separator className="flex-1" />
-        </div>
+            <div className="mt-6 flex w-full items-center gap-3">
+              <Separator className="flex-1" />
+              <span className="text-muted-foreground text-xs">or with email</span>
+              <Separator className="flex-1" />
+            </div>
+          </>
+        )}
 
-        <form onSubmit={submitEmail} className="mt-6 flex w-full flex-col gap-3">
+        <form
+          onSubmit={submitEmail}
+          className={cn('flex w-full flex-col gap-3', showSocial ? 'mt-6' : 'mt-8')}
+        >
           {mode === 'signup' && (
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="name">Name</Label>
@@ -216,8 +261,14 @@ export default function SignInPage() {
 
         <p className="text-muted-foreground mt-8 text-center text-xs text-balance">
           14-day free trial, then $50/year. By continuing you agree to the{' '}
-          <span className="underline underline-offset-2">Terms</span> and{' '}
-          <span className="underline underline-offset-2">Privacy Policy</span>.
+          <Link href="/terms" className="hover:text-foreground underline underline-offset-2">
+            Terms
+          </Link>{' '}
+          and{' '}
+          <Link href="/privacy" className="hover:text-foreground underline underline-offset-2">
+            Privacy Policy
+          </Link>
+          .
         </p>
       </div>
     </main>

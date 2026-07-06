@@ -98,6 +98,13 @@ export const settingsMock = {
     s.accounts = s.accounts.filter((a) => a.id !== id);
   },
 
+  setVipSenders(accountId: string, vipSenders: string[]): ConnectedAccount {
+    const account = getStore().accounts.find((a) => a.id === accountId);
+    if (!account) throw new Error('Account not found');
+    account.vipSenders = [...vipSenders];
+    return { ...account };
+  },
+
   listSnippets(): Snippet[] {
     return getStore().snippets.map((s) => ({ ...s }));
   },

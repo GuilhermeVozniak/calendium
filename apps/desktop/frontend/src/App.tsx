@@ -1,4 +1,6 @@
 import type { InboxSplit } from '@calendium/shared';
+import { useQuery } from '@tanstack/react-query';
+import { format } from 'date-fns';
 import {
   Archive,
   AtSign,
@@ -7,6 +9,7 @@ import {
   Inbox,
   type LucideIcon,
   Newspaper,
+  PenSquare,
   Search,
   Settings,
   Star,
@@ -27,8 +30,13 @@ import {
   CommandShortcut,
 } from '@/ui/command';
 import { Kbd } from '@/ui/kbd';
-import { CalendarView } from '@/views/CalendarView';
-import { emitMailAction, InboxView } from '@/views/InboxView';
+import { Toaster } from '@/ui/toaster';
+import { api, orMock } from '@/lib/api';
+import { openCompose } from '@/lib/compose';
+import { mockSearch } from '@/lib/mock';
+import { CalendarView, emitFocusDate } from '@/views/CalendarView';
+import { ComposeHost } from '@/views/ComposeView';
+import { emitFocusThread, emitMailAction, InboxView } from '@/views/InboxView';
 import { SettingsView } from '@/views/SettingsView';
 
 type View = 'inbox' | 'calendar' | 'settings';
@@ -75,18 +83,53 @@ export default function App() {
   const [view, setView] = useState<View>('inbox');
   const [split, setSplit] = useState<InboxSplit>('important');
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [debounced, setDebounced] = useState('');
 
-  // Global ⌘K / Ctrl+K — the palette is reachable from anywhere.
+  // Global ⌘K / Ctrl+K opens the palette; C composes a new message. Both are
+  // reachable from anywhere (ignoring typing targets for the C shortcut).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setPaletteOpen((open) => !open);
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        openCompose();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
+
+  // Reset the query when the palette closes; debounce it for search.
+  useEffect(() => {
+    if (!paletteOpen) setQuery('');
+  }, [paletteOpen]);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query.trim()), 200);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const { data: searchResults } = useQuery({
+    queryKey: ['search', debounced],
+    enabled: paletteOpen && debounced.length >= 2,
+    queryFn: () =>
+      orMock(
+        () => api.search(debounced),
+        () => mockSearch(debounced)
+      ),
+  });
 
   const goToSplit = (s: InboxSplit) => {
     setSplit(s);
@@ -158,9 +201,57 @@ export default function App() {
       </div>
 
       <CommandDialog open={paletteOpen} onOpenChange={setPaletteOpen}>
-        <CommandInput placeholder="Type a command or search…" />
+        <CommandInput
+          placeholder="Search mail, events, or jump to…"
+          value={query}
+          onValueChange={setQuery}
+        />
         <CommandList>
           <CommandEmpty>No results found.</CommandEmpty>
+          {searchResults &&
+            (searchResults.threads.length > 0 || searchResults.events.length > 0) && (
+              <>
+                <CommandGroup heading="Search results">
+                  {searchResults.threads.slice(0, 6).map((thread) => (
+                    <CommandItem
+                      key={thread.id}
+                      value={`${debounced} ${thread.subject} ${thread.participants[0]?.name ?? ''}`}
+                      onSelect={() =>
+                        runPalette(() => {
+                          goToSplit(thread.split);
+                          emitFocusThread(thread.id);
+                        })
+                      }
+                    >
+                      <Inbox />
+                      <span className="truncate">{thread.subject}</span>
+                      <span className="ml-auto truncate text-xs text-muted-foreground">
+                        {thread.participants[0]?.name ?? thread.participants[0]?.email}
+                      </span>
+                    </CommandItem>
+                  ))}
+                  {searchResults.events.slice(0, 6).map((event) => (
+                    <CommandItem
+                      key={event.id}
+                      value={`${debounced} ${event.title}`}
+                      onSelect={() =>
+                        runPalette(() => {
+                          setView('calendar');
+                          emitFocusDate(event.start);
+                        })
+                      }
+                    >
+                      <CalendarDays />
+                      <span className="truncate">{event.title}</span>
+                      <span className="ml-auto shrink-0 truncate text-xs tabular-nums text-muted-foreground">
+                        {format(new Date(event.start), 'MMM d, HH:mm')}
+                      </span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+                <CommandSeparator />
+              </>
+            )}
           <CommandGroup heading="Go to">
             <CommandItem onSelect={() => runPalette(() => setView('inbox'))}>
               <Inbox /> Inbox
@@ -170,6 +261,13 @@ export default function App() {
             </CommandItem>
             <CommandItem onSelect={() => runPalette(() => setView('settings'))}>
               <Settings /> Settings
+            </CommandItem>
+          </CommandGroup>
+          <CommandSeparator />
+          <CommandGroup heading="Mail">
+            <CommandItem onSelect={() => runPalette(() => openCompose())}>
+              <PenSquare /> New message
+              <CommandShortcut>C</CommandShortcut>
             </CommandItem>
           </CommandGroup>
           <CommandSeparator />
@@ -197,6 +295,9 @@ export default function App() {
           </CommandGroup>
         </CommandList>
       </CommandDialog>
+
+      <ComposeHost />
+      <Toaster />
     </div>
   );
 }

@@ -25,7 +25,7 @@ exactly which of these you configured so the apps can hide the UI they can't use
 | Google OAuth app | One provider required | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Can't connect Gmail / Google Calendar; `features.google=false` |
 | Microsoft Entra app | One provider required | `MS_CLIENT_ID`, `MS_CLIENT_SECRET` | Can't connect Outlook / Microsoft 365; `features.microsoft=false` |
 | OpenRouter (AI) | Optional | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | `POST /v1/ai/compose` disabled; `features.ai=false` |
-| APNs / FCM / Web Push | Optional | see [Push](#5-push-notifications-optional) | No push notifications; `features.push=false` |
+| APNs / FCM / Web Push | Optional | see [Push](#5-push-notifications--optional) | No push notifications; `features.push=false` |
 
 > Provider apps are **per-deployment**. You register your *own* Google Cloud and
 > Microsoft Entra OAuth apps — you cannot reuse Calendium Cloud's. This is the
@@ -130,6 +130,7 @@ Auth client and hide features you didn't enable:
   "version": "0.1.0",
   "authBaseUrl": "https://your-domain/api/auth",
   "authProviders": ["email", "google", "apple"],
+  "undoSendSeconds": 15,
   "features": { "billing": false, "google": true, "microsoft": false, "ai": true, "push": false }
 }
 ```
@@ -156,7 +157,9 @@ calendar, which it stores AES-256-GCM-encrypted in Postgres.
    app name/support email, and add the scopes Calendium requests (below).
 4. **APIs & Services → Credentials → Create credentials → OAuth client ID →
    Web application**.
-5. Under **Authorized redirect URIs**, add your backend callback exactly:
+5. Under **Authorized redirect URIs**, add this API's own callback exactly —
+   `${PUBLIC_API_URL}/v1/accounts/callback/google`. Behind the bundled Caddy
+   proxy the API shares your domain under `/v1`, so that's:
 
    ```
    https://YOUR_DOMAIN/v1/accounts/callback/google
@@ -190,13 +193,25 @@ Google always returns a refresh token.
 > small self-host, staying in Testing with a handful of test users is usually all
 > you need.
 
-### 2c. The redirect allowlist
+### 2c. Two redirect URLs — don't mix them up
 
-After the OAuth dance the backend redirects the browser back to a client-supplied
-`redirectUrl`, which is validated against a server-side allowlist to prevent
-open-redirect abuse. Built-in defaults already cover `http://localhost`,
-`https://localhost`, `http://127.0.0.1`, and `calendium://`. **Add your
-production web origin:**
+The connect flow uses **two different** URLs:
+
+- **Provider redirect URI** (registered at Google/Microsoft, step 5 above):
+  `${PUBLIC_API_URL}/v1/accounts/callback/{provider}` — the backend's **own**
+  callback, where the provider sends the authorization code. `PUBLIC_API_URL` is
+  the public origin of the API; leave it blank to have the backend derive
+  `scheme://host` from the connect request (honoring `X-Forwarded-Proto`/`Host`),
+  which is correct behind the bundled proxy. Set it explicitly if the API is on a
+  different origin than the request the client sends.
+- **Client return URL** — where the backend redirects the browser **after** it
+  has exchanged the code and stored the tokens (e.g. your web app's
+  `/settings?status=connected`). It's validated against a server-side allowlist
+  to prevent open-redirect abuse.
+
+Built-in allowlist defaults already cover `http://localhost`, `https://localhost`,
+`http://127.0.0.1`, and `calendium://` (the desktop/mobile return scheme). **Add
+your production web origin:**
 
 ```bash
 OAUTH_ALLOWED_REDIRECT_URIS=https://YOUR_DOMAIN
@@ -223,7 +238,9 @@ The Microsoft mailbox flow mirrors Google, against Microsoft Graph.
 2. **Supported account types:** choose *Accounts in any organizational directory
    and personal Microsoft accounts* — the backend authorizes against the
    `/common` endpoint, so multi-tenant + personal is the matching choice.
-3. **Redirect URI:** platform **Web**, value:
+3. **Redirect URI:** platform **Web**, value
+   `${PUBLIC_API_URL}/v1/accounts/callback/microsoft` (behind the bundled proxy,
+   your domain under `/v1`):
 
    ```
    https://YOUR_DOMAIN/v1/accounts/callback/microsoft
@@ -333,7 +350,11 @@ VAPID_PUBLIC_KEY=BB...
 VAPID_PRIVATE_KEY=...
 ```
 
-Both halves are required for Web Push to activate.
+Both halves are required for Web Push to activate. When they are set,
+`GET /v1/instance` advertises the public half as `vapidPublicKey`; the web app
+registers `public/sw.js`, subscribes with that key, and registers the browser as
+a push device — after which the worker delivers a push on newly-synced
+important/VIP messages.
 
 ---
 

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"calendium/backend/internal/domain"
 )
@@ -30,17 +32,38 @@ func (s *server) handleConnectAccount(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	url, err := s.deps.Accounts.BeginConnect(r.Context(), userFrom(r).ID, provider, in.RedirectURL)
+	authURL, err := s.deps.Accounts.BeginConnect(
+		r.Context(), userFrom(r).ID, provider, in.RedirectURL, requestBaseURL(r))
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"url": url})
+	writeJSON(w, http.StatusOK, map[string]string{"url": authURL})
 }
 
-// handleAccountCallback is the browser-facing OAuth redirect target; it is
-// unauthenticated (the one-time state parameter authenticates the flow) and
-// renders a small human-readable page instead of JSON.
+// handleSetVipSenders replaces the account's VIP-sender list.
+func (s *server) handleSetVipSenders(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		VipSenders []string `json:"vipSenders"`
+	}
+	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	account, err := s.deps.Accounts.SetVipSenders(r.Context(), userFrom(r).ID, r.PathValue("id"), in.VipSenders)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, account)
+}
+
+// handleAccountCallback is the browser-facing OAuth redirect target the
+// provider sends the code+state to (redirect_uri = this route). It is
+// unauthenticated (the one-time state authenticates the flow); after the
+// token exchange it 302s the browser back to the client's stored redirectUrl
+// with ?status=connected|error. Only when the state itself is invalid — so no
+// client redirect is known — does it render a static page.
 func (s *server) handleAccountCallback(w http.ResponseWriter, r *http.Request) {
 	provider, err := domain.ParseProvider(r.PathValue("provider"))
 	if err != nil {
@@ -48,29 +71,60 @@ func (s *server) handleAccountCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	if e := q.Get("error"); e != "" {
-		detail := e
-		if d := q.Get("error_description"); d != "" {
-			detail += ": " + d
+	_, redirect, cerr := s.deps.Accounts.CompleteConnect(
+		r.Context(), provider, q.Get("state"), q.Get("code"), requestBaseURL(r))
+	if cerr != nil {
+		status, code := statusFor(cerr)
+		if status == http.StatusInternalServerError {
+			s.deps.Logger.Error("oauth callback failed", "provider", provider, "error", cerr)
+		} else {
+			s.deps.Logger.Info("oauth callback rejected", "provider", provider, "code", code, "error", cerr)
 		}
-		writeCallbackPage(w, http.StatusBadRequest, "Connection failed", detail)
-		return
-	}
-	account, err := s.deps.Accounts.CompleteConnect(r.Context(), provider, q.Get("state"), q.Get("code"))
-	if err != nil {
-		status, code := statusFor(err)
+		if redirect != "" {
+			http.Redirect(w, r, withStatusParam(redirect, "error"), http.StatusFound)
+			return
+		}
 		detail := safeMessage(code)
 		if status == http.StatusInternalServerError {
-			s.deps.Logger.Error("oauth callback failed", "provider", provider, "error", err)
 			detail = "Something went wrong while connecting the account. Please try again."
-		} else {
-			s.deps.Logger.Info("oauth callback rejected", "provider", provider, "code", code, "error", err)
 		}
 		writeCallbackPage(w, status, "Connection failed", detail)
 		return
 	}
-	writeCallbackPage(w, http.StatusOK, "Account connected",
-		fmt.Sprintf("%s is connected and syncing. You can close this window and return to Calendium.", account.Email))
+	http.Redirect(w, r, withStatusParam(redirect, "connected"), http.StatusFound)
+}
+
+// requestBaseURL derives the API's public origin (scheme://host) from the
+// incoming request, honoring the X-Forwarded-Proto/Host set by a reverse
+// proxy. Used to build the provider redirect_uri when PUBLIC_API_URL is unset.
+func requestBaseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
+		scheme = strings.TrimSpace(strings.Split(p, ",")[0])
+	}
+	host := r.Host
+	if h := r.Header.Get("X-Forwarded-Host"); h != "" {
+		host = strings.TrimSpace(strings.Split(h, ",")[0])
+	}
+	if host == "" {
+		return ""
+	}
+	return scheme + "://" + host
+}
+
+// withStatusParam appends ?status=<status> to the client redirect URL.
+func withStatusParam(redirect, status string) string {
+	u, err := url.Parse(redirect)
+	if err != nil {
+		return redirect
+	}
+	qq := u.Query()
+	qq.Set("status", status)
+	u.RawQuery = qq.Encode()
+	return u.String()
 }
 
 func (s *server) handleDisconnectAccount(w http.ResponseWriter, r *http.Request) {

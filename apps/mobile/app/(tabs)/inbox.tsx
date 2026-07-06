@@ -3,10 +3,15 @@ import { Icon } from '@/components/ui/icon';
 import { Text } from '@/components/ui/text';
 import { api } from '@/lib/api';
 import { relativeTime } from '@/lib/format';
-import { mockThreadPage, withMockFallback } from '@/lib/mock';
+import { isDemoMode, mockThreadPage, withMockFallback } from '@/lib/mock';
 import { cn } from '@/lib/utils';
 import type { InboxSplit, Page, Thread, ThreadAction } from '@calendium/shared';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQueryClient,
+  type InfiniteData,
+} from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { ArchiveIcon, ClockIcon, InboxIcon, SquarePenIcon, StarIcon, XIcon } from 'lucide-react-native';
 import * as React from 'react';
@@ -26,6 +31,10 @@ const SPLITS: { key: InboxSplit; label: string }[] = [
   { key: 'other', label: 'Other' },
 ];
 
+// The inbox list is cursor-paginated (useInfiniteQuery), so its cache holds
+// `InfiniteData<Page<Thread>>`; helpers below map over every loaded page.
+type ThreadsData = InfiniteData<Page<Thread>>;
+
 export default function InboxScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -33,19 +42,28 @@ export default function InboxScreen() {
   const [split, setSplit] = React.useState<InboxSplit>('important');
   const [selected, setSelected] = React.useState<Thread | null>(null);
 
-  const threadsQuery = useQuery({
+  const threadsQuery = useInfiniteQuery({
     queryKey: ['threads', split],
-    queryFn: () =>
+    queryFn: ({ pageParam }) =>
       withMockFallback(
-        () => api.listThreads({ split, limit: 50 }),
+        () => api.listThreads({ split, limit: 50, cursor: pageParam ?? undefined }),
         () => mockThreadPage(split)
       ),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
   });
+
+  const threads = React.useMemo(
+    () => threadsQuery.data?.pages.flatMap((page) => page.items) ?? [],
+    [threadsQuery.data]
+  );
 
   const updateList = React.useCallback(
     (listSplit: InboxSplit, updater: (threads: Thread[]) => Thread[]) => {
-      queryClient.setQueryData<Page<Thread>>(['threads', listSplit], (page) =>
-        page ? { ...page, items: updater(page.items) } : page
+      queryClient.setQueryData<ThreadsData>(['threads', listSplit], (data) =>
+        data
+          ? { ...data, pages: data.pages.map((page) => ({ ...page, items: updater(page.items) })) }
+          : data
       );
     },
     [queryClient]
@@ -55,6 +73,7 @@ export default function InboxScreen() {
     mutationFn: ({ thread, action }: { thread: Thread; action: ThreadAction }) =>
       api.actOnThread(thread.id, action),
     onMutate: ({ thread, action }) => {
+      const previous = queryClient.getQueryData<ThreadsData>(['threads', split]);
       if (action === 'archive') {
         updateList(split, (items) => items.filter((t) => t.id !== thread.id));
       } else if (action === 'star' || action === 'unstar') {
@@ -62,10 +81,17 @@ export default function InboxScreen() {
           items.map((t) => (t.id === thread.id ? { ...t, starred: action === 'star' } : t))
         );
       }
+      return { previous, split };
     },
-    onError: () => {
-      // API unreachable: keep the optimistic update (mock/offline mode);
-      // a later refetch reconciles once the API is back.
+    onError: (error, _vars, context) => {
+      // Demo mode has no backend, so the optimistic update stands; otherwise a
+      // real rejection (paywall, validation, server error) must not look like
+      // success — revert and tell the user.
+      if (isDemoMode()) return;
+      if (context?.previous) {
+        queryClient.setQueryData(['threads', context.split], context.previous);
+      }
+      Alert.alert('Action failed', error instanceof Error ? error.message : 'Please try again.');
     },
   });
 
@@ -73,10 +99,16 @@ export default function InboxScreen() {
     mutationFn: ({ thread, until }: { thread: Thread; until: string }) =>
       api.snoozeThread(thread.id, until),
     onMutate: ({ thread }) => {
+      const previous = queryClient.getQueryData<ThreadsData>(['threads', split]);
       updateList(split, (items) => items.filter((t) => t.id !== thread.id));
+      return { previous, split };
     },
-    onError: () => {
-      // Same offline-tolerant behavior as actMutation.
+    onError: (error, _vars, context) => {
+      if (isDemoMode()) return;
+      if (context?.previous) {
+        queryClient.setQueryData(['threads', context.split], context.previous);
+      }
+      Alert.alert('Could not snooze', error instanceof Error ? error.message : 'Please try again.');
     },
   });
 
@@ -108,11 +140,9 @@ export default function InboxScreen() {
 
   const openThread = (thread: Thread) => {
     setSelected(null);
-    if (thread.unread) {
-      updateList(split, (items) =>
-        items.map((t) => (t.id === thread.id ? { ...t, unread: false } : t))
-      );
-    }
+    // Read state is recorded server-side by the thread screen (POST .../open)
+    // and reconciled back into this list, so we no longer fake `unread` here —
+    // the dot reflects real data only.
     router.push({ pathname: '/thread/[id]', params: { id: thread.id } });
   };
 
@@ -166,15 +196,28 @@ export default function InboxScreen() {
         </View>
       ) : (
         <FlatList
-          data={threadsQuery.data?.items ?? []}
+          data={threads}
           keyExtractor={(t) => t.id}
           contentContainerClassName="pb-24"
           ItemSeparatorComponent={() => <View className="ml-4 h-px bg-border" />}
           refreshControl={
             <RefreshControl
-              refreshing={threadsQuery.isRefetching}
+              refreshing={threadsQuery.isRefetching && !threadsQuery.isFetchingNextPage}
               onRefresh={() => threadsQuery.refetch()}
             />
+          }
+          onEndReachedThreshold={0.5}
+          onEndReached={() => {
+            if (threadsQuery.hasNextPage && !threadsQuery.isFetchingNextPage) {
+              threadsQuery.fetchNextPage();
+            }
+          }}
+          ListFooterComponent={
+            threadsQuery.isFetchingNextPage ? (
+              <View className="py-6">
+                <ActivityIndicator />
+              </View>
+            ) : null
           }
           ListEmptyComponent={
             <View className="items-center gap-2 px-8 pt-24">

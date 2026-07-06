@@ -111,19 +111,27 @@ func (s *server) recoverPanics(next http.Handler) http.Handler {
 	})
 }
 
-// --- CORS (localhost dev) ----------------------------------------------------
+// --- CORS ---------------------------------------------------------------------
 
-// corsLocalhost reflects localhost/127.0.0.1 origins on any port so the web
-// (Next.js), desktop (Wails/Vite), and Expo dev servers can call the API in
-// development. Production web traffic is expected to be same-origin or
-// fronted by a proxy that owns CORS policy.
-func corsLocalhost(next http.Handler) http.Handler {
+// corsMiddleware reflects an allowed Origin so browser clients can call the
+// API cross-origin: localhost/127.0.0.1 dev servers (web/desktop/Expo, any
+// port), the packaged Wails WebView origins, and any origin in the
+// CORS_ALLOWED_ORIGINS env allowlist. Credentials are allowed (bearer JWTs);
+// preflights get a 204.
+func corsMiddleware(next http.Handler, allowedOrigins []string) http.Handler {
+	allow := make(map[string]struct{}, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		if o = strings.TrimRight(strings.TrimSpace(o), "/"); o != "" {
+			allow[o] = struct{}{}
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin != "" && isLocalDevOrigin(origin) {
+		if origin != "" && originAllowed(origin, allow) {
 			h := w.Header()
 			h.Set("Access-Control-Allow-Origin", origin)
 			h.Add("Vary", "Origin")
+			h.Set("Access-Control-Allow-Credentials", "true")
 			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 			h.Set("Access-Control-Max-Age", "600")
@@ -136,6 +144,14 @@ func corsLocalhost(next http.Handler) http.Handler {
 	})
 }
 
+func originAllowed(origin string, allow map[string]struct{}) bool {
+	if isLocalDevOrigin(origin) || isWailsOrigin(origin) {
+		return true
+	}
+	_, ok := allow[strings.TrimRight(origin, "/")]
+	return ok
+}
+
 func isLocalDevOrigin(origin string) bool {
 	u, err := url.Parse(origin)
 	if err != nil {
@@ -144,6 +160,24 @@ func isLocalDevOrigin(origin string) bool {
 	switch u.Hostname() {
 	case "localhost", "127.0.0.1", "::1":
 		return true
+	}
+	return false
+}
+
+// isWailsOrigin matches the packaged desktop WebView origins across
+// platforms: wails://wails and wails://wails.localhost (macOS/Linux) and
+// http(s)://wails.localhost (Windows, any port).
+func isWailsOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	switch u.Scheme {
+	case "wails":
+		return host == "wails" || host == "wails.localhost"
+	case "http", "https":
+		return host == "wails.localhost"
 	}
 	return false
 }

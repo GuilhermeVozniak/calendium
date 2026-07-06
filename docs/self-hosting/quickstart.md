@@ -92,10 +92,11 @@ BETTER_AUTH_URL=https://mail.example.com       # your public web origin, no trai
 NEXT_PUBLIC_API_URL=https://mail.example.com   # or leave blank to use same-origin
 ```
 
-The Go API verifies Better Auth's JWTs by fetching its JWKS; it derives
-`AUTH_JWKS_URL` (`${BETTER_AUTH_URL}/api/auth/jwks`) and `AUTH_ISSUER`
-(`${BETTER_AUTH_URL}`) automatically, so you don't set those unless your setup is
-unusual.
+The Go API verifies Better Auth's JWTs by fetching its JWKS **server-to-server**.
+The bundled `docker-compose.yml` already points `AUTH_JWKS_URL` at the in-network
+`http://web:3000/api/auth/jwks` (reachable from the `api`/`worker` containers,
+unlike the public `BETTER_AUTH_URL`), and the backend derives `AUTH_ISSUER` from
+`BETTER_AUTH_URL` — so you leave both blank unless your setup is unusual.
 
 > **Want Google / Apple sign-in too?** Add `GOOGLE_CLIENT_ID/SECRET` and/or
 > `APPLE_CLIENT_ID/SECRET`, and register the login redirect URIs
@@ -121,9 +122,13 @@ OPENROUTER_API_KEY=...
 ```
 
 When you register the Google/Microsoft apps, set their **authorized redirect
-URI** to your API callback, e.g. `https://mail.example.com/v1/accounts/callback/google`
-(and `.../callback/microsoft`), and make sure the same origins are in
-`OAUTH_ALLOWED_REDIRECT_URIS`. The full list of provider, push, and AI variables
+URI** to this API's own callback — `${PUBLIC_API_URL}/v1/accounts/callback/google`
+(and `.../callback/microsoft`). Behind the bundled Caddy proxy the API shares your
+domain under `/v1`, so that's `https://mail.example.com/v1/accounts/callback/google`;
+`PUBLIC_API_URL` is derived from the request automatically there, but set it
+explicitly if the API is on a different origin. Separately, make sure your web
+origin is in `OAUTH_ALLOWED_REDIRECT_URIS` — that's where the browser is sent
+*after* the callback completes. The full list of provider, push, and AI variables
 is in the [configuration reference](./configuration.md). You can add these later
 and `make self-host-up` again — unset providers are simply disabled.
 
@@ -167,6 +172,7 @@ You should see something like:
   "version": "0.1.0",
   "authBaseUrl": "https://mail.example.com/api/auth",
   "authProviders": ["email", "google"],
+  "undoSendSeconds": 15,
   "features": { "billing": false, "google": true, "microsoft": true, "ai": true, "push": false }
 }
 ```

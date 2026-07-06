@@ -14,7 +14,7 @@ import {
   startOfDay,
   startOfWeek,
 } from '@/lib/format';
-import { isApiUnreachable, mockCalendars, mockEvents, withMockFallback } from '@/lib/mock';
+import { isDemoMode, mockCalendars, mockEvents, withMockFallback } from '@/lib/mock';
 import { cn } from '@/lib/utils';
 import type { Event, EventInput } from '@calendium/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -99,10 +99,11 @@ export default function CalendarScreen() {
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['events'] }),
     onError: (error, input) => {
-      if (isApiUnreachable(error)) {
-        // Offline/mock mode: keep the optimistic event; a later refetch reconciles.
+      if (isDemoMode()) {
+        // Demo mode: keep the optimistic event (there is no backend).
         return;
       }
+      // A real failure must surface and roll back — never a silent fake add.
       Alert.alert('Could not add event', error instanceof Error ? error.message : 'Unknown error');
       queryClient.invalidateQueries({ queryKey: ['events', dayKey(new Date(input.start))] });
     },

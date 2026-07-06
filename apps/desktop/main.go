@@ -32,6 +32,9 @@ func main() {
 		Mac: &mac.Options{
 			TitleBar:   mac.TitleBarHiddenInset(),
 			Appearance: mac.DefaultAppearance,
+			// Forward calendium:// deep links (OAuth OTT handoff, mailbox-connect
+			// return) from the OS into the WebView as a "deep-link" event.
+			OnUrlOpen: app.handleURL,
 		},
 	})
 	if err != nil {

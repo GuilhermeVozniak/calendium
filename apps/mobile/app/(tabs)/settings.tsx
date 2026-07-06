@@ -46,6 +46,10 @@ export default function SettingsScreen() {
   const [connecting, setConnecting] = React.useState<Provider | null>(null);
 
   const isSelfHost = config?.mode === 'self_host';
+  // Only offer mail providers the server can actually connect (features flags).
+  const connectProviders = (['google', 'microsoft'] as const).filter(
+    (provider) => config?.features?.[provider]
+  );
 
   const switchServer = async () => {
     await clearServer();
@@ -155,24 +159,26 @@ export default function SettingsScreen() {
             </View>
           ))
         )}
-        <View className="flex-row gap-2 border-t border-border p-3">
-          {(['google', 'microsoft'] as const).map((provider) => (
-            <Button
-              key={provider}
-              variant="outline"
-              size="sm"
-              className="flex-1 flex-row gap-1.5"
-              onPress={() => connectAccount(provider)}
-              disabled={connecting !== null}>
-              {connecting === provider ? (
-                <ActivityIndicator size="small" />
-              ) : (
-                <Icon as={PlusIcon} className="size-4" />
-              )}
-              <Text>{PROVIDER_LABEL[provider]}</Text>
-            </Button>
-          ))}
-        </View>
+        {connectProviders.length > 0 && (
+          <View className="flex-row gap-2 border-t border-border p-3">
+            {connectProviders.map((provider) => (
+              <Button
+                key={provider}
+                variant="outline"
+                size="sm"
+                className="flex-1 flex-row gap-1.5"
+                onPress={() => connectAccount(provider)}
+                disabled={connecting !== null}>
+                {connecting === provider ? (
+                  <ActivityIndicator size="small" />
+                ) : (
+                  <Icon as={PlusIcon} className="size-4" />
+                )}
+                <Text>{PROVIDER_LABEL[provider]}</Text>
+              </Button>
+            ))}
+          </View>
+        )}
       </Section>
 
       {/* Server (open-core: which Calendium instance this client talks to) */}

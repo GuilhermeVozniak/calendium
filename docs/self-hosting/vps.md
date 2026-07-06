@@ -263,6 +263,7 @@ curl https://calendium.example.com/v1/instance      # -> instance discovery JSON
   "version": "0.1.0",
   "authBaseUrl": "https://calendium.example.com/api/auth",
   "authProviders": ["email", "google"],
+  "undoSendSeconds": 15,
   "features": { "billing": false, "google": true, "microsoft": false, "ai": false, "push": false }
 }
 ```

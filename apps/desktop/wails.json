@@ -12,6 +12,13 @@
   },
   "info": {
     "productName": "Calendium",
-    "productVersion": "0.1.0"
+    "productVersion": "0.1.0",
+    "protocols": [
+      {
+        "scheme": "calendium",
+        "description": "Calendium deep links",
+        "role": "Viewer"
+      }
+    ]
   }
 }

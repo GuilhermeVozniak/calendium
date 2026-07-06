@@ -1,5 +1,5 @@
 import { betterAuth } from 'better-auth';
-import { bearer, jwt } from 'better-auth/plugins';
+import { bearer, jwt, oneTimeToken } from 'better-auth/plugins';
 import { nextCookies } from 'better-auth/next-js';
 import { expo } from '@better-auth/expo';
 import { Pool } from 'pg';
@@ -44,8 +44,76 @@ function socialProviders() {
   return providers;
 }
 
+/**
+ * Wails desktop WebView page origins. macOS/Linux serve the app from
+ * `wails://wails`; Windows uses `http://wails.localhost`. These are a DIFFERENT
+ * origin from the server they call, so they need explicit CORS + CSRF trust.
+ */
+const WAILS_ORIGINS = [
+  'wails://wails',
+  'wails://wails.localhost',
+  'http://wails.localhost',
+  'https://wails.localhost',
+];
+
+/** Extra browser origins an operator allows (comma-separated exact origins). */
+function envAllowedOrigins(): string[] {
+  return (process.env.CORS_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+}
+
+/** http(s)://localhost | 127.0.0.1 | ::1 on any port — the dev servers. */
+function isLocalhostDevOrigin(url: URL): boolean {
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  return (
+    url.hostname === 'localhost' ||
+    url.hostname === '127.0.0.1' ||
+    url.hostname === '::1' ||
+    url.hostname === '[::1]'
+  );
+}
+
+/**
+ * Whether an `Origin` header should be reflected into
+ * `Access-Control-Allow-Origin` (see app/api/auth/[...all]/route.ts). Mirrors
+ * the Go API's CORS allowlist (wails origins + localhost dev + the
+ * CORS_ALLOWED_ORIGINS env) so the whole stack admits the same clients.
+ * Credentialed CORS forbids `*`, so the caller reflects the exact origin only
+ * when this returns true.
+ */
+export function isAllowedOrigin(origin: string | null | undefined): boolean {
+  if (!origin) return false;
+  if (WAILS_ORIGINS.includes(origin)) return true;
+  if (envAllowedOrigins().includes(origin)) return true;
+  try {
+    const url = new URL(origin);
+    if (
+      url.hostname === 'wails.localhost' &&
+      (url.protocol === 'http:' || url.protocol === 'https:')
+    ) {
+      return true;
+    }
+    return isLocalhostDevOrigin(url);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Origins Better Auth trusts for its own CSRF/callback checks — the native
+ * deep-link scheme, the Wails WebView origins, localhost dev servers, and any
+ * operator-provided CORS_ALLOWED_ORIGINS. Same clients the CORS layer reflects.
+ */
 function trustedOrigins() {
-  const origins = ['calendium://', 'wails://wails'];
+  const origins = [
+    'calendium://',
+    ...WAILS_ORIGINS,
+    'http://localhost:*',
+    'http://127.0.0.1:*',
+    ...envAllowedOrigins(),
+  ];
   if (process.env.BETTER_AUTH_URL) origins.push(process.env.BETTER_AUTH_URL);
   return origins;
 }
@@ -74,6 +142,11 @@ export const auth = betterAuth({
     bearer(),
     // Mobile (Expo) deep-link + secure-store session support.
     expo(),
+    // Short-lived one-time tokens for the desktop browser → app handoff: the
+    // web mints one at /desktop-callback and the desktop app verifies it (via
+    // {authBaseUrl}/one-time-token/verify) to obtain a session. See
+    // apps/web/app/desktop-callback/page.tsx.
+    oneTimeToken(),
     // MUST be last: makes Set-Cookie from server actions/route handlers work.
     nextCookies(),
   ],

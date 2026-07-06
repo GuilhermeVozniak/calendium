@@ -1,11 +1,20 @@
 import React, { createContext, useCallback, useEffect, useState } from 'react';
 import { unregisterPushDevice } from '@/hooks/use-push-registration';
 import type { AuthUser } from '@/lib/auth-client';
+import { queryClient } from '@/lib/query-client';
 import { useServerConfig } from '@/lib/server-config';
 import { Alert } from 'react-native';
 import { useAssertedContext } from './use-aserted-context';
 
 type SocialProvider = 'google' | 'apple';
+
+/** Synthetic identity for the offline "Try the demo" experience (no real auth). */
+const DEMO_USER: AuthUser = {
+  id: 'demo-user',
+  email: 'you@calendium.app',
+  name: 'Calendium Demo',
+  image: null,
+};
 
 interface AuthContextType {
   user: AuthUser | null;
@@ -34,12 +43,19 @@ AuthContext.displayName = 'AuthContext';
  * in expo-secure-store, so it survives restarts).
  */
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const { authClient } = useServerConfig();
+  const { authClient, config, clear: clearServer } = useServerConfig();
+  const demoMode = config?.demoMode ?? false;
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Pull the current session from Better Auth and mirror it into local state.
   const refresh = useCallback(async () => {
+    if (demoMode) {
+      // Demo mode has no real backend/session — surface the synthetic user.
+      setUser(DEMO_USER);
+      setLoading(false);
+      return;
+    }
     if (!authClient) {
       setUser(null);
       setLoading(false);
@@ -56,7 +72,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, [authClient]);
+  }, [authClient, demoMode]);
 
   useEffect(() => {
     setLoading(true);
@@ -117,7 +133,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       // Remove this device's push token before dropping the session.
       await unregisterPushDevice();
-      if (authClient) {
+      if (demoMode) {
+        // Leaving the demo drops the (fake) config and returns to server pick.
+        await clearServer();
+      } else if (authClient) {
         await authClient.signOut();
       }
     } catch (error) {
@@ -125,6 +144,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw error;
     } finally {
       setUser(null);
+      // Drop the previous account's cached mail/calendar so the next sign-in
+      // on this device never briefly renders someone else's data.
+      queryClient.clear();
     }
   };
 

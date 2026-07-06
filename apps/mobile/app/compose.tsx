@@ -3,7 +3,9 @@ import { Icon } from '@/components/ui/icon';
 import { Input } from '@/components/ui/input';
 import { Text } from '@/components/ui/text';
 import { api } from '@/lib/api';
-import { isApiUnreachable, MOCK_ACCOUNT_ID, mockAccounts, mockAiCompose, withMockFallback } from '@/lib/mock';
+import { isApiUnreachable, isDemoMode, MOCK_ACCOUNT_ID, mockAccounts, mockAiCompose, withMockFallback } from '@/lib/mock';
+import { useServerConfig } from '@/lib/server-config';
+import { ApiRequestError } from '@calendium/shared';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { SendIcon, SparklesIcon, XIcon } from 'lucide-react-native';
@@ -14,6 +16,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 export default function ComposeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { config } = useServerConfig();
+  const aiEnabled = config?.features?.ai ?? false;
   const [to, setTo] = React.useState('');
   const [subject, setSubject] = React.useState('');
   const [body, setBody] = React.useState('');
@@ -32,7 +36,16 @@ export default function ComposeScreen() {
 
   const send = useMutation({
     mutationFn: async () => {
-      const accountId = accountsQuery.data?.[0]?.id ?? MOCK_ACCOUNT_ID;
+      // Never send against a fabricated account on a real backend (it would
+      // 404); the mock id is only valid in the offline demo.
+      const accountId = accountsQuery.data?.[0]?.id ?? (isDemoMode() ? MOCK_ACCOUNT_ID : undefined);
+      if (!accountId) {
+        throw new ApiRequestError(
+          400,
+          'no_account',
+          'Connect an email account in Settings before sending.'
+        );
+      }
       const recipients = to
         .split(/[,;\s]+/)
         .filter(Boolean)
@@ -124,19 +137,23 @@ export default function ComposeScreen() {
           style={{ textAlignVertical: 'top' }}
         />
         <View className="flex-row items-center justify-between">
-          <Button
-            variant="outline"
-            size="sm"
-            className="flex-row gap-2"
-            onPress={aiAssist}
-            disabled={aiLoading}>
-            {aiLoading ? (
-              <ActivityIndicator size="small" />
-            ) : (
-              <Icon as={SparklesIcon} className="size-4" />
-            )}
-            <Text>AI draft</Text>
-          </Button>
+          {aiEnabled ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-row gap-2"
+              onPress={aiAssist}
+              disabled={aiLoading}>
+              {aiLoading ? (
+                <ActivityIndicator size="small" />
+              ) : (
+                <Icon as={SparklesIcon} className="size-4" />
+              )}
+              <Text>AI draft</Text>
+            </Button>
+          ) : (
+            <View />
+          )}
           <Text className="text-xs text-muted-foreground" numberOfLines={1}>
             {accountsQuery.data?.[0]?.email ?? ''}
           </Text>

@@ -76,6 +76,8 @@ export interface Thread {
   unread: boolean;
   starred: boolean;
   lastMessageAt: string;
+  /** Set the first time the owner opens the thread (POST .../open); real read state. */
+  openedAt: string | null;
   snoozedUntil: string | null;
   /** Follow-up reminder: resurface if nobody replies by this time. */
   remindAt: string | null;
@@ -122,6 +124,24 @@ export interface Draft {
   /** Most recent delivery failure, when a scheduled send has failed. */
   lastError: string | null;
   updatedAt: string;
+}
+
+/**
+ * Full create/update draft payload — mirrors port.DraftInput in
+ * backend/internal/port/driving.go field-for-field. PUT /v1/mail/drafts/{id}
+ * is a FULL replace: every field is written, so callers must send the whole
+ * draft (omitted fields blank the stored value). Clearing scheduledAt before
+ * the grace elapses is undo-send.
+ */
+export interface DraftInput {
+  accountId: string;
+  threadId: string | null;
+  to: EmailAddress[];
+  cc: EmailAddress[];
+  bcc: EmailAddress[];
+  subject: string;
+  bodyHtml: string;
+  scheduledAt: string | null;
 }
 
 /** Reusable canned response with an optional keyboard shortcut (Superhuman snippets). */
@@ -309,5 +329,12 @@ export interface InstanceInfo {
   authBaseUrl: string;
   /** Enabled sign-in methods, e.g. ["email", "google", "apple"]. */
   authProviders: string[];
+  /**
+   * Undo-send grace window in seconds (UNDO_SEND_SECONDS, default 15): show a
+   * post-send Undo affordance for this long.
+   */
+  undoSendSeconds: number;
+  /** Web Push application server key; present only when web push is configured. */
+  vapidPublicKey?: string;
   features: InstanceFeatures;
 }

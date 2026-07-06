@@ -82,11 +82,14 @@ type AccountRepo interface {
 
 // ThreadQuery filters thread lists. UserID is mandatory; zero values on the
 // other fields mean "no filter". Snoozed threads are excluded unless
-// IncludeSnoozed is set.
+// IncludeSnoozed is set. A non-empty View selects a cross-split pseudo-view
+// (starred/snoozed/sent) and takes precedence over the default inbox-only
+// listing; clients use View for these, never LabelID.
 type ThreadQuery struct {
 	UserID         string
 	AccountID      string
 	Split          domain.InboxSplit
+	View           domain.ThreadView
 	LabelID        string
 	Query          string
 	Cursor         string
@@ -101,6 +104,10 @@ type ThreadRepo interface {
 	GetByProviderID(ctx context.Context, accountID, providerThreadID string) (domain.Thread, error)
 	List(ctx context.Context, q ThreadQuery) (domain.Page[domain.Thread], error)
 	Update(ctx context.Context, t domain.Thread) error
+	// MarkOpened records the first open of a thread with a targeted write:
+	// it sets opened_at (when null) and clears unread, idempotently, without
+	// clobbering columns a concurrent mutation may have changed.
+	MarkOpened(ctx context.Context, id string) error
 	SetLabels(ctx context.Context, threadID string, labelIDs []string) error
 	Search(ctx context.Context, userID, query string, limit int) ([]domain.Thread, error)
 	// ListSnoozeDue returns threads whose snooze elapsed at or before now.
@@ -251,10 +258,12 @@ type OAuthToken struct {
 }
 
 // OAuthGateway runs the provider OAuth flow for offline mail/calendar access.
-// Scopes are baked into the adapter for its provider.
+// Scopes are baked into the adapter for its provider. The flow uses PKCE
+// (S256): codeChallenge is the base64url SHA-256 of the verifier sent on
+// AuthURL, and the matching codeVerifier is replayed on Exchange.
 type OAuthGateway interface {
-	AuthURL(state, redirectURI string) string
-	Exchange(ctx context.Context, code, redirectURI string) (OAuthToken, error)
+	AuthURL(state, redirectURI, codeChallenge string) string
+	Exchange(ctx context.Context, code, redirectURI, codeVerifier string) (OAuthToken, error)
 	Refresh(ctx context.Context, refreshToken string) (OAuthToken, error)
 }
 

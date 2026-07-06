@@ -200,7 +200,10 @@ An HTTPS:443 listener with an ACM certificate, host-based routing:
 `api.<domain>` → api target group, `app.<domain>` → web target group. Route 53
 alias records point both hostnames at the ALB. Because api and web are now on
 separate hostnames, set the web build's `NEXT_PUBLIC_API_URL` to
-`https://api.<domain>` (as in B1).
+`https://api.<domain>` (as in B1). This is a genuine cross-origin split, so also
+set `CORS_ALLOWED_ORIGINS=https://app.<domain>` (the Go API and Better Auth routes
+reflect CORS for it) and `PUBLIC_API_URL=https://api.<domain>` so the
+mailbox-connect callback registers as `https://api.<domain>/v1/accounts/callback/{provider}`.
 
 ### B6. Connection pooling caveat
 

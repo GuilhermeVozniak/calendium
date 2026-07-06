@@ -21,8 +21,14 @@ type InstanceInfo struct {
 	AuthBaseURL string `json:"authBaseUrl"`
 	// AuthProviders lists enabled sign-in methods, always including "email"
 	// plus "google"/"apple" when their credentials are configured.
-	AuthProviders []string         `json:"authProviders"`
-	Features      InstanceFeatures `json:"features"`
+	AuthProviders []string `json:"authProviders"`
+	// UndoSendSeconds is the undo-send grace window (UNDO_SEND_SECONDS,
+	// default 15): clients show a post-send Undo affordance for this long.
+	UndoSendSeconds int `json:"undoSendSeconds"`
+	// VapidPublicKey is the Web Push application server key, present only when
+	// web push is configured; clients subscribe the service worker with it.
+	VapidPublicKey string           `json:"vapidPublicKey,omitempty"`
+	Features       InstanceFeatures `json:"features"`
 }
 
 // InstanceFeatures reports which optional capabilities are wired on this

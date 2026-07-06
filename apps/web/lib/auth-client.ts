@@ -1,13 +1,19 @@
 'use client';
 
 import { createAuthClient } from 'better-auth/react';
+import { oneTimeTokenClient } from 'better-auth/client/plugins';
 
 /**
  * Browser Better Auth client. Talks to the same-origin catch-all at
  * `/api/auth/*`, so no baseURL/NEXT_PUBLIC var is needed — Better Auth infers
  * the current origin in the browser.
+ *
+ * The one-time-token client plugin exposes `authClient.oneTimeToken.generate()`,
+ * used by /desktop-callback to hand a short-lived token to the desktop app.
  */
-export const authClient = createAuthClient();
+export const authClient = createAuthClient({
+  plugins: [oneTimeTokenClient()],
+});
 
 export const { useSession, signIn, signOut, signUp } = authClient;
 

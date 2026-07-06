@@ -32,15 +32,18 @@ type Deps struct {
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
 	Instance InstanceInfo
+	// CORSAllowedOrigins is the extra CORS allowlist (CORS_ALLOWED_ORIGINS)
+	// reflected in addition to the built-in localhost-dev and Wails origins.
+	CORSAllowedOrigins []string
 }
 
 type server struct {
 	deps Deps
 }
 
-// New builds the full v1 REST handler with recovery, request logging,
-// localhost-dev CORS, and bearer-token auth on every /v1 route except the
-// Stripe webhook and the provider OAuth callback.
+// New builds the full v1 REST handler with recovery, request logging, CORS
+// (localhost dev + Wails + CORS_ALLOWED_ORIGINS), and bearer-token auth on
+// every /v1 route except the Stripe webhook and the provider OAuth callback.
 func New(deps Deps) http.Handler {
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
@@ -68,11 +71,13 @@ func New(deps Deps) http.Handler {
 
 	authed("GET /v1/accounts", s.handleListAccounts)
 	authed("POST /v1/accounts/connect/{provider}", s.handleConnectAccount)
+	authed("PUT /v1/accounts/{id}/vip-senders", s.handleSetVipSenders)
 	authed("DELETE /v1/accounts/{id}", s.handleDisconnectAccount)
 
 	authed("GET /v1/mail/threads", s.handleListThreads)
 	authed("GET /v1/mail/threads/{id}", s.handleGetThread)
 	authed("POST /v1/mail/threads/{id}/actions", s.handleThreadAction)
+	authed("POST /v1/mail/threads/{id}/open", s.handleMarkThreadOpened)
 	authed("POST /v1/mail/threads/{id}/snooze", s.handleSnoozeThread)
 	authed("POST /v1/mail/threads/{id}/reminder", s.handleThreadReminder)
 
@@ -82,6 +87,7 @@ func New(deps Deps) http.Handler {
 	authed("PUT /v1/mail/drafts/{id}", s.handleUpdateDraft)
 	authed("DELETE /v1/mail/drafts/{id}", s.handleDeleteDraft)
 	authed("POST /v1/mail/drafts/{id}/send", s.handleSendDraft)
+	authed("POST /v1/mail/drafts/{id}/unsend", s.handleUnsendDraft)
 
 	authed("GET /v1/mail/snippets", s.handleListSnippets)
 	authed("POST /v1/mail/snippets", s.handleCreateSnippet)
@@ -105,7 +111,7 @@ func New(deps Deps) http.Handler {
 	authed("DELETE /v1/devices/{id}", s.handleUnregisterDevice)
 
 	var h http.Handler = mux
-	h = corsLocalhost(h)
+	h = corsMiddleware(h, deps.CORSAllowedOrigins)
 	h = s.logRequests(h)
 	h = s.recoverPanics(h)
 	return h

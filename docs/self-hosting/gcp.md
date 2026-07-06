@@ -177,6 +177,9 @@ The shipped backend image's default command is `api`; overriding it with
   --domain app.<domain>` (and `calendium-api` → `api.<domain>`), or front both with
   a Global HTTPS Load Balancer. The web build's `NEXT_PUBLIC_API_URL` must match
   the API's public hostname (set in B2).
+- With web and API on separate hostnames, set `CORS_ALLOWED_ORIGINS=https://app.<domain>`
+  and `PUBLIC_API_URL=https://api.<domain>` (register
+  `https://api.<domain>/v1/accounts/callback/{provider}` as the OAuth redirect URI).
 - If you ever put a **transaction-mode pooler** (e.g. Supabase Supavisor `:6543`,
   PgBouncer) in front of Postgres, append `&default_query_exec_mode=simple_protocol`
   to `DATABASE_URL` or the pgx driver errors with `prepared statement does not

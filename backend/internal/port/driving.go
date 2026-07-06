@@ -37,11 +37,20 @@ type BillingService interface {
 type AccountService interface {
 	List(ctx context.Context, userID string) ([]domain.ConnectedAccount, error)
 	// BeginConnect starts the provider OAuth flow and returns the URL to
-	// open in a browser.
-	BeginConnect(ctx context.Context, userID string, provider domain.Provider, redirectURL string) (authURL string, err error)
-	// CompleteConnect handles the OAuth callback (state-validated) and
-	// stores the account with encrypted tokens.
-	CompleteConnect(ctx context.Context, provider domain.Provider, state, code string) (domain.ConnectedAccount, error)
+	// open in a browser. redirectURL is the client's own return target
+	// (stored in state for the final callback redirect, never sent to the
+	// provider); requestBaseURL is the API's public origin used to build the
+	// provider redirect_uri when PUBLIC_API_URL is unset.
+	BeginConnect(ctx context.Context, userID string, provider domain.Provider, redirectURL, requestBaseURL string) (authURL string, err error)
+	// CompleteConnect handles the OAuth callback (state-validated) and stores
+	// the account with encrypted tokens. It returns the client redirect URL
+	// stored in state so the callback can 302 the browser back to the client;
+	// on failure after the state is consumed, the redirect URL is still
+	// returned (empty only when the state itself was invalid).
+	CompleteConnect(ctx context.Context, provider domain.Provider, state, code, requestBaseURL string) (account domain.ConnectedAccount, clientRedirect string, err error)
+	// SetVipSenders replaces the account's VIP-sender list (addresses routed
+	// to the "vip" split at ingest).
+	SetVipSenders(ctx context.Context, userID, accountID string, vipSenders []string) (domain.ConnectedAccount, error)
 	Disconnect(ctx context.Context, userID, accountID string) error
 }
 
@@ -71,6 +80,10 @@ type MailService interface {
 	// ActOnThread applies archive/trash/star/... locally and writes through
 	// to the provider.
 	ActOnThread(ctx context.Context, userID, threadID string, action domain.ThreadAction) (domain.Thread, error)
+	// MarkThreadOpened records that the owner opened the thread: it sets
+	// OpenedAt (when null), clears unread, and writes the read state through
+	// to the provider. Idempotent.
+	MarkThreadOpened(ctx context.Context, userID, threadID string) error
 	// SnoozeThread hides the thread until the given time; the worker
 	// resurfaces it when due.
 	SnoozeThread(ctx context.Context, userID, threadID string, until time.Time) (domain.Thread, error)
@@ -87,6 +100,11 @@ type MailService interface {
 	// undo-send grace. It returns a provisional message; the worker
 	// performs the actual provider send.
 	SendDraft(ctx context.Context, userID, draftID string) (domain.Message, error)
+	// UnsendDraft cancels a queued send within the undo-send grace window by
+	// clearing the draft's ScheduledAt, returning the reverted draft. It
+	// returns domain.ErrConflict when the worker has already delivered the
+	// draft (the grace window elapsed).
+	UnsendDraft(ctx context.Context, userID, draftID string) (domain.Draft, error)
 
 	ListSnippets(ctx context.Context, userID string) ([]domain.Snippet, error)
 	CreateSnippet(ctx context.Context, userID string, in SnippetInput) (domain.Snippet, error)

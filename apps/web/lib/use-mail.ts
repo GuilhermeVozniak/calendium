@@ -3,6 +3,7 @@
 import type {
   AiComposeRequest,
   AiComposeResponse,
+  Draft,
   InboxSplit,
   Message,
   Page,
@@ -10,8 +11,10 @@ import type {
   ThreadAction,
 } from '@calendium/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 
 import { getApiClient } from '@/lib/api';
+import { DEMO_MODE } from '@/lib/demo';
 import {
   applyMockAction,
   getMockThread,
@@ -24,10 +27,11 @@ import { fetchSnippets } from '@/lib/settings-data';
 import type { MailboxView } from '@/lib/mail-utils';
 
 /**
- * Mail data layer: TanStack Query hooks against the Calendium API with a
- * transparent fallback to the offline demo dataset (lib/mail-mock.ts) when the
- * API is unreachable. Every result carries its `source` so the UI can surface
- * demo mode.
+ * Mail data layer: TanStack Query hooks against the Calendium API. Outside
+ * explicit demo mode (lib/demo.ts) it surfaces real loading / empty / error
+ * states and never fabricates success; only when DEMO_MODE is on does it fall
+ * back to the offline sample dataset (lib/mail-mock.ts). Results carry their
+ * `source` so the UI can label demo data.
  */
 
 export type DataSource = 'api' | 'demo';
@@ -36,6 +40,8 @@ export interface MailListParams {
   split?: InboxSplit;
   view?: MailboxView;
   q?: string;
+  /** Skip fetching (e.g. while the Drafts pseudo-view is showing instead). */
+  enabled?: boolean;
 }
 
 export interface ThreadListResult {
@@ -49,7 +55,12 @@ export interface ThreadDetailResult {
   source: DataSource;
 }
 
-/** Lightweight reachability probe driving the offline-demo banner. */
+export interface DraftListResult {
+  drafts: Draft[];
+  source: DataSource;
+}
+
+/** Lightweight reachability probe driving the offline/demo banner. */
 export function useApiOnline(): boolean {
   const { data } = useQuery({
     queryKey: ['api-online'],
@@ -70,19 +81,24 @@ export function useApiOnline(): boolean {
 }
 
 export function useThreadList(params: MailListParams) {
+  // 'drafts' is not a thread view — it lists drafts via useDrafts, so never
+  // send it as a listThreads view.
+  const view = params.view && params.view !== 'drafts' ? params.view : undefined;
   return useQuery({
-    queryKey: ['threads', params.split ?? null, params.view ?? null, params.q ?? ''],
+    queryKey: ['threads', params.split ?? null, view ?? null, params.q ?? ''],
+    enabled: params.enabled ?? true,
     queryFn: async (): Promise<ThreadListResult> => {
       try {
         const page = await getApiClient().listThreads({
-          split: params.view ? undefined : (params.split ?? 'important'),
-          labelId: params.view,
+          split: view ? undefined : (params.split ?? 'important'),
+          view,
           q: params.q || undefined,
           limit: 100,
         });
         return { page, source: 'api' };
-      } catch {
-        return { page: getMockThreads(params), source: 'demo' };
+      } catch (err) {
+        if (DEMO_MODE) return { page: getMockThreads(params), source: 'demo' };
+        throw err;
       }
     },
     placeholderData: (previous) => previous,
@@ -98,9 +114,29 @@ export function useThreadDetail(threadId: string | null) {
       try {
         const detail = await getApiClient().getThread(threadId);
         return { ...detail, source: 'api' };
-      } catch {
-        const mock = getMockThread(threadId);
-        return mock ? { ...mock, source: 'demo' } : null;
+      } catch (err) {
+        if (DEMO_MODE) {
+          const mock = getMockThread(threadId);
+          return mock ? { ...mock, source: 'demo' } : null;
+        }
+        throw err;
+      }
+    },
+  });
+}
+
+/** Server-persisted drafts (GET /v1/mail/drafts) for the Drafts pseudo-view. */
+export function useDrafts(enabled: boolean) {
+  return useQuery({
+    queryKey: ['drafts'],
+    enabled,
+    queryFn: async (): Promise<DraftListResult> => {
+      try {
+        const drafts = await getApiClient().listDrafts();
+        return { drafts, source: 'api' };
+      } catch (err) {
+        if (DEMO_MODE) return { drafts: [], source: 'demo' };
+        throw err;
       }
     },
   });
@@ -117,7 +153,7 @@ export function useSnippets() {
 }
 
 // ---------------------------------------------------------------------------
-// Mutations (optimistic; demo store kept in sync so refetches don't undo)
+// Mutations (optimistic; failures revert + surface unless in demo mode)
 // ---------------------------------------------------------------------------
 
 function applyActionToThread(thread: Thread, action: ThreadAction): Thread {
@@ -136,6 +172,38 @@ function applyActionToThread(thread: Thread, action: ThreadAction): Thread {
 }
 
 const REMOVES_FROM_LIST: ReadonlySet<ThreadAction> = new Set(['archive', 'trash', 'spam']);
+
+const ACTION_ERROR: Partial<Record<ThreadAction, string>> = {
+  archive: 'Could not archive the conversation.',
+  trash: 'Could not delete the conversation.',
+  spam: 'Could not report spam.',
+  star: 'Could not update the star.',
+  unstar: 'Could not update the star.',
+  read: 'Could not mark the conversation read.',
+  unread: 'Could not mark the conversation unread.',
+  move_to_inbox: 'Could not move the conversation to the inbox.',
+};
+
+export function useDraftActions() {
+  const queryClient = useQueryClient();
+
+  async function remove(draftId: string): Promise<void> {
+    const previous = queryClient.getQueryData<DraftListResult>(['drafts']);
+    queryClient.setQueryData<DraftListResult | undefined>(['drafts'], (data) =>
+      data ? { ...data, drafts: data.drafts.filter((d) => d.id !== draftId) } : data
+    );
+    try {
+      await getApiClient().deleteDraft(draftId);
+    } catch (err) {
+      if (DEMO_MODE) return;
+      if (previous) queryClient.setQueryData(['drafts'], previous);
+      toast.error('Could not delete the draft.');
+      throw err;
+    }
+  }
+
+  return { remove };
+}
 
 export function useMailActions() {
   const queryClient = useQueryClient();
@@ -157,41 +225,93 @@ export function useMailActions() {
     );
   }
 
-  async function act(threadId: string, action: ThreadAction): Promise<void> {
-    updateCaches(threadId, (t) => applyActionToThread(t, action), REMOVES_FROM_LIST.has(action));
-    applyMockAction(threadId, action);
+  /**
+   * Applies an optimistic cache patch, calls the API, and — outside demo mode —
+   * reverts the caches and toasts on failure so a rejected mutation is never
+   * shown as success.
+   */
+  async function runOptimistic(
+    threadId: string,
+    patch: (t: Thread) => Thread,
+    removeFromLists: boolean,
+    apiCall: () => Promise<unknown>,
+    mockApply: () => void,
+    errorMessage: string
+  ): Promise<void> {
+    const previousLists = queryClient.getQueriesData<ThreadListResult | undefined>({
+      queryKey: ['threads'],
+    });
+    const previousDetail = queryClient.getQueryData<ThreadDetailResult | null | undefined>([
+      'thread',
+      threadId,
+    ]);
+    updateCaches(threadId, patch, removeFromLists);
+    if (DEMO_MODE) mockApply();
     try {
-      await getApiClient().actOnThread(threadId, action);
+      await apiCall();
     } catch {
-      // Demo mode — the optimistic update is the source of truth.
+      if (DEMO_MODE) return;
+      for (const [key, data] of previousLists) queryClient.setQueryData(key, data);
+      queryClient.setQueryData(['thread', threadId], previousDetail);
+      toast.error(errorMessage);
     }
+  }
+
+  async function act(threadId: string, action: ThreadAction): Promise<void> {
+    await runOptimistic(
+      threadId,
+      (t) => applyActionToThread(t, action),
+      REMOVES_FROM_LIST.has(action),
+      () => getApiClient().actOnThread(threadId, action),
+      () => applyMockAction(threadId, action),
+      ACTION_ERROR[action] ?? 'Could not update the conversation.'
+    );
   }
 
   async function snooze(threadId: string, until: string): Promise<void> {
-    updateCaches(threadId, (t) => ({ ...t, snoozedUntil: until }), true);
-    mockSnoozeThread(threadId, until);
-    try {
-      await getApiClient().snoozeThread(threadId, until);
-    } catch {
-      // Demo mode.
-    }
+    await runOptimistic(
+      threadId,
+      (t) => ({ ...t, snoozedUntil: until }),
+      true,
+      () => getApiClient().snoozeThread(threadId, until),
+      () => mockSnoozeThread(threadId, until),
+      'Could not snooze the conversation.'
+    );
   }
 
   async function remind(threadId: string, remindAt: string | null): Promise<void> {
-    updateCaches(threadId, (t) => ({ ...t, remindAt }), false);
-    mockRemindThread(threadId, remindAt);
+    await runOptimistic(
+      threadId,
+      (t) => ({ ...t, remindAt }),
+      false,
+      () => getApiClient().setThreadReminder(threadId, remindAt),
+      () => mockRemindThread(threadId, remindAt),
+      'Could not set the reminder.'
+    );
+  }
+
+  /**
+   * Records that the owner opened a thread (POST .../open): marks it read
+   * server-side and stamps real openedAt. Idempotent and low-stakes, so the
+   * optimistic read state is left in place on failure (it reconciles on the
+   * next refetch) rather than flipping the unread dot back mid-view.
+   */
+  async function markOpened(threadId: string): Promise<void> {
+    const nowIso = new Date().toISOString();
+    updateCaches(threadId, (t) => ({ ...t, unread: false, openedAt: t.openedAt ?? nowIso }), false);
+    if (DEMO_MODE) applyMockAction(threadId, 'read');
     try {
-      await getApiClient().setThreadReminder(threadId, remindAt);
+      await getApiClient().markThreadOpened(threadId);
     } catch {
-      // Demo mode.
+      // Reconciles on the next refetch.
     }
   }
 
-  return { act, snooze, remind };
+  return { act, snooze, remind, markOpened };
 }
 
 // ---------------------------------------------------------------------------
-// AI compose (graceful demo fallback)
+// AI (real API; demo fallback only in DEMO_MODE)
 // ---------------------------------------------------------------------------
 
 export async function runAiCompose(
@@ -200,7 +320,37 @@ export async function runAiCompose(
   try {
     const res = await getApiClient().aiCompose(req);
     return { ...res, source: 'api' };
-  } catch {
-    return { ...mockAiCompose(req), source: 'demo' };
+  } catch (err) {
+    if (DEMO_MODE) return { ...mockAiCompose(req), source: 'demo' };
+    throw err;
+  }
+}
+
+export async function runAiSummarize(
+  threadId: string
+): Promise<{ text: string; source: DataSource }> {
+  try {
+    const res = await getApiClient().aiSummarize({ threadId, prompt: '' });
+    return { text: res.text, source: 'api' };
+  } catch (err) {
+    if (DEMO_MODE) {
+      return { text: mockAiCompose({ action: 'summarize', prompt: '', threadId }).text, source: 'demo' };
+    }
+    throw err;
+  }
+}
+
+export async function runAiAsk(
+  threadId: string,
+  prompt: string
+): Promise<{ text: string; source: DataSource }> {
+  try {
+    const res = await getApiClient().aiAsk({ threadId, prompt });
+    return { text: res.text, source: 'api' };
+  } catch (err) {
+    if (DEMO_MODE) {
+      return { text: mockAiCompose({ action: 'ask', prompt, threadId }).text, source: 'demo' };
+    }
+    throw err;
   }
 }

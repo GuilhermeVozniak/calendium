@@ -1,8 +1,9 @@
 import { Loader2 } from 'lucide-react';
-import { type FormEvent, useState } from 'react';
+import { type FormEvent, useEffect, useState } from 'react';
 
-import { signInEmail, signInSocial, signUpEmail } from '@/lib/auth';
-import { useServerConfig } from '@/lib/server-config';
+import { signInEmail, signUpEmail, verifyOtt } from '@/lib/auth';
+import { useServerConfig, webOrigin } from '@/lib/server-config';
+import { desktop, onDeepLink } from '@/lib/wails';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
 
@@ -41,10 +42,11 @@ function AppleIcon() {
 
 /**
  * Sign-in gate (Better Auth): shown after a server is configured but before the
- * user has an authenticated session. Offers email + password (with a create-
- * account toggle) plus any social providers the server advertises via
- * /v1/instance (`authProviders`). On success the session store updates and the
- * app mounts automatically.
+ * user has a session. Email + password runs in-process. Google/Apple can't run
+ * in an embedded WebView, so those open the web sign-in in the system browser
+ * (contract item 11); it hands a one-time token back via the
+ * calendium://auth/callback?ott=... deep link (or a pasted code) which we redeem
+ * with verifyOtt. On success the session store flips and the app mounts.
  */
 export function SignInView() {
   const { config } = useServerConfig();
@@ -56,8 +58,39 @@ export function SignInView() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState<null | 'email' | 'google' | 'apple'>(null);
+  const [busy, setBusy] = useState<null | 'email'>(null);
+  const [socialStarted, setSocialStarted] = useState(false);
+  const [code, setCode] = useState('');
+  const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  async function handleVerify(token: string) {
+    setError(null);
+    setVerifying(true);
+    const res = await verifyOtt(token);
+    // On success the session store flips and the gate swaps to <App/>; on
+    // failure surface the message and re-enable the input.
+    if (!res.ok) {
+      setError(res.error ?? 'Could not verify that code.');
+      setVerifying(false);
+    }
+  }
+
+  // Desktop deep-link handoff: the browser returns calendium://auth/callback?ott=…
+  useEffect(
+    () =>
+      onDeepLink((url) => {
+        if (!url.startsWith('calendium://auth')) return;
+        let ott = '';
+        try {
+          ott = new URL(url).searchParams.get('ott') ?? '';
+        } catch {
+          // Ignore malformed deep links.
+        }
+        if (ott) void handleVerify(ott);
+      }),
+    []
+  );
 
   async function submitEmail(e: FormEvent) {
     e.preventDefault();
@@ -67,22 +100,21 @@ export function SignInView() {
       mode === 'signin'
         ? await signInEmail(email, password)
         : await signUpEmail(name, email, password);
-    // On success the session store flips and the gate swaps to <App/>; on
-    // failure surface the message and re-enable the form.
     if (!res.ok) {
       setError(res.error ?? 'Something went wrong.');
       setBusy(null);
     }
   }
 
-  async function social(provider: 'google' | 'apple') {
-    setError(null);
-    setBusy(provider);
-    const res = await signInSocial(provider);
-    if (!res.ok) {
-      setError(res.error ?? 'Something went wrong.');
-      setBusy(null);
+  function openWebSignIn() {
+    const origin = webOrigin(config);
+    if (!origin) {
+      setError('Connect to a server first.');
+      return;
     }
+    setError(null);
+    setSocialStarted(true);
+    desktop.OpenExternal(`${origin}/signin?next=/desktop-callback`);
   }
 
   const isSignup = mode === 'signup';
@@ -101,9 +133,7 @@ export function SignInView() {
               <h1 className="text-lg font-semibold tracking-tight">
                 {isSignup ? 'Create your account' : 'Sign in to Calendium'}
               </h1>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {config?.name ?? 'Calendium'}
-              </p>
+              <p className="mt-1 text-sm text-muted-foreground">{config?.name ?? 'Calendium'}</p>
             </div>
           </div>
 
@@ -115,10 +145,10 @@ export function SignInView() {
                     <Button
                       variant="outline"
                       className="gap-2"
-                      disabled={busy !== null}
-                      onClick={() => void social('google')}
+                      disabled={verifying}
+                      onClick={openWebSignIn}
                     >
-                      {busy === 'google' ? <Loader2 className="animate-spin" /> : <GoogleIcon />}
+                      <GoogleIcon />
                       Continue with Google
                     </Button>
                   )}
@@ -126,13 +156,44 @@ export function SignInView() {
                     <Button
                       variant="outline"
                       className="gap-2"
-                      disabled={busy !== null}
-                      onClick={() => void social('apple')}
+                      disabled={verifying}
+                      onClick={openWebSignIn}
                     >
-                      {busy === 'apple' ? <Loader2 className="animate-spin" /> : <AppleIcon />}
+                      <AppleIcon />
                       Continue with Apple
                     </Button>
                   )}
+                </div>
+
+                {socialStarted && (
+                  <p className="text-xs text-muted-foreground">
+                    Finish signing in in your browser, then return to Calendium. If it doesn't
+                    switch back on its own, paste the code from your browser below.
+                  </p>
+                )}
+
+                <div className="flex items-center gap-2">
+                  <Input
+                    aria-label="Sign-in code"
+                    value={code}
+                    onChange={(e) => {
+                      setCode(e.target.value);
+                      setError(null);
+                    }}
+                    placeholder="Have a code? Paste it here"
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    disabled={verifying}
+                  />
+                  <Button
+                    variant="outline"
+                    disabled={verifying || !code.trim()}
+                    onClick={() => void handleVerify(code)}
+                  >
+                    {verifying ? <Loader2 className="animate-spin" /> : null}
+                    Verify
+                  </Button>
                 </div>
 
                 <div className="flex items-center gap-3">

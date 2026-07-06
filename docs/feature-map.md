@@ -34,7 +34,7 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | Per-account signatures | Rich-text signatures configured per connected account and applied automatically | P2 | planned | web, desktop, mobile |
 | Attachment quick access | Search and browse all attachments from a conversation or contact via a command | P2 | planned | web, desktop, mobile |
 | **AI** | | | | |
-| Ask AI | Natural-language questions over inbox, calendar, and the web with cited source emails (`ask` action reserved in the AI contract; full cited-answer experience planned) | P0 | planned | web, desktop, mobile |
+| Ask AI | Natural-language questions over inbox, calendar, and the web with cited source emails; the `ask` action is now wired into the clients (`ApiClient.aiAsk`) with a basic ask UI, and the full cited-source answer experience is planned | P0 | scaffolded | web, desktop, mobile |
 | Write with AI | Jot a few phrases and AI expands them into a full email in your voice; `POST /v1/ai/compose` via OpenRouter | P0 | scaffolded | web, desktop, mobile |
 | Auto Drafts | AI proactively drafts replies, follow-ups, and scheduling responses before you open the email | P0 | planned | web, desktop, mobile |
 | Instant Reply | Three precomputed, ready-to-send reply drafts under every conversation | P0 | planned | web, desktop, mobile |
@@ -164,8 +164,9 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 - Bun monorepo with `apps/*` + `packages/*` workspaces; contracts locked in `docs/architecture.md`, `docs/tech-stack.md`, `docs/payments.md`.
 - `packages/shared`: full TypeScript domain model + typed `ApiClient` mirroring the Go domain and REST v1 contract.
 - Go backend skeleton (hexagonal, stdlib-only): REST v1 surface, Better Auth JWT verification (EdDSA/Ed25519 via JWKS), Stripe $50/yr checkout/portal/webhooks, OpenRouter AI adapter, APNs/FCM/WebPush adapters, Postgres migrations.
-- Product surface scaffolded end to end (mock/local data where provider sync is not yet live): split inbox model, thread list with j/k/e shortcuts, Cmd+K command palette, snooze, send later, follow-up reminders, snippets, AI compose/summarize via OpenRouter, read statuses, unified search, undo-send window, share availability.
+- Product surface scaffolded end to end (mock/local data where provider sync is not yet live): split inbox model, thread list with j/k/e shortcuts, Cmd+K command palette, snooze, send later, drafts management (list/open/delete/update via `ApiClient`), starred/snoozed/sent pseudo-views (`?view=`), follow-up reminders, snippets, AI compose/summarize/ask via OpenRouter, read-state sync (`markThreadOpened`), VIP senders, unified search, undo-send with a post-send Undo toast (`undoSendSeconds` from `GET /v1/instance`), web push registration (VAPID), and share availability.
 - Expo mobile shell with Better Auth (email+password + Google/Apple sign-in, deep linking) and the reader-mode payments treatment (no IAP).
+- Wails desktop client reaching the scaffolded surface — compose, unified search, and basic calendar event CRUD — with runtime server switching, plus Google/Apple sign-in handed off through the system browser via one-time codes (`/desktop-callback` → `calendium://auth/callback?ott=…`).
 - One design system everywhere: shadcn/ui new-york, neutral HSL tokens, radius 0.625rem, lucide icons, light + dark.
 
 ### M1 — Live provider sync

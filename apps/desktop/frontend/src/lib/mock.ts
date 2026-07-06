@@ -87,6 +87,7 @@ function seedToThread(seed: ThreadSeed): Thread {
     unread: seed.unread ?? false,
     starred: seed.starred ?? false,
     lastMessageAt: iso(subMinutes(now, seed.agoMinutes)),
+    openedAt: null,
     snoozedUntil: null,
     remindAt: null,
   };
@@ -169,6 +170,23 @@ export function mockEvents(fromIso: string, toIso: string): Event[] {
   const from = new Date(fromIso).getTime();
   const to = new Date(toIso).getTime();
   return events.filter((e) => new Date(e.start).getTime() >= from && new Date(e.start).getTime() <= to);
+}
+
+/** Substring search across mock threads + events (⌘K in demo mode). */
+export function mockSearch(query: string): { threads: Thread[]; events: Event[] } {
+  const q = query.toLowerCase();
+  const threads = mockThreads().filter(
+    (t) =>
+      t.subject.toLowerCase().includes(q) ||
+      t.snippet.toLowerCase().includes(q) ||
+      t.participants.some(
+        (p) => (p.name ?? '').toLowerCase().includes(q) || p.email.toLowerCase().includes(q)
+      )
+  );
+  const events = mockEvents(subDays(now, 30).toISOString(), addDays(now, 30).toISOString()).filter(
+    (e) => e.title.toLowerCase().includes(q)
+  );
+  return { threads, events };
 }
 
 // --- Billing: standalone demo of the Spotify desktop flow -------------------

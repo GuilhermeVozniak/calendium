@@ -28,6 +28,26 @@ func ParseInboxSplit(s string) (InboxSplit, error) {
 	return "", fmt.Errorf("%w: unknown inbox split %q", ErrValidation, s)
 }
 
+// ThreadView is a cross-split pseudo-view selected via the `view` query
+// parameter (never a labelId): starred conversations, snoozed conversations
+// still in the future, or conversations the account owner has sent to.
+type ThreadView string
+
+const (
+	ThreadViewStarred ThreadView = "starred"
+	ThreadViewSnoozed ThreadView = "snoozed"
+	ThreadViewSent    ThreadView = "sent"
+)
+
+// ParseThreadView validates a view query parameter.
+func ParseThreadView(s string) (ThreadView, error) {
+	switch ThreadView(s) {
+	case ThreadViewStarred, ThreadViewSnoozed, ThreadViewSent:
+		return ThreadView(s), nil
+	}
+	return "", fmt.Errorf("%w: unknown thread view %q", ErrValidation, s)
+}
+
 // EmailAddress is a display name + address pair.
 type EmailAddress struct {
 	Name  *string `json:"name"`
@@ -66,7 +86,16 @@ type Thread struct {
 	MessageCount     int            `json:"messageCount"`
 	Unread           bool           `json:"unread"`
 	Starred          bool           `json:"starred"`
-	LastMessageAt    time.Time      `json:"lastMessageAt"`
+	// InInbox mirrors provider inbox membership: archive/trash/spam clear it
+	// (and write through to the provider) so triaged threads leave the inbox
+	// list instead of reappearing on every refetch. Provider sync recomputes
+	// it from the thread's labels/folder. Not serialized: clients scope by
+	// split/view, never by this flag.
+	InInbox       bool      `json:"-"`
+	LastMessageAt time.Time `json:"lastMessageAt"`
+	// OpenedAt is set the first time the owner opens the thread (POST
+	// /v1/mail/threads/{id}/open); null until then. Real read state, not mock.
+	OpenedAt *time.Time `json:"openedAt"`
 	// SnoozedUntil hides the thread from the inbox until it elapses; the
 	// worker resurfaces it (unread + push) when due.
 	SnoozedUntil *time.Time `json:"snoozedUntil"`

@@ -6,6 +6,7 @@ import type {
   ConnectedAccount,
   DevicePlatform,
   Draft,
+  DraftInput,
   Event,
   EventInput,
   EventPatch,
@@ -126,6 +127,12 @@ export class ApiClient {
       redirectUrl,
     });
   }
+  /** Replaces the account's VIP-sender list (addresses routed to the "vip" split). */
+  setVipSenders(accountId: string, vipSenders: string[]) {
+    return this.request<ConnectedAccount>('PUT', `/v1/accounts/${accountId}/vip-senders`, {
+      vipSenders,
+    });
+  }
   disconnectAccount(accountId: string) {
     return this.request<void>('DELETE', `/v1/accounts/${accountId}`);
   }
@@ -133,6 +140,8 @@ export class ApiClient {
   // --- Mail ---
   listThreads(params: {
     split?: string;
+    /** Cross-split pseudo-view: 'starred' | 'snoozed' | 'sent' (never a labelId). */
+    view?: string;
     labelId?: string;
     q?: string;
     cursor?: string;
@@ -140,6 +149,7 @@ export class ApiClient {
   }) {
     const qs = new URLSearchParams();
     if (params.split) qs.set('split', params.split);
+    if (params.view) qs.set('view', params.view);
     if (params.labelId) qs.set('labelId', params.labelId);
     if (params.q) qs.set('q', params.q);
     if (params.cursor) qs.set('cursor', params.cursor);
@@ -155,21 +165,47 @@ export class ApiClient {
   actOnThread(threadId: string, action: ThreadAction) {
     return this.request<Thread>('POST', `/v1/mail/threads/${threadId}/actions`, { action });
   }
+  /** Records that the owner opened the thread (sets real read state); idempotent. */
+  markThreadOpened(threadId: string) {
+    return this.request<void>('POST', `/v1/mail/threads/${threadId}/open`);
+  }
   snoozeThread(threadId: string, until: string) {
     return this.request<Thread>('POST', `/v1/mail/threads/${threadId}/snooze`, { until });
   }
   setThreadReminder(threadId: string, remindAt: string | null) {
     return this.request<Thread>('POST', `/v1/mail/threads/${threadId}/reminder`, { remindAt });
   }
+  listDrafts() {
+    return this.request<Draft[]>('GET', '/v1/mail/drafts');
+  }
+  getDraft(draftId: string) {
+    return this.request<Draft>('GET', `/v1/mail/drafts/${draftId}`);
+  }
   saveDraft(draft: Partial<Draft> & { accountId: string }) {
     return this.request<Draft>('POST', '/v1/mail/drafts', draft);
   }
-  updateDraft(draftId: string, draft: Partial<Draft>) {
-    return this.request<Draft>('PUT', `/v1/mail/drafts/${draftId}`, draft);
+  /**
+   * Full replace of a draft (PUT semantics): pass the entire DraftInput, since
+   * omitted fields blank the stored value. Clearing scheduledAt before the
+   * grace elapses is undo-send.
+   */
+  updateDraft(draftId: string, input: DraftInput) {
+    return this.request<Draft>('PUT', `/v1/mail/drafts/${draftId}`, input);
+  }
+  deleteDraft(draftId: string) {
+    return this.request<void>('DELETE', `/v1/mail/drafts/${draftId}`);
   }
   /** Sends a draft immediately, or at `scheduledAt` when set (Send Later). */
   sendDraft(draftId: string) {
     return this.request<Message>('POST', `/v1/mail/drafts/${draftId}/send`);
+  }
+  /**
+   * Cancels a queued send within the undo-send grace window, returning the
+   * reverted draft. Throws ApiRequestError(409, 'conflict') when the message
+   * has already been delivered.
+   */
+  unsendDraft(draftId: string) {
+    return this.request<Draft>('POST', `/v1/mail/drafts/${draftId}/unsend`);
   }
   listSnippets() {
     return this.request<Snippet[]>('GET', '/v1/mail/snippets');
@@ -223,8 +259,18 @@ export class ApiClient {
   }
 
   // --- AI ---
+  // The backend exposes a single POST /v1/ai/compose route whose `action`
+  // selects compose/reply/summarize/ask; the helpers below mirror it.
   aiCompose(req: AiComposeRequest) {
     return this.request<AiComposeResponse>('POST', '/v1/ai/compose', req);
+  }
+  /** Summarize a thread (action='summarize'); prompt is optional. */
+  aiSummarize(req: Omit<AiComposeRequest, 'action'>) {
+    return this.aiCompose({ ...req, action: 'summarize' });
+  }
+  /** Ask a question about a thread/draft (action='ask'). */
+  aiAsk(req: Omit<AiComposeRequest, 'action'>) {
+    return this.aiCompose({ ...req, action: 'ask' });
   }
 
   // --- Push devices ---

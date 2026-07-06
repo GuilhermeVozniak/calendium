@@ -121,10 +121,14 @@ operator guide (Docker Compose, HTTPS, providers, upgrades) lives in
 
 **Instance discovery.** `GET /v1/instance` is unauthenticated so a client that only knows
 the server base URL can self-configure. It returns `{ name, mode, version, authBaseUrl,
-authProviders, features: { billing, google, microsoft, ai, push } }` where `mode` is
+authProviders, undoSendSeconds, vapidPublicKey?, features: { billing, google, microsoft, ai, push } }`
+where `mode` is
 `self_host` when `SELF_HOSTED=true` else `cloud`, `authBaseUrl` is `${PUBLIC_WEB_URL||APP_URL}/api/auth`
+(with `PUBLIC_WEB_URL` winning over `APP_URL` when both are set)
 (where Better Auth is hosted), `authProviders` lists enabled sign-in methods (`["email"]`, plus
-`"google"`/`"apple"` when their credentials are configured), `features.billing = !SELF_HOSTED`,
+`"google"`/`"apple"` when their credentials are configured), `undoSendSeconds` is the
+undo-send grace window (`UNDO_SEND_SECONDS`, default 15), `vapidPublicKey` is present only
+when web push is configured, `features.billing = !SELF_HOSTED`,
 and the remaining feature flags reflect which gateways/credentials are configured. Clients build
 their Better Auth client against `authBaseUrl` and read `features.billing` to decide whether to
 show any billing/paywall UI at all.

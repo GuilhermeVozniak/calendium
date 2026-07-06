@@ -159,12 +159,18 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 
 	// 3. Threads (preserving local-only state on updates).
 	localThreadByProvider := map[string]domain.Thread{}
+	var notify []domain.Thread
 	for _, t := range page.Threads {
 		t.AccountID = acct.ID
+		// since bounds "is this a genuinely new inbound message" for both the
+		// resurface-on-reply and push-notify checks below.
+		var since time.Time
 		existing, err := s.threads.GetByProviderID(ctx, acct.ID, t.ProviderThreadID)
 		switch {
 		case err == nil:
 			t.ID = existing.ID
+			t.OpenedAt = existing.OpenedAt // read state is local-only
+			since = existing.LastMessageAt
 			t.SnoozedUntil = existing.SnoozedUntil
 			t.RemindAt = existing.RemindAt
 			// A fresh inbound reply on the thread resurfaces it: Superhuman
@@ -206,6 +212,14 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 			return err
 		}
 		localThreadByProvider[t.ProviderThreadID] = saved
+		// Push on newly-synced important/vip mail (a genuinely new inbound
+		// message the owner has not sent). Only worth collecting when push is
+		// wired.
+		if s.push != nil && saved.InInbox &&
+			(saved.Split == domain.SplitImportant || saved.Split == domain.SplitVIP) &&
+			hasNewInboundReply(page.Messages, t.ProviderThreadID, acct.Email, since) {
+			notify = append(notify, saved)
+		}
 	}
 
 	// 4. Messages, remapped onto local thread ids.
@@ -231,6 +245,15 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 		if _, err := s.messages.Upsert(ctx, m); err != nil {
 			return err
 		}
+	}
+
+	// 5. Push notifications for new important/vip mail (best-effort).
+	for _, t := range notify {
+		title := "New email"
+		if t.Split == domain.SplitVIP {
+			title = "New VIP email"
+		}
+		s.notifyThread(ctx, t, title, firstNonEmpty(t.Subject, "You have a new message"))
 	}
 	return nil
 }

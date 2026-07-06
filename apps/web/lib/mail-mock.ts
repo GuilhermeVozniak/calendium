@@ -129,6 +129,7 @@ function build(spec: ThreadSpec): ThreadRecord {
       unread: spec.unread ?? false,
       starred: spec.starred ?? false,
       lastMessageAt: last.sentAt,
+      openedAt: spec.unread ? null : hoursAgo(0),
       snoozedUntil: null,
       remindAt: null,
     },

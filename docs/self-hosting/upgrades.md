@@ -77,7 +77,7 @@ Key properties:
   runs in its own transaction together with its bookkeeping row, so a failed
   migration rolls back cleanly.
 - **Ordered lexicographically.** Files are applied in filename order
-  (`0001_init.sql`, `0002_better_auth.sql`, `0002_subscription_event_order.sql`,
+  (`0001_init.sql`, `0002_better_auth.sql`, `0003_subscription_event_order.sql`,
   …). The Better Auth schema (`0002_better_auth.sql`) is applied by the same
   boot migrator — there is no separate JS migration step at deploy.
 - **Forward-only.** There are no down-migrations. Rolling *back* schema means
@@ -171,7 +171,7 @@ The stack pins `postgres:16-alpine`. Postgres minor upgrades within a major
 **major** Postgres upgrade (e.g. 16 → 17) requires a dump/restore or
 `pg_upgrade`, not just a tag bump — `pg_dump` on the old version, then restore
 into a fresh 17 volume. Snapshot first. See
-[Security → keep base images current](./security.md#keep-base-images-current)
+[Security → keep base images current](./security.md#7-keep-base-images-current)
 for the other images.
 
 ---

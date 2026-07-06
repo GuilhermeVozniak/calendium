@@ -1,6 +1,7 @@
 import { configureApi } from '@/lib/api';
 import { configureAuthClient, getAuthClient, type AuthClient } from '@/lib/auth-client';
-import { fetchInstance, type InstanceMode } from '@calendium/shared';
+import { setDemoMode } from '@/lib/mock';
+import { fetchInstance, type InstanceFeatures, type InstanceMode } from '@calendium/shared';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as React from 'react';
 
@@ -29,7 +30,35 @@ export interface ServerConfig {
   mode: InstanceMode;
   /** Human-readable instance name (INSTANCE_NAME on the server). */
   name: string;
+  /**
+   * Enabled sign-in methods (e.g. ["email","google","apple"]), from
+   * /v1/instance. Clients hide social buttons the server didn't configure.
+   */
+  authProviders: string[];
+  /** Feature flags from /v1/instance so the UI hides what the server can't do. */
+  features: InstanceFeatures;
+  /**
+   * Explicit "Try the demo" mode: the app runs on deterministic mock data with
+   * no backend. Only ever set by the demo button on the connect screen; absent
+   * for every real self-host / Cloud connection.
+   */
+  demoMode?: boolean;
 }
+
+/**
+ * Ready-made config for the offline "Try the demo" experience. It points at no
+ * real server — every screen reads the mock data in lib/mock and auth is
+ * short-circuited to a demo user. This is the ONLY place mock data is enabled.
+ */
+export const DEMO_CONFIG: ServerConfig = {
+  serverUrl: 'https://demo.calendium.app',
+  authBaseUrl: 'https://demo.calendium.app/api/auth',
+  mode: 'cloud',
+  name: 'Calendium Demo',
+  authProviders: ['email', 'google', 'apple'],
+  features: { billing: true, google: true, microsoft: true, ai: true, push: false },
+  demoMode: true,
+};
 
 /** Normalizes user-entered URLs: trims, drops trailing slash, adds https://. */
 export function normalizeServerUrl(url: string): string {
@@ -68,11 +97,15 @@ export async function discoverServer(serverUrl: string): Promise<ServerConfig> {
     authBaseUrl: info.authBaseUrl,
     mode: info.mode,
     name: info.name,
+    authProviders: info.authProviders,
+    features: info.features,
   };
 }
 
 /** Applies (or clears) a config on the runtime Better Auth + API clients. */
 function applyConfig(config: ServerConfig | null): AuthClient | null {
+  // Gate mock data on the config's explicit demo flag (never on live configs).
+  setDemoMode(config?.demoMode ?? false);
   if (config) {
     configureApi(config.serverUrl);
     return configureAuthClient(config.authBaseUrl);

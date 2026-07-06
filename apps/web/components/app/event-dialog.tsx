@@ -44,8 +44,8 @@ import {
   sendRsvpApi,
   updateEventApi,
 } from '@/lib/calendar-data';
-import { MOCK_SELF_EMAIL } from '@/lib/calendar-mock';
 import { nextHalfHour } from '@/lib/quick-add';
+import { useSelfEmails } from '@/lib/use-identity';
 import { cn } from '@/lib/utils';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -112,9 +112,13 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
   const [reminders, setReminders] = React.useState<number[]>([10]);
   const [rsvpChoice, setRsvpChoice] = React.useState<RsvpStatus>('needs_action');
 
+  const selfEmails = useSelfEmails();
   const writableCalendars = calendars.filter((c) => c.canWrite);
   const organizer = event?.attendees.find((a) => a.organizer);
-  const isInvite = !!event && event.attendees.length > 0 && organizer?.email !== MOCK_SELF_EMAIL;
+  const isInvite =
+    !!event &&
+    event.attendees.length > 0 &&
+    !(organizer && selfEmails.has(organizer.email.toLowerCase()));
 
   React.useEffect(() => {
     if (!open) return;
@@ -133,7 +137,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
       setMeet(event.conferencing != null);
       setReminders([...event.reminderMinutes]);
       const self =
-        event.attendees.find((a) => a.email === MOCK_SELF_EMAIL) ??
+        event.attendees.find((a) => selfEmails.has(a.email.toLowerCase())) ??
         event.attendees.find((a) => !a.organizer);
       setRsvpChoice(self?.response ?? 'needs_action');
     } else {
@@ -158,7 +162,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
       setRsvpChoice('needs_action');
     }
     setAttendeeDraft('');
-  }, [open, event, defaults, calendars]);
+  }, [open, event, defaults, calendars, selfEmails]);
 
   /** Shifting the start keeps the event duration by moving the end with it. */
   const handleStartChange = (value: string) => {

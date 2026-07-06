@@ -17,7 +17,7 @@ import { Input } from '@/ui/input';
  * and persist the config so the Better Auth + API clients build at runtime.
  */
 export function ConnectView() {
-  const { save } = useServerConfig();
+  const { save, enterDemo } = useServerConfig();
   const [url, setUrl] = useState((import.meta.env.VITE_API_URL as string | undefined) ?? '');
   const [busy, setBusy] = useState<null | 'server' | 'cloud'>(null);
   const [error, setError] = useState<string | null>(null);
@@ -130,6 +130,14 @@ export function ConnectView() {
                 {busy === 'cloud' ? <Loader2 className="animate-spin" /> : <Cloud />}
                 Use Calendium Cloud
               </Button>
+
+              <button
+                type="button"
+                className="mt-1 text-center text-xs text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline"
+                onClick={enterDemo}
+              >
+                Just exploring? Try the demo
+              </button>
             </div>
           )}
         </div>

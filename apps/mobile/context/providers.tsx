@@ -1,18 +1,10 @@
 import { AuthProvider } from '@/context/auth';
+import { queryClient } from '@/lib/query-client';
 import { ServerConfigProvider } from '@/lib/server-config';
 import { NAV_THEME } from '@/lib/theme';
 import { ThemeProvider } from '@react-navigation/native';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { useColorScheme } from 'nativewind';
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: 1,
-      staleTime: 30_000,
-    },
-  },
-});
 
 export default function Providers({ children }: { children: React.ReactNode }) {
   const { colorScheme } = useColorScheme();

@@ -109,12 +109,15 @@ failed.
 **Causes & fixes:**
 
 - **The API can't reach the JWKS endpoint.** The backend fetches public keys
-  from `AUTH_JWKS_URL` (default `${BETTER_AUTH_URL}/api/auth/jwks`)
-  **server-to-server**, so it must be reachable from the `api` container to the
-  `web` service — not just from a browser. Inside the bundled compose network,
-  point it at the internal service: `AUTH_JWKS_URL=http://web:3000/api/auth/jwks`.
-  Externally it must resolve and not be blocked by a firewall or a proxy that
-  only allows browser traffic. Test from inside the container:
+  from `AUTH_JWKS_URL` **server-to-server**, so it must be reachable from the
+  `api`/`worker` containers to the `web` service — not just from a browser. The
+  bundled `docker-compose.yml` defaults it to the in-network
+  `http://web:3000/api/auth/jwks`, which works out of the box — **leave
+  `AUTH_JWKS_URL` blank in `.env`**. A 401 here usually means you *overrode* it
+  wrongly: pointing it at the public `BETTER_AUTH_URL` (the `api` container can't
+  loop back through your proxy) or at a host the container can't resolve. Either
+  clear it to fall back to the compose default, or set a URL the `api` container
+  can actually reach. Test from inside the container:
   `docker compose exec api wget -qO- "$AUTH_JWKS_URL"` — you should get a JSON
   JWKS containing `"kty":"OKP","crv":"Ed25519"`.
 - **Issuer pin mismatch.** The backend requires the token `iss` to equal
@@ -175,7 +178,10 @@ docker compose up -d --build web     # or: make self-host-up
 Note there's usually **no CORS to configure**: behind the proxy the web app and
 API share one origin (`https://your-domain`, API under `/v1`). CORS errors are a
 symptom that the web app is pointed at a *different* origin than it's served
-from — fix the URL rather than loosening CORS.
+from — fix the URL rather than loosening CORS. When you *deliberately* serve the
+web app and API from different origins (or a third-party browser client hits the
+API), add those origins to `CORS_ALLOWED_ORIGINS` — the desktop app's
+`wails://wails.localhost` origin and localhost dev origins are already allowed.
 
 ---
 
@@ -185,7 +191,8 @@ from — fix the URL rather than loosening CORS.
 Microsoft shows `AADSTS50011`, when connecting a mailbox.
 
 **Cause/fix:** the backend callback URL isn't registered in the provider
-console. Register it **exactly**:
+console. This is the **API's own** callback — `${PUBLIC_API_URL}/v1/accounts/callback/{provider}`
+(behind the bundled proxy, your domain under `/v1`). Register it **exactly**:
 
 ```
 https://your-domain/v1/accounts/callback/google

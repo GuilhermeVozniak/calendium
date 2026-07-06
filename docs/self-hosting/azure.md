@@ -155,6 +155,9 @@ The shipped backend image defaults to the `api` binary; `--command worker` runs
 - Map custom domains `api.<domain>` → `calendium-api` and `app.<domain>` →
   `calendium-web`. The web build's `NEXT_PUBLIC_API_URL` must match the API's
   public FQDN (set in B2).
+- Because web (`app.<domain>`) and API (`api.<domain>`) are separate origins, set
+  `CORS_ALLOWED_ORIGINS=https://app.<domain>` and `PUBLIC_API_URL=https://api.<domain>`
+  (the OAuth callback base — register `https://api.<domain>/v1/accounts/callback/{provider}`).
 - Use Flexible Server VNet/firewall rules so the Container Apps environment can
   reach `5432`.
 - Passwordless option: Flexible Server supports **Microsoft Entra ID** auth via the

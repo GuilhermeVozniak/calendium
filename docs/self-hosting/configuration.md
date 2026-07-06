@@ -37,8 +37,8 @@ See also: [Quickstart](./quickstart.md) · [Clients](./clients.md) ·
 | --- | --- | --- | --- |
 | `SELF_HOSTED` | No | `false` | `true` puts the instance in self-host mode: entitlement gating becomes a no-op (**all features unlocked**), the billing endpoints return `501 self_hosted`, and `GET /v1/instance` reports `mode: self_host`. The root `.env.example` defaults it to `true`. |
 | `INSTANCE_NAME` | No | `Calendium` | Display name shown to clients on the connect screen and via `GET /v1/instance`. |
-| `APP_URL` | No | — | Public web origin, used to build absolute links (no trailing slash). |
-| `PUBLIC_WEB_URL` | No | falls back to `APP_URL` | Public web origin advertised to clients. |
+| `APP_URL` | No | — | Public web origin, used to build absolute links (no trailing slash). Fallback source for `PUBLIC_WEB_URL`. |
+| `PUBLIC_WEB_URL` | No | falls back to `APP_URL` | Public web origin advertised to clients (the `authBaseUrl` in `GET /v1/instance`). **When both are set, `PUBLIC_WEB_URL` wins over `APP_URL`;** blank falls back to `APP_URL`. |
 | `DOMAIN` | No | `localhost` | Domain the bundled Caddy proxy serves (automatic HTTPS). With `localhost`, Caddy serves a locally-trusted internal cert. |
 | `ACME_EMAIL` | No | — | Email Let's Encrypt uses for expiry notices (Caddy profile). Set it for a real domain. |
 
@@ -54,7 +54,7 @@ ES256 also supported). Email + password works out of the box. Full setup:
 | --- | --- | --- | --- |
 | `BETTER_AUTH_SECRET` | **Yes** (web) | — | Better Auth signing/encryption secret. Generate with `openssl rand -base64 32`. **Secret — never expose.** The web app won't start without it. |
 | `BETTER_AUTH_URL` | **Yes** | — | Public web origin hosting Better Auth (your domain, **no trailing slash**), e.g. `https://mail.example.com`. Read by the web app, and by the Go API to derive JWKS/issuer. |
-| `AUTH_JWKS_URL` | No | `${BETTER_AUTH_URL}/api/auth/jwks` | JWKS endpoint the backend fetches Better Auth's public keys from. Override only if served from a different origin. |
+| `AUTH_JWKS_URL` | No | in-network `http://web:3000/api/auth/jwks` (compose) | JWKS endpoint the backend fetches Better Auth's public keys from, **server-to-server**. The bundled `docker-compose.yml` defaults it to the in-network `web` service (the public `BETTER_AUTH_URL` usually isn't reachable from the `api` container), so **leave it blank**. Running the API binary directly it derives from `BETTER_AUTH_URL` (`${BETTER_AUTH_URL}/api/auth/jwks`). Override only to a URL the API can actually reach. |
 | `AUTH_ISSUER` | No | `${BETTER_AUTH_URL}` | Expected token `iss`, pinned by the backend. Empty disables issuer pinning. |
 
 ## Web app (Next.js)
@@ -68,6 +68,7 @@ is `NEXT_PUBLIC_API_URL`.
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `NEXT_PUBLIC_API_URL` | No | `http://localhost:8080` | Where the browser reaches the Go API. **Inlined at build time** (Docker build arg) — rebuild the `web` image to change it. Behind the bundled proxy set it to your domain, or **leave blank** to use same-origin relative `/v1/…` requests. |
+| `CORS_ALLOWED_ORIGINS` | No | — | Comma-separated extra browser origins allowed for CORS by **both** the Go API and the Better Auth routes. The desktop app's `wails://wails.localhost` (and `http(s)://wails.localhost`, any port) plus localhost dev origins are allowed by default; add any other origin that serves the web client from a different host than the API. |
 
 ## Provider OAuth apps (mail + calendar) & social login
 
@@ -79,7 +80,8 @@ redirect-URI setup.
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `OAUTH_ALLOWED_REDIRECT_URIS` | No | — | Comma-separated extra allowed OAuth redirect targets, **appended** to the built-in `localhost` + `calendium://` defaults. Add your web origin here or provider connect flows are rejected. |
+| `PUBLIC_API_URL` | No | derived from request | Public origin of the Go API itself — the base for the mailbox-connect OAuth callback. Register `${PUBLIC_API_URL}/v1/accounts/callback/{google\|microsoft}` as the redirect URI in the provider console. Blank derives `scheme://host` from the incoming connect request (honoring `X-Forwarded-Proto`/`Host`), which is correct behind the bundled Caddy proxy. |
+| `OAUTH_ALLOWED_REDIRECT_URIS` | No | — | Comma-separated extra allowed OAuth redirect targets, **appended** to the built-in `localhost` + `calendium://` defaults. This is the client return URL the browser lands on *after* the callback completes (your web app) — **not** the provider redirect URI above. Add your web origin here or provider connect flows are rejected. |
 | `GOOGLE_CLIENT_ID` | No | — | Enables Google **login** (`authProviders` gains `google`) **and** Gmail + Google Calendar connect (`features.google`). Shared between both. |
 | `GOOGLE_CLIENT_SECRET` | No | — | Google OAuth client secret. |
 | `APPLE_CLIENT_ID` | No | — | Enables **Sign in with Apple** (`authProviders` gains `apple`). Apple Services ID. |
@@ -98,13 +100,17 @@ redirect-URI setup.
 
 `features.push` becomes `true` when **any** push channel is configured: APNs
 (`APNS_KEY_P8`), FCM (`FCM_SERVICE_ACCOUNT_JSON`), or Web Push (both
-`VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY`).
+`VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY`). When Web Push is configured,
+`GET /v1/instance` also advertises the public key as `vapidPublicKey` so the web
+client can register its service worker (`public/sw.js`) and subscribe; the worker
+then delivers a push to the user's devices on newly-synced important/VIP messages.
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `APNS_KEY_ID` | No | — | APNs key ID (iOS/macOS, HTTP/2 + ES256 JWT). |
 | `APNS_TEAM_ID` | No | — | Apple developer team ID. |
 | `APNS_KEY_P8` | No | — | PEM contents of the `.p8` key (newlines escaped as `\n`), **not** a file path. Presence enables the push feature flag. |
+| `APNS_TOPIC` | No | `app.calendium` | APNs topic — must equal your iOS/macOS app's **bundle id**. Change it to match the bundle id of the build you distribute (see [Clients → build from source](./clients.md)), or APNs rejects the pushes. |
 | `FCM_SERVICE_ACCOUNT_JSON` | No | — | FCM v1 service-account JSON on a single line (Android). |
 | `VAPID_PUBLIC_KEY` | No | — | Web Push VAPID public key. |
 | `VAPID_PRIVATE_KEY` | No | — | Web Push VAPID private key. Both VAPID keys must be set to enable Web Push. |
@@ -185,6 +191,7 @@ shape:
   "version": "0.1.0",
   "authBaseUrl": "https://mail.example.com/api/auth",
   "authProviders": ["email", "google", "apple"],
+  "undoSendSeconds": 15,
   "features": {
     "billing": false,
     "google": true,
@@ -202,6 +209,8 @@ shape:
 | `version` | The running API build constant (currently `0.1.0`). |
 | `authBaseUrl` | `${PUBLIC_WEB_URL\|\|APP_URL}/api/auth` — the Better Auth base clients build their auth client against. |
 | `authProviders` | Sign-in methods: `["email"]`, plus `"google"` when `GOOGLE_CLIENT_ID` is set and `"apple"` when `APPLE_CLIENT_ID` is set. |
+| `undoSendSeconds` | Undo-send grace window in seconds (`UNDO_SEND_SECONDS`, default `15`); clients show a post-send **Undo** toast for this long. |
+| `vapidPublicKey` | Web Push VAPID public key (`VAPID_PUBLIC_KEY`), **present only when web push is configured** (the web client subscribes with it). Omitted otherwise. |
 | `features.billing` | `!SELF_HOSTED` — `false` on self-host. |
 | `features.google` | `true` when `GOOGLE_CLIENT_ID` is set. |
 | `features.microsoft` | `true` when `MS_CLIENT_ID` is set. |

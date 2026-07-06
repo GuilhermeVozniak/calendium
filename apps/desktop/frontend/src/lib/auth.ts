@@ -166,19 +166,39 @@ export async function signUpEmail(
 }
 
 /**
- * Kick off an OAuth flow with Google or Apple. In the WebView this navigates to
- * the provider and returns to the server's Better Auth callback. Full desktop
- * deep-link round-trip back into the app needs a host wails:// handler (see the
- * desktop Go host) — email + password works entirely in-process today.
+ * Completes desktop social sign-in from a one-time token (contract item 11).
+ *
+ * Google blocks OAuth inside embedded WebViews, so the social flow runs in the
+ * system browser (SignInView opens `${webOrigin}/signin?next=/desktop-callback`).
+ * The web `/desktop-callback` page mints a one-time token and hands it back via
+ * the calendium://auth/callback?ott=... deep link (or a pasted code). We redeem
+ * it at Better Auth's one-time-token/verify endpoint; the bearer() plugin
+ * returns the new session token in `set-auth-token`, which we persist exactly
+ * like email/password sign-in does.
  */
-export async function signInSocial(provider: 'google' | 'apple'): Promise<AuthResult> {
-  const c = getAuthClient();
-  if (!c) return { ok: false, error: 'Connect to a server first.' };
+export async function verifyOtt(token: string): Promise<AuthResult> {
   const cfg = getActiveServerConfig();
-  const callbackURL = cfg?.authBaseUrl ? new URL(cfg.authBaseUrl).origin : undefined;
-  const { error } = await c.signIn.social({ provider, callbackURL });
-  if (error) return { ok: false, error: error.message ?? 'Could not start sign in.' };
-  return { ok: true };
+  if (!cfg?.authBaseUrl) return { ok: false, error: 'Connect to a server first.' };
+  const trimmed = token.trim();
+  if (!trimmed) return { ok: false, error: 'Enter the code from your browser.' };
+  try {
+    const res = await fetch(`${cfg.authBaseUrl}/one-time-token/verify`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ token: trimmed }),
+    });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { message?: string } | null;
+      return { ok: false, error: data?.message ?? 'That code is invalid or has expired.' };
+    }
+    const sessionToken = res.headers.get('set-auth-token');
+    if (!sessionToken) return { ok: false, error: 'Sign-in did not return a session token.' };
+    setStoredToken(sessionToken);
+    await refreshSession();
+    return { ok: true };
+  } catch {
+    return { ok: false, error: 'Could not reach the server.' };
+  }
 }
 
 export async function signOut(): Promise<void> {

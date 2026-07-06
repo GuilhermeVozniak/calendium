@@ -34,7 +34,9 @@ const queryClient = new QueryClient({
 // Better Auth instance (Sign in). Only a configured server + live session
 // mounts the app (which builds the Better Auth + API clients from that config).
 function Root() {
-  const { isConfigured } = useServerConfig();
+  const { isConfigured, demoMode } = useServerConfig();
+  // Explicit "Try the demo" skips the Connect + Sign-in gates and runs on mock data.
+  if (demoMode) return <App />;
   if (!isConfigured) return <ConnectView />;
   return <AuthGate />;
 }

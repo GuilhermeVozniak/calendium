@@ -1,24 +1,32 @@
 import type { InboxSplit, Thread } from '@calendium/shared';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { addHours, format, isToday } from 'date-fns';
-import { Star } from 'lucide-react';
+import { Loader2, Star } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { api, orMock } from '@/lib/api';
 import { mockThreads } from '@/lib/mock';
+import { isDemoMode } from '@/lib/server-config';
+import { errorMessage, toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
-import { desktop } from '@/lib/wails';
 import { Badge } from '@/ui/badge';
+import { Button } from '@/ui/button';
 import { Kbd } from '@/ui/kbd';
 import { ThreadPane } from '@/views/ThreadPane';
 
 export type MailAction = 'next' | 'prev' | 'archive' | 'star' | 'snooze';
 
 const MAIL_ACTION_EVENT = 'calendium:mail-action';
+const FOCUS_THREAD_EVENT = 'calendium:focus-thread';
 
 /** Lets the command palette (or anything else) drive inbox actions. */
 export function emitMailAction(action: MailAction) {
   window.dispatchEvent(new CustomEvent<MailAction>(MAIL_ACTION_EVENT, { detail: action }));
+}
+
+/** Selects a specific thread once its split is loaded (⌘K search results). */
+export function emitFocusThread(threadId: string) {
+  window.dispatchEvent(new CustomEvent<string>(FOCUS_THREAD_EVENT, { detail: threadId }));
 }
 
 const SPLIT_LABELS: Record<InboxSplit, string> = {
@@ -74,7 +82,8 @@ function ThreadRow({
 }
 
 export function InboxView({ split }: { split: InboxSplit }) {
-  const { data } = useQuery({
+  const queryClient = useQueryClient();
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['threads', split],
     queryFn: () =>
       orMock(
@@ -86,6 +95,7 @@ export function InboxView({ split }: { split: InboxSplit }) {
   // Local working copy so j/k/e/s/z mutate optimistically.
   const [threads, setThreads] = useState<Thread[]>([]);
   const [cursor, setCursor] = useState(0);
+  const [focusId, setFocusId] = useState<string | null>(null);
   useEffect(() => {
     setThreads(data ?? []);
   }, [data]);
@@ -93,23 +103,40 @@ export function InboxView({ split }: { split: InboxSplit }) {
     setCursor(0);
   }, [split]);
 
+  // ⌘K search can request a specific thread; select it once it's loaded.
+  useEffect(() => {
+    const onFocus = (e: Event) => setFocusId((e as CustomEvent<string>).detail);
+    window.addEventListener(FOCUS_THREAD_EVENT, onFocus);
+    return () => window.removeEventListener(FOCUS_THREAD_EVENT, onFocus);
+  }, []);
+  useEffect(() => {
+    if (!focusId || !data) return;
+    const idx = data.findIndex((t) => t.id === focusId);
+    if (idx >= 0) {
+      setCursor(idx);
+      setFocusId(null);
+    }
+  }, [data, focusId]);
+
   const selected = threads[cursor] ?? null;
 
-  // Dock badge reflects unread count (NotifyBadge is a host-side stub today).
-  useEffect(() => {
-    void desktop.NotifyBadge(threads.filter((t) => t.unread).length);
-  }, [threads]);
-
-  // Opening a thread marks it read (write-through, mock-safe).
+  // Opening a thread records real read state server-side (contract item 5).
   useEffect(() => {
     if (!selected || !selected.unread) return;
     const id = selected.id;
     setThreads((prev) => prev.map((t) => (t.id === id ? { ...t, unread: false } : t)));
-    void orMock(
-      () => api.actOnThread(id, 'read'),
-      () => selected
-    );
+    if (!isDemoMode()) void api.markThreadOpened(id).catch(() => {});
   }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Persists a mutation; on failure surfaces a toast and reverts by refetching
+  // (honesty policy — never a silent fake-success). No-ops in demo mode.
+  function persist(fn: () => Promise<unknown>, title: string) {
+    if (isDemoMode()) return;
+    void fn().catch((e) => {
+      toast({ title, description: errorMessage(e), variant: 'destructive' });
+      void queryClient.invalidateQueries({ queryKey: ['threads', split] });
+    });
+  }
 
   function runAction(action: MailAction) {
     const current = threads[cursor];
@@ -125,9 +152,9 @@ export function InboxView({ split }: { split: InboxSplit }) {
         setThreads((prev) =>
           prev.map((t) => (t.id === current.id ? { ...t, starred: !t.starred } : t))
         );
-        void orMock(
+        persist(
           () => api.actOnThread(current.id, current.starred ? 'unstar' : 'star'),
-          () => current
+          'Could not update star'
         );
         return;
       }
@@ -137,16 +164,10 @@ export function InboxView({ split }: { split: InboxSplit }) {
         setThreads((prev) => prev.filter((t) => t.id !== current.id));
         setCursor((c) => Math.max(Math.min(c, threads.length - 2), 0));
         if (action === 'archive') {
-          void orMock(
-            () => api.actOnThread(current.id, 'archive'),
-            () => current
-          );
+          persist(() => api.actOnThread(current.id, 'archive'), 'Could not archive');
         } else {
           const until = addHours(new Date(), 3).toISOString();
-          void orMock(
-            () => api.snoozeThread(current.id, until),
-            () => current
-          );
+          persist(() => api.snoozeThread(current.id, until), 'Could not snooze');
         }
         return;
       }
@@ -198,7 +219,19 @@ export function InboxView({ split }: { split: InboxSplit }) {
           </div>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {threads.length === 0 ? (
+          {isLoading ? (
+            <div className="flex h-full items-center justify-center">
+              <Loader2 className="size-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : isError ? (
+            <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
+              <p className="text-sm font-medium">Couldn't load mail</p>
+              <p className="text-xs text-muted-foreground">{errorMessage(error)}</p>
+              <Button variant="outline" size="sm" onClick={() => void refetch()}>
+                Retry
+              </Button>
+            </div>
+          ) : threads.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-1 p-6 text-center">
               <p className="text-sm font-medium">Inbox zero</p>
               <p className="text-xs text-muted-foreground">

@@ -49,6 +49,15 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	// Fail fast on a guaranteed-broken auth configuration instead of booting
+	// healthy and 401ing every request / advertising a relative authBaseUrl.
+	if cfg.Auth.JWKSURL == "" {
+		return errors.New("BETTER_AUTH_URL (or AUTH_JWKS_URL) is required: without it every authenticated request fails with 401")
+	}
+	if cfg.Instance.PublicWebURL == "" {
+		return errors.New("PUBLIC_WEB_URL (or APP_URL) is required: GET /v1/instance must advertise an absolute Better Auth base URL")
+	}
+
 	// --- Postgres + migrations ---
 	db, err := sql.Open("pgx", cfg.DB.URL)
 	if err != nil {
@@ -100,7 +109,7 @@ func run(logger *slog.Logger) error {
 
 	users := service.NewUserService(store.Users(), clock)
 	billing := service.NewBillingService(store.Users(), store.Subscriptions(), store.StripeEvents(), stripe, clock, store, cfg.Instance.SelfHosted)
-	accounts := service.NewAccountService(store.Accounts(), store.OAuthStates(), store.SyncStates(), oauth, cfg.OAuth.AllowedRedirectURIs, clock)
+	accounts := service.NewAccountService(store.Accounts(), store.OAuthStates(), store.SyncStates(), oauth, cfg.OAuth.AllowedRedirectURIs, cfg.Instance.PublicAPIURL, clock)
 	mail := service.NewMailService(service.MailServiceDeps{
 		Subscriptions: store.Subscriptions(),
 		Accounts:      store.Accounts(),
@@ -142,9 +151,17 @@ func run(logger *slog.Logger) error {
 	if cfg.Instance.SelfHosted {
 		mode = httpapi.ModeSelfHost
 	}
+	webPushConfigured := cfg.Push.VAPID.PublicKey != "" && cfg.Push.VAPID.PrivateKey != ""
 	pushConfigured := cfg.Push.APNs.KeyP8 != "" ||
 		cfg.Push.FCM.ServiceAccountJSON != "" ||
-		(cfg.Push.VAPID.PublicKey != "" && cfg.Push.VAPID.PrivateKey != "")
+		webPushConfigured
+
+	// vapidPublicKey is advertised only when web push is configured so web
+	// clients can subscribe the service worker.
+	vapidPublicKey := ""
+	if webPushConfigured {
+		vapidPublicKey = cfg.Push.VAPID.PublicKey
+	}
 
 	// authBaseUrl is where clients reach Better Auth (hosted by the web app).
 	authBaseURL := strings.TrimRight(cfg.Instance.PublicWebURL, "/") + "/api/auth"
@@ -156,11 +173,13 @@ func run(logger *slog.Logger) error {
 		authProviders = append(authProviders, "apple")
 	}
 	instance := httpapi.InstanceInfo{
-		Name:          cfg.Instance.Name,
-		Mode:          mode,
-		Version:       httpapi.Version,
-		AuthBaseURL:   authBaseURL,
-		AuthProviders: authProviders,
+		Name:            cfg.Instance.Name,
+		Mode:            mode,
+		Version:         httpapi.Version,
+		AuthBaseURL:     authBaseURL,
+		AuthProviders:   authProviders,
+		UndoSendSeconds: int(cfg.Mail.UndoSendGrace / time.Second),
+		VapidPublicKey:  vapidPublicKey,
 		Features: httpapi.InstanceFeatures{
 			Billing:   !cfg.Instance.SelfHosted,
 			Google:    cfg.Google.ClientID != "",
@@ -172,18 +191,19 @@ func run(logger *slog.Logger) error {
 
 	// --- HTTP server ---
 	handler := httpapi.New(httpapi.Deps{
-		Logger:    logger,
-		Verifier:  verifier,
-		Users:     users,
-		Billing:   billing,
-		Accounts:  accounts,
-		Mail:      mail,
-		Calendars: calendars,
-		Search:    search,
-		AI:        aiSvc,
-		Devices:   devices,
-		Payments:  stripe,
-		Instance:  instance,
+		Logger:             logger,
+		Verifier:           verifier,
+		Users:              users,
+		Billing:            billing,
+		Accounts:           accounts,
+		Mail:               mail,
+		Calendars:          calendars,
+		Search:             search,
+		AI:                 aiSvc,
+		Devices:            devices,
+		Payments:           stripe,
+		Instance:           instance,
+		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 	})
 
 	srv := &http.Server{
