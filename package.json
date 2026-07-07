@@ -10,7 +10,13 @@
     "build:web": "bun run --cwd apps/web build",
     "build:desktop": "cd apps/desktop && wails build",
     "build:api": "cd backend && go build ./...",
+    "test": "bun run test:api && bun run test:shared && bun run test:web && bun run test:mobile && bun run test:desktop",
     "test:api": "cd backend && go test ./...",
+    "test:shared": "echo \"[test:shared] no unit tests yet — TODO in packages/shared sub-project\" && exit 0",
+    "test:web": "echo \"[test:web] no unit tests yet — TODO in apps/web sub-project\" && exit 0",
+    "test:mobile": "echo \"[test:mobile] no unit tests yet — TODO in apps/mobile sub-project\" && exit 0",
+    "test:desktop": "echo \"[test:desktop] no unit tests yet — TODO in apps/desktop sub-project\" && exit 0",
+    "test:e2e": "echo \"[test:e2e] no e2e suite yet — TODO once web+api compose is wired\" && exit 0",
     "typecheck": "bun run --cwd apps/web typecheck && bun run --cwd packages/shared typecheck",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,css}\""
   },

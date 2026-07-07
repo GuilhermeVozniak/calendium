@@ -1,0 +1,64 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Go backend (build + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: backend/go.sum
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race + coverage)
+        # ubuntu-latest ships Docker, so the postgres testcontainers
+        # integration tests run here too. -cover prints per-package coverage;
+        # a hard threshold gate (e.g. fail under N%) can be layered on later.
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -n 1
+
+  # ---------------------------------------------------------------------------
+  # Placeholder for the TypeScript sub-projects (packages/shared, apps/web,
+  # apps/mobile, apps/desktop/frontend). Uncomment and fill in per-workspace as
+  # each grows a real unit-test suite. Kept here so the matrix shape is agreed
+  # up-front and reviewers know where TS coverage will land.
+  #
+  # frontend:
+  #   name: TS ${{ matrix.workspace }}
+  #   runs-on: ubuntu-latest
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       workspace: [shared, web, mobile, desktop]
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: oven-sh/setup-bun@v2
+  #       with:
+  #         bun-version: latest
+  #     - run: bun install --frozen-lockfile
+  #     - run: bun run test:${{ matrix.workspace }}

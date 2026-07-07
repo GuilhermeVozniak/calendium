@@ -11,7 +11,7 @@ PROFILE ?= caddy
 profile_flag = $(if $(strip $(PROFILE)),--profile $(PROFILE),)
 
 .DEFAULT_GOAL := help
-.PHONY: help self-host-up self-host-down self-host-logs gen-secret db-backup db-restore
+.PHONY: help self-host-up self-host-down self-host-logs gen-secret db-backup db-restore test-api test-api-cover
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -38,3 +38,9 @@ db-backup: ## Dump the database to backups/calendium-<timestamp>.sql.gz
 db-restore: ## Restore a dump: make db-restore FILE=backups/xxx.sql.gz
 	@test -n "$(FILE)" || { echo "usage: make db-restore FILE=backups/calendium-YYYYMMDD-HHMMSS.sql.gz"; exit 1; }
 	@gunzip -c "$(FILE)" | $(COMPOSE) exec -T db sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
+
+test-api: ## Run the Go backend test suite (needs Docker for testcontainers)
+	cd backend && go test ./...
+
+test-api-cover: ## Run the backend suite printing per-package coverage
+	cd backend && go test -cover ./...
