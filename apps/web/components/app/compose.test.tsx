@@ -263,6 +263,43 @@ describe('ComposeForm — recipients', () => {
     expect(screen.queryByText('alic')).not.toBeInTheDocument();
   });
 
+  // Regression test for a narrower corruption path left behind by the fix
+  // above: the bare-email branch tested the whole string against EMAIL_RE,
+  // which does not exclude '<'/'>'. A stray, unmatched angle bracket (one
+  // that doesn't pair up into a valid `<email>` form, which is handled by
+  // the angle branch above) fell through into the bare branch and got
+  // embedded straight into the stored/displayed email. parseAddress() now
+  // rejects any bare candidate containing a stray '<' or '>'.
+  it('rejects a bare email with a stray leading angle bracket and keeps the draft text', async () => {
+    const user = userEvent.setup();
+    renderCompose();
+    const toInput = await screen.findByPlaceholderText('name@example.com');
+    await user.type(toInput, '<alice@example.com{Enter}');
+    expect(screen.queryByText('alice@example.com')).not.toBeInTheDocument();
+    expect(screen.queryByText('<alice@example.com')).not.toBeInTheDocument();
+    expect(toInput).toHaveValue('<alice@example.com');
+  });
+
+  it('rejects a bare email with a stray trailing "<" and keeps the draft text', async () => {
+    const user = userEvent.setup();
+    renderCompose();
+    const toInput = await screen.findByPlaceholderText('name@example.com');
+    await user.type(toInput, 'alice@example.com<{Enter}');
+    expect(screen.queryByText('alice@example.com')).not.toBeInTheDocument();
+    expect(screen.queryByText('alice@example.com<')).not.toBeInTheDocument();
+    expect(toInput).toHaveValue('alice@example.com<');
+  });
+
+  it('rejects a bare email with a stray trailing ">" and keeps the draft text', async () => {
+    const user = userEvent.setup();
+    renderCompose();
+    const toInput = await screen.findByPlaceholderText('name@example.com');
+    await user.type(toInput, 'alice@example.com>{Enter}');
+    expect(screen.queryByText('alice@example.com')).not.toBeInTheDocument();
+    expect(screen.queryByText('alice@example.com>')).not.toBeInTheDocument();
+    expect(toInput).toHaveValue('alice@example.com>');
+  });
+
   it('does not add a duplicate chip for the same email', async () => {
     const user = userEvent.setup();
     renderCompose({ to: [{ name: null, email: 'a@b.co' }] });

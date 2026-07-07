@@ -108,8 +108,10 @@ function parseAddress(raw: string): EmailAddress | null {
     const name = angle[1]?.trim();
     return { name: name ? name : null, email };
   }
-  // bare email
-  if (EMAIL_RE.test(s)) return { name: null, email: s.toLowerCase() };
+  // bare email — reject stray angle brackets (valid only inside a matched <...> pair, handled above)
+  if (!s.includes('<') && !s.includes('>') && EMAIL_RE.test(s)) {
+    return { name: null, email: s.toLowerCase() };
+  }
   return null;
 }
 
