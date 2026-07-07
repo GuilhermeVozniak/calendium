@@ -515,6 +515,90 @@ func TestHandleWebhookPreservesInvoiceFields(t *testing.T) {
 	}
 }
 
+// TestHandleWebhookResolvesUserByCustomerID covers applyWebhookEvent's
+// customer->user resolution branch: when the webhook event carries no
+// UserID (Stripe's metadata was missing/stripped), the user is looked up via
+// SubscriptionRepo.GetByStripeCustomerID(CustomerID) instead.
+func TestHandleWebhookResolvesUserByCustomerID(t *testing.T) {
+	ctx := context.Background()
+	const userID = "u1"
+
+	t.Run("known customer id resolves the user and updates their subscription", func(t *testing.T) {
+		now := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+		subs := newSubscriptionRepo()
+		if err := subs.Upsert(ctx, domain.Subscription{
+			UserID:           userID,
+			Status:           domain.SubscriptionActive,
+			StripeCustomerID: "cus_1",
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		events := newStripeEventRepo()
+		payments := newPayments()
+		payments.webhookEvent = port.WebhookEvent{
+			ID:   "evt_resolve",
+			Type: "customer.subscription.updated",
+			// UserID intentionally empty: forces resolution via CustomerID.
+			CustomerID:     "cus_1",
+			SubscriptionID: "sub_1",
+			Status:         domain.SubscriptionPastDue,
+			Created:        &now,
+		}
+		tx := newTxRunner()
+
+		b := NewBillingService(newUserRepo(), subs, events, payments, newClock(now), tx, false)
+
+		if err := b.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+			t.Fatalf("HandleWebhook: %v", err)
+		}
+		got, err := subs.GetByUserID(ctx, userID)
+		if err != nil {
+			t.Fatalf("subscription not found for resolved user: %v", err)
+		}
+		if got.Status != domain.SubscriptionPastDue {
+			t.Fatalf("status = %q, want %q (resolved via customer id)", got.Status, domain.SubscriptionPastDue)
+		}
+		if got.StripeSubscriptionID != "sub_1" {
+			t.Fatalf("StripeSubscriptionID = %q, want sub_1", got.StripeSubscriptionID)
+		}
+		if got.StripeCustomerID != "cus_1" {
+			t.Fatalf("StripeCustomerID = %q, want cus_1 (preserved)", got.StripeCustomerID)
+		}
+		if tx.calls == 0 {
+			t.Fatal("expected RunInTx to wrap webhook handling")
+		}
+	})
+
+	t.Run("unknown customer id is a no-op", func(t *testing.T) {
+		now := time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC)
+		subs := newSubscriptionRepo() // empty: no subscription carries cus_unknown
+
+		events := newStripeEventRepo()
+		payments := newPayments()
+		payments.webhookEvent = port.WebhookEvent{
+			ID:         "evt_unknown_customer",
+			Type:       "customer.subscription.updated",
+			CustomerID: "cus_unknown",
+			Status:     domain.SubscriptionActive,
+			Created:    &now,
+		}
+		tx := newTxRunner()
+
+		b := NewBillingService(newUserRepo(), subs, events, payments, newClock(now), tx, false)
+
+		if err := b.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+			t.Fatalf("HandleWebhook: %v", err)
+		}
+		if len(subs.byUser) != 0 || len(subs.byCustomer) != 0 {
+			t.Fatalf("subscription store mutated on unknown customer: byUser=%v byCustomer=%v", subs.byUser, subs.byCustomer)
+		}
+		if tx.calls == 0 {
+			t.Fatal("expected RunInTx to wrap webhook handling even for the no-op branch")
+		}
+	})
+}
+
 // TestRequireActivePaidPath covers the paid-path entitlement gate: no
 // subscription, past_due within/beyond the grace window, and expired.
 func TestRequireActivePaidPath(t *testing.T) {

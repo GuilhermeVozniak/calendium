@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -732,6 +733,159 @@ func TestUpdateEventWriteThrough(t *testing.T) {
 		_, err := f.svc.UpdateEvent(ctx, "u1", "nope", domain.EventPatch{Title: ptr("x")})
 		if !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("err = %v, want ErrNotFound", err)
+		}
+	})
+}
+
+// --- applyEventPatch field-level merge -----------------------------------
+//
+// These drive UpdateEvent against a LOCAL-ONLY event (ProviderEventID = "",
+// same technique as "local-only event skips the provider" above) so the
+// provider never overwrites the merged result with a canned response --
+// the final mirror row is exactly applyEventPatch's output.
+
+func TestApplyEventPatchFieldMerge(t *testing.T) {
+	ctx := context.Background()
+
+	// seedFullEvent seeds a local-only event with every field populated so
+	// both the "patched" and "left alone" branches have something concrete
+	// to assert against.
+	seedFullEvent := func(f *calFixture) domain.Event {
+		base := f.clock.Now()
+		return seedEvent(f, "ev1", func(e *domain.Event) {
+			e.ProviderEventID = ""
+			e.Title = "Standup"
+			e.Description = ptr("Daily sync")
+			e.Location = ptr("Room A")
+			e.Start = base.Add(time.Hour)
+			e.End = base.Add(90 * time.Minute)
+			e.AllDay = false
+			e.RecurrenceRule = ptr("FREQ=DAILY")
+			e.Attendees = []domain.Attendee{
+				{Email: "alice@x.com", Response: domain.RsvpAccepted},
+				{Email: "bob@x.com", Response: domain.RsvpDeclined},
+			}
+			e.ReminderMinutes = []int{10}
+		})
+	}
+
+	t.Run("every set field is applied and attendee merge preserves existing RSVPs", func(t *testing.T) {
+		f := newCalFixture(t)
+		seedFullEvent(f)
+		base := f.clock.Now()
+
+		newStart := base.Add(3 * time.Hour)
+		newEnd := base.Add(4 * time.Hour)
+		patch := domain.EventPatch{
+			Title:           ptr("Renamed Standup"),
+			Description:     ptr("Updated agenda"),
+			Location:        ptr("Room B"),
+			Start:           &newStart,
+			End:             &newEnd,
+			AllDay:          ptr(true),
+			RecurrenceRule:  ptr("FREQ=WEEKLY"),
+			AttendeeEmails:  ptr([]string{"Alice@X.com", "carol@x.com"}), // bob dropped, alice re-added (different case), carol new
+			ReminderMinutes: ptr([]int{5, 30}),
+		}
+
+		got, err := f.svc.UpdateEvent(ctx, "u1", "ev1", patch)
+		if err != nil {
+			t.Fatalf("UpdateEvent: %v", err)
+		}
+
+		if got.Title != "Renamed Standup" {
+			t.Fatalf("Title = %q, want Renamed Standup", got.Title)
+		}
+		if got.Description == nil || *got.Description != "Updated agenda" {
+			t.Fatalf("Description = %v, want Updated agenda", got.Description)
+		}
+		if got.Location == nil || *got.Location != "Room B" {
+			t.Fatalf("Location = %v, want Room B", got.Location)
+		}
+		if !got.Start.Equal(newStart) {
+			t.Fatalf("Start = %v, want %v", got.Start, newStart)
+		}
+		if !got.End.Equal(newEnd) {
+			t.Fatalf("End = %v, want %v", got.End, newEnd)
+		}
+		if !got.AllDay {
+			t.Fatal("AllDay = false, want true")
+		}
+		if got.RecurrenceRule == nil || *got.RecurrenceRule != "FREQ=WEEKLY" {
+			t.Fatalf("RecurrenceRule = %v, want FREQ=WEEKLY", got.RecurrenceRule)
+		}
+		if !reflect.DeepEqual(got.ReminderMinutes, []int{5, 30}) {
+			t.Fatalf("ReminderMinutes = %v, want [5 30]", got.ReminderMinutes)
+		}
+
+		// Attendee merge: order follows the patch's AttendeeEmails order.
+		if len(got.Attendees) != 2 {
+			t.Fatalf("Attendees = %+v, want 2 entries", got.Attendees)
+		}
+		if got.Attendees[0].Email != "Alice@X.com" || got.Attendees[0].Response != domain.RsvpAccepted {
+			t.Fatalf("Attendees[0] = %+v, want Alice@X.com/accepted (existing RSVP preserved case-insensitively)", got.Attendees[0])
+		}
+		if got.Attendees[1].Email != "carol@x.com" || got.Attendees[1].Response != domain.RsvpNeedsAction {
+			t.Fatalf("Attendees[1] = %+v, want carol@x.com/needs_action (new attendee defaults)", got.Attendees[1])
+		}
+		// bob@x.com was dropped from the patch's attendee list entirely.
+		for _, a := range got.Attendees {
+			if strings.EqualFold(a.Email, "bob@x.com") {
+				t.Fatalf("bob@x.com still present after being dropped from the patch: %+v", got.Attendees)
+			}
+		}
+
+		// Status carries no patch field: untouched regardless of what else changed.
+		if got.Status != domain.EventConfirmed {
+			t.Fatalf("Status = %q, want confirmed (unpatchable field left alone)", got.Status)
+		}
+
+		stored, ok := f.events.byID["ev1"]
+		if !ok {
+			t.Fatal("event not persisted to mirror")
+		}
+		if !reflect.DeepEqual(stored, got) {
+			t.Fatalf("mirror = %+v, want %+v", stored, got)
+		}
+	})
+
+	t.Run("nil patch fields leave every corresponding value untouched", func(t *testing.T) {
+		f := newCalFixture(t)
+		original := seedFullEvent(f)
+
+		// Only Title is set; every other EventPatch field is nil, exercising
+		// the nil branch for each field in applyEventPatch.
+		got, err := f.svc.UpdateEvent(ctx, "u1", "ev1", domain.EventPatch{Title: ptr("Only title changed")})
+		if err != nil {
+			t.Fatalf("UpdateEvent: %v", err)
+		}
+
+		if got.Title != "Only title changed" {
+			t.Fatalf("Title = %q, want Only title changed", got.Title)
+		}
+		if got.Description == nil || *got.Description != *original.Description {
+			t.Fatalf("Description = %v, want unchanged %v", got.Description, original.Description)
+		}
+		if got.Location == nil || *got.Location != *original.Location {
+			t.Fatalf("Location = %v, want unchanged %v", got.Location, original.Location)
+		}
+		if !got.Start.Equal(original.Start) {
+			t.Fatalf("Start = %v, want unchanged %v", got.Start, original.Start)
+		}
+		if !got.End.Equal(original.End) {
+			t.Fatalf("End = %v, want unchanged %v", got.End, original.End)
+		}
+		if got.AllDay != original.AllDay {
+			t.Fatalf("AllDay = %v, want unchanged %v", got.AllDay, original.AllDay)
+		}
+		if got.RecurrenceRule == nil || *got.RecurrenceRule != *original.RecurrenceRule {
+			t.Fatalf("RecurrenceRule = %v, want unchanged %v", got.RecurrenceRule, original.RecurrenceRule)
+		}
+		if !reflect.DeepEqual(got.Attendees, original.Attendees) {
+			t.Fatalf("Attendees = %+v, want unchanged %+v (RSVP responses preserved)", got.Attendees, original.Attendees)
+		}
+		if !reflect.DeepEqual(got.ReminderMinutes, original.ReminderMinutes) {
+			t.Fatalf("ReminderMinutes = %v, want unchanged %v", got.ReminderMinutes, original.ReminderMinutes)
 		}
 	})
 }

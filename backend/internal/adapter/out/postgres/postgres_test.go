@@ -81,6 +81,9 @@ func runSuite(m *testing.M) int {
 func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	t.Helper()
 	if dockerErr != nil {
+		if os.Getenv("REQUIRE_DOCKER") != "" {
+			t.Fatalf("REQUIRE_DOCKER is set but the postgres container failed to start: %v", dockerErr)
+		}
 		t.Skipf("skipping postgres repo tests: Docker unavailable: %v", dockerErr)
 	}
 	truncateAll(t)

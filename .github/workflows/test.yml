@@ -37,6 +37,11 @@ jobs:
         # ubuntu-latest ships Docker, so the postgres testcontainers
         # integration tests run here too. -cover prints per-package coverage;
         # a hard threshold gate (e.g. fail under N%) can be layered on later.
+        # REQUIRE_DOCKER makes the postgres suite fail loudly (t.Fatalf) if
+        # the container can't start, instead of silently t.Skip-ing and
+        # passing CI with zero postgres coverage.
+        env:
+          REQUIRE_DOCKER: "1"
         run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
 
       - name: Coverage summary

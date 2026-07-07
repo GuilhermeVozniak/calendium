@@ -274,6 +274,47 @@ func TestSendDraftSchedulesAtGrace(t *testing.T) {
 	}
 }
 
+// --- MailService.MarkThreadOpened provider write-through ---------------------
+//
+// TestMarkThreadOpenedIdempotentAndOwned (ops_test.go) covers ownership and
+// idempotency with no provider wired up; this asserts the PROVIDER
+// write-through branch specifically: opening an unread thread removes the
+// UNREAD label upstream, in addition to the local mirror update.
+
+func TestMarkThreadOpenedWritesThroughToProvider(t *testing.T) {
+	const owner = "u1"
+	f := newMailFixture(t)
+	f.seedAccount(t, "a1", owner)
+	f.seedThread(t, "t1", "a1", func(th *domain.Thread) { th.Unread = true })
+
+	if err := f.svc.MarkThreadOpened(context.Background(), owner, "t1"); err != nil {
+		t.Fatalf("MarkThreadOpened: %v", err)
+	}
+
+	// Local mirror updated via ThreadRepo.MarkOpened.
+	if f.threads.markOpened != 1 {
+		t.Fatalf("MarkOpened calls = %d, want 1", f.threads.markOpened)
+	}
+
+	// Provider write-through: ModifyLabels called with the provider thread id,
+	// the resolved access token, add=nil, remove=[UNREAD].
+	if f.provider.modifyLabelsCalls != 1 {
+		t.Fatalf("ModifyLabels calls = %d, want 1", f.provider.modifyLabelsCalls)
+	}
+	if f.provider.lastModifyThreadID != "p-t1" {
+		t.Fatalf("provider thread id = %q, want p-t1", f.provider.lastModifyThreadID)
+	}
+	if f.provider.lastModifyToken != "tok-a1" {
+		t.Fatalf("access token = %q, want tok-a1", f.provider.lastModifyToken)
+	}
+	if f.provider.lastModifyAdd != nil {
+		t.Fatalf("add = %v, want nil", f.provider.lastModifyAdd)
+	}
+	if !reflect.DeepEqual(f.provider.lastModifyRemove, []string{port.LabelKeyUnread}) {
+		t.Fatalf("remove = %v, want [%s]", f.provider.lastModifyRemove, port.LabelKeyUnread)
+	}
+}
+
 // --- MailService.GetThread ----------------------------------------------------
 
 func TestGetThread(t *testing.T) {
