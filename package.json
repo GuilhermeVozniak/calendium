@@ -16,7 +16,7 @@
     "test:web": "bun run --cwd apps/web test",
     "test:mobile": "bun run --cwd apps/mobile test",
     "test:desktop": "bun run --cwd apps/desktop/frontend test",
-    "test:e2e": "echo \"[test:e2e] no e2e suite yet — TODO once web+api compose is wired\" && exit 0",
+    "test:e2e": "bun run --cwd apps/web e2e",
     "typecheck": "bun run --cwd apps/web typecheck && bun run --cwd packages/shared typecheck",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,css}\""
   },

@@ -18,6 +18,11 @@ expo-env.d.ts
 /apps/web/out/
 next-env.d.ts
 
+# Playwright (apps/web e2e)
+/apps/web/test-results/
+/apps/web/playwright-report/
+/apps/web/blob-report/
+
 # Wails (apps/desktop)
 apps/desktop/build/bin/
 apps/desktop/frontend/dist/
