@@ -12,7 +12,7 @@
     "build:api": "cd backend && go build ./...",
     "test": "bun run test:api && bun run test:shared && bun run test:web && bun run test:mobile && bun run test:desktop",
     "test:api": "cd backend && go test ./...",
-    "test:shared": "echo \"[test:shared] no unit tests yet — TODO in packages/shared sub-project\" && exit 0",
+    "test:shared": "bun run --cwd packages/shared test",
     "test:web": "echo \"[test:web] no unit tests yet — TODO in apps/web sub-project\" && exit 0",
     "test:mobile": "echo \"[test:mobile] no unit tests yet — TODO in apps/mobile sub-project\" && exit 0",
     "test:desktop": "echo \"[test:desktop] no unit tests yet — TODO in apps/desktop sub-project\" && exit 0",
@@ -21,7 +21,8 @@
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,css}\""
   },
   "devDependencies": {
-    "prettier": "^3.6.2"
+    "prettier": "^3.6.2",
+    "vitest": "^4.1.10"
   },
   "overrides": {
     "@types/react": "~19.1.10"
