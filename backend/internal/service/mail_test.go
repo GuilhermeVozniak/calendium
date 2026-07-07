@@ -177,8 +177,11 @@ func TestActOnThreadMirrorsAndWritesThrough(t *testing.T) {
 			f := newMailFixture(t)
 			f.seedAccount(t, "a1", owner)
 			// Seed the opposite of the mutation so each change is observable.
+			// move_to_inbox flips InInbox false->true, so it must seed false;
+			// every other action seeds InInbox=true.
+			inInbox := tt.action != domain.ThreadActionMoveToInbox
 			f.seedThread(t, "t1", "a1", func(th *domain.Thread) {
-				th.InInbox = true
+				th.InInbox = inInbox
 				th.Starred = tt.action == domain.ThreadActionUnstar
 				th.Unread = tt.action == domain.ThreadActionRead
 			})
