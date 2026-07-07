@@ -1,4 +1,4 @@
-import * as React from 'react';
+import type * as React from 'react';
 import { cva, type VariantProps } from 'class-variance-authority';
 
 import { cn } from '@/lib/utils';
@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils';
  *   <Kbd>⌘</Kbd> <Kbd>K</Kbd>  ·  <KbdGroup keys={['G', 'I']} />
  */
 const kbdVariants = cva(
-  'pointer-events-none inline-flex shrink-0 select-none items-center justify-center rounded border border-border bg-muted font-sans font-medium uppercase tracking-wide text-muted-foreground shadow-[inset_0_-1px_0_0_hsl(var(--border))] [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*=size-])]:size-3',
+  'border-border bg-muted text-muted-foreground pointer-events-none inline-flex shrink-0 items-center justify-center rounded border font-sans font-medium tracking-wide uppercase shadow-[inset_0_-1px_0_0_hsl(var(--border))] select-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*=size-])]:size-3',
   {
     variants: {
       size: {
@@ -47,7 +47,13 @@ function KbdGroup({
       data-slot="kbd-group"
       className={cn('inline-flex items-center gap-1', className)}
       {...props}>
-      {keys ? keys.map((key, index) => <Kbd key={`${key}-${index}`} size={size}>{key}</Kbd>) : children}
+      {keys
+        ? keys.map((key, index) => (
+            <Kbd key={`${key}-${index}`} size={size}>
+              {key}
+            </Kbd>
+          ))
+        : children}
     </span>
   );
 }

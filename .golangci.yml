@@ -1,0 +1,36 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+# Show every finding instead of golangci-lint's default cap (50/linter,
+# 3 identical-text issues) - we want the full picture, not a truncated sample.
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - misspell
+    - staticcheck
+    - unused
+  exclusions:
+    rules:
+      # Table-driven tests and fakes lean on the stdlib testing idioms that
+      # trip a few of these checks (unchecked writes to bytes.Buffer/strings
+      # in test helpers, etc.) - real production code stays fully linted.
+      - path: _test\.go
+        linters:
+          - errcheck
+      # staticcheck noise that's specific to test code: syntactically-identical
+      # calls that are actually non-deterministic (SA4000, e.g. two calls to a
+      # random-token generator), deliberate use of deprecated crypto APIs to
+      # build fixtures (SA1019), and pure style suggestions (QF10xx) that
+      # aren't worth the diff in test files.
+      - path: _test\.go
+        linters:
+          - staticcheck

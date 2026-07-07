@@ -83,7 +83,7 @@ func (s *apnsSender) send(ctx context.Context, deviceToken, title, body string, 
 	if err != nil {
 		return fmt.Errorf("push: apns request: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode == http.StatusOK {
 		return nil
 	}

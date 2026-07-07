@@ -1,4 +1,3 @@
-import * as React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -43,9 +42,15 @@ function Consumer() {
     <div>
       <span data-testid="theme">{theme}</span>
       <span data-testid="resolved">{resolvedTheme}</span>
-      <button onClick={() => setTheme('light')}>set-light</button>
-      <button onClick={() => setTheme('dark')}>set-dark</button>
-      <button onClick={() => setTheme('system')}>set-system</button>
+      <button type="button" onClick={() => setTheme('light')}>
+        set-light
+      </button>
+      <button type="button" onClick={() => setTheme('dark')}>
+        set-dark
+      </button>
+      <button type="button" onClick={() => setTheme('system')}>
+        set-system
+      </button>
     </div>
   );
 }
@@ -188,16 +193,13 @@ describe('ThemeProvider — persistence', () => {
   it('still applies the theme for the session when localStorage throws', async () => {
     mockMatchMedia(false);
     const user = userEvent.setup();
-    const getItemSpy = vi
-      .spyOn(window.localStorage.__proto__, 'getItem')
-      .mockImplementation(() => {
-        throw new Error('private mode');
-      });
-    const setItemSpy = vi
-      .spyOn(window.localStorage.__proto__, 'setItem')
-      .mockImplementation(() => {
-        throw new Error('private mode');
-      });
+    const localStorageProto = Object.getPrototypeOf(window.localStorage);
+    const getItemSpy = vi.spyOn(localStorageProto, 'getItem').mockImplementation(() => {
+      throw new Error('private mode');
+    });
+    const setItemSpy = vi.spyOn(localStorageProto, 'setItem').mockImplementation(() => {
+      throw new Error('private mode');
+    });
 
     render(
       <ThemeProvider>

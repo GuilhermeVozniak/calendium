@@ -1,4 +1,5 @@
-import React, { useContext } from 'react';
+import type React from 'react';
+import { useContext } from 'react';
 
 export function useAssertedContext<T>(context: React.Context<T>) {
   const contextValue = useContext(context);

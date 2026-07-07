@@ -24,7 +24,7 @@ import { cn } from '@/lib/utils';
 function nextDestination(): string {
   if (typeof window === 'undefined') return '/mail';
   const next = new URLSearchParams(window.location.search).get('next');
-  if (next && next.startsWith('/') && !next.startsWith('//')) return next;
+  if (next?.startsWith('/') && !next.startsWith('//')) return next;
   return '/mail';
 }
 
@@ -131,7 +131,7 @@ export default function SignInPage() {
       {/* Faint dot grid backdrop */}
       <div
         aria-hidden
-        className="absolute inset-0 -z-10 [background-image:radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:24px_24px] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_45%,black,transparent)]"
+        className="absolute inset-0 -z-10 [background-image:radial-gradient(hsl(var(--border))_1px,transparent_1px)] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_45%,black,transparent)] [background-size:24px_24px]"
       />
 
       <div className="flex w-full max-w-sm flex-col items-center">
@@ -153,8 +153,7 @@ export default function SignInPage() {
                   size="lg"
                   className="w-full"
                   disabled={busy}
-                  onClick={() => social('google')}
-                >
+                  onClick={() => social('google')}>
                   {pending === 'google' ? (
                     <Loader2 className="animate-spin" />
                   ) : (
@@ -169,8 +168,7 @@ export default function SignInPage() {
                   size="lg"
                   className="w-full"
                   disabled={busy}
-                  onClick={() => social('apple')}
-                >
+                  onClick={() => social('apple')}>
                   {pending === 'apple' ? (
                     <Loader2 className="animate-spin" />
                   ) : (
@@ -191,8 +189,7 @@ export default function SignInPage() {
 
         <form
           onSubmit={submitEmail}
-          className={cn('flex w-full flex-col gap-3', showSocial ? 'mt-6' : 'mt-8')}
-        >
+          className={cn('flex w-full flex-col gap-3', showSocial ? 'mt-6' : 'mt-8')}>
           {mode === 'signup' && (
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="name">Name</Label>
@@ -244,8 +241,7 @@ export default function SignInPage() {
           type="button"
           className="text-muted-foreground hover:text-foreground mt-4 text-xs transition-colors"
           onClick={() => setMode((m) => (m === 'signin' ? 'signup' : 'signin'))}
-          disabled={busy}
-        >
+          disabled={busy}>
           {mode === 'signin'
             ? "Don't have an account? Sign up"
             : 'Already have an account? Sign in'}

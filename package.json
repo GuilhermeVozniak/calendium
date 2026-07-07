@@ -1,7 +1,11 @@
 {
   "name": "calendium",
   "private": true,
-  "workspaces": ["apps/*", "apps/desktop/frontend", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "apps/desktop/frontend",
+    "packages/*"
+  ],
   "scripts": {
     "dev:mobile": "bun run --cwd apps/mobile dev",
     "dev:web": "bun run --cwd apps/web dev",
@@ -18,9 +22,15 @@
     "test:desktop": "bun run --cwd apps/desktop/frontend test",
     "test:e2e": "bun run --cwd apps/web e2e",
     "typecheck": "bun run --cwd apps/web typecheck && bun run --cwd packages/shared typecheck",
-    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,css}\""
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,css}\"",
+    "lint": "bun run lint:js && bun run lint:go",
+    "lint:js": "biome check .",
+    "lint:go": "cd backend && golangci-lint run ./... && cd ../apps/desktop && golangci-lint run ./...",
+    "prepare": "lefthook install"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.2",
+    "lefthook": "^2.1.9",
     "prettier": "^3.6.2",
     "vitest": "^4.1.10"
   },

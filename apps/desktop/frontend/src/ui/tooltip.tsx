@@ -1,4 +1,4 @@
-import * as React from 'react';
+import type * as React from 'react';
 
 import { cn } from '@/lib/utils';
 
@@ -29,11 +29,10 @@ function Tooltip({ label, side = 'top', className, children }: TooltipProps) {
       <span
         role="tooltip"
         className={cn(
-          'pointer-events-none absolute z-50 hidden whitespace-nowrap rounded-md bg-primary px-2 py-1 text-xs text-primary-foreground shadow-md group-hover/tooltip:inline-flex group-hover/tooltip:items-center group-hover/tooltip:gap-1.5',
+          'bg-primary text-primary-foreground pointer-events-none absolute z-50 hidden rounded-md px-2 py-1 text-xs whitespace-nowrap shadow-md group-hover/tooltip:inline-flex group-hover/tooltip:items-center group-hover/tooltip:gap-1.5',
           sideClasses[side],
           className
-        )}
-      >
+        )}>
         {label}
       </span>
     </span>

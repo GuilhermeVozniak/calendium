@@ -79,7 +79,7 @@ func (r draftRepo) ListByUser(ctx context.Context, userID string) ([]domain.Draf
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return collectDrafts(rows)
 }
 
@@ -119,7 +119,7 @@ func (r draftRepo) ListScheduledDue(ctx context.Context, now time.Time, limit in
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return collectDrafts(rows)
 }
 
@@ -211,7 +211,7 @@ func (r snippetRepo) ListByUser(ctx context.Context, userID string) ([]domain.Sn
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	snippets := []domain.Snippet{}
 	for rows.Next() {
 		s, err := scanSnippet(rows)

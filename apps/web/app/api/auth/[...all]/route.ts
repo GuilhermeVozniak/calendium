@@ -27,7 +27,9 @@ function corsHeaders(req: Request): Headers {
 }
 
 function withCors(res: Response, req: Request): Response {
-  corsHeaders(req).forEach((value, key) => res.headers.set(key, value));
+  corsHeaders(req).forEach((value, key) => {
+    res.headers.set(key, value);
+  });
   return res;
 }
 

@@ -236,12 +236,12 @@ func buildRFC2822(msg port.OutgoingMessage) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		fmt.Fprint(pw, text)
+		_, _ = fmt.Fprint(pw, text)
 		hw, err := mw.CreatePart(textHeader("text/html"))
 		if err != nil {
 			return nil, err
 		}
-		fmt.Fprint(hw, msg.BodyHTML)
+		_, _ = fmt.Fprint(hw, msg.BodyHTML)
 		if err := mw.Close(); err != nil {
 			return nil, err
 		}

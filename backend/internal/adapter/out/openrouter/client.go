@@ -71,7 +71,7 @@ func (c *Client) Complete(ctx context.Context, system, user string) (text, model
 	if err != nil {
 		return "", "", fmt.Errorf("openrouter: request: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
 	if err != nil {

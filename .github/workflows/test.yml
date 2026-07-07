@@ -47,23 +47,85 @@ jobs:
       - name: Coverage summary
         run: go tool cover -func=coverage.out | tail -n 1
 
-  # ---------------------------------------------------------------------------
-  # Placeholder for the TypeScript sub-projects (packages/shared, apps/web,
-  # apps/mobile, apps/desktop/frontend). Uncomment and fill in per-workspace as
-  # each grows a real unit-test suite. Kept here so the matrix shape is agreed
-  # up-front and reviewers know where TS coverage will land.
-  #
-  # frontend:
-  #   name: TS ${{ matrix.workspace }}
-  #   runs-on: ubuntu-latest
-  #   strategy:
-  #     fail-fast: false
-  #     matrix:
-  #       workspace: [shared, web, mobile, desktop]
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: oven-sh/setup-bun@v2
-  #       with:
-  #         bun-version: latest
-  #     - run: bun install --frozen-lockfile
-  #     - run: bun run test:${{ matrix.workspace }}
+  lint-js:
+    name: Biome (JS/TS lint)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Biome check
+        run: bunx biome check .
+
+  lint-go:
+    name: golangci-lint (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [backend, apps/desktop]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12
+          working-directory: ${{ matrix.module }}
+
+  ts-tests:
+    name: TS unit tests (shared, web, desktop, mobile)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test packages/shared
+        run: bun run test:shared
+
+      - name: Test apps/web
+        run: bun run test:web
+
+      - name: Test apps/desktop/frontend
+        run: bun run test:desktop
+
+      - name: Test apps/mobile
+        run: bun run test:mobile
+
+  e2e:
+    name: Playwright e2e (apps/web, demo mode)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run e2e tests
+        run: bun run test:e2e

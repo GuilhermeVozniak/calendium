@@ -13,7 +13,7 @@ function definePatchable(target: object, key: string, value: unknown) {
 }
 
 function clearPatchable(target: object, key: string) {
-  if (Object.prototype.hasOwnProperty.call(target, key)) {
+  if (Object.hasOwn(target, key)) {
     Reflect.deleteProperty(target, key);
   }
 }
@@ -63,7 +63,9 @@ describe('enableWebPush / disableWebPush', () => {
   let registerMock: ReturnType<typeof vi.fn>;
   let requestPermissionMock: ReturnType<typeof vi.fn>;
   let mockSubscription: { endpoint: string; unsubscribe: ReturnType<typeof vi.fn> };
-  let mockRegistration: { pushManager: { getSubscription: ReturnType<typeof vi.fn>; subscribe: ReturnType<typeof vi.fn> } };
+  let mockRegistration: {
+    pushManager: { getSubscription: ReturnType<typeof vi.fn>; subscribe: ReturnType<typeof vi.fn> };
+  };
 
   beforeEach(() => {
     unsubscribeMock = vi.fn(async () => true);
@@ -108,14 +110,14 @@ describe('enableWebPush / disableWebPush', () => {
     it('throws when push is not supported', async () => {
       clearPatchable(window, 'Notification');
       await expect(enableWebPush(VAPID_KEY)).rejects.toThrow(
-        'Push notifications are not supported in this browser.',
+        'Push notifications are not supported in this browser.'
       );
     });
 
     it('throws when notification permission is not granted', async () => {
       requestPermissionMock.mockResolvedValueOnce('denied');
       await expect(enableWebPush(VAPID_KEY)).rejects.toThrow(
-        'Notification permission was not granted.',
+        'Notification permission was not granted.'
       );
     });
 

@@ -87,7 +87,7 @@ func (c *Client) token(ctx context.Context, form url.Values, fallbackRefresh str
 	if err != nil {
 		return port.OAuthToken{}, fmt.Errorf("googleapi: token request: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	var tr tokenResponse
 	if res.StatusCode != http.StatusOK {

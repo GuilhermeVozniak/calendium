@@ -92,7 +92,7 @@ func (c *Client) doJSON(ctx context.Context, method, url, accessToken string, bo
 	if err != nil {
 		return fmt.Errorf("msgraph: %s %s: %w", method, url, err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
 	if err != nil {

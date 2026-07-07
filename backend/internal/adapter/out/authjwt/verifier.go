@@ -331,7 +331,7 @@ func (v *Verifier) fetch(ctx context.Context) (map[string]crypto.PublicKey, erro
 	if err != nil {
 		return nil, fmt.Errorf("authjwt: fetch JWKS: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("authjwt: JWKS endpoint returned %s", res.Status)
 	}

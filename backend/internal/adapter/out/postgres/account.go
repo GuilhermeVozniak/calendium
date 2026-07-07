@@ -90,7 +90,7 @@ func (r accountRepo) listAccounts(ctx context.Context, query string, args ...any
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	accounts := []domain.ConnectedAccount{}
 	for rows.Next() {
 		a, err := scanAccount(rows)
@@ -271,7 +271,7 @@ func (r deviceRepo) ListByUser(ctx context.Context, userID string) ([]domain.Not
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	devices := []domain.NotificationDevice{}
 	for rows.Next() {
 		d, err := scanDevice(rows)

@@ -63,7 +63,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	err = db.PingContext(pingCtx)

@@ -1,0 +1,38 @@
+# https://lefthook.dev/configuration/
+#
+# Pre-push gate: lint (Biome for JS/TS, golangci-lint for both Go modules)
+# plus every unit-test suite in the monorepo, run in parallel.
+#
+# test:e2e (Playwright) is deliberately EXCLUDED here: it needs a built web
+# app + a real Chromium download, which is too heavy for a local pre-push
+# hook. It runs in CI instead (see .github/workflows/test.yml).
+#
+# test:api spins up testcontainers (a throwaway Postgres in Docker) via the
+# backend's own test suite. It needs a running local Docker daemon. It stays
+# in pre-push because tests-before-push was explicitly requested, but if
+# Docker isn't running locally this job will fail loudly rather than
+# silently skip -- start Docker Desktop (or `colima start`, etc.) before
+# pushing, or use `git push --no-verify` to bypass this hook in a pinch.
+pre-push:
+  parallel: true
+  jobs:
+    - name: lint:js
+      run: bun run lint:js
+
+    - name: lint:go
+      run: bun run lint:go
+
+    - name: test:api
+      run: bun run test:api
+
+    - name: test:shared
+      run: bun run test:shared
+
+    - name: test:web
+      run: bun run test:web
+
+    - name: test:desktop
+      run: bun run test:desktop
+
+    - name: test:mobile
+      run: bun run test:mobile

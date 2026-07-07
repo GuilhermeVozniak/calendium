@@ -186,7 +186,7 @@ func (r threadRepo) List(ctx context.Context, q port.ThreadQuery) (domain.Page[d
 	if err != nil {
 		return page, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	items := []domain.Thread{}
 	for rows.Next() {
@@ -279,7 +279,7 @@ func (r threadRepo) Search(ctx context.Context, userID, query string, limit int)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return collectThreads(rows)
 }
 
@@ -291,7 +291,7 @@ func (r threadRepo) ListSnoozeDue(ctx context.Context, now time.Time, limit int)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return collectThreads(rows)
 }
 
@@ -303,7 +303,7 @@ func (r threadRepo) ListRemindersDue(ctx context.Context, now time.Time, limit i
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return collectThreads(rows)
 }
 
@@ -498,7 +498,7 @@ func (r messageRepo) ListByThread(ctx context.Context, threadID string) ([]domai
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	msgs := []domain.Message{}
 	ids := []string{}
@@ -540,7 +540,7 @@ func (r messageRepo) attachmentsFor(ctx context.Context, messageIDs []string) (m
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	byMsg := map[string][]domain.Attachment{}
 	for rows.Next() {
@@ -596,7 +596,7 @@ func (r labelRepo) ListByAccount(ctx context.Context, accountID string) ([]domai
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	labels := []domain.Label{}
 	for rows.Next() {
 		l, err := scanLabel(rows)

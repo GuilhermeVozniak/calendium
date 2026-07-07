@@ -14,8 +14,8 @@
 // With none of these set the committed default still builds and push degrades
 // honestly at runtime (getDevicePushTokenAsync throws -> notifyPushUnavailable in
 // hooks/use-push-registration.ts), instead of advertising a dead feature.
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const googleServicesPath = process.env.GOOGLE_SERVICES_JSON || './google-services.json';
 const hasGoogleServices = fs.existsSync(path.resolve(__dirname, googleServicesPath));
@@ -33,8 +33,6 @@ module.exports = ({ config }) => ({
     ...config.extra,
     // `eas build` links a build to an Expo project via this id; kept out of the
     // committed config so self-hosters build against their own Expo project.
-    ...(easProjectId
-      ? { eas: { ...(config.extra && config.extra.eas), projectId: easProjectId } }
-      : {}),
+    ...(easProjectId ? { eas: { ...config.extra?.eas, projectId: easProjectId } } : {}),
   },
 });

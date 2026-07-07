@@ -59,24 +59,23 @@ function ThreadRow({
       type="button"
       onClick={onClick}
       className={cn(
-        'flex w-full select-none flex-col gap-0.5 border-b px-3 py-2 text-left transition-colors',
+        'flex w-full flex-col gap-0.5 border-b px-3 py-2 text-left transition-colors select-none',
         active ? 'bg-accent' : 'hover:bg-accent/50'
-      )}
-    >
+      )}>
       <div className="flex items-center gap-1.5">
-        {thread.unread && <span className="size-1.5 shrink-0 rounded-full bg-chart-1" />}
+        {thread.unread && <span className="bg-chart-1 size-1.5 shrink-0 rounded-full" />}
         <span className={cn('truncate text-sm', thread.unread ? 'font-semibold' : 'font-medium')}>
           {sender?.name ?? sender?.email ?? 'Unknown'}
         </span>
-        {thread.starred && <Star className="size-3 shrink-0 fill-chart-4 text-chart-4" />}
-        <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">
+        {thread.starred && <Star className="fill-chart-4 text-chart-4 size-3 shrink-0" />}
+        <span className="text-muted-foreground ml-auto shrink-0 text-[11px] tabular-nums">
           {threadTime(thread.lastMessageAt)}
         </span>
       </div>
       <div className={cn('truncate text-[13px]', thread.unread ? 'font-medium' : '')}>
         {thread.subject}
       </div>
-      <div className="truncate text-xs text-muted-foreground">{thread.snippet}</div>
+      <div className="text-muted-foreground truncate text-xs">{thread.snippet}</div>
     </button>
   );
 }
@@ -122,7 +121,7 @@ export function InboxView({ split }: { split: InboxSplit }) {
 
   // Opening a thread records real read state server-side (contract item 5).
   useEffect(() => {
-    if (!selected || !selected.unread) return;
+    if (!selected?.unread) return;
     const id = selected.id;
     setThreads((prev) => prev.map((t) => (t.id === id ? { ...t, unread: false } : t)));
     if (!isDemoMode()) void api.markThreadOpened(id).catch(() => {});
@@ -212,7 +211,7 @@ export function InboxView({ split }: { split: InboxSplit }) {
         <header className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
           <h1 className="text-sm font-semibold">{SPLIT_LABELS[split]}</h1>
           <Badge variant="secondary">{threads.length}</Badge>
-          <div className="ml-auto flex items-center gap-1 text-[11px] text-muted-foreground">
+          <div className="text-muted-foreground ml-auto flex items-center gap-1 text-[11px]">
             <Kbd>J</Kbd>
             <Kbd>K</Kbd>
             <span>navigate</span>
@@ -221,12 +220,12 @@ export function InboxView({ split }: { split: InboxSplit }) {
         <div className="min-h-0 flex-1 overflow-y-auto">
           {isLoading ? (
             <div className="flex h-full items-center justify-center">
-              <Loader2 className="size-5 animate-spin text-muted-foreground" />
+              <Loader2 className="text-muted-foreground size-5 animate-spin" />
             </div>
           ) : isError ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
               <p className="text-sm font-medium">Couldn't load mail</p>
-              <p className="text-xs text-muted-foreground">{errorMessage(error)}</p>
+              <p className="text-muted-foreground text-xs">{errorMessage(error)}</p>
               <Button variant="outline" size="sm" onClick={() => void refetch()}>
                 Retry
               </Button>
@@ -234,7 +233,7 @@ export function InboxView({ split }: { split: InboxSplit }) {
           ) : threads.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-1 p-6 text-center">
               <p className="text-sm font-medium">Inbox zero</p>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-muted-foreground text-xs">
                 Nothing in {SPLIT_LABELS[split]} — enjoy the quiet.
               </p>
             </div>
@@ -249,7 +248,7 @@ export function InboxView({ split }: { split: InboxSplit }) {
             ))
           )}
         </div>
-        <footer className="flex h-8 shrink-0 items-center gap-3 border-t px-3 text-[11px] text-muted-foreground">
+        <footer className="text-muted-foreground flex h-8 shrink-0 items-center gap-3 border-t px-3 text-[11px]">
           <span className="inline-flex items-center gap-1">
             <Kbd>E</Kbd> archive
           </span>

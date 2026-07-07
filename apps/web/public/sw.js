@@ -24,7 +24,7 @@ self.addEventListener('push', (event) => {
     body: payload.body || '',
     icon: '/icon.png',
     badge: '/icon.png',
-    tag: (payload.data && payload.data.threadId) || undefined,
+    tag: payload.data?.threadId || undefined,
     data: payload.data || {},
   };
   event.waitUntil(self.registration.showNotification(title, options));

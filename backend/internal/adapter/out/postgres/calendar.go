@@ -81,7 +81,7 @@ func (r calendarRepo) listCalendars(ctx context.Context, query string, args ...a
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	cals := []domain.Calendar{}
 	for rows.Next() {
 		c, err := scanCalendar(rows)
@@ -253,7 +253,7 @@ func (r eventRepo) ListInRange(ctx context.Context, userID string, from, to time
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return collectEvents(rows)
 }
 
@@ -285,7 +285,7 @@ func (r eventRepo) Search(ctx context.Context, userID, query string, limit int) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return collectEvents(rows)
 }
 

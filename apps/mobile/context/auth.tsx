@@ -1,4 +1,5 @@
-import React, { createContext, useCallback, useEffect, useState } from 'react';
+import type React from 'react';
+import { createContext, useCallback, useEffect, useState } from 'react';
 import { unregisterPushDevice } from '@/hooks/use-push-registration';
 import type { AuthUser } from '@/lib/auth-client';
 import { queryClient } from '@/lib/query-client';

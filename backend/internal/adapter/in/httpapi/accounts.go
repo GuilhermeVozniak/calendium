@@ -140,7 +140,7 @@ func (s *server) handleDisconnectAccount(w http.ResponseWriter, r *http.Request)
 func writeCallbackPage(w http.ResponseWriter, status int, title, detail string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	fmt.Fprintf(w, `<!doctype html>
+	_, _ = fmt.Fprintf(w, `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">

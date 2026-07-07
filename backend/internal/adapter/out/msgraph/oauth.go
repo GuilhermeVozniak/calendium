@@ -81,7 +81,7 @@ func (c *Client) token(ctx context.Context, form url.Values, fallbackRefresh str
 	if err != nil {
 		return port.OAuthToken{}, fmt.Errorf("msgraph: token request: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
 		var oe struct {

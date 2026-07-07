@@ -64,7 +64,7 @@ func (c *Client) do(ctx context.Context, method, path string, form url.Values, o
 	if err != nil {
 		return fmt.Errorf("stripeapi: %s %s: %w", method, path, err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
 	if err != nil {
