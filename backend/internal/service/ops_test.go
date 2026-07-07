@@ -12,145 +12,6 @@ import (
 	"calendium/backend/internal/port"
 )
 
-// --- fakes -------------------------------------------------------------------
-
-type stubAccountRepo struct {
-	port.AccountRepo
-	byID           map[string]domain.ConnectedAccount
-	updated        *domain.ConnectedAccount
-	created        *domain.ConnectedAccount
-	savedTokensFor string
-}
-
-func (r *stubAccountRepo) GetByID(_ context.Context, id string) (domain.ConnectedAccount, error) {
-	a, ok := r.byID[id]
-	if !ok {
-		return domain.ConnectedAccount{}, domain.ErrNotFound
-	}
-	return a, nil
-}
-
-func (r *stubAccountRepo) ListByUser(_ context.Context, userID string) ([]domain.ConnectedAccount, error) {
-	out := []domain.ConnectedAccount{}
-	for _, a := range r.byID {
-		if a.UserID == userID {
-			out = append(out, a)
-		}
-	}
-	return out, nil
-}
-
-func (r *stubAccountRepo) Create(_ context.Context, a domain.ConnectedAccount) (domain.ConnectedAccount, error) {
-	if r.byID == nil {
-		r.byID = map[string]domain.ConnectedAccount{}
-	}
-	r.byID[a.ID] = a
-	r.created = &a
-	return a, nil
-}
-
-func (r *stubAccountRepo) Update(_ context.Context, a domain.ConnectedAccount) error {
-	if r.byID == nil {
-		r.byID = map[string]domain.ConnectedAccount{}
-	}
-	r.byID[a.ID] = a
-	r.updated = &a
-	return nil
-}
-
-func (r *stubAccountRepo) SaveTokens(_ context.Context, accountID string, _ port.TokenSet) error {
-	r.savedTokensFor = accountID
-	return nil
-}
-
-type stubThreadRepo struct {
-	port.ThreadRepo
-	byID       map[string]domain.Thread
-	markOpened int
-	lastQuery  port.ThreadQuery
-}
-
-func (r *stubThreadRepo) GetByID(_ context.Context, id string) (domain.Thread, error) {
-	t, ok := r.byID[id]
-	if !ok {
-		return domain.Thread{}, domain.ErrNotFound
-	}
-	return t, nil
-}
-
-func (r *stubThreadRepo) MarkOpened(_ context.Context, _ string) error {
-	r.markOpened++
-	return nil
-}
-
-func (r *stubThreadRepo) List(_ context.Context, q port.ThreadQuery) (domain.Page[domain.Thread], error) {
-	r.lastQuery = q
-	return domain.Page[domain.Thread]{Items: []domain.Thread{}}, nil
-}
-
-type stubDraftRepo struct {
-	port.DraftRepo
-	byID        map[string]domain.Draft
-	claimResult bool
-	claimedID   string
-}
-
-func (r *stubDraftRepo) GetByID(_ context.Context, id string) (domain.Draft, error) {
-	d, ok := r.byID[id]
-	if !ok {
-		return domain.Draft{}, domain.ErrNotFound
-	}
-	return d, nil
-}
-
-func (r *stubDraftRepo) ClaimScheduled(_ context.Context, id string) (bool, error) {
-	r.claimedID = id
-	return r.claimResult, nil
-}
-
-type stubOAuthStateRepo struct {
-	created *port.OAuthState
-	byState map[string]port.OAuthState
-}
-
-func (r *stubOAuthStateRepo) Create(_ context.Context, s port.OAuthState) error {
-	if r.byState == nil {
-		r.byState = map[string]port.OAuthState{}
-	}
-	r.byState[s.State] = s
-	r.created = &s
-	return nil
-}
-
-func (r *stubOAuthStateRepo) Consume(_ context.Context, state string) (port.OAuthState, error) {
-	s, ok := r.byState[state]
-	if !ok {
-		return port.OAuthState{}, domain.ErrNotFound
-	}
-	delete(r.byState, state)
-	return s, nil
-}
-
-type stubOAuthGateway struct {
-	authRedirect, authChallenge string
-	exchRedirect, exchVerifier  string
-	token                       port.OAuthToken
-}
-
-func (g *stubOAuthGateway) AuthURL(state, redirectURI, codeChallenge string) string {
-	g.authRedirect, g.authChallenge = redirectURI, codeChallenge
-	return "https://provider.example/auth?state=" + state
-}
-
-func (g *stubOAuthGateway) Exchange(_ context.Context, _, redirectURI, codeVerifier string) (port.OAuthToken, error) {
-	g.exchRedirect, g.exchVerifier = redirectURI, codeVerifier
-	return g.token, nil
-}
-
-func (g *stubOAuthGateway) Refresh(context.Context, string) (port.OAuthToken, error) {
-	return port.OAuthToken{}, nil
-}
-
 // --- MailService.UnsendDraft -------------------------------------------------
 
 func TestUnsendDraft(t *testing.T) {
@@ -171,11 +32,13 @@ func TestUnsendDraft(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			accounts := &stubAccountRepo{byID: map[string]domain.ConnectedAccount{"a1": acct}}
-			drafts := &stubDraftRepo{byID: map[string]domain.Draft{}, claimResult: tt.claim}
+			accounts := newAccountRepo()
+			accounts.byID["a1"] = acct
+			drafts := newDraftRepo(accounts)
 			if tt.draft != nil {
 				drafts.byID["d1"] = *tt.draft
 			}
+			drafts.claimOutcome["d1"] = tt.claim
 			svc := NewMailService(MailServiceDeps{Accounts: accounts, Drafts: drafts, Clock: SystemClock{}, SelfHosted: true})
 
 			got, err := svc.UnsendDraft(context.Background(), owner, "d1")
@@ -202,8 +65,10 @@ func TestUnsendDraft(t *testing.T) {
 
 func TestMarkThreadOpenedIdempotentAndOwned(t *testing.T) {
 	const owner = "u1"
-	accounts := &stubAccountRepo{byID: map[string]domain.ConnectedAccount{"a1": {ID: "a1", UserID: owner}}}
-	threads := &stubThreadRepo{byID: map[string]domain.Thread{"t1": {ID: "t1", AccountID: "a1"}}}
+	accounts := newAccountRepo()
+	accounts.byID["a1"] = domain.ConnectedAccount{ID: "a1", UserID: owner}
+	threads := newThreadRepo()
+	threads.byID["t1"] = domain.Thread{ID: "t1", AccountID: "a1"}
 	svc := NewMailService(MailServiceDeps{Accounts: accounts, Threads: threads, Clock: SystemClock{}, SelfHosted: true})
 
 	for i := 0; i < 2; i++ {
@@ -222,7 +87,7 @@ func TestMarkThreadOpenedIdempotentAndOwned(t *testing.T) {
 // --- MailService.ListThreads forwards the pseudo-view ------------------------
 
 func TestListThreadsForwardsView(t *testing.T) {
-	threads := &stubThreadRepo{}
+	threads := newThreadRepo()
 	svc := NewMailService(MailServiceDeps{Threads: threads, Clock: SystemClock{}, SelfHosted: true})
 
 	if _, err := svc.ListThreads(context.Background(), "u1", port.ThreadQuery{View: domain.ThreadViewSent}); err != nil {
@@ -240,9 +105,8 @@ func TestListThreadsForwardsView(t *testing.T) {
 
 func TestSetVipSenders(t *testing.T) {
 	const owner = "u1"
-	accounts := &stubAccountRepo{byID: map[string]domain.ConnectedAccount{
-		"a1": {ID: "a1", UserID: owner, Email: "me@x.com"},
-	}}
+	accounts := newAccountRepo()
+	accounts.byID["a1"] = domain.ConnectedAccount{ID: "a1", UserID: owner, Email: "me@x.com"}
 	svc := NewAccountService(accounts, nil, nil, nil, nil, "", SystemClock{})
 
 	got, err := svc.SetVipSenders(context.Background(), owner, "a1",
@@ -265,10 +129,10 @@ func TestSetVipSenders(t *testing.T) {
 // --- AccountService OAuth: callback redirect_uri + PKCE ----------------------
 
 func TestBeginConnectUsesCallbackAndPKCE(t *testing.T) {
-	gw := &stubOAuthGateway{}
-	states := &stubOAuthStateRepo{}
+	gw := newOAuthGateway()
+	states := newOAuthStateRepo()
 	oauth := map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: gw}
-	svc := NewAccountService(&stubAccountRepo{}, states, nil, oauth,
+	svc := NewAccountService(newAccountRepo(), states, nil, oauth,
 		[]string{"https://app.example.com"}, "https://api.example.com", SystemClock{})
 
 	authURL, err := svc.BeginConnect(context.Background(), "u1", domain.ProviderGoogle,
@@ -298,11 +162,11 @@ func TestBeginConnectUsesCallbackAndPKCE(t *testing.T) {
 }
 
 func TestBeginConnectDerivesCallbackFromRequest(t *testing.T) {
-	gw := &stubOAuthGateway{}
-	states := &stubOAuthStateRepo{}
+	gw := newOAuthGateway()
+	states := newOAuthStateRepo()
 	oauth := map[domain.Provider]port.OAuthGateway{domain.ProviderMicrosoft: gw}
 	// No PUBLIC_API_URL configured — derive the callback origin from the request.
-	svc := NewAccountService(&stubAccountRepo{}, states, nil, oauth,
+	svc := NewAccountService(newAccountRepo(), states, nil, oauth,
 		[]string{"calendium://"}, "", SystemClock{})
 
 	if _, err := svc.BeginConnect(context.Background(), "u1", domain.ProviderMicrosoft,
@@ -316,9 +180,10 @@ func TestBeginConnectDerivesCallbackFromRequest(t *testing.T) {
 }
 
 func TestCompleteConnectReplaysVerifierAndReturnsRedirect(t *testing.T) {
-	gw := &stubOAuthGateway{token: port.OAuthToken{Email: "me@x.com", Scopes: []string{"scope"}}}
-	accounts := &stubAccountRepo{byID: map[string]domain.ConnectedAccount{}}
-	states := &stubOAuthStateRepo{}
+	gw := newOAuthGateway()
+	gw.token = port.OAuthToken{Email: "me@x.com", Scopes: []string{"scope"}}
+	accounts := newAccountRepo()
+	states := newOAuthStateRepo()
 	oauth := map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: gw}
 	svc := NewAccountService(accounts, states, nil, oauth,
 		[]string{"https://app.example.com"}, "https://api.example.com", SystemClock{})
