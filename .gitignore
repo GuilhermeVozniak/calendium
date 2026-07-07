@@ -15,7 +15,7 @@ expo-env.d.ts
 
 # Next.js (apps/web)
 .next/
-out/
+/apps/web/out/
 next-env.d.ts
 
 # Wails (apps/desktop)
