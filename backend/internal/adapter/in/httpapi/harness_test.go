@@ -1,0 +1,515 @@
+package httpapi
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"calendium/backend/internal/domain"
+	"calendium/backend/internal/port"
+)
+
+// Compile-time proof every double satisfies its port.
+var (
+	_ port.TokenVerifier   = (*fakeVerifier)(nil)
+	_ port.UserService     = (*fakeUserService)(nil)
+	_ port.BillingService  = (*fakeBillingService)(nil)
+	_ port.AccountService  = (*fakeAccountService)(nil)
+	_ port.MailService     = (*fakeMailService)(nil)
+	_ port.CalendarService = (*fakeCalendarService)(nil)
+	_ port.SearchService   = (*fakeSearchService)(nil)
+	_ port.AIService       = (*fakeAIService)(nil)
+	_ port.DeviceService   = (*fakeDeviceService)(nil)
+)
+
+const (
+	defaultToken  = "valid-token"
+	defaultUserID = "user_1"
+)
+
+// --- token verifier ----------------------------------------------------------
+
+type fakeVerifier struct {
+	tokens map[string]port.Identity // token => identity
+	err    error                    // when non-nil, Verify always fails
+	calls  int
+	gotJWT string
+}
+
+func (f *fakeVerifier) Verify(ctx context.Context, jwt string) (port.Identity, error) {
+	f.calls++
+	f.gotJWT = jwt
+	if f.err != nil {
+		return port.Identity{}, f.err
+	}
+	id, ok := f.tokens[jwt]
+	if !ok {
+		return port.Identity{}, domain.ErrUnauthorized
+	}
+	return id, nil
+}
+
+// --- UserService -------------------------------------------------------------
+
+type fakeUserService struct {
+	ensureRet   domain.User
+	ensureErr   error
+	ensureCalls int
+	gotIdentity port.Identity
+
+	getRet domain.User
+	getErr error
+}
+
+func (f *fakeUserService) EnsureUser(ctx context.Context, id port.Identity) (domain.User, error) {
+	f.ensureCalls++
+	f.gotIdentity = id
+	return f.ensureRet, f.ensureErr
+}
+func (f *fakeUserService) GetUser(ctx context.Context, userID string) (domain.User, error) {
+	return f.getRet, f.getErr
+}
+
+// --- BillingService ----------------------------------------------------------
+
+type fakeBillingService struct {
+	subRet domain.Subscription
+	subErr error
+
+	checkoutURL           string
+	checkoutErr           error
+	gotCheckoutSuccessURL string
+	gotCheckoutCancelURL  string
+
+	portalURL       string
+	portalErr       error
+	gotPortalReturn string
+
+	webhookErr        error
+	webhookCalls      int
+	gotWebhookPayload []byte
+	gotWebhookSig     string
+
+	requireActiveErr error
+}
+
+func (f *fakeBillingService) GetSubscription(ctx context.Context, userID string) (domain.Subscription, error) {
+	return f.subRet, f.subErr
+}
+func (f *fakeBillingService) CreateCheckoutSession(ctx context.Context, userID, successURL, cancelURL string) (string, error) {
+	f.gotCheckoutSuccessURL, f.gotCheckoutCancelURL = successURL, cancelURL
+	return f.checkoutURL, f.checkoutErr
+}
+func (f *fakeBillingService) CreatePortalSession(ctx context.Context, userID, returnURL string) (string, error) {
+	f.gotPortalReturn = returnURL
+	return f.portalURL, f.portalErr
+}
+func (f *fakeBillingService) HandleWebhook(ctx context.Context, payload []byte, sigHeader string) error {
+	f.webhookCalls++
+	f.gotWebhookPayload = payload
+	f.gotWebhookSig = sigHeader
+	return f.webhookErr
+}
+func (f *fakeBillingService) RequireActive(ctx context.Context, userID string) error {
+	return f.requireActiveErr
+}
+
+// --- AccountService ----------------------------------------------------------
+
+type fakeAccountService struct {
+	listRet []domain.ConnectedAccount
+	listErr error
+
+	beginURL        string
+	beginErr        error
+	gotProvider     domain.Provider
+	gotRedirectURL  string
+	gotBeginBaseURL string
+
+	completeAccount  domain.ConnectedAccount
+	completeRedirect string
+	completeErr      error
+	gotState         string
+	gotCode          string
+
+	vipRet   domain.ConnectedAccount
+	vipErr   error
+	gotVIPID string
+	gotVIP   []string
+
+	disconnectErr   error
+	gotDisconnectID string
+}
+
+func (f *fakeAccountService) List(ctx context.Context, userID string) ([]domain.ConnectedAccount, error) {
+	return f.listRet, f.listErr
+}
+func (f *fakeAccountService) BeginConnect(ctx context.Context, userID string, provider domain.Provider, redirectURL, requestBaseURL string) (string, error) {
+	f.gotProvider, f.gotRedirectURL, f.gotBeginBaseURL = provider, redirectURL, requestBaseURL
+	return f.beginURL, f.beginErr
+}
+func (f *fakeAccountService) CompleteConnect(ctx context.Context, provider domain.Provider, state, code, requestBaseURL string) (domain.ConnectedAccount, string, error) {
+	f.gotProvider, f.gotState, f.gotCode = provider, state, code
+	return f.completeAccount, f.completeRedirect, f.completeErr
+}
+func (f *fakeAccountService) SetVipSenders(ctx context.Context, userID, accountID string, vipSenders []string) (domain.ConnectedAccount, error) {
+	f.gotVIPID, f.gotVIP = accountID, vipSenders
+	return f.vipRet, f.vipErr
+}
+func (f *fakeAccountService) Disconnect(ctx context.Context, userID, accountID string) error {
+	f.gotDisconnectID = accountID
+	return f.disconnectErr
+}
+
+// --- MailService -------------------------------------------------------------
+
+type fakeMailService struct {
+	// ListThreads
+	listPage      domain.Page[domain.Thread]
+	listErr       error
+	listCalls     int
+	gotListUserID string
+	gotListQuery  port.ThreadQuery
+
+	// GetThread
+	getThreadThread domain.Thread
+	getThreadMsgs   []domain.Message
+	getThreadErr    error
+	gotGetThreadID  string
+
+	// ActOnThread
+	actRet    domain.Thread
+	actErr    error
+	gotAction domain.ThreadAction
+	gotActID  string
+
+	markOpenedErr error
+	gotMarkID     string
+
+	snoozeRet   domain.Thread
+	snoozeErr   error
+	gotSnoozeID string
+	gotUntil    time.Time
+
+	reminderRet   domain.Thread
+	reminderErr   error
+	gotReminderID string
+	gotRemindAt   *time.Time
+
+	// drafts
+	createDraftRet domain.Draft
+	createDraftErr error
+	gotCreateDraft port.DraftInput
+
+	updateDraftRet domain.Draft
+	updateDraftErr error
+	gotUpdateDraft port.DraftInput
+
+	getDraftRet domain.Draft
+	getDraftErr error
+
+	listDraftsRet []domain.Draft
+	listDraftsErr error
+
+	deleteDraftErr error
+	gotDeleteDraft string
+
+	sendDraftRet domain.Message
+	sendDraftErr error
+
+	unsendDraftRet domain.Draft
+	unsendDraftErr error
+
+	// snippets
+	listSnippetsRet []domain.Snippet
+	listSnippetsErr error
+	createSnippet   domain.Snippet
+	createSnipErr   error
+	updateSnippet   domain.Snippet
+	updateSnipErr   error
+	deleteSnipErr   error
+}
+
+func (f *fakeMailService) ListThreads(ctx context.Context, userID string, q port.ThreadQuery) (domain.Page[domain.Thread], error) {
+	f.listCalls++
+	f.gotListUserID = userID
+	f.gotListQuery = q
+	return f.listPage, f.listErr
+}
+func (f *fakeMailService) GetThread(ctx context.Context, userID, threadID string) (domain.Thread, []domain.Message, error) {
+	f.gotGetThreadID = threadID
+	return f.getThreadThread, f.getThreadMsgs, f.getThreadErr
+}
+func (f *fakeMailService) ActOnThread(ctx context.Context, userID, threadID string, action domain.ThreadAction) (domain.Thread, error) {
+	f.gotActID, f.gotAction = threadID, action
+	return f.actRet, f.actErr
+}
+func (f *fakeMailService) MarkThreadOpened(ctx context.Context, userID, threadID string) error {
+	f.gotMarkID = threadID
+	return f.markOpenedErr
+}
+func (f *fakeMailService) SnoozeThread(ctx context.Context, userID, threadID string, until time.Time) (domain.Thread, error) {
+	f.gotSnoozeID, f.gotUntil = threadID, until
+	return f.snoozeRet, f.snoozeErr
+}
+func (f *fakeMailService) SetReminder(ctx context.Context, userID, threadID string, remindAt *time.Time) (domain.Thread, error) {
+	f.gotReminderID, f.gotRemindAt = threadID, remindAt
+	return f.reminderRet, f.reminderErr
+}
+func (f *fakeMailService) CreateDraft(ctx context.Context, userID string, in port.DraftInput) (domain.Draft, error) {
+	f.gotCreateDraft = in
+	return f.createDraftRet, f.createDraftErr
+}
+func (f *fakeMailService) UpdateDraft(ctx context.Context, userID, draftID string, in port.DraftInput) (domain.Draft, error) {
+	f.gotUpdateDraft = in
+	return f.updateDraftRet, f.updateDraftErr
+}
+func (f *fakeMailService) GetDraft(ctx context.Context, userID, draftID string) (domain.Draft, error) {
+	return f.getDraftRet, f.getDraftErr
+}
+func (f *fakeMailService) ListDrafts(ctx context.Context, userID string) ([]domain.Draft, error) {
+	return f.listDraftsRet, f.listDraftsErr
+}
+func (f *fakeMailService) DeleteDraft(ctx context.Context, userID, draftID string) error {
+	f.gotDeleteDraft = draftID
+	return f.deleteDraftErr
+}
+func (f *fakeMailService) SendDraft(ctx context.Context, userID, draftID string) (domain.Message, error) {
+	return f.sendDraftRet, f.sendDraftErr
+}
+func (f *fakeMailService) UnsendDraft(ctx context.Context, userID, draftID string) (domain.Draft, error) {
+	return f.unsendDraftRet, f.unsendDraftErr
+}
+func (f *fakeMailService) ListSnippets(ctx context.Context, userID string) ([]domain.Snippet, error) {
+	return f.listSnippetsRet, f.listSnippetsErr
+}
+func (f *fakeMailService) CreateSnippet(ctx context.Context, userID string, in port.SnippetInput) (domain.Snippet, error) {
+	return f.createSnippet, f.createSnipErr
+}
+func (f *fakeMailService) UpdateSnippet(ctx context.Context, userID, snippetID string, in port.SnippetInput) (domain.Snippet, error) {
+	return f.updateSnippet, f.updateSnipErr
+}
+func (f *fakeMailService) DeleteSnippet(ctx context.Context, userID, snippetID string) error {
+	return f.deleteSnipErr
+}
+
+// --- CalendarService ---------------------------------------------------------
+
+type fakeCalendarService struct {
+	listCalsRet []domain.Calendar
+	listCalsErr error
+
+	updateCalRet domain.Calendar
+	updateCalErr error
+	gotUpdateCal port.CalendarPatch
+
+	listEventsRet   []domain.Event
+	listEventsErr   error
+	listEventsCalls int
+	gotEventsFrom   time.Time
+	gotEventsTo     time.Time
+	gotEventsCalIDs []string
+
+	createEventRet domain.Event
+	createEventErr error
+
+	updateEventRet domain.Event
+	updateEventErr error
+
+	deleteEventErr error
+	gotDeleteEvt   string
+
+	rsvpRet   domain.Event
+	rsvpErr   error
+	gotRsvp   domain.RsvpStatus
+	gotRsvpID string
+
+	availRet    []domain.AvailabilitySlot
+	availErr    error
+	availCalls  int
+	gotAvailDur time.Duration
+}
+
+func (f *fakeCalendarService) ListCalendars(ctx context.Context, userID string) ([]domain.Calendar, error) {
+	return f.listCalsRet, f.listCalsErr
+}
+func (f *fakeCalendarService) UpdateCalendar(ctx context.Context, userID, calendarID string, patch port.CalendarPatch) (domain.Calendar, error) {
+	f.gotUpdateCal = patch
+	return f.updateCalRet, f.updateCalErr
+}
+func (f *fakeCalendarService) ListEvents(ctx context.Context, userID string, from, to time.Time, calendarIDs []string) ([]domain.Event, error) {
+	f.listEventsCalls++
+	f.gotEventsFrom, f.gotEventsTo, f.gotEventsCalIDs = from, to, calendarIDs
+	return f.listEventsRet, f.listEventsErr
+}
+func (f *fakeCalendarService) CreateEvent(ctx context.Context, userID string, in domain.EventInput) (domain.Event, error) {
+	return f.createEventRet, f.createEventErr
+}
+func (f *fakeCalendarService) UpdateEvent(ctx context.Context, userID, eventID string, patch domain.EventPatch) (domain.Event, error) {
+	return f.updateEventRet, f.updateEventErr
+}
+func (f *fakeCalendarService) DeleteEvent(ctx context.Context, userID, eventID string) error {
+	f.gotDeleteEvt = eventID
+	return f.deleteEventErr
+}
+func (f *fakeCalendarService) RSVP(ctx context.Context, userID, eventID string, response domain.RsvpStatus) (domain.Event, error) {
+	f.gotRsvpID, f.gotRsvp = eventID, response
+	return f.rsvpRet, f.rsvpErr
+}
+func (f *fakeCalendarService) Availability(ctx context.Context, userID string, from, to time.Time, slotDuration time.Duration) ([]domain.AvailabilitySlot, error) {
+	f.availCalls++
+	f.gotEventsFrom, f.gotEventsTo, f.gotAvailDur = from, to, slotDuration
+	return f.availRet, f.availErr
+}
+
+// --- SearchService -----------------------------------------------------------
+
+type fakeSearchService struct {
+	ret   port.SearchResult
+	err   error
+	gotQ  string
+	calls int
+}
+
+func (f *fakeSearchService) Search(ctx context.Context, userID, query string) (port.SearchResult, error) {
+	f.calls++
+	f.gotQ = query
+	return f.ret, f.err
+}
+
+// --- AIService ---------------------------------------------------------------
+
+type fakeAIService struct {
+	ret    domain.AiComposeResponse
+	err    error
+	gotReq domain.AiComposeRequest
+}
+
+func (f *fakeAIService) Compose(ctx context.Context, userID string, req domain.AiComposeRequest) (domain.AiComposeResponse, error) {
+	f.gotReq = req
+	return f.ret, f.err
+}
+
+// --- DeviceService -----------------------------------------------------------
+
+type fakeDeviceService struct {
+	registerRet domain.NotificationDevice
+	registerErr error
+	gotPlatform domain.DevicePlatform
+	gotToken    string
+
+	unregisterErr error
+	gotUnregID    string
+}
+
+func (f *fakeDeviceService) Register(ctx context.Context, userID string, platform domain.DevicePlatform, token string) (domain.NotificationDevice, error) {
+	f.gotPlatform, f.gotToken = platform, token
+	return f.registerRet, f.registerErr
+}
+func (f *fakeDeviceService) Unregister(ctx context.Context, userID, deviceID string) error {
+	f.gotUnregID = deviceID
+	return f.unregisterErr
+}
+
+// --- harness -----------------------------------------------------------------
+
+type harness struct {
+	t         *testing.T
+	deps      Deps
+	verifier  *fakeVerifier
+	users     *fakeUserService
+	billing   *fakeBillingService
+	accounts  *fakeAccountService
+	mail      *fakeMailService
+	calendars *fakeCalendarService
+	search    *fakeSearchService
+	ai        *fakeAIService
+	devices   *fakeDeviceService
+}
+
+// newHarness wires every double into Deps with a discard logger and one
+// pre-registered valid token (defaultToken => user defaultUserID).
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	ver := &fakeVerifier{tokens: map[string]port.Identity{
+		defaultToken: {Subject: defaultUserID, Email: "owner@example.com", Name: "Owner"},
+	}}
+	users := &fakeUserService{ensureRet: domain.User{ID: defaultUserID, Email: "owner@example.com"}}
+	h := &harness{
+		t:         t,
+		verifier:  ver,
+		users:     users,
+		billing:   &fakeBillingService{},
+		accounts:  &fakeAccountService{},
+		mail:      &fakeMailService{},
+		calendars: &fakeCalendarService{},
+		search:    &fakeSearchService{},
+		ai:        &fakeAIService{},
+		devices:   &fakeDeviceService{},
+	}
+	h.deps = Deps{
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Verifier:  ver,
+		Users:     users,
+		Billing:   h.billing,
+		Accounts:  h.accounts,
+		Mail:      h.mail,
+		Calendars: h.calendars,
+		Search:    h.search,
+		AI:        h.ai,
+		Devices:   h.devices,
+	}
+	return h
+}
+
+// server returns a bare *server for unit-testing individual middleware
+// (requireAuth/recoverPanics) without the full New() stack.
+func (h *harness) server() *server { return &server{deps: h.deps} }
+
+// handler returns the full v1 stack (recover + log + CORS + auth + routes).
+func (h *harness) handler() http.Handler { return New(h.deps) }
+
+// authed issues a request through the full stack with a valid bearer token.
+func (h *harness) authed(method, target string, body io.Reader) *httptest.ResponseRecorder {
+	h.t.Helper()
+	req := httptest.NewRequest(method, target, body)
+	req.Header.Set("Authorization", "Bearer "+defaultToken)
+	rec := httptest.NewRecorder()
+	h.handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// anon issues a request through the full stack with no Authorization header.
+func (h *harness) anon(method, target string, body io.Reader) *httptest.ResponseRecorder {
+	h.t.Helper()
+	req := httptest.NewRequest(method, target, body)
+	rec := httptest.NewRecorder()
+	h.handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// jsonBody marshals v to an io.Reader for request bodies.
+func jsonBody(t *testing.T, v any) io.Reader {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	return bytes.NewReader(b)
+}
+
+// decodeErr unmarshals the { "error": { code, message } } envelope.
+func decodeErr(t *testing.T, rec *httptest.ResponseRecorder) errorDetail {
+	t.Helper()
+	var b errorBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &b); err != nil {
+		t.Fatalf("decode error envelope: %v (body=%s)", err, rec.Body.String())
+	}
+	return b.Error
+}
