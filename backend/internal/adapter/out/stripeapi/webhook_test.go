@@ -40,6 +40,102 @@ func TestVerifySignature(t *testing.T) {
 	}
 }
 
+func TestParseWebhookCheckoutSessionCompleted(t *testing.T) {
+	c := NewClient("sk_test", "whsec_test", "price_annual", nil)
+
+	t.Run("uses metadata.user_id when present", func(t *testing.T) {
+		payload := []byte(`{
+			"id": "evt_cs1", "type": "checkout.session.completed",
+			"data": {"object": {
+				"customer": "cus_1", "subscription": "sub_1",
+				"client_reference_id": "user-ref",
+				"metadata": {"user_id": "user-meta"}
+			}}
+		}`)
+		now := time.Now()
+		header := fmt.Sprintf("t=%d,v1=%s", now.Unix(), sign("whsec_test", now.Unix(), payload))
+
+		ev, err := c.ParseWebhook(payload, header)
+		if err != nil {
+			t.Fatalf("ParseWebhook: %v", err)
+		}
+		if ev.ID != "evt_cs1" || ev.Type != "checkout.session.completed" {
+			t.Fatalf("id/type not normalized: %+v", ev)
+		}
+		if ev.CustomerID != "cus_1" || ev.SubscriptionID != "sub_1" {
+			t.Fatalf("ids not normalized: %+v", ev)
+		}
+		if ev.UserID != "user-meta" {
+			t.Fatalf("UserID = %q, want metadata.user_id value", ev.UserID)
+		}
+		if ev.Status != "" {
+			t.Fatalf("Status = %q, want empty (left to the paired subscription.created event)", ev.Status)
+		}
+	})
+
+	t.Run("falls back to client_reference_id when metadata.user_id is empty", func(t *testing.T) {
+		payload := []byte(`{
+			"id": "evt_cs2", "type": "checkout.session.completed",
+			"data": {"object": {
+				"customer": "cus_2", "subscription": "sub_2",
+				"client_reference_id": "user-ref"
+			}}
+		}`)
+		now := time.Now()
+		header := fmt.Sprintf("t=%d,v1=%s", now.Unix(), sign("whsec_test", now.Unix(), payload))
+
+		ev, err := c.ParseWebhook(payload, header)
+		if err != nil {
+			t.Fatalf("ParseWebhook: %v", err)
+		}
+		if ev.UserID != "user-ref" {
+			t.Fatalf("UserID = %q, want client_reference_id fallback", ev.UserID)
+		}
+	})
+}
+
+// TestParseWebhookInvoiceEvents pins the invoice.paid → active and
+// invoice.payment_failed → past_due normalization; current_period_end is
+// intentionally left to the paired subscription.* event.
+func TestParseWebhookInvoiceEvents(t *testing.T) {
+	c := NewClient("sk_test", "whsec_test", "price_annual", nil)
+
+	tests := []struct {
+		name       string
+		eventType  string
+		wantStatus domain.SubscriptionStatus
+	}{
+		{"invoice.paid settles to active", "invoice.paid", domain.SubscriptionActive},
+		{"invoice.payment_failed settles to past_due", "invoice.payment_failed", domain.SubscriptionPastDue},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := []byte(fmt.Sprintf(`{
+				"id": "evt_inv", "type": %q,
+				"data": {"object": {
+					"customer": "cus_3", "subscription": "sub_3", "period_end": 1700100000
+				}}
+			}`, tc.eventType))
+			now := time.Now()
+			header := fmt.Sprintf("t=%d,v1=%s", now.Unix(), sign("whsec_test", now.Unix(), payload))
+
+			ev, err := c.ParseWebhook(payload, header)
+			if err != nil {
+				t.Fatalf("ParseWebhook: %v", err)
+			}
+			if ev.CustomerID != "cus_3" || ev.SubscriptionID != "sub_3" {
+				t.Fatalf("ids not normalized: %+v", ev)
+			}
+			if ev.Status != tc.wantStatus {
+				t.Fatalf("Status = %q, want %q", ev.Status, tc.wantStatus)
+			}
+			if ev.CurrentPeriodEnd != nil {
+				t.Fatalf("CurrentPeriodEnd = %v, want nil (left to subscription.* events)", ev.CurrentPeriodEnd)
+			}
+		})
+	}
+}
+
 func TestParseWebhookNormalizesSubscription(t *testing.T) {
 	c := NewClient("sk_test", "whsec_test", "price_annual", nil)
 	payload := []byte(`{

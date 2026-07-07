@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -325,6 +326,64 @@ func TestVerifyKidSelection(t *testing.T) {
 	if got := srv.count(); got != 1 {
 		t.Fatalf("JWKS fetched %d times, want 1 (both kids in one key set)", got)
 	}
+}
+
+// TestVerifyRejectsAlgConfusion guards the classic JWT algorithm-confusion
+// bypass: Verify dispatches on the untrusted header `alg` field, so it must
+// reject both an unsigned "none" token and an "HS256" token forged by
+// HMAC-signing with the (published, therefore attacker-known) JWKS public
+// key bytes as the shared secret. Verifier only implements EdDSA/RS256/ES256
+// (verifier.go's verifySignature default case), so both must fall through
+// to the unsupported-alg error rather than being accepted.
+func TestVerifyRejectsAlgConfusion(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		kid    = "confusion-kid"
+		issuer = "https://app.calendium.com"
+	)
+	srv := jwksServer(t, kid, pub)
+	defer srv.Close()
+
+	v := NewVerifier(srv.URL, issuer, srv.Client())
+	exp := time.Now().Add(time.Minute).Unix()
+
+	t.Run("alg none is rejected", func(t *testing.T) {
+		header := encSeg(t, map[string]any{"alg": "none", "typ": "JWT", "kid": kid})
+		claims := encSeg(t, map[string]any{"sub": "user_none", "iss": issuer, "exp": exp})
+		token := header + "." + claims + "." // alg=none carries an empty signature segment
+
+		_, err := v.Verify(context.Background(), token)
+		if err == nil {
+			t.Fatal("expected alg=none token to be rejected")
+		}
+		if !strings.Contains(err.Error(), "unsupported alg") {
+			t.Fatalf(`err = %v, want to contain "unsupported alg"`, err)
+		}
+	})
+
+	t.Run("alg HS256 signed with the JWKS public key bytes is rejected", func(t *testing.T) {
+		header := encSeg(t, map[string]any{"alg": "HS256", "typ": "JWT", "kid": kid})
+		claims := encSeg(t, map[string]any{"sub": "user_hs256", "iss": issuer, "exp": exp})
+		signingInput := header + "." + claims
+
+		// Classic alg-confusion bypass: treat the published Ed25519 public key
+		// bytes as an HMAC-SHA256 shared secret.
+		mac := hmac.New(sha256.New, pub)
+		mac.Write([]byte(signingInput))
+		sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+		token := signingInput + "." + sig
+
+		_, err := v.Verify(context.Background(), token)
+		if err == nil {
+			t.Fatal("expected HS256 alg-confusion token to be rejected")
+		}
+		if !strings.Contains(err.Error(), "unsupported alg") {
+			t.Fatalf(`err = %v, want to contain "unsupported alg"`, err)
+		}
+	})
 }
 
 func TestVerifyRS256Rejects(t *testing.T) {

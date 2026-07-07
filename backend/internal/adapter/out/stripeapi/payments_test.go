@@ -213,6 +213,100 @@ func TestCreatePortalSession(t *testing.T) {
 	}
 }
 
+func TestGetSubscription(t *testing.T) {
+	t.Run("fetches by id and normalizes the result", func(t *testing.T) {
+		var gotMethod, gotPath string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotMethod = r.Method
+			gotPath = r.URL.Path
+			_, _ = w.Write([]byte(`{
+				"id": "sub_1", "customer": "cus_1", "status": "trialing",
+				"current_period_end": 1700000000, "cancel_at_period_end": false,
+				"trial_end": 1700500000, "metadata": {"user_id": "user-9"}
+			}`))
+		}))
+		defer srv.Close()
+
+		c := NewClient("sk_test", "wh", "price_x", rewriteClient(t, srv.URL))
+		ev, err := c.GetSubscription(context.Background(), "sub_1")
+		if err != nil {
+			t.Fatalf("GetSubscription: %v", err)
+		}
+		if gotMethod != http.MethodGet || gotPath != "/v1/subscriptions/sub_1" {
+			t.Errorf("request = %s %s", gotMethod, gotPath)
+		}
+		if ev.SubscriptionID != "sub_1" || ev.CustomerID != "cus_1" || ev.UserID != "user-9" {
+			t.Errorf("ids not normalized: %+v", ev)
+		}
+		if ev.Status != domain.SubscriptionTrialing || ev.CancelAtPeriodEnd {
+			t.Errorf("state not normalized: %+v", ev)
+		}
+		if ev.CurrentPeriodEnd == nil || ev.CurrentPeriodEnd.Unix() != 1700000000 {
+			t.Errorf("CurrentPeriodEnd = %v", ev.CurrentPeriodEnd)
+		}
+		if ev.TrialEndsAt == nil || ev.TrialEndsAt.Unix() != 1700500000 {
+			t.Errorf("TrialEndsAt = %v", ev.TrialEndsAt)
+		}
+	})
+
+	t.Run("escapes the subscription id in the path", func(t *testing.T) {
+		var gotEscapedPath string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotEscapedPath = r.URL.EscapedPath()
+			_, _ = w.Write([]byte(`{"id":"sub/1","customer":"cus_1","status":"active"}`))
+		}))
+		defer srv.Close()
+
+		c := NewClient("sk_test", "wh", "price_x", rewriteClient(t, srv.URL))
+		if _, err := c.GetSubscription(context.Background(), "sub/1"); err != nil {
+			t.Fatalf("GetSubscription: %v", err)
+		}
+		if gotEscapedPath != "/v1/subscriptions/sub%2F1" {
+			t.Errorf("escaped path = %q", gotEscapedPath)
+		}
+	})
+
+	t.Run("propagates a not-found error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"type":"invalid_request_error","message":"No such subscription"}}`))
+		}))
+		defer srv.Close()
+
+		c := NewClient("sk_test", "wh", "price_x", rewriteClient(t, srv.URL))
+		_, err := c.GetSubscription(context.Background(), "sub_missing")
+		if !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("err = %v, want wrap of domain.ErrNotFound", err)
+		}
+	})
+}
+
+// TestMapSubscriptionStatus is a table test over all eight Stripe status
+// strings mapSubscriptionStatus handles, plus the default/unknown case.
+func TestMapSubscriptionStatus(t *testing.T) {
+	tests := []struct {
+		stripeStatus string
+		want         domain.SubscriptionStatus
+	}{
+		{"trialing", domain.SubscriptionTrialing},
+		{"active", domain.SubscriptionActive},
+		{"past_due", domain.SubscriptionPastDue},
+		{"canceled", domain.SubscriptionCanceled},
+		{"unpaid", domain.SubscriptionExpired},
+		{"incomplete_expired", domain.SubscriptionExpired},
+		{"incomplete", domain.SubscriptionNone},
+		{"paused", domain.SubscriptionNone},
+		{"some_future_stripe_status", domain.SubscriptionNone}, // default/unknown
+	}
+	for _, tc := range tests {
+		t.Run(tc.stripeStatus, func(t *testing.T) {
+			if got := mapSubscriptionStatus(tc.stripeStatus); got != tc.want {
+				t.Errorf("mapSubscriptionStatus(%q) = %q, want %q", tc.stripeStatus, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestDoMapsErrorStatuses checks the shared do() sentinel mapping.
 func TestDoMapsErrorStatuses(t *testing.T) {
 	tests := []struct {
