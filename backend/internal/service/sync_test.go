@@ -6,12 +6,6 @@ package service
 //
 // Known fake limitations (cannot be worked around without modifying the
 // shared fakes in fakes_test.go, which Tasks 1-7 depend on):
-//   - fakeMailProvider.SyncMail serves one fixed programmable page and does
-//     not record the cursor/token it was called with, so a "drains multiple
-//     pages until HasMore=false" case cannot be driven here: since the fake
-//     always returns the SAME page on every call, setting HasMore=true would
-//     spin the real sync loop forever (the page never changes). That case is
-//     intentionally omitted.
 //   - fakeThreadRepo.ClearSnooze/ClearReminder always return nil; there is no
 //     field to program a failure, so "ClearSnooze error is collected but
 //     non-fatal" cannot be exercised. Omitted.
@@ -19,11 +13,12 @@ package service
 //     "the refreshed token is the one used for sync/send" is not directly
 //     observable; the refresh tests instead assert on the OAuth gateway call
 //     and the persisted token (the observable side effects of a refresh).
-//   - fakeEventRepo.DeleteByProviderID never returns domain.ErrNotFound (it
-//     silently no-ops when nothing matches), so the "syncEvents swallows
-//     ErrNotFound" branch in sync.go is not actually exercised by the
-//     "deleting an already-absent id" case below; it only pins that
-//     SyncAccount does not error in that situation.
+//
+// Two limitations noted in earlier revisions of this file -- fakeMailProvider
+// only ever serving a single fixed page, and fakeEventRepo.DeleteByProviderID
+// never returning domain.ErrNotFound -- were lifted additively (syncPages /
+// deleteByProviderErr in fakes_test.go); see TestSyncAccountDrainsMultiplePages
+// and TestSyncAccountDeletedIDTolerantOfAbsence below.
 
 import (
 	"context"
@@ -185,12 +180,6 @@ func TestSyncAccountUnknownAccount(t *testing.T) {
 
 	if err := svc.SyncAccount(ctx, "ghost"); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("SyncAccount(ghost) err = %v, want ErrNotFound", err)
-	}
-	// fakeMailProvider has no counter for SyncMail calls; absence of any Send
-	// call is the closest available proxy that nothing downstream ran (the
-	// GetByID failure returns before syncMail/syncCalendars are even reached).
-	if len(mail.sent) != 0 {
-		t.Fatalf("Send calls = %d, want 0", len(mail.sent))
 	}
 }
 
@@ -811,9 +800,60 @@ func TestSyncAccountOrphanMessageSkipped(t *testing.T) {
 	}
 }
 
-// TestSyncAccountDeletedIDTolerantOfAbsence: deleting a provider event id
-// that was never mirrored locally does not fail the sync.
+// TestSyncAccountDeletedIDTolerantOfAbsence exercises the errors.Is swallow
+// branch in syncEvents (sync.go: `if err != nil && !errors.Is(err,
+// domain.ErrNotFound) { return err }`): a DeleteByProviderID failure of
+// exactly domain.ErrNotFound is swallowed and the sync still succeeds, while
+// any other DeleteByProviderID error still fails the sync.
 func TestSyncAccountDeletedIDTolerantOfAbsence(t *testing.T) {
+	newSvc := func(events *fakeEventRepo) *SyncService {
+		now := time.Date(2026, 7, 7, 9, 0, 0, 0, time.UTC)
+		accounts := newAccountRepo()
+		if _, err := accounts.Create(context.Background(), domain.ConnectedAccount{
+			ID: "a1", UserID: "u1", Provider: domain.ProviderGoogle, Email: "me@acme.com",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := accounts.SaveTokens(context.Background(), "a1", port.TokenSet{AccessToken: "valid", ExpiresAt: now.Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		cal := newCalendarProvider()
+		cal.calendars = []domain.Calendar{{ProviderCalendarID: "pc1", Name: "Personal"}}
+		cal.syncPage = port.CalendarSyncPage{DeletedIDs: []string{"never-existed"}}
+
+		return NewSyncService(SyncServiceDeps{
+			Accounts: accounts, Calendars: newCalendarRepo(), Events: events, SyncState: newSyncStateRepo(),
+			CalendarProviders: map[domain.Provider]port.CalendarProvider{domain.ProviderGoogle: cal},
+			OAuth:             map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+			Clock:             newClock(now),
+		})
+	}
+
+	t.Run("ErrNotFound is swallowed", func(t *testing.T) {
+		events := newEventRepo()
+		events.deleteByProviderErr = domain.ErrNotFound
+		svc := newSvc(events)
+		if err := svc.SyncAccount(context.Background(), "a1"); err != nil {
+			t.Fatalf("SyncAccount: %v, want nil (ErrNotFound swallowed)", err)
+		}
+	})
+
+	t.Run("other error propagates", func(t *testing.T) {
+		boom := errors.New("boom")
+		events := newEventRepo()
+		events.deleteByProviderErr = boom
+		svc := newSvc(events)
+		if err := svc.SyncAccount(context.Background(), "a1"); !errors.Is(err, boom) {
+			t.Fatalf("SyncAccount err = %v, want wrapping %v", err, boom)
+		}
+	})
+}
+
+// TestSyncAccountDrainsMultiplePages drains a mail sync loop where every page
+// but the last sets HasMore=true, asserting the loop threads NextCursor into
+// the next SyncMail call, accumulates every page's threads/messages, and
+// persists only the FINAL page's NextCursor.
+func TestSyncAccountDrainsMultiplePages(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 7, 7, 9, 0, 0, 0, time.UTC)
 	accounts := newAccountRepo()
@@ -825,26 +865,72 @@ func TestSyncAccountDeletedIDTolerantOfAbsence(t *testing.T) {
 	if err := accounts.SaveTokens(ctx, "a1", port.TokenSet{AccessToken: "valid", ExpiresAt: now.Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	cal := newCalendarProvider()
-	cal.calendars = []domain.Calendar{{ProviderCalendarID: "pc1", Name: "Personal"}}
-	cal.syncPage = port.CalendarSyncPage{DeletedIDs: []string{"never-existed"}}
-	calendars := newCalendarRepo()
-	events := newEventRepo()
+
+	page := func(providerThreadID, providerMessageID, nextCursor string, hasMore bool) port.MailSyncPage {
+		return port.MailSyncPage{
+			Threads: []domain.Thread{{ProviderThreadID: providerThreadID, Subject: providerThreadID, InInbox: true, LastMessageAt: now}},
+			Messages: []port.IncomingMessage{{Message: domain.Message{
+				ProviderMessageID: providerMessageID, ThreadID: providerThreadID,
+				From: domain.EmailAddress{Email: "friend@example.org"}, SentAt: now,
+			}}},
+			NextCursor: nextCursor,
+			HasMore:    hasMore,
+		}
+	}
+
+	mail := newMailProvider()
+	mail.syncPages = []port.MailSyncPage{
+		page("pt1", "pm1", "c1", true),
+		page("pt2", "pm2", "c2", true),
+		page("pt3", "pm3", "c3", false),
+	}
+
+	threads := newThreadRepo()
+	messages := newMessageRepo()
+	labels := newLabelRepo()
 	syncState := newSyncStateRepo()
 
 	svc := NewSyncService(SyncServiceDeps{
-		Accounts: accounts, Calendars: calendars, Events: events, SyncState: syncState,
-		CalendarProviders: map[domain.Provider]port.CalendarProvider{domain.ProviderGoogle: cal},
-		OAuth:             map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
-		Clock:             newClock(now),
+		Accounts: accounts, Labels: labels, Threads: threads, Messages: messages, SyncState: syncState,
+		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
+		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+		Clock:         newClock(now),
 	})
 
-	// NOTE: the real fakeEventRepo.DeleteByProviderID never returns
-	// ErrNotFound (see file header) -- this pins the observable outcome
-	// (SyncAccount tolerates deleting an absent id) without exercising the
-	// errors.Is swallow branch specifically.
 	if err := svc.SyncAccount(ctx, "a1"); err != nil {
 		t.Fatalf("SyncAccount: %v", err)
+	}
+
+	// SyncMail called exactly 3 times, threading each page's NextCursor into
+	// the next call (starting from the empty initial cursor).
+	wantCursors := []string{"", "c1", "c2"}
+	if len(mail.syncMailCursors) != len(wantCursors) {
+		t.Fatalf("SyncMail calls = %d, want %d (cursors %v)", len(mail.syncMailCursors), len(wantCursors), mail.syncMailCursors)
+	}
+	for i, want := range wantCursors {
+		if mail.syncMailCursors[i] != want {
+			t.Fatalf("SyncMail call %d cursor = %q, want %q", i, mail.syncMailCursors[i], want)
+		}
+	}
+
+	// Every page's thread and message were upserted.
+	for _, pt := range []string{"pt1", "pt2", "pt3"} {
+		th, err := threads.GetByProviderID(ctx, "a1", pt)
+		if err != nil {
+			t.Fatalf("thread %s not upserted: %v", pt, err)
+		}
+		msgs, err := messages.ListByThread(ctx, th.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("messages on thread %s = %d, want 1", pt, len(msgs))
+		}
+	}
+
+	// The FINAL page's NextCursor is what gets persisted, not an intermediate one.
+	if st, err := syncState.Get(ctx, "a1", "mail"); err != nil || st.Cursor != "c3" {
+		t.Fatalf("mail cursor = %q (err %v), want c3", st.Cursor, err)
 	}
 }
 

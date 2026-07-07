@@ -631,12 +631,17 @@ var _ port.CalendarRepo = (*fakeCalendarRepo)(nil)
 // fakeEventRepo stores events by ID in insertion order. ListInRange filters by
 // [from,to) overlap and, when calendarIDs is non-empty, by calendar membership
 // (user scoping is assumed handled by test seeding). Search is programmable.
+// DeleteByProviderID defaults to a silent no-op when nothing matches (existing
+// behavior, unchanged); setting deleteByProviderErr makes every call return
+// that error instead, so a test can drive both the domain.ErrNotFound swallow
+// branch in syncEvents and a genuine propagated failure.
 type fakeEventRepo struct {
 	byID  map[string]domain.Event
 	order []string
 
-	searchResult []domain.Event
-	searchErr    error
+	searchResult        []domain.Event
+	searchErr           error
+	deleteByProviderErr error
 }
 
 func newEventRepo() *fakeEventRepo { return &fakeEventRepo{byID: map[string]domain.Event{}} }
@@ -695,6 +700,9 @@ func (r *fakeEventRepo) Delete(_ context.Context, id string) error {
 }
 
 func (r *fakeEventRepo) DeleteByProviderID(_ context.Context, calendarID, providerEventID string) error {
+	if r.deleteByProviderErr != nil {
+		return r.deleteByProviderErr
+	}
 	for _, id := range r.order {
 		if e, ok := r.byID[id]; ok && e.CalendarID == calendarID && e.ProviderEventID == providerEventID {
 			delete(r.byID, id)
@@ -900,9 +908,18 @@ var _ port.OAuthGateway = (*fakeOAuthGateway)(nil)
 
 // fakeMailProvider serves a programmable sync page and send result, records
 // every Send, and captures ModifyLabels args exactly as received (nil stays nil).
+//
+// SyncMail defaults to always returning the single programmable syncPage
+// (existing behavior, unchanged). Programming syncPages instead switches it to
+// serve one page per call, advancing an internal index and clamping to the
+// last entry once exhausted -- the last page must set HasMore=false so the
+// real sync loop terminates. Every cursor SyncMail was called with is
+// recorded in syncMailCursors, in call order, so a test can assert the loop
+// threads NextCursor into the next call.
 type fakeMailProvider struct {
 	// programmable
 	syncPage        port.MailSyncPage
+	syncPages       []port.MailSyncPage // when non-empty, overrides syncPage: one page served per call
 	syncErr         error
 	sentResult      port.SentMessage
 	sendErr         error
@@ -910,6 +927,9 @@ type fakeMailProvider struct {
 
 	// recording
 	sent               []port.OutgoingMessage
+	syncMailCalls      int
+	syncPageIdx        int      // next index into syncPages to serve (clamped to the last entry)
+	syncMailCursors    []string // cursor arg on every SyncMail call, in call order
 	modifyLabelsCalls  int
 	lastModifyToken    string
 	lastModifyThreadID string
@@ -920,6 +940,16 @@ type fakeMailProvider struct {
 func newMailProvider() *fakeMailProvider { return &fakeMailProvider{} }
 
 func (p *fakeMailProvider) SyncMail(_ context.Context, accessToken, cursor string) (port.MailSyncPage, error) {
+	p.syncMailCalls++
+	p.syncMailCursors = append(p.syncMailCursors, cursor)
+	if len(p.syncPages) > 0 {
+		i := p.syncPageIdx
+		if i >= len(p.syncPages) {
+			i = len(p.syncPages) - 1
+		}
+		p.syncPageIdx++
+		return p.syncPages[i], p.syncErr
+	}
 	return p.syncPage, p.syncErr
 }
 
