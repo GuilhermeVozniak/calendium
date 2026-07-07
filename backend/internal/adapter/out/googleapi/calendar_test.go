@@ -360,6 +360,28 @@ func TestClient_RSVP_NoSelfAttendee(t *testing.T) {
 	}
 }
 
+func TestMapGcalResponse(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want domain.RsvpStatus
+	}{
+		{"accepted", "accepted", domain.RsvpAccepted},
+		{"declined", "declined", domain.RsvpDeclined},
+		{"tentative", "tentative", domain.RsvpTentative},
+		{"needsAction maps directly", "needsAction", domain.RsvpNeedsAction},
+		{"empty string falls back to needsAction", "", domain.RsvpNeedsAction},
+		{"unrecognized value falls back to needsAction", "bogus", domain.RsvpNeedsAction},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mapGcalResponse(tc.in); got != tc.want {
+				t.Errorf("mapGcalResponse(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestClient_SyncEvents_AllDayParsing(t *testing.T) {
 	_, c := newGoogleServer(t, func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"items":[

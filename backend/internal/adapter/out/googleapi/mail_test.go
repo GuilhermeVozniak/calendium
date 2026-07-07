@@ -447,6 +447,34 @@ func TestClient_ModifyLabels_NoOpMakesNoRequest(t *testing.T) {
 	}
 }
 
+func TestHtmlToText(t *testing.T) {
+	cases := []struct {
+		name string
+		html string
+		want string
+	}{
+		{"plain text passthrough", "hello world", "hello world"},
+		{"strips simple tags", "<p>Hello</p>", "Hello"},
+		{"strips nested tags", "<div><b>Bold</b> text</div>", "Bold text"},
+		{"strips tag attributes", `<a href="https://example.com">Link</a>`, "Link"},
+		{"does not decode entities", "Tom &amp; Jerry", "Tom &amp; Jerry"},
+		{"trims only leading/trailing whitespace", "  <p>Hi</p>  ", "Hi"},
+		{"preserves internal newlines between stripped tags", "<p>Line one</p>\n<p>Line two</p>", "Line one\nLine two"},
+		{"self-closing tag leaves no gap", "Before<br/>After", "BeforeAfter"},
+		{"unclosed trailing tag consumes rest of string", "Hello <div", "Hello"},
+		{"unicode passes through untouched", "<p>café</p>", "café"},
+		{"empty input", "", ""},
+		{"only tags yields empty string", "<div></div>", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := htmlToText(tc.html); got != tc.want {
+				t.Errorf("htmlToText(%q) = %q, want %q", tc.html, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestClient_ModifyLabels_Unauthorized(t *testing.T) {
 	_, c := newGoogleServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
