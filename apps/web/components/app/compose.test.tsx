@@ -192,27 +192,24 @@ describe('ComposeForm — recipients', () => {
     expect(toInput).toHaveValue('');
   });
 
-  // KNOWN BUG (found while writing these tests; NOT fixed — production source
-  // must not be modified per task instructions): parseAddress()'s regex
-  // (`^\s*(?:"?([^"<]*)"?\s*)?<?([^\s<>]+@[^\s<>]+)>?\s*$`) greedily backtracks
+  // Regression test for a fixed production bug: parseAddress()'s old regex
+  // (`^\s*(?:"?([^"<]*)"?\s*)?<?([^\s<>]+@[^\s<>]+)>?\s*$`) greedily backtracked
   // group 1 ("name") into the email's local-part whenever a *bare* address
-  // (no `<...>` brackets) has a local-part of 2+ characters — i.e. virtually
+  // (no `<...>` brackets) had a local-part of 2+ characters — i.e. virtually
   // every real email typed as plain "name@example.com". The first character
-  // of the local-part is stolen into a bogus display name and the stored
-  // email is truncated. Reproduced directly against the regex outside the
-  // DOM: parseAddress('alice@example.com') => { name: 'alic', email:
-  // 'e@example.com' }. This test locks in and documents the CURRENT (broken)
-  // behavior rather than silently asserting a "fixed" outcome that isn't
-  // actually true — see the sp3b report for full details and impact.
-  it('documents a known bug: a realistic bare email gets its local-part corrupted', async () => {
+  // of the local-part was stolen into a bogus display name and the stored
+  // email was truncated (e.g. 'alice@example.com' => { name: 'alic', email:
+  // 'e@example.com' }). parseAddress() was rewritten to match the
+  // `<email>`-bracketed forms via one anchored pattern and bare emails via
+  // EMAIL_RE directly, so no backtracking can steal local-part characters.
+  it('adds a chip for a bare multi-character-local-part email without corrupting it', async () => {
     const user = userEvent.setup();
     renderCompose();
     const toInput = await screen.findByPlaceholderText('name@example.com');
     await user.type(toInput, 'alice@example.com{Enter}');
-    // What SHOULD appear (and does not, due to the bug):
-    expect(screen.queryByText('alice@example.com')).not.toBeInTheDocument();
-    // What the buggy parser actually produces:
-    expect(await screen.findByText('alic')).toBeInTheDocument();
+    expect(await screen.findByText('alice@example.com')).toBeInTheDocument();
+    expect(screen.queryByText('alic')).not.toBeInTheDocument();
+    expect(toInput).toHaveValue('');
   });
 
   it('parses "Name <email>" input correctly and shows the name as the chip label', async () => {
@@ -221,6 +218,31 @@ describe('ComposeForm — recipients', () => {
     const toInput = await screen.findByPlaceholderText('name@example.com');
     await user.type(toInput, 'Alice Smith <alice@example.com>{Enter}');
     expect(await screen.findByText('Alice Smith')).toBeInTheDocument();
+  });
+
+  it('parses a quoted display name "Name" <email> and shows the name as the chip label', async () => {
+    const user = userEvent.setup();
+    renderCompose();
+    const toInput = await screen.findByPlaceholderText('name@example.com');
+    await user.type(toInput, '"Alice B" <alice@example.com>{Enter}');
+    expect(await screen.findByText('Alice B')).toBeInTheDocument();
+  });
+
+  it('parses an angle-bracket-only address <email> with no display name', async () => {
+    const user = userEvent.setup();
+    renderCompose();
+    const toInput = await screen.findByPlaceholderText('name@example.com');
+    await user.type(toInput, '<alice@example.com>{Enter}');
+    expect(await screen.findByText('alice@example.com')).toBeInTheDocument();
+  });
+
+  it('normalizes email casing to lowercase', async () => {
+    const user = userEvent.setup();
+    renderCompose();
+    const toInput = await screen.findByPlaceholderText('name@example.com');
+    await user.type(toInput, 'ALICE@EXAMPLE.COM{Enter}');
+    expect(await screen.findByText('alice@example.com')).toBeInTheDocument();
+    expect(screen.queryByText('ALICE@EXAMPLE.COM')).not.toBeInTheDocument();
   });
 
   it('does not add a chip for an invalid email and keeps the draft text', async () => {

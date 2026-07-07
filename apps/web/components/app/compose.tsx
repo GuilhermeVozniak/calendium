@@ -99,10 +99,18 @@ export function ComposeProvider({ children }: { children: React.ReactNode }) {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function parseAddress(raw: string): EmailAddress | null {
-  const match = raw.match(/^\s*(?:"?([^"<]*)"?\s*)?<?([^\s<>]+@[^\s<>]+)>?\s*$/);
-  if (!match || !EMAIL_RE.test(match[2] ?? '')) return null;
-  const name = match[1]?.trim();
-  return { name: name ? name : null, email: match[2]!.toLowerCase() };
+  const s = raw.trim();
+  // "Display Name" <email> | Name <email> | <email>
+  const angle = s.match(/^(?:"?([^"<]*?)"?\s*)?<([^\s<>]+@[^\s<>]+)>$/);
+  if (angle) {
+    const email = angle[2]!.toLowerCase();
+    if (!EMAIL_RE.test(email)) return null;
+    const name = angle[1]?.trim();
+    return { name: name ? name : null, email };
+  }
+  // bare email
+  if (EMAIL_RE.test(s)) return { name: null, email: s.toLowerCase() };
+  return null;
 }
 
 export function htmlToText(html: string): string {
