@@ -1576,3 +1576,137 @@ func TestUnsubscribeThreadLinkAndNone(t *testing.T) {
 		t.Fatalf("no-info err = %v, want ErrValidation", err)
 	}
 }
+
+func TestUnsubscribeThreadPrefersMailtoOverLink(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	link := "https://news.example/manual"
+	mailto := "mailto:unsub@news.example?subject=Unsubscribe"
+	f.seedThread(t, "t1", "a1", func(th *domain.Thread) {
+		th.UnsubscribeURL = &link
+		th.UnsubscribeMailto = &mailto
+	})
+
+	res, err := f.svc.UnsubscribeThread(ctx, "u1", "t1")
+	if err != nil {
+		t.Fatalf("UnsubscribeThread: %v", err)
+	}
+	if res.Method != "mailto" {
+		t.Fatalf("Method = %q, want mailto (mailto must win over link)", res.Method)
+	}
+	if len(f.provider.sent) != 1 {
+		t.Fatalf("sent %d messages, want 1", len(f.provider.sent))
+	}
+}
+
+func TestUnsubscribeThreadOneClickFailureDoesNotFallBack(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	errBoom := errors.New("gateway boom")
+	f.unsub.err = errBoom
+	link := "https://news.example/u?id=1"
+	mailto := "mailto:unsub@news.example?subject=Unsubscribe"
+	f.seedThread(t, "t1", "a1", func(th *domain.Thread) {
+		th.UnsubscribeURL = &link
+		th.UnsubscribeMailto = &mailto
+		th.UnsubscribeOneClick = true
+	})
+
+	res, err := f.svc.UnsubscribeThread(ctx, "u1", "t1")
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("err = %v, want wrapped %v", err, errBoom)
+	}
+	if res != (port.UnsubscribeResult{}) {
+		t.Fatalf("result = %+v, want zero value", res)
+	}
+	if len(f.provider.sent) != 0 {
+		t.Fatal("one-click failure must not fall back to mailto/link send")
+	}
+}
+
+func TestUnsubscribeThreadOneClickNilGatewayFallsBackToMailto(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.svc.unsubscriber = nil
+	f.seedAccount(t, "a1", "u1")
+	link := "https://news.example/u?id=1"
+	mailto := "mailto:unsub@news.example?subject=Unsubscribe"
+	f.seedThread(t, "t1", "a1", func(th *domain.Thread) {
+		th.UnsubscribeURL = &link
+		th.UnsubscribeMailto = &mailto
+		th.UnsubscribeOneClick = true
+	})
+
+	res, err := f.svc.UnsubscribeThread(ctx, "u1", "t1")
+	if err != nil {
+		t.Fatalf("UnsubscribeThread: %v", err)
+	}
+	if res.Method != "mailto" {
+		t.Fatalf("Method = %q, want mailto (nil gateway must fall through)", res.Method)
+	}
+	if len(f.provider.sent) != 1 {
+		t.Fatalf("sent %d messages, want 1", len(f.provider.sent))
+	}
+	if len(f.unsub.calls) != 0 {
+		t.Fatal("nil gateway must not have been invoked")
+	}
+}
+
+func TestUnsubscribeThreadMailtoBodyParam(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	mailto := "mailto:x@y?subject=Please%20unsubscribe&body=REMOVE%20ME"
+	f.seedThread(t, "t1", "a1", func(th *domain.Thread) { th.UnsubscribeMailto = &mailto })
+
+	res, err := f.svc.UnsubscribeThread(ctx, "u1", "t1")
+	if err != nil {
+		t.Fatalf("UnsubscribeThread: %v", err)
+	}
+	if res.Method != "mailto" {
+		t.Fatalf("Method = %q, want mailto", res.Method)
+	}
+	if len(f.provider.sent) != 1 {
+		t.Fatalf("sent %d messages, want 1", len(f.provider.sent))
+	}
+	msg := f.provider.sent[0]
+	if msg.BodyText != "REMOVE ME" {
+		t.Fatalf("BodyText = %q, want %q", msg.BodyText, "REMOVE ME")
+	}
+}
+
+func TestUnsubscribeThreadMailtoBodyDefaultsWhenAbsent(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	mailto := "mailto:x@y?subject=Please%20unsubscribe"
+	f.seedThread(t, "t1", "a1", func(th *domain.Thread) { th.UnsubscribeMailto = &mailto })
+
+	res, err := f.svc.UnsubscribeThread(ctx, "u1", "t1")
+	if err != nil {
+		t.Fatalf("UnsubscribeThread: %v", err)
+	}
+	if res.Method != "mailto" {
+		t.Fatalf("Method = %q, want mailto", res.Method)
+	}
+	if f.provider.sent[0].BodyText != "unsubscribe" {
+		t.Fatalf("BodyText = %q, want default %q", f.provider.sent[0].BodyText, "unsubscribe")
+	}
+}
+
+func TestUnsubscribeThreadMailtoEmptyRecipientIsValidationError(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	mailto := "mailto:?subject=x"
+	f.seedThread(t, "t1", "a1", func(th *domain.Thread) { th.UnsubscribeMailto = &mailto })
+
+	if _, err := f.svc.UnsubscribeThread(ctx, "u1", "t1"); !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("err = %v, want ErrValidation", err)
+	}
+	if len(f.provider.sent) != 0 {
+		t.Fatal("empty recipient must not reach provider.Send")
+	}
+}

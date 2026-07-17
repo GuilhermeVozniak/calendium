@@ -718,6 +718,10 @@ func (s *MailService) UnsubscribeThread(ctx context.Context, userID, threadID st
 		}
 		return port.UnsubscribeResult{Method: "one_click"}, nil
 	case t.UnsubscribeMailto != nil:
+		to, subject, body := parseUnsubscribeMailto(*t.UnsubscribeMailto)
+		if to == "" {
+			return port.UnsubscribeResult{}, fmt.Errorf("%w: mailto unsubscribe has no recipient", domain.ErrValidation)
+		}
 		provider, ok := s.mail[acct.Provider]
 		if !ok {
 			return port.UnsubscribeResult{}, fmt.Errorf("%w: no mail provider for account", domain.ErrValidation)
@@ -726,12 +730,11 @@ func (s *MailService) UnsubscribeThread(ctx context.Context, userID, threadID st
 		if err != nil {
 			return port.UnsubscribeResult{}, err
 		}
-		to, subject := parseUnsubscribeMailto(*t.UnsubscribeMailto)
 		if _, err := provider.Send(ctx, token, port.OutgoingMessage{
 			From:     domain.EmailAddress{Email: acct.Email},
 			To:       []domain.EmailAddress{{Email: to}},
 			Subject:  subject,
-			BodyText: "unsubscribe",
+			BodyText: body,
 		}); err != nil {
 			return port.UnsubscribeResult{}, fmt.Errorf("mailto unsubscribe failed: %w", err)
 		}
@@ -742,18 +745,25 @@ func (s *MailService) UnsubscribeThread(ctx context.Context, userID, threadID st
 	return port.UnsubscribeResult{}, fmt.Errorf("%w: thread has no unsubscribe information", domain.ErrValidation)
 }
 
-// parseUnsubscribeMailto splits "mailto:addr?subject=…" into recipient and
-// subject (defaulting to "unsubscribe").
-func parseUnsubscribeMailto(raw string) (to, subject string) {
+// parseUnsubscribeMailto splits "mailto:addr?subject=…&body=…" into
+// recipient, subject, and body (subject and body both default to
+// "unsubscribe" when absent). Query values are unescaped by url.ParseQuery.
+func parseUnsubscribeMailto(raw string) (to, subject, body string) {
 	subject = "unsubscribe"
+	body = "unsubscribe"
 	rest := strings.TrimPrefix(raw, "mailto:")
 	if i := strings.IndexByte(rest, '?'); i >= 0 {
-		if q, err := url.ParseQuery(rest[i+1:]); err == nil && q.Get("subject") != "" {
-			subject = q.Get("subject")
+		if q, err := url.ParseQuery(rest[i+1:]); err == nil {
+			if s := q.Get("subject"); s != "" {
+				subject = s
+			}
+			if b := q.Get("body"); b != "" {
+				body = b
+			}
 		}
 		rest = rest[:i]
 	}
-	return rest, subject
+	return rest, subject, body
 }
 
 func emptyIfNil(addrs []domain.EmailAddress) []domain.EmailAddress {
