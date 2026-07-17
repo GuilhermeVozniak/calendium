@@ -87,6 +87,9 @@ type MailService interface {
 	// SnoozeThread hides the thread until the given time; the worker
 	// resurfaces it when due.
 	SnoozeThread(ctx context.Context, userID, threadID string, until time.Time) (domain.Thread, error)
+	// UnsnoozeThread clears a pending snooze (client-side undo of snooze)
+	// without marking the thread unread.
+	UnsnoozeThread(ctx context.Context, userID, threadID string) (domain.Thread, error)
 	// SetReminder sets (or clears, with nil) a follow-up reminder.
 	SetReminder(ctx context.Context, userID, threadID string, remindAt *time.Time) (domain.Thread, error)
 

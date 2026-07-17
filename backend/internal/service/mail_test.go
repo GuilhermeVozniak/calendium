@@ -449,6 +449,35 @@ func TestSnoozeThread(t *testing.T) {
 	})
 }
 
+// --- MailService.UnsnoozeThread -----------------------------------------------
+
+func TestUnsnoozeThreadClearsSnoozeWithoutUnread(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	until := f.clock.Now().Add(4 * time.Hour)
+	f.seedThread(t, "t1", "a1", func(th *domain.Thread) {
+		th.SnoozedUntil = &until
+		th.Unread = false
+	})
+
+	got, err := f.svc.UnsnoozeThread(ctx, "u1", "t1")
+	if err != nil {
+		t.Fatalf("UnsnoozeThread: %v", err)
+	}
+	if got.SnoozedUntil != nil {
+		t.Fatalf("SnoozedUntil = %v, want nil", got.SnoozedUntil)
+	}
+	if got.Unread {
+		t.Fatal("Unread flipped to true; unsnooze must not fake a wake-up")
+	}
+
+	// Foreign user gets 404 semantics.
+	if _, err := f.svc.UnsnoozeThread(ctx, "intruder", "t1"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("foreign unsnooze err = %v, want ErrNotFound", err)
+	}
+}
+
 // --- MailService.SetReminder --------------------------------------------------
 
 func TestSetReminder(t *testing.T) {

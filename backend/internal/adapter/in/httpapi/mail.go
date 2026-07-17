@@ -109,6 +109,15 @@ func (s *server) handleSnoozeThread(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, thread)
 }
 
+func (s *server) handleUnsnoozeThread(w http.ResponseWriter, r *http.Request) {
+	thread, err := s.deps.Mail.UnsnoozeThread(r.Context(), userFrom(r).ID, r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, thread)
+}
+
 func (s *server) handleThreadReminder(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		RemindAt *time.Time `json:"remindAt"` // null clears the reminder

@@ -213,6 +213,21 @@ func (s *MailService) SnoozeThread(ctx context.Context, userID, threadID string,
 	return t, nil
 }
 
+func (s *MailService) UnsnoozeThread(ctx context.Context, userID, threadID string) (domain.Thread, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.Thread{}, err
+	}
+	t, _, err := ownedThread(ctx, s.threads, s.accounts, userID, threadID)
+	if err != nil {
+		return domain.Thread{}, err
+	}
+	t.SnoozedUntil = nil
+	if err := s.threads.Update(ctx, t); err != nil {
+		return domain.Thread{}, err
+	}
+	return t, nil
+}
+
 func (s *MailService) SetReminder(ctx context.Context, userID, threadID string, remindAt *time.Time) (domain.Thread, error) {
 	if err := s.ent.require(ctx, userID); err != nil {
 		return domain.Thread{}, err

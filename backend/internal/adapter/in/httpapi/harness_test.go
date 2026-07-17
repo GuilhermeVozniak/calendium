@@ -197,6 +197,10 @@ type fakeMailService struct {
 	gotSnoozeID string
 	gotUntil    time.Time
 
+	unsnoozeRet   domain.Thread
+	unsnoozeErr   error
+	gotUnsnoozeID string
+
 	reminderRet   domain.Thread
 	reminderErr   error
 	gotReminderID string
@@ -257,6 +261,10 @@ func (f *fakeMailService) MarkThreadOpened(ctx context.Context, userID, threadID
 func (f *fakeMailService) SnoozeThread(ctx context.Context, userID, threadID string, until time.Time) (domain.Thread, error) {
 	f.gotSnoozeID, f.gotUntil = threadID, until
 	return f.snoozeRet, f.snoozeErr
+}
+func (f *fakeMailService) UnsnoozeThread(ctx context.Context, userID, threadID string) (domain.Thread, error) {
+	f.gotUnsnoozeID = threadID
+	return f.unsnoozeRet, f.unsnoozeErr
 }
 func (f *fakeMailService) SetReminder(ctx context.Context, userID, threadID string, remindAt *time.Time) (domain.Thread, error) {
 	f.gotReminderID, f.gotRemindAt = threadID, remindAt

@@ -79,6 +79,7 @@ func New(deps Deps) http.Handler {
 	authed("POST /v1/mail/threads/{id}/actions", s.handleThreadAction)
 	authed("POST /v1/mail/threads/{id}/open", s.handleMarkThreadOpened)
 	authed("POST /v1/mail/threads/{id}/snooze", s.handleSnoozeThread)
+	authed("DELETE /v1/mail/threads/{id}/snooze", s.handleUnsnoozeThread)
 	authed("POST /v1/mail/threads/{id}/reminder", s.handleThreadReminder)
 
 	authed("GET /v1/mail/drafts", s.handleListDrafts)
