@@ -14,7 +14,7 @@ import type {
   UnsubscribeResult,
 } from '@calendium/shared';
 import { UndoStack } from '@calendium/shared';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { toast } from 'sonner';
 
 import { getApiClient } from '@/lib/api';
@@ -278,7 +278,9 @@ export function useMailActions() {
   /**
    * Applies an optimistic cache patch, calls the API, and — outside demo mode —
    * reverts the caches and toasts on failure so a rejected mutation is never
-   * shown as success.
+   * shown as success. Returns whether the mutation actually took effect: a
+   * resolved real API call, or (DEMO_MODE) the local fallback applied above.
+   * Callers use this to decide whether pushing an undo entry is honest.
    */
   async function runOptimistic(
     threadId: string,
@@ -287,7 +289,7 @@ export function useMailActions() {
     apiCall: () => Promise<unknown>,
     mockApply: () => void,
     errorMessage: string
-  ): Promise<void> {
+  ): Promise<boolean> {
     const previousLists = queryClient.getQueriesData<ThreadListResult | undefined>({
       queryKey: ['threads'],
     });
@@ -299,11 +301,13 @@ export function useMailActions() {
     if (DEMO_MODE) mockApply();
     try {
       await apiCall();
+      return true;
     } catch {
-      if (DEMO_MODE) return;
+      if (DEMO_MODE) return true;
       for (const [key, data] of previousLists) queryClient.setQueryData(key, data);
       queryClient.setQueryData(['thread', threadId], previousDetail);
       toast.error(errorMessage);
+      return false;
     }
   }
 
@@ -311,8 +315,8 @@ export function useMailActions() {
     threadId: string,
     action: ThreadAction,
     opts?: { undoable?: boolean }
-  ): Promise<void> {
-    await runOptimistic(
+  ): Promise<boolean> {
+    const ok = await runOptimistic(
       threadId,
       (t) => applyActionToThread(t, action),
       REMOVES_FROM_LIST.has(action),
@@ -321,19 +325,21 @@ export function useMailActions() {
       ACTION_ERROR[action] ?? 'Could not update the conversation.'
     );
     const inverse = ACTION_INVERSE[action];
-    if (opts?.undoable !== false && inverse) {
+    if (ok && opts?.undoable !== false && inverse) {
       mailUndo.push({
         label: ACTION_UNDO_LABEL[action] ?? action,
         undo: () =>
-          act(threadId, inverse, { undoable: false }).then(() => {
+          act(threadId, inverse, { undoable: false }).then((undone) => {
+            if (!undone) throw new Error(`Could not undo: ${ACTION_UNDO_LABEL[action] ?? action}`);
             void queryClient.invalidateQueries({ queryKey: ['threads'] });
           }),
       });
     }
+    return ok;
   }
 
-  async function snooze(threadId: string, until: string): Promise<void> {
-    await runOptimistic(
+  async function snooze(threadId: string, until: string): Promise<boolean> {
+    const ok = await runOptimistic(
       threadId,
       (t) => ({ ...t, snoozedUntil: until }),
       true,
@@ -341,7 +347,16 @@ export function useMailActions() {
       () => mockSnoozeThread(threadId, until),
       'Could not snooze the conversation.'
     );
-    mailUndo.push({ label: 'Snooze', undo: async () => { await unsnooze(threadId); } });
+    if (ok) {
+      mailUndo.push({
+        label: 'Snooze',
+        undo: async () => {
+          const undone = await unsnooze(threadId);
+          if (!undone) throw new Error('Could not undo snooze');
+        },
+      });
+    }
+    return ok;
   }
 
   async function remind(threadId: string, remindAt: string | null): Promise<void> {
@@ -372,58 +387,117 @@ export function useMailActions() {
     }
   }
 
+  /**
+   * Restores just the failed ids to their pre-mutation snapshot across every
+   * matched ['threads'] list — reinserting them if the optimistic update
+   * removed them (archive/trash/spam), or reverting their fields otherwise —
+   * while leaving the succeeded ids in their new (mutated) state.
+   */
+  function restoreFailedIds(
+    previousLists: Array<[QueryKey, ThreadListResult | undefined]>,
+    failedIds: string[]
+  ): void {
+    if (failedIds.length === 0) return;
+    const failedSet = new Set(failedIds);
+    for (const [key, prevData] of previousLists) {
+      if (!prevData) continue;
+      const prevById = new Map(prevData.page.items.map((t) => [t.id, t] as const));
+      queryClient.setQueryData<ThreadListResult | undefined>(key, (current) => {
+        if (!current) return current;
+        const currentIds = new Set(current.page.items.map((t) => t.id));
+        const items = current.page.items.map((t) =>
+          failedSet.has(t.id) && prevById.has(t.id) ? prevById.get(t.id)! : t
+        );
+        for (const id of failedIds) {
+          if (prevById.has(id) && !currentIds.has(id)) items.push(prevById.get(id)!);
+        }
+        return { ...current, page: { ...current.page, items } };
+      });
+    }
+  }
+
   async function bulkAct(threadIds: string[], action: BulkAction, labelId?: string): Promise<void> {
     const previousLists = queryClient.getQueriesData<ThreadListResult | undefined>({
       queryKey: ['threads'],
     });
     const removes = action === 'archive' || action === 'trash' || action === 'spam';
+    const isLabelAction = action === 'label' || action === 'unlabel';
     const idSet = new Set(threadIds);
     queryClient.setQueriesData<ThreadListResult | undefined>({ queryKey: ['threads'] }, (data) => {
       if (!data) return data;
       const items = removes
         ? data.page.items.filter((t) => !idSet.has(t.id))
         : data.page.items.map((t) =>
-            idSet.has(t.id) && action !== 'label' && action !== 'unlabel'
-              ? applyActionToThread(t, action as ThreadAction)
-              : t
+            idSet.has(t.id) && !isLabelAction ? applyActionToThread(t, action as ThreadAction) : t
           );
       return { ...data, page: { ...data.page, items } };
     });
     if (DEMO_MODE) {
-      if (action === 'label' || action === 'unlabel') {
+      if (isLabelAction) {
         for (const id of threadIds) applyMockLabel(id, labelId ?? '', action === 'label');
       } else {
         mockBulkAction(threadIds, action);
       }
     }
+
+    // Labels aren't reflected in the optimistic list patch above (bulk label
+    // affects filtering/visibility in ways the cache can't fake), so success
+    // is surfaced by invalidating the affected list + detail queries instead.
+    function invalidateLabelCaches() {
+      void queryClient.invalidateQueries({ queryKey: ['threads'] });
+      for (const id of threadIds) void queryClient.invalidateQueries({ queryKey: ['thread', id] });
+    }
+
+    // Only push an undo entry for the ids that actually succeeded — never for
+    // label/unlabel (no inverse tracked per-id here, matching prior behavior).
+    function pushBulkUndo(succeededIds: string[]) {
+      if (isLabelAction || succeededIds.length === 0) return;
+      const inverse = ACTION_INVERSE[action as ThreadAction];
+      if (!inverse) return;
+      mailUndo.push({
+        label: `${ACTION_UNDO_LABEL[action as ThreadAction] ?? action} ${succeededIds.length} conversations`,
+        undo: async () => {
+          try {
+            const res = await getApiClient().bulkThreadAction({
+              threadIds: succeededIds,
+              action: inverse,
+            });
+            if (res.failedIds.length > 0) throw new Error('Bulk undo partially failed');
+          } catch (err) {
+            if (!DEMO_MODE) throw err;
+            mockBulkAction(succeededIds, inverse);
+          }
+          void queryClient.invalidateQueries({ queryKey: ['threads'] });
+        },
+      });
+    }
+
     try {
-      await getApiClient().bulkThreadAction({ threadIds, action, labelId });
-      if (action !== 'label' && action !== 'unlabel') {
-        const inverse = ACTION_INVERSE[action];
-        if (inverse) {
-          mailUndo.push({
-            label: `${ACTION_UNDO_LABEL[action] ?? action} ${threadIds.length} conversations`,
-            undo: async () => {
-              await getApiClient()
-                .bulkThreadAction({ threadIds, action: inverse })
-                .catch(() => {
-                  if (!DEMO_MODE) throw new Error('undo failed');
-                  mockBulkAction(threadIds, inverse);
-                });
-              void queryClient.invalidateQueries({ queryKey: ['threads'] });
-            },
-          });
-        }
+      const res = await getApiClient().bulkThreadAction({ threadIds, action, labelId });
+      if (res.failedIds.length > 0) {
+        restoreFailedIds(previousLists, res.failedIds);
+        toast.error(
+          `${res.failedIds.length} conversation${res.failedIds.length === 1 ? '' : 's'} failed to update.`
+        );
       }
+      if (isLabelAction) invalidateLabelCaches();
+      const succeededIds = threadIds.filter((id) => !res.failedIds.includes(id));
+      pushBulkUndo(succeededIds);
     } catch {
-      if (DEMO_MODE) return; // mock already applied; demo keeps the optimistic state
+      if (DEMO_MODE) {
+        // Mock fallback already applied optimistically above — every id
+        // "succeeded" locally, so undo should target all of them.
+        if (isLabelAction) invalidateLabelCaches();
+        pushBulkUndo(threadIds);
+        return;
+      }
       for (const [key, data] of previousLists) queryClient.setQueryData(key, data);
       toast.error('Could not update the selected conversations.');
     }
   }
 
-  async function unsnooze(threadId: string): Promise<void> {
-    await runOptimistic(
+  async function unsnooze(threadId: string): Promise<boolean> {
+    return runOptimistic(
       threadId,
       (t) => ({ ...t, snoozedUntil: null }),
       false,
@@ -433,8 +507,8 @@ export function useMailActions() {
     );
   }
 
-  async function setLabel(threadId: string, labelId: string, add: boolean): Promise<void> {
-    await runOptimistic(
+  async function setLabel(threadId: string, labelId: string, add: boolean): Promise<boolean> {
+    const ok = await runOptimistic(
       threadId,
       (t) => ({
         ...t,
@@ -447,7 +521,16 @@ export function useMailActions() {
       () => applyMockLabel(threadId, labelId, add),
       'Could not update the label.'
     );
-    mailUndo.push({ label: add ? 'Label' : 'Remove label', undo: () => setLabel(threadId, labelId, !add) });
+    if (ok) {
+      mailUndo.push({
+        label: add ? 'Label' : 'Remove label',
+        undo: async () => {
+          const undone = await setLabel(threadId, labelId, !add);
+          if (!undone) throw new Error('Could not undo label change');
+        },
+      });
+    }
+    return ok;
   }
 
   async function unsubscribe(threadId: string): Promise<UnsubscribeResult> {
@@ -477,8 +560,13 @@ export function useMailActions() {
   async function undoLast(): Promise<boolean> {
     const entry = mailUndo.pop();
     if (!entry) return false;
-    await entry.undo();
-    return true;
+    try {
+      await entry.undo();
+      return true;
+    } catch {
+      toast.error(`Could not undo: ${entry.label}.`);
+      return false;
+    }
   }
 
   return {
