@@ -180,6 +180,10 @@ export function CommandPalette() {
             Set follow-up reminder…
             <KbdGroup size="sm" keys={['⇧', 'H']} className="ml-auto" />
           </CommandItem>
+          <CommandItem onSelect={() => runMailCommand('get-me-to-zero')}>
+            <Inbox />
+            Get Me To Zero
+          </CommandItem>
           <CommandItem onSelect={() => runMailCommand('undo')}>
             <RotateCcw />
             Undo last action

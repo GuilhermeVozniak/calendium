@@ -1,5 +1,5 @@
 import type { EmailAddress, Thread } from '@calendium/shared';
-import { addDays, addHours, format, isThisYear, isToday, nextMonday, nextSaturday, set } from 'date-fns';
+import { addDays, addHours, format, isThisYear, isToday, nextMonday, nextSaturday, set, subDays, subMonths } from 'date-fns';
 
 /** Non-split mailbox views shown in the left rail. */
 export type MailboxView = 'starred' | 'snoozed' | 'sent' | 'drafts';
@@ -95,6 +95,16 @@ export function sendLaterOptions(now: Date = new Date()): TimeOption[] {
   ];
 }
 
+/** Get Me To Zero cutoffs: archive inbox mail older than these periods. */
+export function zeroCutoffOptions(now: Date = new Date()): TimeOption[] {
+  return [
+    { id: 'week', label: '1 week', when: subDays(now, 7) },
+    { id: 'two-weeks', label: '2 weeks', when: subDays(now, 14) },
+    { id: 'month', label: '1 month', when: subMonths(now, 1) },
+    { id: 'quarter', label: '3 months', when: subMonths(now, 3) },
+  ];
+}
+
 // ---------------------------------------------------------------------------
 // Cross-component mail actions (command palette → inbox page)
 // ---------------------------------------------------------------------------
@@ -108,7 +118,8 @@ export type MailCommand =
   | 'mark-read'
   | 'search'
   | 'undo'
-  | 'label';
+  | 'label'
+  | 'get-me-to-zero';
 
 export const MAIL_COMMAND_EVENT = 'calendium:mail-command';
 

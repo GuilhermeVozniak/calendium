@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 
 import { BulkBar } from '@/components/app/bulk-bar';
 import { htmlToText, useCompose } from '@/components/app/compose';
+import { GetMeToZero } from '@/components/app/get-me-to-zero';
 import { LabelPicker } from '@/components/app/label-picker';
 import { TimePickerDialog } from '@/components/app/snooze-menu';
 import { ThreadView } from '@/components/app/thread-view';
@@ -174,6 +175,7 @@ function MailClient() {
   const { act, snooze, remind, undoLast, bulkAct, setLabel } = useMailActions();
   const [snoozeOpen, setSnoozeOpen] = React.useState(false);
   const [remindOpen, setRemindOpen] = React.useState(false);
+  const [zeroOpen, setZeroOpen] = React.useState(false);
 
   const undo = React.useCallback(() => {
     void undoLast().then((did) => {
@@ -433,6 +435,7 @@ function MailClient() {
     else if (command === 'reminder') setRemindOpen(true);
     else if (command === 'undo') handlers.undo();
     else if (command === 'label') setLabelPickerOpen(true);
+    else if (command === 'get-me-to-zero') setZeroOpen(true);
   }, []);
 
   React.useEffect(() => onMailCommand(runCommand), [runCommand]);
@@ -617,6 +620,7 @@ function MailClient() {
           toast.success(`Reminder set for ${formatOptionTime(when)}`);
         }}
       />
+      <GetMeToZero open={zeroOpen} onOpenChange={setZeroOpen} />
     </div>
   );
 }

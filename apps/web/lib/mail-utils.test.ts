@@ -17,6 +17,7 @@ import {
   sendLaterOptions,
   snoozeOptions,
   takePendingMailCommand,
+  zeroCutoffOptions,
   type MailCommand,
 } from '@/lib/mail-utils';
 
@@ -203,6 +204,18 @@ describe('snoozeOptions / reminderOptions / sendLaterOptions', () => {
     expect(() => snoozeOptions()).not.toThrow();
     expect(() => reminderOptions()).not.toThrow();
     expect(() => sendLaterOptions()).not.toThrow();
+  });
+});
+
+describe('zeroCutoffOptions', () => {
+  it('returns week/two-weeks/month/quarter cutoffs in the past', () => {
+    const now = new Date('2026-07-17T12:00:00Z');
+    const options = zeroCutoffOptions(now);
+    expect(options.map((o) => o.id)).toEqual(['week', 'two-weeks', 'month', 'quarter']);
+    for (const option of options) {
+      expect(option.when.getTime()).toBeLessThan(now.getTime());
+    }
+    expect(options[0]!.when.toISOString()).toBe('2026-07-10T12:00:00.000Z');
   });
 });
 
