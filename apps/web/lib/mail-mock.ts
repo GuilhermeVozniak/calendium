@@ -3,10 +3,12 @@ import type {
   AiComposeResponse,
   EmailAddress,
   InboxSplit,
+  Label,
   Message,
   Page,
   Thread,
   ThreadAction,
+  UnsubscribeResult,
 } from '@calendium/shared';
 
 import type { MailboxView } from '@/lib/mail-utils';
@@ -68,6 +70,7 @@ interface ThreadSpec {
   starred?: boolean;
   participants: EmailAddress[];
   msgs: MsgSpec[];
+  unsubscribe?: { mailto?: string; url?: string; oneClick?: boolean };
 }
 
 function toHtml(text: string): string {
@@ -132,9 +135,9 @@ function build(spec: ThreadSpec): ThreadRecord {
       openedAt: spec.unread ? null : hoursAgo(0),
       snoozedUntil: null,
       remindAt: null,
-      unsubscribeMailto: null,
-      unsubscribeUrl: null,
-      unsubscribeOneClick: false,
+      unsubscribeMailto: spec.unsubscribe?.mailto ?? null,
+      unsubscribeUrl: spec.unsubscribe?.url ?? null,
+      unsubscribeOneClick: spec.unsubscribe?.oneClick ?? false,
     },
   };
 }
@@ -441,6 +444,11 @@ const SPECS: ThreadSpec[] = [
     split: 'news',
     subject: 'The Batch: Agents that plan before they act',
     participants: [batch],
+    unsubscribe: {
+      mailto: 'mailto:unsub@deeplearning.ai',
+      url: 'https://deeplearning.ai/the-batch/unsubscribe',
+      oneClick: true,
+    },
     msgs: [
       {
         from: batch,
@@ -455,6 +463,11 @@ const SPECS: ThreadSpec[] = [
     subject: 'Stratechery: Aggregation theory and the AI browser',
     unread: true,
     participants: [stratechery],
+    unsubscribe: {
+      mailto: 'mailto:unsub@stratechery.com',
+      url: 'https://stratechery.com/unsubscribe',
+      oneClick: true,
+    },
     msgs: [
       {
         from: stratechery,
@@ -468,6 +481,7 @@ const SPECS: ThreadSpec[] = [
     split: 'news',
     subject: 'Changelog News #578 — local-first strikes back',
     participants: [changelog],
+    unsubscribe: { url: 'https://changelog.com/news/unsubscribe' },
     msgs: [
       {
         from: changelog,
@@ -481,6 +495,7 @@ const SPECS: ThreadSpec[] = [
     split: 'news',
     subject: 'Product Hunt Daily: today’s top launches',
     participants: [producthunt],
+    unsubscribe: { mailto: 'mailto:unsub@producthunt.com' },
     msgs: [
       {
         from: producthunt,
@@ -631,6 +646,60 @@ export function mockSnoozeThread(threadId: string, until: string | null): void {
 export function mockRemindThread(threadId: string, remindAt: string | null): void {
   const record = store.get(threadId);
   if (record) record.thread.remindAt = remindAt;
+}
+
+// ---------------------------------------------------------------------------
+// Labels, bulk actions, unsubscribe, Get Me To Zero
+// ---------------------------------------------------------------------------
+
+const MOCK_LABELS: Label[] = [
+  { id: 'lbl_updates', accountId: ACCOUNT_ID, name: 'Updates', kind: 'user', color: null },
+  { id: 'lbl_receipts', accountId: ACCOUNT_ID, name: 'Receipts', kind: 'user', color: null },
+  { id: 'lbl_travel', accountId: ACCOUNT_ID, name: 'Travel', kind: 'user', color: null },
+];
+
+export function getMockLabels(): Label[] {
+  return MOCK_LABELS.map((l) => ({ ...l }));
+}
+
+export function applyMockLabel(threadId: string, labelId: string, add: boolean): void {
+  const record = store.get(threadId);
+  if (!record) return;
+  const ids = record.thread.labelIds.filter((id) => id !== labelId);
+  if (add) ids.push(labelId);
+  record.thread.labelIds = ids;
+}
+
+export function mockBulkAction(threadIds: string[], action: ThreadAction): void {
+  for (const id of threadIds) applyMockAction(id, action);
+}
+
+export function mockUnsnoozeThread(threadId: string): void {
+  const record = store.get(threadId);
+  if (record) record.thread.snoozedUntil = null;
+}
+
+export function mockUnsubscribe(threadId: string): UnsubscribeResult {
+  const record = store.get(threadId);
+  if (!record) return { method: 'link', url: 'https://example.com/unsubscribe' };
+  const t = record.thread;
+  if (t.unsubscribeOneClick && t.unsubscribeUrl) return { method: 'one_click' };
+  if (t.unsubscribeMailto) return { method: 'mailto' };
+  return { method: 'link', url: t.unsubscribeUrl ?? 'https://example.com/unsubscribe' };
+}
+
+export function mockArchiveOlderThan(olderThanIso: string): number {
+  const cutoff = Date.parse(olderThanIso);
+  let archived = 0;
+  for (const record of store.values()) {
+    const t = record.thread;
+    const inInbox = !t.snoozedUntil; // demo approximation of inbox membership
+    if (inInbox && Date.parse(t.lastMessageAt) < cutoff) {
+      applyMockAction(t.id, 'archive');
+      archived++;
+    }
+  }
+  return archived;
 }
 
 // ---------------------------------------------------------------------------

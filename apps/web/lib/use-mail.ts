@@ -3,13 +3,17 @@
 import type {
   AiComposeRequest,
   AiComposeResponse,
+  BulkAction,
   Draft,
   InboxSplit,
+  Label,
   Message,
   Page,
   Thread,
   ThreadAction,
+  UnsubscribeResult,
 } from '@calendium/shared';
+import { UndoStack } from '@calendium/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 
@@ -17,14 +21,23 @@ import { getApiClient } from '@/lib/api';
 import { DEMO_MODE } from '@/lib/demo';
 import {
   applyMockAction,
+  applyMockLabel,
+  getMockLabels,
   getMockThread,
   getMockThreads,
   mockAiCompose,
+  mockArchiveOlderThan,
+  mockBulkAction,
   mockRemindThread,
   mockSnoozeThread,
+  mockUnsnoozeThread,
+  mockUnsubscribe,
 } from '@/lib/mail-mock';
 import { fetchSnippets } from '@/lib/settings-data';
 import type { MailboxView } from '@/lib/mail-utils';
+
+/** Module singleton backing the global "undo anything" (Z) shortcut. */
+export const mailUndo = new UndoStack();
 
 /**
  * Mail data layer: TanStack Query hooks against the Calendium API. Outside
@@ -152,6 +165,21 @@ export function useSnippets() {
   });
 }
 
+export function useLabels() {
+  return useQuery({
+    queryKey: ['labels'],
+    staleTime: 5 * 60_000,
+    queryFn: async (): Promise<{ labels: Label[]; source: DataSource }> => {
+      try {
+        return { labels: await getApiClient().listLabels(), source: 'api' };
+      } catch (err) {
+        if (DEMO_MODE) return { labels: getMockLabels(), source: 'demo' };
+        throw err;
+      }
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Mutations (optimistic; failures revert + surface unless in demo mode)
 // ---------------------------------------------------------------------------
@@ -182,6 +210,28 @@ const ACTION_ERROR: Partial<Record<ThreadAction, string>> = {
   read: 'Could not mark the conversation read.',
   unread: 'Could not mark the conversation unread.',
   move_to_inbox: 'Could not move the conversation to the inbox.',
+};
+
+const ACTION_INVERSE: Partial<Record<ThreadAction, ThreadAction>> = {
+  archive: 'move_to_inbox',
+  trash: 'move_to_inbox',
+  spam: 'move_to_inbox',
+  star: 'unstar',
+  unstar: 'star',
+  read: 'unread',
+  unread: 'read',
+  move_to_inbox: 'archive',
+};
+
+const ACTION_UNDO_LABEL: Partial<Record<ThreadAction, string>> = {
+  archive: 'Archive',
+  trash: 'Delete',
+  spam: 'Report spam',
+  star: 'Star',
+  unstar: 'Unstar',
+  read: 'Mark read',
+  unread: 'Mark unread',
+  move_to_inbox: 'Move to inbox',
 };
 
 export function useDraftActions() {
@@ -257,7 +307,11 @@ export function useMailActions() {
     }
   }
 
-  async function act(threadId: string, action: ThreadAction): Promise<void> {
+  async function act(
+    threadId: string,
+    action: ThreadAction,
+    opts?: { undoable?: boolean }
+  ): Promise<void> {
     await runOptimistic(
       threadId,
       (t) => applyActionToThread(t, action),
@@ -266,6 +320,16 @@ export function useMailActions() {
       () => applyMockAction(threadId, action),
       ACTION_ERROR[action] ?? 'Could not update the conversation.'
     );
+    const inverse = ACTION_INVERSE[action];
+    if (opts?.undoable !== false && inverse) {
+      mailUndo.push({
+        label: ACTION_UNDO_LABEL[action] ?? action,
+        undo: () =>
+          act(threadId, inverse, { undoable: false }).then(() => {
+            void queryClient.invalidateQueries({ queryKey: ['threads'] });
+          }),
+      });
+    }
   }
 
   async function snooze(threadId: string, until: string): Promise<void> {
@@ -277,6 +341,7 @@ export function useMailActions() {
       () => mockSnoozeThread(threadId, until),
       'Could not snooze the conversation.'
     );
+    mailUndo.push({ label: 'Snooze', undo: async () => { await unsnooze(threadId); } });
   }
 
   async function remind(threadId: string, remindAt: string | null): Promise<void> {
@@ -307,7 +372,127 @@ export function useMailActions() {
     }
   }
 
-  return { act, snooze, remind, markOpened };
+  async function bulkAct(threadIds: string[], action: BulkAction, labelId?: string): Promise<void> {
+    const previousLists = queryClient.getQueriesData<ThreadListResult | undefined>({
+      queryKey: ['threads'],
+    });
+    const removes = action === 'archive' || action === 'trash' || action === 'spam';
+    const idSet = new Set(threadIds);
+    queryClient.setQueriesData<ThreadListResult | undefined>({ queryKey: ['threads'] }, (data) => {
+      if (!data) return data;
+      const items = removes
+        ? data.page.items.filter((t) => !idSet.has(t.id))
+        : data.page.items.map((t) =>
+            idSet.has(t.id) && action !== 'label' && action !== 'unlabel'
+              ? applyActionToThread(t, action as ThreadAction)
+              : t
+          );
+      return { ...data, page: { ...data.page, items } };
+    });
+    if (DEMO_MODE) {
+      if (action === 'label' || action === 'unlabel') {
+        for (const id of threadIds) applyMockLabel(id, labelId ?? '', action === 'label');
+      } else {
+        mockBulkAction(threadIds, action);
+      }
+    }
+    try {
+      await getApiClient().bulkThreadAction({ threadIds, action, labelId });
+      if (action !== 'label' && action !== 'unlabel') {
+        const inverse = ACTION_INVERSE[action];
+        if (inverse) {
+          mailUndo.push({
+            label: `${ACTION_UNDO_LABEL[action] ?? action} ${threadIds.length} conversations`,
+            undo: async () => {
+              await getApiClient()
+                .bulkThreadAction({ threadIds, action: inverse })
+                .catch(() => {
+                  if (!DEMO_MODE) throw new Error('undo failed');
+                  mockBulkAction(threadIds, inverse);
+                });
+              void queryClient.invalidateQueries({ queryKey: ['threads'] });
+            },
+          });
+        }
+      }
+    } catch {
+      if (DEMO_MODE) return; // mock already applied; demo keeps the optimistic state
+      for (const [key, data] of previousLists) queryClient.setQueryData(key, data);
+      toast.error('Could not update the selected conversations.');
+    }
+  }
+
+  async function unsnooze(threadId: string): Promise<void> {
+    await runOptimistic(
+      threadId,
+      (t) => ({ ...t, snoozedUntil: null }),
+      false,
+      () => getApiClient().unsnoozeThread(threadId),
+      () => mockUnsnoozeThread(threadId),
+      'Could not cancel the snooze.'
+    );
+  }
+
+  async function setLabel(threadId: string, labelId: string, add: boolean): Promise<void> {
+    await runOptimistic(
+      threadId,
+      (t) => ({
+        ...t,
+        labelIds: add
+          ? [...t.labelIds.filter((id) => id !== labelId), labelId]
+          : t.labelIds.filter((id) => id !== labelId),
+      }),
+      false,
+      () => getApiClient().setThreadLabel(threadId, labelId, add),
+      () => applyMockLabel(threadId, labelId, add),
+      'Could not update the label.'
+    );
+    mailUndo.push({ label: add ? 'Label' : 'Remove label', undo: () => setLabel(threadId, labelId, !add) });
+  }
+
+  async function unsubscribe(threadId: string): Promise<UnsubscribeResult> {
+    try {
+      return await getApiClient().unsubscribeThread(threadId);
+    } catch (err) {
+      if (DEMO_MODE) return mockUnsubscribe(threadId);
+      throw err;
+    }
+  }
+
+  async function getMeToZero(olderThanIso: string): Promise<number> {
+    try {
+      const res = await getApiClient().archiveOlderThan(olderThanIso);
+      void queryClient.invalidateQueries({ queryKey: ['threads'] });
+      return res.archivedCount;
+    } catch (err) {
+      if (DEMO_MODE) {
+        const count = mockArchiveOlderThan(olderThanIso);
+        void queryClient.invalidateQueries({ queryKey: ['threads'] });
+        return count;
+      }
+      throw err;
+    }
+  }
+
+  async function undoLast(): Promise<boolean> {
+    const entry = mailUndo.pop();
+    if (!entry) return false;
+    await entry.undo();
+    return true;
+  }
+
+  return {
+    act,
+    snooze,
+    remind,
+    markOpened,
+    bulkAct,
+    unsnooze,
+    setLabel,
+    unsubscribe,
+    getMeToZero,
+    undoLast,
+  };
 }
 
 // ---------------------------------------------------------------------------
