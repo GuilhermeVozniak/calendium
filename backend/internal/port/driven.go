@@ -170,6 +170,8 @@ type LabelRepo interface {
 	// Upsert matches on (accountID, providerLabelID).
 	Upsert(ctx context.Context, l domain.Label) (domain.Label, error)
 	ListByAccount(ctx context.Context, accountID string) ([]domain.Label, error)
+	GetByID(ctx context.Context, id string) (domain.Label, error)
+	ListByUser(ctx context.Context, userID string) ([]domain.Label, error)
 }
 
 // CalendarRepo persists mirrored calendars.

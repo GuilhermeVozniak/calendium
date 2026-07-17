@@ -24,6 +24,7 @@ type mailFixture struct {
 	messages *fakeMessageRepo
 	drafts   *fakeDraftRepo
 	snippets *fakeSnippetRepo
+	labels   *fakeLabelRepo
 	provider *fakeMailProvider
 	oauth    *fakeOAuthGateway
 	clock    *fakeClock
@@ -33,12 +34,15 @@ func newMailFixture(t *testing.T) *mailFixture {
 	t.Helper()
 	clk := newClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))
 	accounts := newAccountRepo()
+	labels := newLabelRepo()
+	labels.accounts = accounts
 	f := &mailFixture{
 		accounts: accounts,
 		threads:  newThreadRepo(),
 		messages: newMessageRepo(),
 		drafts:   newDraftRepo(accounts),
 		snippets: newSnippetRepo(),
+		labels:   labels,
 		provider: newMailProvider(),
 		oauth:    newOAuthGateway(),
 		clock:    clk,
@@ -49,6 +53,7 @@ func newMailFixture(t *testing.T) *mailFixture {
 		Messages:      f.messages,
 		Drafts:        f.drafts,
 		Snippets:      f.snippets,
+		Labels:        f.labels,
 		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: f.provider},
 		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: f.oauth},
 		Clock:         clk,
@@ -1373,5 +1378,129 @@ func TestArchiveOlderThanExcludesOtherUsersThreads(t *testing.T) {
 	}
 	if !gotOther.InInbox {
 		t.Fatal("cross-user thread was archived; ListInboxBefore leaked another user's thread")
+	}
+}
+
+// --- MailService labels (Task 6) ---------------------------------------------
+
+func TestSetThreadLabelAddsRemovesAndWritesThrough(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedThread(t, "t1", "a1", nil)
+	if _, err := f.labels.Upsert(ctx, domain.Label{
+		ID: "lbl1", AccountID: "a1", ProviderLabelID: "PL_1", Name: "Follow up", Kind: domain.LabelKindUser,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := f.svc.SetThreadLabel(ctx, "u1", "t1", "lbl1", true)
+	if err != nil {
+		t.Fatalf("SetThreadLabel(add): %v", err)
+	}
+	if !reflect.DeepEqual(got.LabelIDs, []string{"lbl1"}) {
+		t.Fatalf("LabelIDs = %v, want [lbl1]", got.LabelIDs)
+	}
+	if !reflect.DeepEqual(f.provider.lastModifyAdd, []string{"PL_1"}) || f.provider.lastModifyRemove != nil {
+		t.Fatalf("provider add=%v remove=%v, want add=[PL_1]", f.provider.lastModifyAdd, f.provider.lastModifyRemove)
+	}
+
+	got, err = f.svc.SetThreadLabel(ctx, "u1", "t1", "lbl1", false)
+	if err != nil {
+		t.Fatalf("SetThreadLabel(remove): %v", err)
+	}
+	if len(got.LabelIDs) != 0 {
+		t.Fatalf("LabelIDs = %v, want empty", got.LabelIDs)
+	}
+	if !reflect.DeepEqual(f.provider.lastModifyRemove, []string{"PL_1"}) {
+		t.Fatalf("provider remove = %v, want [PL_1]", f.provider.lastModifyRemove)
+	}
+}
+
+func TestSetThreadLabelRejectsCrossAccountLabel(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedAccount(t, "a2", "u2")
+	f.seedThread(t, "t1", "a1", nil)
+	if _, err := f.labels.Upsert(ctx, domain.Label{ID: "lbl2", AccountID: "a2", ProviderLabelID: "PL_2", Name: "Other"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.SetThreadLabel(ctx, "u1", "t1", "lbl2", true); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("cross-account label err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestListLabelsScopesByUser(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedAccount(t, "a2", "u2")
+	if _, err := f.labels.Upsert(ctx, domain.Label{AccountID: "a1", ProviderLabelID: "PL_1", Name: "Mine"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.labels.Upsert(ctx, domain.Label{AccountID: "a2", ProviderLabelID: "PL_2", Name: "Other"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := f.svc.ListLabels(ctx, "u1")
+	if err != nil {
+		t.Fatalf("ListLabels: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "Mine" {
+		t.Fatalf("ListLabels = %+v, want only u1's label", got)
+	}
+}
+
+func TestBulkSetLabelAppliesToOwnedAndReportsFailures(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedAccount(t, "a2", "u2")
+	f.seedThread(t, "t1", "a1", nil)
+	t2 := f.seedThread(t, "t2", "a1", nil)
+	f.seedThread(t, "t-other", "a2", nil)
+	if _, err := f.labels.Upsert(ctx, domain.Label{
+		ID: "lbl1", AccountID: "a1", ProviderLabelID: "PL_1", Name: "Follow up",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-seed t2 with the label so we can exercise the remove path too.
+	if err := f.threads.SetLabels(ctx, t2.ID, []string{"lbl1"}); err != nil {
+		t.Fatal(err)
+	}
+	t2.LabelIDs = []string{"lbl1"}
+	if err := f.threads.Update(ctx, t2); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := f.svc.BulkSetLabel(ctx, "u1", []string{"t1", "t2", "missing", "t-other"}, "lbl1", true)
+	if err != nil {
+		t.Fatalf("BulkSetLabel: %v", err)
+	}
+	if len(res.Threads) != 2 {
+		t.Fatalf("Threads = %+v, want 2 mutated", res.Threads)
+	}
+	if !reflect.DeepEqual(res.FailedIDs, []string{"missing", "t-other"}) {
+		t.Fatalf("FailedIDs = %v, want [missing t-other]", res.FailedIDs)
+	}
+	for _, th := range res.Threads {
+		if !reflect.DeepEqual(th.LabelIDs, []string{"lbl1"}) {
+			t.Fatalf("thread %s LabelIDs = %v, want [lbl1]", th.ID, th.LabelIDs)
+		}
+	}
+
+	// Bulk unlabel removes it again.
+	res, err = f.svc.BulkSetLabel(ctx, "u1", []string{"t1", "t2"}, "lbl1", false)
+	if err != nil {
+		t.Fatalf("BulkSetLabel(remove): %v", err)
+	}
+	if len(res.Threads) != 2 || len(res.FailedIDs) != 0 {
+		t.Fatalf("res = %+v, want 2 mutated 0 failed", res)
+	}
+	for _, th := range res.Threads {
+		if len(th.LabelIDs) != 0 {
+			t.Fatalf("thread %s LabelIDs = %v, want empty", th.ID, th.LabelIDs)
+		}
 	}
 }

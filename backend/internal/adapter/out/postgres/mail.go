@@ -641,3 +641,29 @@ func (r labelRepo) ListByAccount(ctx context.Context, accountID string) ([]domai
 	}
 	return labels, rows.Err()
 }
+
+func (r labelRepo) GetByID(ctx context.Context, id string) (domain.Label, error) {
+	row := r.q(ctx).QueryRowContext(ctx,
+		`SELECT `+labelCols+` FROM labels WHERE id = $1`, id)
+	return scanLabel(row)
+}
+
+func (r labelRepo) ListByUser(ctx context.Context, userID string) ([]domain.Label, error) {
+	rows, err := r.q(ctx).QueryContext(ctx,
+		`SELECT `+labelCols+` FROM labels
+		 WHERE account_id IN (SELECT id FROM connected_accounts WHERE user_id = $1)
+		 ORDER BY name`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	labels := []domain.Label{}
+	for rows.Next() {
+		l, err := scanLabel(rows)
+		if err != nil {
+			return nil, err
+		}
+		labels = append(labels, l)
+	}
+	return labels, rows.Err()
+}

@@ -197,3 +197,49 @@ func TestLabelRepoListByAccountOrdered(t *testing.T) {
 		t.Fatalf("ListByAccount = %+v, want [Alpha, Zeta]", list)
 	}
 }
+
+func TestLabelListByUserAndGetByID(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	seedUser(t, st, "u2")
+	acct1 := seedAccount(t, st, "u1")
+	acct2 := seedAccount(t, st, "u2")
+
+	l1, err := st.Labels().Upsert(ctx, domain.Label{AccountID: acct1.ID, ProviderLabelID: newID(), Name: "Zeta"})
+	if err != nil {
+		t.Fatalf("Upsert l1: %v", err)
+	}
+	if _, err := st.Labels().Upsert(ctx, domain.Label{AccountID: acct1.ID, ProviderLabelID: newID(), Name: "Alpha"}); err != nil {
+		t.Fatalf("Upsert l2: %v", err)
+	}
+	other, err := st.Labels().Upsert(ctx, domain.Label{AccountID: acct2.ID, ProviderLabelID: newID(), Name: "Other"})
+	if err != nil {
+		t.Fatalf("Upsert other: %v", err)
+	}
+
+	list, err := st.Labels().ListByUser(ctx, "u1")
+	if err != nil {
+		t.Fatalf("ListByUser: %v", err)
+	}
+	if len(list) != 2 || list[0].Name != "Alpha" || list[1].Name != "Zeta" {
+		t.Fatalf("ListByUser(u1) = %+v, want [Alpha, Zeta], scoped away from u2", list)
+	}
+
+	got, err := st.Labels().GetByID(ctx, l1.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.ID != l1.ID || got.Name != "Zeta" {
+		t.Fatalf("GetByID = %+v", got)
+	}
+
+	if _, err := st.Labels().GetByID(ctx, "nope"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("GetByID unknown: err = %v, want ErrNotFound", err)
+	}
+
+	// sanity: other's label exists but is outside u1's ListByUser scope
+	if other.AccountID != acct2.ID {
+		t.Fatalf("other.AccountID = %q, want %q", other.AccountID, acct2.ID)
+	}
+}

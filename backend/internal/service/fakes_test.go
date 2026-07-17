@@ -550,10 +550,14 @@ var _ port.SnippetRepo = (*fakeSnippetRepo)(nil)
 // --- label repo --------------------------------------------------------------
 
 // fakeLabelRepo upserts on (AccountID, ProviderLabelID); a new label without an
-// ID is assigned one via newID().
+// ID is assigned one via newID(). ListByUser scopes by ownership when the
+// optional accounts pointer is set (Label carries no UserID); left nil, it
+// returns every stored label (existing single-account-repo tests keep
+// working without wiring accounts).
 type fakeLabelRepo struct {
-	byID  map[string]domain.Label
-	order []string
+	byID     map[string]domain.Label
+	order    []string
+	accounts *fakeAccountRepo
 }
 
 func newLabelRepo() *fakeLabelRepo { return &fakeLabelRepo{byID: map[string]domain.Label{}} }
@@ -580,6 +584,29 @@ func (r *fakeLabelRepo) ListByAccount(_ context.Context, accountID string) ([]do
 		if l := r.byID[id]; l.AccountID == accountID {
 			out = append(out, l)
 		}
+	}
+	return out, nil
+}
+
+func (r *fakeLabelRepo) GetByID(_ context.Context, id string) (domain.Label, error) {
+	l, ok := r.byID[id]
+	if !ok {
+		return domain.Label{}, domain.ErrNotFound
+	}
+	return l, nil
+}
+
+func (r *fakeLabelRepo) ListByUser(_ context.Context, userID string) ([]domain.Label, error) {
+	out := []domain.Label{}
+	for _, id := range r.order {
+		l := r.byID[id]
+		if r.accounts != nil {
+			a, ok := r.accounts.byID[l.AccountID]
+			if !ok || a.UserID != userID {
+				continue
+			}
+		}
+		out = append(out, l)
 	}
 	return out, nil
 }

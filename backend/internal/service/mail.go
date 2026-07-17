@@ -28,6 +28,7 @@ type MailServiceDeps struct {
 	Messages      port.MessageRepo
 	Drafts        port.DraftRepo
 	Snippets      port.SnippetRepo
+	Labels        port.LabelRepo
 	MailProviders map[domain.Provider]port.MailProvider
 	OAuth         map[domain.Provider]port.OAuthGateway
 	Clock         port.Clock
@@ -45,6 +46,7 @@ type MailService struct {
 	messages      port.MessageRepo
 	drafts        port.DraftRepo
 	snippets      port.SnippetRepo
+	labels        port.LabelRepo
 	mail          map[domain.Provider]port.MailProvider
 	tokens        tokenSource
 	clock         port.Clock
@@ -65,6 +67,7 @@ func NewMailService(d MailServiceDeps) *MailService {
 		messages:      d.Messages,
 		drafts:        d.Drafts,
 		snippets:      d.Snippets,
+		labels:        d.Labels,
 		mail:          d.MailProviders,
 		tokens:        tokenSource{accounts: d.Accounts, oauth: d.OAuth, clock: d.Clock},
 		clock:         d.Clock,
@@ -591,6 +594,101 @@ func validateSnippetInput(in port.SnippetInput) error {
 		return fmt.Errorf("%w: snippet body is required", domain.ErrValidation)
 	}
 	return nil
+}
+
+// --- Labels ---
+
+func (s *MailService) ListLabels(ctx context.Context, userID string) ([]domain.Label, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return nil, err
+	}
+	ls, err := s.labels.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if ls == nil {
+		ls = []domain.Label{}
+	}
+	return ls, nil
+}
+
+func (s *MailService) SetThreadLabel(ctx context.Context, userID, threadID, labelID string, add bool) (domain.Thread, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.Thread{}, err
+	}
+	t, acct, err := ownedThread(ctx, s.threads, s.accounts, userID, threadID)
+	if err != nil {
+		return domain.Thread{}, err
+	}
+	return s.setLabelOwned(ctx, t, acct, labelID, add)
+}
+
+// setLabelOwned applies a label mutation to an already-ownership-checked
+// thread; shared by SetThreadLabel and BulkSetLabel.
+func (s *MailService) setLabelOwned(ctx context.Context, t domain.Thread, acct domain.ConnectedAccount, labelID string, add bool) (domain.Thread, error) {
+	label, err := s.labels.GetByID(ctx, labelID)
+	if err != nil {
+		return domain.Thread{}, err
+	}
+	if label.AccountID != t.AccountID {
+		return domain.Thread{}, domain.ErrNotFound // labels never cross accounts
+	}
+	next := make([]string, 0, len(t.LabelIDs)+1)
+	for _, id := range t.LabelIDs {
+		if id != labelID {
+			next = append(next, id)
+		}
+	}
+	if add {
+		next = append(next, labelID)
+	}
+	t.LabelIDs = next
+	if err := s.threads.SetLabels(ctx, t.ID, next); err != nil {
+		return domain.Thread{}, err
+	}
+	if provider, ok := s.mail[acct.Provider]; ok {
+		token, err := s.tokens.accessToken(ctx, acct)
+		if err != nil {
+			return t, err
+		}
+		var addKeys, removeKeys []string
+		if add {
+			addKeys = []string{label.ProviderLabelID}
+		} else {
+			removeKeys = []string{label.ProviderLabelID}
+		}
+		if err := provider.ModifyLabels(ctx, token, t.ProviderThreadID, addKeys, removeKeys); err != nil {
+			return t, fmt.Errorf("provider write-through failed: %w", err)
+		}
+	}
+	return t, nil
+}
+
+// BulkSetLabel applies the same label mutation to each of threadIDs, skipping
+// (and reporting in FailedIDs) any thread that is missing, foreign, or fails
+// the provider write-through rather than failing the whole request.
+func (s *MailService) BulkSetLabel(ctx context.Context, userID string, threadIDs []string, labelID string, add bool) (port.BulkActionResult, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return port.BulkActionResult{}, err
+	}
+	if len(threadIDs) == 0 || len(threadIDs) > maxBulkThreads {
+		return port.BulkActionResult{}, fmt.Errorf("%w: between 1 and %d threadIds required", domain.ErrValidation, maxBulkThreads)
+	}
+	res := port.BulkActionResult{Threads: []domain.Thread{}, FailedIDs: []string{}}
+	for _, id := range threadIDs {
+		t, acct, err := ownedThread(ctx, s.threads, s.accounts, userID, id)
+		if err != nil {
+			res.FailedIDs = append(res.FailedIDs, id)
+			continue
+		}
+		updated, err := s.setLabelOwned(ctx, t, acct, labelID, add)
+		if err != nil {
+			res.FailedIDs = append(res.FailedIDs, id)
+			continue
+		}
+		res.Threads = append(res.Threads, updated)
+	}
+	return res, nil
 }
 
 func emptyIfNil(addrs []domain.EmailAddress) []domain.EmailAddress {

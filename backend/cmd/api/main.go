@@ -117,6 +117,7 @@ func run(logger *slog.Logger) error {
 		Messages:      store.Messages(),
 		Drafts:        store.Drafts(),
 		Snippets:      store.Snippets(),
+		Labels:        store.Labels(),
 		MailProviders: mailProviders,
 		OAuth:         oauth,
 		Clock:         clock,

@@ -386,3 +386,95 @@ func TestHandleSnippets(t *testing.T) {
 		}
 	})
 }
+
+func TestHandleListLabels(t *testing.T) {
+	h := newHarness(t)
+	h.mail.listLabelsRet = []domain.Label{{ID: "l1", Name: "Follow up"}}
+	rec := h.authed(http.MethodGet, "/v1/mail/labels", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	var got []domain.Label
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "l1" {
+		t.Fatalf("got = %+v", got)
+	}
+}
+
+func TestHandleSetThreadLabel(t *testing.T) {
+	t.Run("add success", func(t *testing.T) {
+		h := newHarness(t)
+		h.mail.setLabelRet = domain.Thread{ID: "th1", LabelIDs: []string{"l1"}}
+		rec := h.authed(http.MethodPost, "/v1/mail/threads/th1/labels", jsonBody(t, map[string]any{"labelId": "l1", "add": true}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.mail.gotSetLabelID != "th1" || h.mail.gotSetLabelLabelID != "l1" || !h.mail.gotSetLabelAdd {
+			t.Fatalf("got threadID=%q labelID=%q add=%v", h.mail.gotSetLabelID, h.mail.gotSetLabelLabelID, h.mail.gotSetLabelAdd)
+		}
+	})
+
+	t.Run("missing labelId rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPost, "/v1/mail/threads/th1/labels", jsonBody(t, map[string]any{"add": true}))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if got := decodeErr(t, rec); got.Code != "validation_failed" {
+			t.Fatalf("code = %q, want validation_failed", got.Code)
+		}
+	})
+
+	t.Run("service not found propagates", func(t *testing.T) {
+		h := newHarness(t)
+		h.mail.setLabelErr = domain.ErrNotFound
+		rec := h.authed(http.MethodPost, "/v1/mail/threads/th1/labels", jsonBody(t, map[string]any{"labelId": "l1", "add": false}))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestHandleBulkThreadActionsLabelDispatch(t *testing.T) {
+	t.Run("label", func(t *testing.T) {
+		h := newHarness(t)
+		h.mail.bulkSetLabelRet = port.BulkActionResult{Threads: []domain.Thread{{ID: "t1"}}, FailedIDs: []string{}}
+		rec := h.authed(http.MethodPost, "/v1/mail/threads/bulk-actions",
+			jsonBody(t, map[string]any{"threadIds": []string{"t1"}, "action": "label", "labelId": "l1"}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.mail.gotBulkSetLabelLabelID != "l1" || !h.mail.gotBulkSetLabelAdd {
+			t.Fatalf("labelId=%q add=%v", h.mail.gotBulkSetLabelLabelID, h.mail.gotBulkSetLabelAdd)
+		}
+		if len(h.mail.gotBulkSetLabelIDs) != 1 || h.mail.gotBulkSetLabelIDs[0] != "t1" {
+			t.Fatalf("gotBulkSetLabelIDs = %v", h.mail.gotBulkSetLabelIDs)
+		}
+	})
+
+	t.Run("unlabel", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPost, "/v1/mail/threads/bulk-actions",
+			jsonBody(t, map[string]any{"threadIds": []string{"t1"}, "action": "unlabel", "labelId": "l1"}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.mail.gotBulkSetLabelAdd {
+			t.Fatalf("gotBulkSetLabelAdd = true, want false for unlabel")
+		}
+	})
+
+	t.Run("missing labelId rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPost, "/v1/mail/threads/bulk-actions",
+			jsonBody(t, map[string]any{"threadIds": []string{"t1"}, "action": "label"}))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if got := decodeErr(t, rec); got.Code != "validation_failed" {
+			t.Fatalf("code = %q, want validation_failed", got.Code)
+		}
+	})
+}

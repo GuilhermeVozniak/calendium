@@ -251,6 +251,25 @@ type fakeMailService struct {
 	updateSnippet   domain.Snippet
 	updateSnipErr   error
 	deleteSnipErr   error
+
+	// ListLabels
+	listLabelsRet []domain.Label
+	listLabelsErr error
+
+	// SetThreadLabel
+	setLabelRet        domain.Thread
+	setLabelErr        error
+	gotSetLabelID      string
+	gotSetLabelLabelID string
+	gotSetLabelAdd     bool
+
+	// BulkSetLabel
+	bulkSetLabelRet        port.BulkActionResult
+	bulkSetLabelErr        error
+	gotBulkSetLabelUserID  string
+	gotBulkSetLabelIDs     []string
+	gotBulkSetLabelLabelID string
+	gotBulkSetLabelAdd     bool
 }
 
 func (f *fakeMailService) ListThreads(ctx context.Context, userID string, q port.ThreadQuery) (domain.Page[domain.Thread], error) {
@@ -326,6 +345,17 @@ func (f *fakeMailService) UpdateSnippet(ctx context.Context, userID, snippetID s
 }
 func (f *fakeMailService) DeleteSnippet(ctx context.Context, userID, snippetID string) error {
 	return f.deleteSnipErr
+}
+func (f *fakeMailService) ListLabels(ctx context.Context, userID string) ([]domain.Label, error) {
+	return f.listLabelsRet, f.listLabelsErr
+}
+func (f *fakeMailService) SetThreadLabel(ctx context.Context, userID, threadID, labelID string, add bool) (domain.Thread, error) {
+	f.gotSetLabelID, f.gotSetLabelLabelID, f.gotSetLabelAdd = threadID, labelID, add
+	return f.setLabelRet, f.setLabelErr
+}
+func (f *fakeMailService) BulkSetLabel(ctx context.Context, userID string, threadIDs []string, labelID string, add bool) (port.BulkActionResult, error) {
+	f.gotBulkSetLabelUserID, f.gotBulkSetLabelIDs, f.gotBulkSetLabelLabelID, f.gotBulkSetLabelAdd = userID, threadIDs, labelID, add
+	return f.bulkSetLabelRet, f.bulkSetLabelErr
 }
 
 // --- CalendarService ---------------------------------------------------------

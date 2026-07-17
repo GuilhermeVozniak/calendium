@@ -127,6 +127,15 @@ type MailService interface {
 	CreateSnippet(ctx context.Context, userID string, in SnippetInput) (domain.Snippet, error)
 	UpdateSnippet(ctx context.Context, userID, snippetID string, in SnippetInput) (domain.Snippet, error)
 	DeleteSnippet(ctx context.Context, userID, snippetID string) error
+
+	ListLabels(ctx context.Context, userID string) ([]domain.Label, error)
+	// SetThreadLabel adds (add=true) or removes a user/system label on a
+	// thread, writing through to the provider with the label's provider id.
+	SetThreadLabel(ctx context.Context, userID, threadID, labelID string, add bool) (domain.Thread, error)
+	// BulkSetLabel applies the same label mutation to up to maxBulkThreads
+	// owned threads, skipping (and reporting) any that are missing or
+	// foreign instead of failing the whole request.
+	BulkSetLabel(ctx context.Context, userID string, threadIDs []string, labelID string, add bool) (BulkActionResult, error)
 }
 
 // CalendarPatch is the PATCH /v1/calendars/{id} payload; nil = unchanged.

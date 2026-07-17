@@ -91,6 +91,19 @@ func (s *server) handleBulkThreadActions(w http.ResponseWriter, r *http.Request)
 		s.writeError(w, r, err)
 		return
 	}
+	if in.Action == "label" || in.Action == "unlabel" {
+		if in.LabelID == "" {
+			s.writeError(w, r, fmt.Errorf("%w: labelId is required for label actions", domain.ErrValidation))
+			return
+		}
+		res, err := s.deps.Mail.BulkSetLabel(r.Context(), userFrom(r).ID, in.ThreadIDs, in.LabelID, in.Action == "label")
+		if err != nil {
+			s.writeError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
+		return
+	}
 	action, err := domain.ParseThreadAction(in.Action)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -102,6 +115,38 @@ func (s *server) handleBulkThreadActions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// --- labels ----------------------------------------------------------------
+
+func (s *server) handleListLabels(w http.ResponseWriter, r *http.Request) {
+	labels, err := s.deps.Mail.ListLabels(r.Context(), userFrom(r).ID)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, labels)
+}
+
+func (s *server) handleSetThreadLabel(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		LabelID string `json:"labelId"`
+		Add     bool   `json:"add"`
+	}
+	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if in.LabelID == "" {
+		s.writeError(w, r, fmt.Errorf("%w: labelId is required", domain.ErrValidation))
+		return
+	}
+	thread, err := s.deps.Mail.SetThreadLabel(r.Context(), userFrom(r).ID, r.PathValue("id"), in.LabelID, in.Add)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, thread)
 }
 
 func (s *server) handleMarkThreadOpened(w http.ResponseWriter, r *http.Request) {
