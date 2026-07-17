@@ -81,6 +81,29 @@ func (s *server) handleThreadAction(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, thread)
 }
 
+func (s *server) handleBulkThreadActions(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		ThreadIDs []string `json:"threadIds"`
+		Action    string   `json:"action"`
+		LabelID   string   `json:"labelId"`
+	}
+	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	action, err := domain.ParseThreadAction(in.Action)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	res, err := s.deps.Mail.BulkActOnThreads(r.Context(), userFrom(r).ID, in.ThreadIDs, action)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 func (s *server) handleMarkThreadOpened(w http.ResponseWriter, r *http.Request) {
 	if err := s.deps.Mail.MarkThreadOpened(r.Context(), userFrom(r).ID, r.PathValue("id")); err != nil {
 		s.writeError(w, r, err)

@@ -121,7 +121,12 @@ func (s *MailService) ActOnThread(ctx context.Context, userID, threadID string, 
 	if err != nil {
 		return domain.Thread{}, err
 	}
+	return s.applyAction(ctx, t, acct, action)
+}
 
+// applyAction mutates one owned thread locally and writes through to the
+// provider. Shared by ActOnThread, BulkActOnThreads, and ArchiveOlderThan.
+func (s *MailService) applyAction(ctx context.Context, t domain.Thread, acct domain.ConnectedAccount, action domain.ThreadAction) (domain.Thread, error) {
 	var add, remove []string
 	switch action {
 	case domain.ThreadActionArchive:
@@ -167,6 +172,39 @@ func (s *MailService) ActOnThread(ctx context.Context, userID, threadID string, 
 		}
 	}
 	return t, nil
+}
+
+// maxBulkThreads caps POST /v1/mail/threads/bulk-actions payloads.
+const maxBulkThreads = 200
+
+// BulkActOnThreads applies action to each of threadIDs, skipping (and
+// reporting in FailedIDs) any thread that is missing, foreign, or fails the
+// provider write-through rather than failing the whole request.
+func (s *MailService) BulkActOnThreads(ctx context.Context, userID string, threadIDs []string, action domain.ThreadAction) (port.BulkActionResult, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return port.BulkActionResult{}, err
+	}
+	if len(threadIDs) == 0 {
+		return port.BulkActionResult{}, fmt.Errorf("%w: threadIds is required", domain.ErrValidation)
+	}
+	if len(threadIDs) > maxBulkThreads {
+		return port.BulkActionResult{}, fmt.Errorf("%w: at most %d threads per bulk action", domain.ErrValidation, maxBulkThreads)
+	}
+	res := port.BulkActionResult{Threads: []domain.Thread{}, FailedIDs: []string{}}
+	for _, id := range threadIDs {
+		t, acct, err := ownedThread(ctx, s.threads, s.accounts, userID, id)
+		if err != nil {
+			res.FailedIDs = append(res.FailedIDs, id)
+			continue
+		}
+		updated, err := s.applyAction(ctx, t, acct, action)
+		if err != nil {
+			res.FailedIDs = append(res.FailedIDs, id)
+			continue
+		}
+		res.Threads = append(res.Threads, updated)
+	}
+	return res, nil
 }
 
 // MarkThreadOpened records the first open of a thread (real read state) and

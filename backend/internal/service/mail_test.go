@@ -220,6 +220,50 @@ func TestActOnThreadMirrorsAndWritesThrough(t *testing.T) {
 	}
 }
 
+// --- MailService.BulkActOnThreads ---------------------------------------------
+
+func TestBulkActOnThreadsArchivesAndReportsFailures(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedThread(t, "t1", "a1", nil)
+	f.seedThread(t, "t2", "a1", nil)
+
+	res, err := f.svc.BulkActOnThreads(ctx, "u1", []string{"t1", "ghost", "t2"}, domain.ThreadActionArchive)
+	if err != nil {
+		t.Fatalf("BulkActOnThreads: %v", err)
+	}
+	if len(res.Threads) != 2 {
+		t.Fatalf("len(Threads) = %d, want 2", len(res.Threads))
+	}
+	for _, th := range res.Threads {
+		if th.InInbox {
+			t.Fatalf("thread %s still InInbox after bulk archive", th.ID)
+		}
+	}
+	if !reflect.DeepEqual(res.FailedIDs, []string{"ghost"}) {
+		t.Fatalf("FailedIDs = %v, want [ghost]", res.FailedIDs)
+	}
+	if f.provider.modifyLabelsCalls != 2 {
+		t.Fatalf("provider write-throughs = %d, want 2", f.provider.modifyLabelsCalls)
+	}
+}
+
+func TestBulkActOnThreadsValidatesInput(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	if _, err := f.svc.BulkActOnThreads(ctx, "u1", nil, domain.ThreadActionArchive); !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("empty ids err = %v, want ErrValidation", err)
+	}
+	tooMany := make([]string, 201)
+	for i := range tooMany {
+		tooMany[i] = "t"
+	}
+	if _, err := f.svc.BulkActOnThreads(ctx, "u1", tooMany, domain.ThreadActionArchive); !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("201 ids err = %v, want ErrValidation", err)
+	}
+}
+
 // --- MailService.SendDraft: send-now schedules at now + undo-send grace -------
 
 func TestSendDraftSchedulesAtGrace(t *testing.T) {

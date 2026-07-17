@@ -201,6 +201,13 @@ type fakeMailService struct {
 	unsnoozeErr   error
 	gotUnsnoozeID string
 
+	// BulkActOnThreads
+	bulkResult    port.BulkActionResult
+	bulkErr       error
+	bulkUserID    string
+	bulkThreadIDs []string
+	bulkAction    domain.ThreadAction
+
 	reminderRet   domain.Thread
 	reminderErr   error
 	gotReminderID string
@@ -265,6 +272,10 @@ func (f *fakeMailService) SnoozeThread(ctx context.Context, userID, threadID str
 func (f *fakeMailService) UnsnoozeThread(ctx context.Context, userID, threadID string) (domain.Thread, error) {
 	f.gotUnsnoozeID = threadID
 	return f.unsnoozeRet, f.unsnoozeErr
+}
+func (f *fakeMailService) BulkActOnThreads(ctx context.Context, userID string, threadIDs []string, action domain.ThreadAction) (port.BulkActionResult, error) {
+	f.bulkUserID, f.bulkThreadIDs, f.bulkAction = userID, threadIDs, action
+	return f.bulkResult, f.bulkErr
 }
 func (f *fakeMailService) SetReminder(ctx context.Context, userID, threadID string, remindAt *time.Time) (domain.Thread, error) {
 	f.gotReminderID, f.gotRemindAt = threadID, remindAt

@@ -73,6 +73,13 @@ type SnippetInput struct {
 	BodyHTML string  `json:"bodyHtml"`
 }
 
+// BulkActionResult reports a bulk mutation: mutated threads plus the ids
+// that failed (not found / foreign / provider error) — never a partial 500.
+type BulkActionResult struct {
+	Threads   []domain.Thread `json:"threads"`
+	FailedIDs []string        `json:"failedIds"`
+}
+
 // MailService covers threads, drafts, and snippets.
 type MailService interface {
 	ListThreads(ctx context.Context, userID string, q ThreadQuery) (domain.Page[domain.Thread], error)
@@ -80,6 +87,10 @@ type MailService interface {
 	// ActOnThread applies archive/trash/star/... locally and writes through
 	// to the provider.
 	ActOnThread(ctx context.Context, userID, threadID string, action domain.ThreadAction) (domain.Thread, error)
+	// BulkActOnThreads applies the same action to up to maxBulkThreads owned
+	// threads, skipping (and reporting) any that are missing or foreign
+	// instead of failing the whole request.
+	BulkActOnThreads(ctx context.Context, userID string, threadIDs []string, action domain.ThreadAction) (BulkActionResult, error)
 	// MarkThreadOpened records that the owner opened the thread: it sets
 	// OpenedAt (when null), clears unread, and writes the read state through
 	// to the provider. Idempotent.

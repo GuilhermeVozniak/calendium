@@ -77,6 +77,7 @@ func New(deps Deps) http.Handler {
 	authed("GET /v1/mail/threads", s.handleListThreads)
 	authed("GET /v1/mail/threads/{id}", s.handleGetThread)
 	authed("POST /v1/mail/threads/{id}/actions", s.handleThreadAction)
+	authed("POST /v1/mail/threads/bulk-actions", s.handleBulkThreadActions)
 	authed("POST /v1/mail/threads/{id}/open", s.handleMarkThreadOpened)
 	authed("POST /v1/mail/threads/{id}/snooze", s.handleSnoozeThread)
 	authed("DELETE /v1/mail/threads/{id}/snooze", s.handleUnsnoozeThread)
