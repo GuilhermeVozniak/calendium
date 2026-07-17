@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -1253,5 +1254,124 @@ func TestArchiveOlderThanArchivesInBatches(t *testing.T) {
 	}
 	if f.provider.modifyLabelsCalls != 2 {
 		t.Fatalf("provider write-throughs = %d, want 2", f.provider.modifyLabelsCalls)
+	}
+}
+
+// TestArchiveOlderThanSkipsFailingThreadsAndTerminates covers the adjudicated
+// error-semantics decision: a per-thread failure (here, an account that no
+// longer resolves) is skipped rather than aborting the whole run, and the
+// loop must still terminate even though the failing thread keeps in_inbox=true
+// and would otherwise keep reappearing under re-query-from-start pagination.
+func TestArchiveOlderThanSkipsFailingThreadsAndTerminates(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	cutoff := f.clock.Now().Add(-7 * 24 * time.Hour)
+
+	// t-fail references a nonexistent account, so accounts.GetByID fails on
+	// every attempt.
+	fail := f.seedThread(t, "t-fail", "ghost-account", func(th *domain.Thread) {
+		th.LastMessageAt = cutoff.Add(-3 * time.Hour)
+	})
+	ok1 := f.seedThread(t, "t-ok-1", "a1", func(th *domain.Thread) { th.LastMessageAt = cutoff.Add(-time.Hour) })
+	ok2 := f.seedThread(t, "t-ok-2", "a1", func(th *domain.Thread) { th.LastMessageAt = cutoff.Add(-2 * time.Hour) })
+
+	archived, err := f.svc.ArchiveOlderThan(ctx, "u1", cutoff)
+	if err != nil {
+		t.Fatalf("ArchiveOlderThan: %v", err)
+	}
+	if archived != 2 {
+		t.Fatalf("archived = %d, want 2 (failing thread must not count)", archived)
+	}
+	for _, id := range []string{ok1.ID, ok2.ID} {
+		got, err := f.threads.GetByID(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.InInbox {
+			t.Fatalf("thread %s still InInbox", id)
+		}
+	}
+	gotFail, err := f.threads.GetByID(ctx, fail.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gotFail.InInbox {
+		t.Fatal("failing thread was archived despite its account never resolving")
+	}
+	// Termination proof: without failed-ID tracking, ArchiveOlderThan would
+	// re-query the same never-shrinking page forever; bound the call count
+	// instead of relying on a hung test.
+	if f.threads.listInboxBeforeCalls == 0 || f.threads.listInboxBeforeCalls > 5 {
+		t.Fatalf("ListInboxBefore called %d times, want a small bounded number (loop must terminate)", f.threads.listInboxBeforeCalls)
+	}
+}
+
+// TestArchiveOlderThanConsumesMultipleBatches proves real multi-page coverage:
+// more threads than a single ListInboxBefore page (maxBulkThreads) match, so
+// the loop must page through more than one batch, archive every thread, and
+// still terminate.
+func TestArchiveOlderThanConsumesMultipleBatches(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	cutoff := f.clock.Now().Add(-7 * 24 * time.Hour)
+
+	const total = maxBulkThreads + 5 // more than one page
+	for i := 0; i < total; i++ {
+		id := fmt.Sprintf("t-old-%03d", i)
+		f.seedThread(t, id, "a1", func(th *domain.Thread) {
+			th.LastMessageAt = cutoff.Add(-time.Duration(i+1) * time.Minute)
+		})
+	}
+
+	archived, err := f.svc.ArchiveOlderThan(ctx, "u1", cutoff)
+	if err != nil {
+		t.Fatalf("ArchiveOlderThan: %v", err)
+	}
+	if archived != total {
+		t.Fatalf("archived = %d, want %d", archived, total)
+	}
+	if f.threads.listInboxBeforeCalls < 2 {
+		t.Fatalf("ListInboxBefore calls = %d, want >= 2 (multiple pages consumed)", f.threads.listInboxBeforeCalls)
+	}
+	if f.provider.modifyLabelsCalls != total {
+		t.Fatalf("provider write-throughs = %d, want %d", f.provider.modifyLabelsCalls, total)
+	}
+}
+
+// TestArchiveOlderThanExcludesOtherUsersThreads proves ListInboxBefore is
+// scoped per-user: another user's old, unsnoozed, in-inbox thread must never
+// be archived by this user's Get Me To Zero run.
+func TestArchiveOlderThanExcludesOtherUsersThreads(t *testing.T) {
+	f := newMailFixture(t)
+	f.threads.accounts = f.accounts // opt into thread->account->user scoping, mirroring fakeCalendarRepo
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedAccount(t, "a2", "u2")
+	cutoff := f.clock.Now().Add(-7 * 24 * time.Hour)
+	mine := f.seedThread(t, "t-mine", "a1", func(th *domain.Thread) { th.LastMessageAt = cutoff.Add(-time.Hour) })
+	other := f.seedThread(t, "t-other", "a2", func(th *domain.Thread) { th.LastMessageAt = cutoff.Add(-time.Hour) })
+
+	archived, err := f.svc.ArchiveOlderThan(ctx, "u1", cutoff)
+	if err != nil {
+		t.Fatalf("ArchiveOlderThan: %v", err)
+	}
+	if archived != 1 {
+		t.Fatalf("archived = %d, want 1", archived)
+	}
+	gotMine, err := f.threads.GetByID(ctx, mine.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMine.InInbox {
+		t.Fatal("owned old thread still InInbox")
+	}
+	gotOther, err := f.threads.GetByID(ctx, other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gotOther.InInbox {
+		t.Fatal("cross-user thread was archived; ListInboxBefore leaked another user's thread")
 	}
 }

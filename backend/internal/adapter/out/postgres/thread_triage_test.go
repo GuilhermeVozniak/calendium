@@ -77,11 +77,11 @@ func TestListInboxBefore(t *testing.T) {
 
 	// Old, unsnoozed thread (should be included)
 	old := domain.Thread{
-		ID:             "t-old",
-		AccountID:      "a1",
+		ID:               "t-old",
+		AccountID:        "a1",
 		ProviderThreadID: "pt-old",
-		InInbox:        true,
-		LastMessageAt: cutoff.Add(-time.Hour),
+		InInbox:          true,
+		LastMessageAt:    cutoff.Add(-time.Hour),
 	}
 	if _, err := store.Threads().Upsert(ctx, old); err != nil {
 		t.Fatalf("seed old thread: %v", err)
@@ -90,27 +90,48 @@ func TestListInboxBefore(t *testing.T) {
 	// Old, snoozed thread (should be excluded)
 	futureTime := cutoff.Add(time.Hour)
 	snoozed := domain.Thread{
-		ID:             "t-snoozed",
-		AccountID:      "a1",
+		ID:               "t-snoozed",
+		AccountID:        "a1",
 		ProviderThreadID: "pt-snoozed",
-		InInbox:        true,
-		LastMessageAt: cutoff.Add(-2 * time.Hour),
-		SnoozedUntil:   &futureTime,
+		InInbox:          true,
+		LastMessageAt:    cutoff.Add(-2 * time.Hour),
+		SnoozedUntil:     &futureTime,
 	}
 	if _, err := store.Threads().Upsert(ctx, snoozed); err != nil {
 		t.Fatalf("seed snoozed thread: %v", err)
 	}
 
 	// New thread (should be excluded)
-	new := domain.Thread{
-		ID:             "t-new",
-		AccountID:      "a1",
+	newThread := domain.Thread{
+		ID:               "t-new",
+		AccountID:        "a1",
 		ProviderThreadID: "pt-new",
-		InInbox:        true,
-		LastMessageAt: cutoff.Add(time.Hour),
+		InInbox:          true,
+		LastMessageAt:    cutoff.Add(time.Hour),
 	}
-	if _, err := store.Threads().Upsert(ctx, new); err != nil {
+	if _, err := store.Threads().Upsert(ctx, newThread); err != nil {
 		t.Fatalf("seed new thread: %v", err)
+	}
+
+	// A second user's old, unsnoozed, in-inbox thread must never leak into
+	// u1's Get Me To Zero run (cross-user isolation).
+	if _, err := store.Users().Upsert(ctx, domain.User{ID: "u2", Email: "u2@example.com"}); err != nil {
+		t.Fatalf("seed user2: %v", err)
+	}
+	if _, err := store.Accounts().Create(ctx, domain.ConnectedAccount{
+		ID: "a2", UserID: "u2", Provider: domain.ProviderGoogle, Email: "u2@example.com",
+	}); err != nil {
+		t.Fatalf("seed account2: %v", err)
+	}
+	otherUserOld := domain.Thread{
+		ID:               "t-other-user-old",
+		AccountID:        "a2",
+		ProviderThreadID: "pt-other-user-old",
+		InInbox:          true,
+		LastMessageAt:    cutoff.Add(-time.Hour),
+	}
+	if _, err := store.Threads().Upsert(ctx, otherUserOld); err != nil {
+		t.Fatalf("seed other user's old thread: %v", err)
 	}
 
 	// Query
@@ -119,7 +140,7 @@ func TestListInboxBefore(t *testing.T) {
 		t.Fatalf("ListInboxBefore: %v", err)
 	}
 
-	// Expect only the old, unsnoozed thread
+	// Expect only the old, unsnoozed thread owned by u1
 	if len(got) != 1 {
 		t.Fatalf("got %d threads, want 1", len(got))
 	}

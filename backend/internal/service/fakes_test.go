@@ -199,6 +199,12 @@ var _ port.AccountRepo = (*fakeAccountRepo)(nil)
 type fakeThreadRepo struct {
 	byID map[string]domain.Thread
 
+	// accounts, when set, scopes ListInboxBefore by resolving each
+	// thread->account->user, mirroring how fakeCalendarRepo/fakeDraftRepo
+	// scope by ownership. Left nil, ListInboxBefore ignores userID (existing
+	// behavior for tests that don't wire it up).
+	accounts *fakeAccountRepo
+
 	// programmable
 	listPage     domain.Page[domain.Thread]
 	searchResult []domain.Thread
@@ -207,15 +213,16 @@ type fakeThreadRepo struct {
 	remindersDue []domain.Thread
 
 	// recording
-	markOpened       int
-	lastQuery        port.ThreadQuery
-	clearedSnooze    []string
-	clearedReminder  []string
-	lastSetLabelsID  string
-	lastSetLabelIDs  []string
-	appendSentCalls  int
-	lastAppendSentID string
-	lastAppendSentAt time.Time
+	markOpened           int
+	lastQuery            port.ThreadQuery
+	clearedSnooze        []string
+	clearedReminder      []string
+	lastSetLabelsID      string
+	lastSetLabelIDs      []string
+	appendSentCalls      int
+	lastAppendSentID     string
+	lastAppendSentAt     time.Time
+	listInboxBeforeCalls int
 }
 
 func newThreadRepo() *fakeThreadRepo { return &fakeThreadRepo{byID: map[string]domain.Thread{}} }
@@ -319,8 +326,15 @@ func (r *fakeThreadRepo) AppendSentMessage(_ context.Context, id string, sentAt 
 }
 
 func (r *fakeThreadRepo) ListInboxBefore(_ context.Context, userID string, before time.Time, limit int) ([]domain.Thread, error) {
+	r.listInboxBeforeCalls++
 	var threads []domain.Thread
 	for _, t := range r.byID {
+		if r.accounts != nil {
+			a, ok := r.accounts.byID[t.AccountID]
+			if !ok || a.UserID != userID {
+				continue
+			}
+		}
 		// Filter: in_inbox, not snoozed, and last_message_at before cutoff
 		if t.InInbox && t.SnoozedUntil == nil && t.LastMessageAt.Before(before) {
 			threads = append(threads, t)

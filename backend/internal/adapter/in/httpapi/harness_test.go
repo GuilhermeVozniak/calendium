@@ -214,9 +214,9 @@ type fakeMailService struct {
 	gotRemindAt   *time.Time
 
 	// ArchiveOlderThan
-	zeroCount    int
-	zeroErr      error
-	zeroUserID   string
+	zeroCount     int
+	zeroErr       error
+	zeroUserID    string
 	zeroOlderThan time.Time
 
 	// drafts

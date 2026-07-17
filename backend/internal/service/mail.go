@@ -286,12 +286,23 @@ func (s *MailService) SetReminder(ctx context.Context, userID, threadID string, 
 
 // ArchiveOlderThan is Get Me To Zero: archive every inbox thread older than
 // the cutoff, paging until none remain. Archiving clears in_inbox, so each
-// page shrinks and the loop terminates. Returns how many were archived.
+// page shrinks and the loop terminates. Returns how many were successfully
+// archived.
+//
+// A per-thread failure (missing account, provider write-through error) skips
+// that thread and continues with the rest, mirroring BulkActOnThreads; only a
+// ListInboxBefore (listing) error aborts the whole run. A thread that fails
+// to archive keeps in_inbox=true, so it would otherwise keep reappearing in
+// every subsequent page under this re-query-from-start pagination and loop
+// forever. To guarantee termination, failing thread IDs are tracked and
+// skipped on later pages, and a page consisting entirely of already-failed
+// IDs ends the run.
 func (s *MailService) ArchiveOlderThan(ctx context.Context, userID string, olderThan time.Time) (int, error) {
 	if err := s.ent.require(ctx, userID); err != nil {
 		return 0, err
 	}
 	archived := 0
+	failed := map[string]struct{}{}
 	for {
 		batch, err := s.threads.ListInboxBefore(ctx, userID, olderThan, maxBulkThreads)
 		if err != nil {
@@ -300,13 +311,32 @@ func (s *MailService) ArchiveOlderThan(ctx context.Context, userID string, older
 		if len(batch) == 0 {
 			return archived, nil
 		}
+
+		progress := false
 		for _, t := range batch {
+			if _, alreadyFailed := failed[t.ID]; !alreadyFailed {
+				progress = true
+				break
+			}
+		}
+		if !progress {
+			// Every thread on this page has already failed before and stays
+			// in_inbox; re-querying would return the same page forever.
+			return archived, nil
+		}
+
+		for _, t := range batch {
+			if _, alreadyFailed := failed[t.ID]; alreadyFailed {
+				continue
+			}
 			acct, err := s.accounts.GetByID(ctx, t.AccountID)
 			if err != nil {
-				return archived, err
+				failed[t.ID] = struct{}{}
+				continue
 			}
 			if _, err := s.applyAction(ctx, t, acct, domain.ThreadActionArchive); err != nil {
-				return archived, err
+				failed[t.ID] = struct{}{}
+				continue
 			}
 			archived++
 		}
