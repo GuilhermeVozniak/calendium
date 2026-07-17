@@ -148,12 +148,14 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 	// account are honored so the "vip" split is actually reachable.
 	vips := vipSet(acct.VIPSenders)
 	splitByThread := map[string]domain.InboxSplit{}
+	unsubByThread := map[string]unsubscribeInfo{}
 	newestByThread := map[string]time.Time{}
 	for _, im := range page.Messages {
 		providerThreadID := im.Message.ThreadID // provider id at this boundary
 		if last, seen := newestByThread[providerThreadID]; !seen || im.Message.SentAt.After(last) {
 			newestByThread[providerThreadID] = im.Message.SentAt
 			splitByThread[providerThreadID] = ClassifySplit(im, acct.Email, vips)
+			unsubByThread[providerThreadID] = parseListUnsubscribe(im.Headers)
 		}
 	}
 
@@ -170,6 +172,9 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 		case err == nil:
 			t.ID = existing.ID
 			t.OpenedAt = existing.OpenedAt // read state is local-only
+			t.UnsubscribeMailto = existing.UnsubscribeMailto
+			t.UnsubscribeURL = existing.UnsubscribeURL
+			t.UnsubscribeOneClick = existing.UnsubscribeOneClick
 			since = existing.LastMessageAt
 			t.SnoozedUntil = existing.SnoozedUntil
 			t.RemindAt = existing.RemindAt
@@ -194,6 +199,11 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 			}
 		default:
 			return err
+		}
+		if info, ok := unsubByThread[t.ProviderThreadID]; ok {
+			t.UnsubscribeMailto = optionalString(info.Mailto)
+			t.UnsubscribeURL = optionalString(info.URL)
+			t.UnsubscribeOneClick = info.OneClick
 		}
 		if len(t.LabelIDs) > 0 {
 			mapped := make([]string, 0, len(t.LabelIDs))
