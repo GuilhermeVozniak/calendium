@@ -189,6 +189,19 @@ export default function CalendarPage() {
 
   React.useEffect(() => setMounted(true), []);
 
+  // ⌘K search results deep-link to a day via /calendar?d=<ISO>. Read it once
+  // on mount from window.location — this page is client-only, and skipping
+  // useSearchParams avoids wrapping the page in a Suspense boundary.
+  React.useEffect(() => {
+    const d = new URLSearchParams(window.location.search).get('d');
+    if (!d) return;
+    const parsed = new Date(d);
+    if (!Number.isNaN(parsed.getTime())) {
+      setAnchor(parsed);
+      setView('day');
+    }
+  }, []);
+
   // Keep the current-time indicator moving.
   React.useEffect(() => {
     const id = window.setInterval(() => setNow(new Date()), 60_000);

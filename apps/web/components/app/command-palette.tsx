@@ -21,6 +21,8 @@ import {
   Sun,
 } from 'lucide-react';
 
+import { useQuery } from '@tanstack/react-query';
+
 import { useCompose } from '@/components/app/compose';
 import { useTheme } from '@/components/theme-provider';
 import {
@@ -35,15 +37,36 @@ import {
 import { Kbd, KbdGroup } from '@/components/ui/kbd';
 import { dispatchMailCommand, queueMailCommand, type MailCommand } from '@/lib/mail-utils';
 import { signOut } from '@/lib/auth-client';
+import { fetchSearch } from '@/lib/search-data';
 import { MOD_KEY, useShortcuts } from '@/lib/shortcuts';
 
 /** ⌘K command palette — every Calendium action, one keystroke away. */
 export function CommandPalette() {
   const [open, setOpen] = React.useState(false);
+  const [query, setQuery] = React.useState('');
+  const [debounced, setDebounced] = React.useState('');
   const router = useRouter();
   const pathname = usePathname();
   const { openCompose } = useCompose();
   const { setTheme, resolvedTheme } = useTheme();
+
+  // Reset the query when the palette closes; debounce it for live search.
+  React.useEffect(() => {
+    if (!open) {
+      setQuery('');
+      setDebounced('');
+    }
+  }, [open]);
+  React.useEffect(() => {
+    const t = setTimeout(() => setDebounced(query.trim()), 200);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const { data: searchResults } = useQuery({
+    queryKey: ['palette-search', debounced],
+    enabled: open && debounced.length >= 2,
+    queryFn: () => fetchSearch(debounced),
+  });
 
   useShortcuts([
     {
@@ -80,9 +103,46 @@ export function CommandPalette() {
       title="Command palette"
       description="Type a command or search…"
     >
-      <CommandInput placeholder="Type a command or search…" />
+      <CommandInput
+        placeholder="Type a command or search…"
+        value={query}
+        onValueChange={setQuery}
+      />
       <CommandList>
         <CommandEmpty>No results found.</CommandEmpty>
+
+        {searchResults && (searchResults.threads.length > 0 || searchResults.events.length > 0) && (
+          <>
+            <CommandGroup heading="Search results">
+              {searchResults.threads.slice(0, 6).map((thread) => (
+                <CommandItem
+                  key={thread.id}
+                  value={`${debounced} ${thread.subject} ${thread.participants[0]?.name ?? ''}`}
+                  onSelect={() => run(() => router.push(`/mail?t=${thread.id}`))}
+                >
+                  <Inbox />
+                  <span className="truncate">{thread.subject}</span>
+                  <span className="text-muted-foreground ml-auto truncate text-xs">
+                    {thread.participants[0]?.name ?? thread.participants[0]?.email}
+                  </span>
+                </CommandItem>
+              ))}
+              {searchResults.events.slice(0, 6).map((event) => (
+                <CommandItem
+                  key={event.id}
+                  value={`${debounced} ${event.title}`}
+                  onSelect={() =>
+                    run(() => router.push(`/calendar?d=${encodeURIComponent(event.start)}`))
+                  }
+                >
+                  <CalendarDays />
+                  <span className="truncate">{event.title}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+            <CommandSeparator />
+          </>
+        )}
 
         <CommandGroup heading="Mail">
           <CommandItem onSelect={() => run(() => openCompose())}>
