@@ -302,8 +302,9 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze }: ThreadVie
                   if (onArchive) {
                     onArchive();
                   } else {
-                    void act(thread.id, 'archive');
-                    toast.success('Archived');
+                    void act(thread.id, 'archive').then((ok) => {
+                      if (ok) toast.success('Archived');
+                    });
                     onClose();
                   }
                 }}
