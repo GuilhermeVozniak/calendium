@@ -18,6 +18,8 @@ import * as React from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { snoozePresets } from '@/lib/triage';
+
 type ThreadDetail = { thread: Thread; messages: Message[] };
 // The inbox list is cursor-paginated, so its cache is InfiniteData<Page<Thread>>.
 type ThreadsData = InfiniteData<Page<Thread>>;
@@ -131,12 +133,6 @@ export default function ThreadScreen() {
   const snooze = () => {
     const thread = detailQuery.data?.thread;
     if (!thread) return;
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(8, 0, 0, 0);
-    const nextWeek = new Date();
-    nextWeek.setDate(nextWeek.getDate() + 7);
-    nextWeek.setHours(8, 0, 0, 0);
     const doSnooze = async (until: string) => {
       const previous = queryClient.getQueryData<ThreadsData>(['threads', thread.split]);
       removeFromInboxList(thread);
@@ -150,9 +146,11 @@ export default function ThreadScreen() {
       }
     };
     Alert.alert('Snooze until', undefined, [
-      { text: 'Tomorrow 8 AM', onPress: () => doSnooze(tomorrow.toISOString()) },
-      { text: 'Next week', onPress: () => doSnooze(nextWeek.toISOString()) },
-      { text: 'Cancel', style: 'cancel' },
+      ...snoozePresets().map((preset) => ({
+        text: preset.label,
+        onPress: () => doSnooze(preset.until.toISOString()),
+      })),
+      { text: 'Cancel', style: 'cancel' as const },
     ]);
   };
 

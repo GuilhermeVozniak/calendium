@@ -16,7 +16,12 @@ import { useRouter } from 'expo-router';
 import { ArchiveIcon, ClockIcon, InboxIcon, SquarePenIcon, StarIcon, XIcon } from 'lucide-react-native';
 import * as React from 'react';
 import { ActivityIndicator, Alert, FlatList, Pressable, RefreshControl, ScrollView, View } from 'react-native';
+import ReanimatedSwipeable, {
+  type SwipeableMethods,
+} from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import { snoozePresets } from '@/lib/triage';
 
 // All InboxSplit categories, in the order they surface in the split-inbox rail.
 // Must stay in sync with the shared InboxSplit union so every backend-classified
@@ -114,27 +119,12 @@ export default function InboxScreen() {
 
   const promptSnooze = (thread: Thread) => {
     setSelected(null);
-    const laterToday = new Date(Date.now() + 3 * 60 * 60 * 1000);
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(8, 0, 0, 0);
-    const nextWeek = new Date();
-    nextWeek.setDate(nextWeek.getDate() + 7);
-    nextWeek.setHours(8, 0, 0, 0);
     Alert.alert('Snooze until', undefined, [
-      {
-        text: 'Later today',
-        onPress: () => snoozeMutation.mutate({ thread, until: laterToday.toISOString() }),
-      },
-      {
-        text: 'Tomorrow 8 AM',
-        onPress: () => snoozeMutation.mutate({ thread, until: tomorrow.toISOString() }),
-      },
-      {
-        text: 'Next week',
-        onPress: () => snoozeMutation.mutate({ thread, until: nextWeek.toISOString() }),
-      },
-      { text: 'Cancel', style: 'cancel' },
+      ...snoozePresets().map((preset) => ({
+        text: preset.label,
+        onPress: () => snoozeMutation.mutate({ thread, until: preset.until.toISOString() }),
+      })),
+      { text: 'Cancel', style: 'cancel' as const },
     ]);
   };
 
@@ -230,9 +220,11 @@ export default function InboxScreen() {
             </View>
           }
           renderItem={({ item }) => (
-            <ThreadRow
+            <SwipeableThreadRow
               thread={item}
               highlighted={selected?.id === item.id}
+              onArchive={() => actMutation.mutate({ thread: item, action: 'archive' })}
+              onSnooze={() => promptSnooze(item)}
               onPress={() => openThread(item)}
               onLongPress={() => setSelected(item)}
             />
@@ -278,6 +270,61 @@ export default function InboxScreen() {
         </View>
       )}
     </View>
+  );
+}
+
+/** Swipe right → archive; swipe left → snooze picker. Long-press bar still works. */
+function SwipeableThreadRow({
+  thread,
+  highlighted,
+  onArchive,
+  onSnooze,
+  onPress,
+  onLongPress,
+}: {
+  thread: Thread;
+  highlighted: boolean;
+  onArchive: () => void;
+  onSnooze: () => void;
+  onPress: () => void;
+  onLongPress: () => void;
+}) {
+  const swipeRef = React.useRef<SwipeableMethods>(null);
+  return (
+    <ReanimatedSwipeable
+      ref={swipeRef}
+      friction={2}
+      leftThreshold={64}
+      rightThreshold={64}
+      overshootLeft={false}
+      overshootRight={false}
+      onSwipeableOpen={(direction) => {
+        swipeRef.current?.close();
+        if (direction === 'left') {
+          // Left actions revealed (swipe right) → archive.
+          onArchive();
+        } else {
+          onSnooze();
+        }
+      }}
+      renderLeftActions={() => (
+        <View className="w-20 items-center justify-center bg-green-600">
+          <Icon as={ArchiveIcon} className="size-5 text-white" />
+        </View>
+      )}
+      renderRightActions={() => (
+        <View className="w-20 items-center justify-center bg-amber-500">
+          <Icon as={ClockIcon} className="size-5 text-white" />
+        </View>
+      )}
+    >
+      <ThreadRow
+        thread={thread}
+        highlighted={highlighted}
+        onPress={onPress}
+        onLongPress={onLongPress}
+      />
+    </ReanimatedSwipeable>
   );
 }
 
