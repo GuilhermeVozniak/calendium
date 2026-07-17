@@ -166,6 +166,13 @@ interface ThreadViewProps {
   threadId: string;
   onClose: () => void;
   onArchive?: () => void;
+  /**
+   * When provided, the header Snooze button defers to the caller (the mail
+   * page opens its own TimePickerDialog, which routes through
+   * advancePastRemoved + undo like archive/trash). When absent, ThreadView
+   * falls back to its own internal dialog — same contract as `onArchive`.
+   */
+  onSnooze?: () => void;
 }
 
 /**
@@ -173,7 +180,7 @@ interface ThreadViewProps {
  * quoted history behind a toggle, read-status line on your sent messages,
  * reply / reply-all / forward with r / a / f.
  */
-export function ThreadView({ threadId, onClose, onArchive }: ThreadViewProps) {
+export function ThreadView({ threadId, onClose, onArchive, onSnooze }: ThreadViewProps) {
   const { data, isLoading } = useThreadDetail(threadId);
   const { act, snooze, remind, markOpened } = useMailActions();
   const { openCompose } = useCompose();
@@ -315,7 +322,13 @@ export function ThreadView({ threadId, onClose, onArchive }: ThreadViewProps) {
                 size="icon"
                 className="size-7"
                 aria-label="Snooze"
-                onClick={() => setSnoozeOpen(true)}
+                onClick={() => {
+                  if (onSnooze) {
+                    onSnooze();
+                  } else {
+                    setSnoozeOpen(true);
+                  }
+                }}
               >
                 <Clock className="size-4" />
               </Button>
@@ -490,17 +503,23 @@ export function ThreadView({ threadId, onClose, onArchive }: ThreadViewProps) {
         </span>
       </div>
 
-      <TimePickerDialog
-        open={snoozeOpen}
-        onOpenChange={setSnoozeOpen}
-        title="Snooze until…"
-        options={snoozeOptions()}
-        onPick={(when) => {
-          void snooze(thread.id, when.toISOString());
-          toast.success(`Snoozed until ${formatOptionTime(when)}`);
-          onClose();
-        }}
-      />
+      {/* Only rendered when the caller hasn't taken over Snooze (see onSnooze
+          above) — the page's own dialog routes through advancePastRemoved
+          and undo, so this internal fallback is unused when onSnooze is set. */}
+      {!onSnooze && (
+        <TimePickerDialog
+          open={snoozeOpen}
+          onOpenChange={setSnoozeOpen}
+          title="Snooze until…"
+          options={snoozeOptions()}
+          onPick={(when) => {
+            onClose();
+            void snooze(thread.id, when.toISOString()).then((ok) => {
+              if (ok) toast.success(`Snoozed until ${formatOptionTime(when)}`);
+            });
+          }}
+        />
+      )}
       <TimePickerDialog
         open={remindOpen}
         onOpenChange={setRemindOpen}

@@ -203,15 +203,33 @@ function MailClient() {
     [orderedIds, openThreadId, navigate]
   );
 
+  /**
+   * Shared shape behind archive/trash/snooze: advance past the removed
+   * thread immediately (product speed bet — navigation is optimistic and not
+   * fabricated state), then gate the success toast on the mutation's actual
+   * outcome. On failure, runOptimistic (lib/use-mail) already reverts the
+   * caches and shows its own error toast — no extra handling here, and no
+   * pane restoration (the cache revert puts the thread back in the list).
+   */
+  const removeWithUndo = React.useCallback(
+    (id: string, run: () => Promise<boolean>, message: string) => {
+      advancePastRemoved(id);
+      void run().then((ok) => {
+        if (ok) {
+          toast.success(message, {
+            action: { label: 'Undo', onClick: () => void undoLast() },
+          });
+        }
+      });
+    },
+    [advancePastRemoved, undoLast]
+  );
+
   const archiveSelected = React.useCallback(() => {
     if (!selectedThread) return;
     const id = selectedThread.id;
-    advancePastRemoved(id);
-    void act(id, 'archive');
-    toast.success('Archived', {
-      action: { label: 'Undo', onClick: () => void undoLast() },
-    });
-  }, [selectedThread, advancePastRemoved, act, undoLast]);
+    removeWithUndo(id, () => act(id, 'archive'), 'Archived');
+  }, [selectedThread, removeWithUndo, act]);
 
   const toggleStar = React.useCallback(() => {
     if (!selectedThread) return;
@@ -367,9 +385,7 @@ function MailClient() {
       handler: () => {
         if (!selectedThread) return;
         const id = selectedThread.id;
-        advancePastRemoved(id);
-        void act(id, 'trash');
-        toast.success('Deleted', { action: { label: 'Undo', onClick: () => void undoLast() } });
+        removeWithUndo(id, () => act(id, 'trash'), 'Deleted');
       },
     },
     { keys: 'z', description: 'Undo last action', handler: undo },
@@ -563,7 +579,12 @@ function MailClient() {
       {/* Thread pane */}
       {openThreadId && (
         <section className="min-w-0 flex-1">
-          <ThreadView threadId={openThreadId} onClose={closeThread} onArchive={archiveSelected} />
+          <ThreadView
+            threadId={openThreadId}
+            onClose={closeThread}
+            onArchive={archiveSelected}
+            onSnooze={() => setSnoozeOpen(true)}
+          />
         </section>
       )}
 
@@ -582,11 +603,7 @@ function MailClient() {
         onPick={(when) => {
           if (!selectedThread) return;
           const id = selectedThread.id;
-          advancePastRemoved(id);
-          void snooze(id, when.toISOString());
-          toast.success(`Snoozed until ${formatOptionTime(when)}`, {
-            action: { label: 'Undo', onClick: () => void undoLast() },
-          });
+          removeWithUndo(id, () => snooze(id, when.toISOString()), `Snoozed until ${formatOptionTime(when)}`);
         }}
       />
       <TimePickerDialog
