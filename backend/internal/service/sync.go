@@ -155,7 +155,12 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 		if last, seen := newestByThread[providerThreadID]; !seen || im.Message.SentAt.After(last) {
 			newestByThread[providerThreadID] = im.Message.SentAt
 			splitByThread[providerThreadID] = ClassifySplit(im, acct.Email, vips)
-			unsubByThread[providerThreadID] = parseListUnsubscribe(im.Headers)
+			// Only track messages that actually yield unsubscribe info; header-less
+			// messages (zero-value unsubscribeInfo) don't overwrite prior stamps.
+			info := parseListUnsubscribe(im.Headers)
+			if info.Mailto != "" || info.URL != "" {
+				unsubByThread[providerThreadID] = info
+			}
 		}
 	}
 
