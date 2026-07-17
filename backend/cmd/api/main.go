@@ -24,6 +24,7 @@ import (
 	"calendium/backend/internal/adapter/out/openrouter"
 	"calendium/backend/internal/adapter/out/postgres"
 	"calendium/backend/internal/adapter/out/stripeapi"
+	"calendium/backend/internal/adapter/out/unsubscribe"
 	"calendium/backend/internal/config"
 	"calendium/backend/internal/domain"
 	"calendium/backend/internal/migrate"
@@ -120,6 +121,7 @@ func run(logger *slog.Logger) error {
 		Labels:        store.Labels(),
 		MailProviders: mailProviders,
 		OAuth:         oauth,
+		Unsubscriber:  unsubscribe.New(),
 		Clock:         clock,
 		SelfHosted:    cfg.Instance.SelfHosted,
 		UndoSendGrace: cfg.Mail.UndoSendGrace,

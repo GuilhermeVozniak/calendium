@@ -202,6 +202,15 @@ func (s *server) handleThreadReminder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, thread)
 }
 
+func (s *server) handleUnsubscribeThread(w http.ResponseWriter, r *http.Request) {
+	res, err := s.deps.Mail.UnsubscribeThread(r.Context(), userFrom(r).ID, r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 func (s *server) handleGetMeToZero(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		OlderThan time.Time `json:"olderThan"`

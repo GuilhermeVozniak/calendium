@@ -400,3 +400,9 @@ type AI interface {
 type PushSender interface {
 	Send(ctx context.Context, device domain.NotificationDevice, title, body string, data map[string]string) error
 }
+
+// UnsubscribeGateway performs an RFC 8058 one-click list-unsubscribe POST
+// against a sender-provided URL.
+type UnsubscribeGateway interface {
+	PostOneClick(ctx context.Context, url string) error
+}

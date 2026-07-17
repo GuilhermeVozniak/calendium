@@ -270,6 +270,11 @@ type fakeMailService struct {
 	gotBulkSetLabelIDs     []string
 	gotBulkSetLabelLabelID string
 	gotBulkSetLabelAdd     bool
+
+	// UnsubscribeThread
+	unsubscribeRet   port.UnsubscribeResult
+	unsubscribeErr   error
+	gotUnsubscribeID string
 }
 
 func (f *fakeMailService) ListThreads(ctx context.Context, userID string, q port.ThreadQuery) (domain.Page[domain.Thread], error) {
@@ -356,6 +361,10 @@ func (f *fakeMailService) SetThreadLabel(ctx context.Context, userID, threadID, 
 func (f *fakeMailService) BulkSetLabel(ctx context.Context, userID string, threadIDs []string, labelID string, add bool) (port.BulkActionResult, error) {
 	f.gotBulkSetLabelUserID, f.gotBulkSetLabelIDs, f.gotBulkSetLabelLabelID, f.gotBulkSetLabelAdd = userID, threadIDs, labelID, add
 	return f.bulkSetLabelRet, f.bulkSetLabelErr
+}
+func (f *fakeMailService) UnsubscribeThread(ctx context.Context, userID, threadID string) (port.UnsubscribeResult, error) {
+	f.gotUnsubscribeID = threadID
+	return f.unsubscribeRet, f.unsubscribeErr
 }
 
 // --- CalendarService ---------------------------------------------------------

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -31,7 +32,10 @@ type MailServiceDeps struct {
 	Labels        port.LabelRepo
 	MailProviders map[domain.Provider]port.MailProvider
 	OAuth         map[domain.Provider]port.OAuthGateway
-	Clock         port.Clock
+	// Unsubscriber performs the RFC 8058 one-click POST; nil disables the
+	// one-click path (falls back to mailto / link).
+	Unsubscriber port.UnsubscribeGateway
+	Clock        port.Clock
 	// SelfHosted unlocks the paywall (open-core self-hosted mode).
 	SelfHosted bool
 	// UndoSendGrace <= 0 falls back to DefaultUndoSendGrace.
@@ -49,6 +53,7 @@ type MailService struct {
 	labels        port.LabelRepo
 	mail          map[domain.Provider]port.MailProvider
 	tokens        tokenSource
+	unsubscriber  port.UnsubscribeGateway
 	clock         port.Clock
 	undoSendGrace time.Duration
 }
@@ -70,6 +75,7 @@ func NewMailService(d MailServiceDeps) *MailService {
 		labels:        d.Labels,
 		mail:          d.MailProviders,
 		tokens:        tokenSource{accounts: d.Accounts, oauth: d.OAuth, clock: d.Clock},
+		unsubscriber:  d.Unsubscriber,
 		clock:         d.Clock,
 		undoSendGrace: grace,
 	}
@@ -689,6 +695,65 @@ func (s *MailService) BulkSetLabel(ctx context.Context, userID string, threadIDs
 		res.Threads = append(res.Threads, updated)
 	}
 	return res, nil
+}
+
+// --- Unsubscribe ---
+
+// UnsubscribeThread executes the thread's List-Unsubscribe: RFC 8058
+// one-click when the thread advertised it and a gateway is wired, else a
+// mailto send via the user's own account, else it reports the URL for the
+// client to open. domain.ErrValidation when the thread carries none.
+func (s *MailService) UnsubscribeThread(ctx context.Context, userID, threadID string) (port.UnsubscribeResult, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return port.UnsubscribeResult{}, err
+	}
+	t, acct, err := ownedThread(ctx, s.threads, s.accounts, userID, threadID)
+	if err != nil {
+		return port.UnsubscribeResult{}, err
+	}
+	switch {
+	case t.UnsubscribeOneClick && t.UnsubscribeURL != nil && s.unsubscriber != nil:
+		if err := s.unsubscriber.PostOneClick(ctx, *t.UnsubscribeURL); err != nil {
+			return port.UnsubscribeResult{}, fmt.Errorf("one-click unsubscribe failed: %w", err)
+		}
+		return port.UnsubscribeResult{Method: "one_click"}, nil
+	case t.UnsubscribeMailto != nil:
+		provider, ok := s.mail[acct.Provider]
+		if !ok {
+			return port.UnsubscribeResult{}, fmt.Errorf("%w: no mail provider for account", domain.ErrValidation)
+		}
+		token, err := s.tokens.accessToken(ctx, acct)
+		if err != nil {
+			return port.UnsubscribeResult{}, err
+		}
+		to, subject := parseUnsubscribeMailto(*t.UnsubscribeMailto)
+		if _, err := provider.Send(ctx, token, port.OutgoingMessage{
+			From:     domain.EmailAddress{Email: acct.Email},
+			To:       []domain.EmailAddress{{Email: to}},
+			Subject:  subject,
+			BodyText: "unsubscribe",
+		}); err != nil {
+			return port.UnsubscribeResult{}, fmt.Errorf("mailto unsubscribe failed: %w", err)
+		}
+		return port.UnsubscribeResult{Method: "mailto"}, nil
+	case t.UnsubscribeURL != nil:
+		return port.UnsubscribeResult{Method: "link", URL: *t.UnsubscribeURL}, nil
+	}
+	return port.UnsubscribeResult{}, fmt.Errorf("%w: thread has no unsubscribe information", domain.ErrValidation)
+}
+
+// parseUnsubscribeMailto splits "mailto:addr?subject=…" into recipient and
+// subject (defaulting to "unsubscribe").
+func parseUnsubscribeMailto(raw string) (to, subject string) {
+	subject = "unsubscribe"
+	rest := strings.TrimPrefix(raw, "mailto:")
+	if i := strings.IndexByte(rest, '?'); i >= 0 {
+		if q, err := url.ParseQuery(rest[i+1:]); err == nil && q.Get("subject") != "" {
+			subject = q.Get("subject")
+		}
+		rest = rest[:i]
+	}
+	return rest, subject
 }
 
 func emptyIfNil(addrs []domain.EmailAddress) []domain.EmailAddress {

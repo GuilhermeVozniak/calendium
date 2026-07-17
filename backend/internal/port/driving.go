@@ -136,6 +136,18 @@ type MailService interface {
 	// owned threads, skipping (and reporting) any that are missing or
 	// foreign instead of failing the whole request.
 	BulkSetLabel(ctx context.Context, userID string, threadIDs []string, labelID string, add bool) (BulkActionResult, error)
+	// UnsubscribeThread executes the thread's List-Unsubscribe: RFC 8058
+	// one-click when available, else a mailto send, else it reports the URL
+	// for the client to open. domain.ErrValidation when the thread has none.
+	UnsubscribeThread(ctx context.Context, userID, threadID string) (UnsubscribeResult, error)
+}
+
+// UnsubscribeResult reports how an unsubscribe was (or must be) performed:
+// "one_click" and "mailto" completed server-side; "link" returns the URL the
+// client must open in a browser.
+type UnsubscribeResult struct {
+	Method string `json:"method"` // "one_click" | "mailto" | "link"
+	URL    string `json:"url,omitempty"`
 }
 
 // CalendarPatch is the PATCH /v1/calendars/{id} payload; nil = unchanged.

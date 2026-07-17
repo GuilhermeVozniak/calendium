@@ -1185,3 +1185,19 @@ func (p *fakePush) Send(_ context.Context, device domain.NotificationDevice, tit
 }
 
 var _ port.PushSender = (*fakePush)(nil)
+
+// --- unsubscribe gateway -----------------------------------------------------
+
+// fakeUnsubscriber records every one-click POST target and serves a
+// programmable error.
+type fakeUnsubscriber struct {
+	calls []string
+	err   error
+}
+
+func (u *fakeUnsubscriber) PostOneClick(_ context.Context, url string) error {
+	u.calls = append(u.calls, url)
+	return u.err
+}
+
+var _ port.UnsubscribeGateway = (*fakeUnsubscriber)(nil)

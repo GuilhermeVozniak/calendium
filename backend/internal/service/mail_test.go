@@ -27,6 +27,7 @@ type mailFixture struct {
 	labels   *fakeLabelRepo
 	provider *fakeMailProvider
 	oauth    *fakeOAuthGateway
+	unsub    *fakeUnsubscriber
 	clock    *fakeClock
 }
 
@@ -45,6 +46,7 @@ func newMailFixture(t *testing.T) *mailFixture {
 		labels:   labels,
 		provider: newMailProvider(),
 		oauth:    newOAuthGateway(),
+		unsub:    &fakeUnsubscriber{},
 		clock:    clk,
 	}
 	f.svc = NewMailService(MailServiceDeps{
@@ -56,6 +58,7 @@ func newMailFixture(t *testing.T) *mailFixture {
 		Labels:        f.labels,
 		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: f.provider},
 		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: f.oauth},
+		Unsubscriber:  f.unsub,
 		Clock:         clk,
 		SelfHosted:    true,
 		UndoSendGrace: 15 * time.Second,
@@ -1502,5 +1505,74 @@ func TestBulkSetLabelAppliesToOwnedAndReportsFailures(t *testing.T) {
 		if len(th.LabelIDs) != 0 {
 			t.Fatalf("thread %s LabelIDs = %v, want empty", th.ID, th.LabelIDs)
 		}
+	}
+}
+
+// --- MailService.UnsubscribeThread --------------------------------------------
+
+func TestUnsubscribeThreadPrefersOneClick(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	link := "https://news.example/u?id=1"
+	mailto := "mailto:unsub@news.example?subject=Unsubscribe"
+	f.seedThread(t, "t1", "a1", func(th *domain.Thread) {
+		th.UnsubscribeURL = &link
+		th.UnsubscribeMailto = &mailto
+		th.UnsubscribeOneClick = true
+	})
+
+	res, err := f.svc.UnsubscribeThread(ctx, "u1", "t1")
+	if err != nil {
+		t.Fatalf("UnsubscribeThread: %v", err)
+	}
+	if res.Method != "one_click" {
+		t.Fatalf("Method = %q, want one_click", res.Method)
+	}
+	if !reflect.DeepEqual(f.unsub.calls, []string{link}) {
+		t.Fatalf("gateway calls = %v", f.unsub.calls)
+	}
+	if len(f.provider.sent) != 0 {
+		t.Fatal("one-click path must not send mail")
+	}
+}
+
+func TestUnsubscribeThreadFallsBackToMailto(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	mailto := "mailto:unsub@news.example?subject=Please%20unsubscribe"
+	f.seedThread(t, "t1", "a1", func(th *domain.Thread) { th.UnsubscribeMailto = &mailto })
+
+	res, err := f.svc.UnsubscribeThread(ctx, "u1", "t1")
+	if err != nil {
+		t.Fatalf("UnsubscribeThread: %v", err)
+	}
+	if res.Method != "mailto" {
+		t.Fatalf("Method = %q, want mailto", res.Method)
+	}
+	if len(f.provider.sent) != 1 {
+		t.Fatalf("sent %d messages, want 1", len(f.provider.sent))
+	}
+	msg := f.provider.sent[0]
+	if msg.To[0].Email != "unsub@news.example" || msg.Subject != "Please unsubscribe" {
+		t.Fatalf("sent to=%q subject=%q", msg.To[0].Email, msg.Subject)
+	}
+}
+
+func TestUnsubscribeThreadLinkAndNone(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	link := "https://news.example/manual"
+	f.seedThread(t, "t-link", "a1", func(th *domain.Thread) { th.UnsubscribeURL = &link })
+	f.seedThread(t, "t-none", "a1", nil)
+
+	res, err := f.svc.UnsubscribeThread(ctx, "u1", "t-link")
+	if err != nil || res.Method != "link" || res.URL != link {
+		t.Fatalf("link path = %+v, %v", res, err)
+	}
+	if _, err := f.svc.UnsubscribeThread(ctx, "u1", "t-none"); !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("no-info err = %v, want ErrValidation", err)
 	}
 }
