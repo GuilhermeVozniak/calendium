@@ -3,7 +3,7 @@
 import * as React from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { Draft, InboxSplit, Label, Thread } from '@calendium/shared';
-import { EMPTY_SELECTION, clearSelection, extendSelection, toggleSelected } from '@calendium/shared';
+import { EMPTY_SELECTION, clearSelection, extendSelection, nextAfterRemoval, toggleSelected } from '@calendium/shared';
 import { Loader2, Search, Sparkles, Star, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -193,17 +193,25 @@ function MailClient() {
     [threads, selectedIndex, openThreadId, navigate]
   );
 
+  // --- Auto-advance logic ---
+  const advancePastRemoved = React.useCallback(
+    (removedId: string) => {
+      const nextId = nextAfterRemoval(orderedIds, removedId);
+      setSelectedId(nextId);
+      if (openThreadId === removedId) navigate({ t: nextId });
+    },
+    [orderedIds, openThreadId, navigate]
+  );
+
   const archiveSelected = React.useCallback(() => {
     if (!selectedThread) return;
-    const archivedId = selectedThread.id;
-    const next = threads[selectedIndex + 1] ?? threads[selectedIndex - 1] ?? null;
-    setSelectedId(next?.id ?? null);
-    if (openThreadId === archivedId) navigate({ t: next?.id ?? null });
-    void act(archivedId, 'archive');
+    const id = selectedThread.id;
+    advancePastRemoved(id);
+    void act(id, 'archive');
     toast.success('Archived', {
       action: { label: 'Undo', onClick: () => void undoLast() },
     });
-  }, [selectedThread, threads, selectedIndex, openThreadId, navigate, act, undoLast]);
+  }, [selectedThread, advancePastRemoved, act, undoLast]);
 
   const toggleStar = React.useCallback(() => {
     if (!selectedThread) return;
@@ -353,6 +361,17 @@ function MailClient() {
     },
     { keys: 'h', description: 'Snooze', handler: () => selectedThread && setSnoozeOpen(true) },
     { keys: 'shift+h', description: 'Follow-up reminder', handler: () => selectedThread && setRemindOpen(true) },
+    {
+      keys: '#',
+      description: 'Trash',
+      handler: () => {
+        if (!selectedThread) return;
+        const id = selectedThread.id;
+        advancePastRemoved(id);
+        void act(id, 'trash');
+        toast.success('Deleted', { action: { label: 'Undo', onClick: () => void undoLast() } });
+      },
+    },
     { keys: 'z', description: 'Undo last action', handler: undo },
     {
       keys: 'l',
@@ -544,7 +563,7 @@ function MailClient() {
       {/* Thread pane */}
       {openThreadId && (
         <section className="min-w-0 flex-1">
-          <ThreadView threadId={openThreadId} onClose={closeThread} />
+          <ThreadView threadId={openThreadId} onClose={closeThread} onArchive={archiveSelected} />
         </section>
       )}
 
@@ -563,9 +582,11 @@ function MailClient() {
         onPick={(when) => {
           if (!selectedThread) return;
           const id = selectedThread.id;
-          if (openThreadId === id) closeThread();
+          advancePastRemoved(id);
           void snooze(id, when.toISOString());
-          toast.success(`Snoozed until ${formatOptionTime(when)}`);
+          toast.success(`Snoozed until ${formatOptionTime(when)}`, {
+            action: { label: 'Undo', onClick: () => void undoLast() },
+          });
         }}
       />
       <TimePickerDialog

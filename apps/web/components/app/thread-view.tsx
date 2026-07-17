@@ -165,6 +165,7 @@ function ThreadAiPanel({ threadId }: { threadId: string }) {
 interface ThreadViewProps {
   threadId: string;
   onClose: () => void;
+  onArchive?: () => void;
 }
 
 /**
@@ -172,7 +173,7 @@ interface ThreadViewProps {
  * quoted history behind a toggle, read-status line on your sent messages,
  * reply / reply-all / forward with r / a / f.
  */
-export function ThreadView({ threadId, onClose }: ThreadViewProps) {
+export function ThreadView({ threadId, onClose, onArchive }: ThreadViewProps) {
   const { data, isLoading } = useThreadDetail(threadId);
   const { act, snooze, remind, markOpened } = useMailActions();
   const { openCompose } = useCompose();
@@ -291,9 +292,13 @@ export function ThreadView({ threadId, onClose }: ThreadViewProps) {
                 className="size-7"
                 aria-label="Archive"
                 onClick={() => {
-                  void act(thread.id, 'archive');
-                  toast.success('Archived');
-                  onClose();
+                  if (onArchive) {
+                    onArchive();
+                  } else {
+                    void act(thread.id, 'archive');
+                    toast.success('Archived');
+                    onClose();
+                  }
                 }}
               >
                 <Archive className="size-4" />

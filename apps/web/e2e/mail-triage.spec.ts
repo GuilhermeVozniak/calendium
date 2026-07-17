@@ -27,9 +27,11 @@ test.describe('Mail — inbox triage', () => {
     await page.getByRole('button', { name: 'Archive' }).click();
 
     await expect(page.getByText('Archived', { exact: true })).toBeVisible();
-    // Archiving closes the thread pane and returns to the list; the archived
-    // thread no longer matches the (still active) Important split filter.
+    // Auto-advance: the archived thread leaves the list AND the next
+    // conversation opens in the thread pane instead of returning to the list.
     await expect(page.getByRole('button', { name: /Renewal terms for FY27/ })).toHaveCount(0);
+    await expect(page.getByRole('heading', { level: 1 })).not.toHaveText(/Renewal terms for FY27/);
+    await expect(page).toHaveURL(/t=/); // a thread is still open
   });
 
   test('Z undoes an archive, restoring the thread to the list', async ({ page }) => {
@@ -52,5 +54,15 @@ test.describe('Mail — inbox triage', () => {
     await page.keyboard.press('h');
     await expect(page.getByText('Snooze until…')).toBeVisible();
     await page.keyboard.press('Escape');
+  });
+
+  test('snooze auto-advances to the next conversation', async ({ page }) => {
+    await page.goto('/mail');
+    const target = page.getByRole('button', { name: /Renewal terms for FY27/ });
+    await target.hover();
+    await page.keyboard.press('h');
+    await page.getByText('Tonight').click();
+    await expect(page.getByText(/Snoozed until/)).toBeVisible();
+    await expect(page.getByRole('button', { name: /Renewal terms for FY27/ })).toHaveCount(0);
   });
 });
