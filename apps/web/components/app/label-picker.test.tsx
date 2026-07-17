@@ -44,4 +44,36 @@ describe('LabelPicker', () => {
     expect(screen.queryByText('Updates')).not.toBeInTheDocument();
     expect(screen.getByText('Travel')).toBeInTheDocument();
   });
+
+  describe('bulk mode (activeLabelIds with multiple shared labels)', () => {
+    it('shows label as active when all selected threads have it (unlabel on pick)', async () => {
+      const onPick = vi.fn();
+      render(
+        <LabelPicker
+          open
+          onOpenChange={() => {}}
+          labels={labels}
+          activeLabelIds={new Set(['lbl_updates', 'lbl_travel'])}
+          onPick={onPick}
+        />
+      );
+      await userEvent.click(screen.getByText('Updates'));
+      expect(onPick).toHaveBeenCalledWith(labels[0], false);
+    });
+
+    it('shows label as inactive when no threads have it (label on pick)', async () => {
+      const onPick = vi.fn();
+      render(
+        <LabelPicker
+          open
+          onOpenChange={() => {}}
+          labels={labels}
+          activeLabelIds={new Set(['lbl_updates'])}
+          onPick={onPick}
+        />
+      );
+      await userEvent.click(screen.getByText('Travel'));
+      expect(onPick).toHaveBeenCalledWith(labels[1], true);
+    });
+  });
 });

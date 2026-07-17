@@ -16,6 +16,7 @@ import { Kbd, KbdGroup } from '@/components/ui/kbd';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { getApiClient } from '@/lib/api';
+import { sharedLabelIds } from '@/lib/mail-helpers';
 import {
   formatListTime,
   formatOptionTime,
@@ -242,10 +243,14 @@ function MailClient() {
   // --- Labels ----------------------------------------------------------------
   const [labelPickerOpen, setLabelPickerOpen] = React.useState(false);
   const labelsQuery = useLabels();
-  const activeLabelIds = React.useMemo(
-    () => new Set(selectedIds.length === 0 ? (selectedThread?.labelIds ?? []) : []),
-    [selectedIds, selectedThread]
-  );
+  const activeLabelIds = React.useMemo(() => {
+    if (selectedIds.length === 0) {
+      return new Set(selectedThread?.labelIds ?? []);
+    }
+    // Bulk mode: compute intersection of label IDs across all selected threads
+    const selectedThreads = selectedIds.map((id) => threads.find((t) => t.id === id)!);
+    return sharedLabelIds(selectedThreads);
+  }, [selectedIds, selectedThread, threads]);
 
   const pickLabel = React.useCallback(
     (label: Label, add: boolean) => {
@@ -329,7 +334,16 @@ function MailClient() {
     {
       keys: 's',
       description: 'Star',
-      handler: () => (selection.ids.size > 0 ? void bulkAct(selectedIds, 'star') : toggleStar()),
+      handler: () => {
+        if (selection.ids.size > 0) {
+          const ids = selectedIds;
+          setSelection(clearSelection());
+          void bulkAct(ids, 'star');
+          toast.success(`Starred ${ids.length} conversation${ids.length === 1 ? '' : 's'}`);
+        } else {
+          toggleStar();
+        }
+      },
     },
     { keys: 'u', description: 'Toggle unread', handler: toggleUnread },
     {
@@ -343,7 +357,7 @@ function MailClient() {
     {
       keys: 'l',
       description: 'Label',
-      handler: () => (selectedThread || selectedIds.length > 0) && setLabelPickerOpen(true),
+      handler: () => (selectedThread || selection.ids.size > 0) && setLabelPickerOpen(true),
     },
     { keys: '/', description: 'Search', handler: focusSearch },
   ]);
@@ -510,6 +524,9 @@ function MailClient() {
           </span>
           <span className="flex items-center gap-1">
             <Kbd size="sm">H</Kbd> snooze
+          </span>
+          <span className="flex items-center gap-1">
+            <Kbd size="sm">L</Kbd> label
           </span>
           <span className="flex items-center gap-1">
             <Kbd size="sm">Z</Kbd> undo
