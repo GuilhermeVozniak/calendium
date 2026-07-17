@@ -223,7 +223,7 @@ function MailClient() {
     const ids = selectedIds;
     setSelection(clearSelection());
     void bulkAct(ids, 'archive');
-    toast.success(`Archived ${ids.length} conversations`, {
+    toast.success(`Archived ${ids.length} conversation${ids.length === 1 ? '' : 's'}`, {
       action: { label: 'Undo', onClick: () => void undoLast() },
     });
   }, [selectedIds, bulkAct, undoLast]);
@@ -319,15 +319,33 @@ function MailClient() {
   // Same-route commands arrive as a DOM event; cross-route commands are queued
   // (lib/mail-utils) and consumed here on mount, so neither is dropped by a
   // listener that isn't attached yet.
-  const commandHandlers = React.useRef({ archiveSelected, toggleStar, toggleUnread, markRead, focusSearch, undo });
-  commandHandlers.current = { archiveSelected, toggleStar, toggleUnread, markRead, focusSearch, undo };
+  const commandHandlers = React.useRef({
+    archiveSelected,
+    toggleStar,
+    toggleUnread,
+    markRead,
+    focusSearch,
+    undo,
+    handleArchive: () => (selection.ids.size > 0 ? bulkArchive() : archiveSelected()),
+    handleMarkRead: () => (selection.ids.size > 0 ? bulkMarkRead() : markRead()),
+  });
+  commandHandlers.current = {
+    archiveSelected,
+    toggleStar,
+    toggleUnread,
+    markRead,
+    focusSearch,
+    undo,
+    handleArchive: () => (selection.ids.size > 0 ? bulkArchive() : archiveSelected()),
+    handleMarkRead: () => (selection.ids.size > 0 ? bulkMarkRead() : markRead()),
+  };
 
   const runCommand = React.useCallback((command: MailCommand) => {
     const handlers = commandHandlers.current;
-    if (command === 'archive') handlers.archiveSelected();
+    if (command === 'archive') handlers.handleArchive();
     else if (command === 'star') handlers.toggleStar();
     else if (command === 'unread') handlers.toggleUnread();
-    else if (command === 'mark-read') handlers.markRead();
+    else if (command === 'mark-read') handlers.handleMarkRead();
     else if (command === 'search') handlers.focusSearch();
     else if (command === 'snooze') setSnoozeOpen(true);
     else if (command === 'reminder') setRemindOpen(true);
