@@ -101,6 +101,13 @@ type Thread struct {
 	SnoozedUntil *time.Time `json:"snoozedUntil"`
 	// RemindAt is a follow-up reminder: resurface if nobody replies by then.
 	RemindAt *time.Time `json:"remindAt"`
+	// UnsubscribeMailto / UnsubscribeURL / UnsubscribeOneClick are parsed from
+	// the newest message's List-Unsubscribe / List-Unsubscribe-Post headers at
+	// sync ingest (RFC 2369 / RFC 8058). All zero when the sender offers no
+	// unsubscribe. OneClick means the URL accepts the RFC 8058 POST.
+	UnsubscribeMailto   *string `json:"unsubscribeMailto"`
+	UnsubscribeURL      *string `json:"unsubscribeUrl"`
+	UnsubscribeOneClick bool    `json:"unsubscribeOneClick"`
 }
 
 // Attachment is file metadata on a message (bodies are fetched on demand).

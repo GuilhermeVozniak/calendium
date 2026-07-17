@@ -15,7 +15,7 @@ import (
 
 const threadCols = `t.id, t.account_id, t.provider_thread_id, t.subject, t.snippet,
 	t.participants, t.split, t.message_count, t.unread, t.starred, t.in_inbox, t.last_message_at,
-	t.opened_at, t.snoozed_until, t.remind_at,
+	t.opened_at, t.snoozed_until, t.remind_at, t.unsubscribe_mailto, t.unsubscribe_url, t.unsubscribe_one_click,
 	coalesce((SELECT json_agg(tl.label_id ORDER BY tl.label_id)
 	          FROM thread_labels tl WHERE tl.thread_id = t.id), '[]'::json)::text`
 
@@ -24,9 +24,10 @@ func scanThread(r rowScanner) (domain.Thread, error) {
 	var participants []byte
 	var labels string
 	var opened, snoozed, remind sql.NullTime
+	var unsubMailto, unsubURL sql.NullString
 	if err := r.Scan(&t.ID, &t.AccountID, &t.ProviderThreadID, &t.Subject, &t.Snippet,
 		&participants, &t.Split, &t.MessageCount, &t.Unread, &t.Starred, &t.InInbox, &t.LastMessageAt,
-		&opened, &snoozed, &remind, &labels); err != nil {
+		&opened, &snoozed, &remind, &unsubMailto, &unsubURL, &t.UnsubscribeOneClick, &labels); err != nil {
 		return domain.Thread{}, notFound(err)
 	}
 	if err := unmarshalInto(participants, &t.Participants); err != nil {
@@ -44,6 +45,12 @@ func scanThread(r rowScanner) (domain.Thread, error) {
 	t.OpenedAt = timePtr(opened)
 	t.SnoozedUntil = timePtr(snoozed)
 	t.RemindAt = timePtr(remind)
+	if unsubMailto.Valid {
+		t.UnsubscribeMailto = &unsubMailto.String
+	}
+	if unsubURL.Valid {
+		t.UnsubscribeURL = &unsubURL.String
+	}
 	return t, nil
 }
 
@@ -69,8 +76,9 @@ func (r threadRepo) Upsert(ctx context.Context, t domain.Thread) (domain.Thread,
 	}
 	err = r.q(ctx).QueryRowContext(ctx, `
 		INSERT INTO threads (id, account_id, provider_thread_id, subject, snippet, participants,
-			split, message_count, unread, starred, in_inbox, last_message_at, opened_at, snoozed_until, remind_at)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+			split, message_count, unread, starred, in_inbox, last_message_at, opened_at, snoozed_until, remind_at,
+			unsubscribe_mailto, unsubscribe_url, unsubscribe_one_click)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		ON CONFLICT `+conflict+` DO UPDATE SET
 			subject         = EXCLUDED.subject,
 			snippet         = EXCLUDED.snippet,
@@ -84,11 +92,15 @@ func (r threadRepo) Upsert(ctx context.Context, t domain.Thread) (domain.Thread,
 			opened_at       = COALESCE(threads.opened_at, EXCLUDED.opened_at),
 			snoozed_until   = EXCLUDED.snoozed_until,
 			remind_at       = EXCLUDED.remind_at,
+			unsubscribe_mailto = EXCLUDED.unsubscribe_mailto,
+			unsubscribe_url = EXCLUDED.unsubscribe_url,
+			unsubscribe_one_click = EXCLUDED.unsubscribe_one_click,
 			updated_at      = now()
 		RETURNING id`,
 		t.ID, t.AccountID, t.ProviderThreadID, t.Subject, t.Snippet, participants,
 		string(t.Split), t.MessageCount, t.Unread, t.Starred, t.InInbox, t.LastMessageAt,
-		nullTimePtr(t.OpenedAt), nullTimePtr(t.SnoozedUntil), nullTimePtr(t.RemindAt)).Scan(&t.ID)
+		nullTimePtr(t.OpenedAt), nullTimePtr(t.SnoozedUntil), nullTimePtr(t.RemindAt),
+		t.UnsubscribeMailto, t.UnsubscribeURL, t.UnsubscribeOneClick).Scan(&t.ID)
 	if err != nil {
 		return domain.Thread{}, err
 	}
@@ -227,11 +239,15 @@ func (r threadRepo) Update(ctx context.Context, t domain.Thread) error {
 			opened_at       = $11,
 			snoozed_until   = $12,
 			remind_at       = $13,
+			unsubscribe_mailto = $14,
+			unsubscribe_url = $15,
+			unsubscribe_one_click = $16,
 			updated_at      = now()
 		WHERE id = $1`,
 		t.ID, t.Subject, t.Snippet, participants, string(t.Split), t.MessageCount,
 		t.Unread, t.Starred, t.InInbox, t.LastMessageAt,
-		nullTimePtr(t.OpenedAt), nullTimePtr(t.SnoozedUntil), nullTimePtr(t.RemindAt)))
+		nullTimePtr(t.OpenedAt), nullTimePtr(t.SnoozedUntil), nullTimePtr(t.RemindAt),
+		t.UnsubscribeMailto, t.UnsubscribeURL, t.UnsubscribeOneClick))
 }
 
 // MarkOpened records the first open of a thread with a targeted write: it
