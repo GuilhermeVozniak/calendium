@@ -149,17 +149,22 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 	vips := vipSet(acct.VIPSenders)
 	splitByThread := map[string]domain.InboxSplit{}
 	unsubByThread := map[string]unsubscribeInfo{}
+	unsubNewestAt := map[string]time.Time{} // Track when unsubscribe info was last updated
 	newestByThread := map[string]time.Time{}
 	for _, im := range page.Messages {
 		providerThreadID := im.Message.ThreadID // provider id at this boundary
 		if last, seen := newestByThread[providerThreadID]; !seen || im.Message.SentAt.After(last) {
 			newestByThread[providerThreadID] = im.Message.SentAt
 			splitByThread[providerThreadID] = ClassifySplit(im, acct.Email, vips)
-			// Only track messages that actually yield unsubscribe info; header-less
-			// messages (zero-value unsubscribeInfo) don't overwrite prior stamps.
-			info := parseListUnsubscribe(im.Headers)
-			if info.Mailto != "" || info.URL != "" {
+		}
+		// Track unsubscribe info independently of split classification running max.
+		// For each message, check if it carries unsubscribe headers and if its timestamp
+		// is newer than any previously seen carrier for this thread.
+		info := parseListUnsubscribe(im.Headers)
+		if info.Mailto != "" || info.URL != "" {
+			if lastCarrierAt, seen := unsubNewestAt[providerThreadID]; !seen || im.Message.SentAt.After(lastCarrierAt) {
 				unsubByThread[providerThreadID] = info
+				unsubNewestAt[providerThreadID] = im.Message.SentAt
 			}
 		}
 	}

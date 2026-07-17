@@ -253,3 +253,165 @@ func TestSyncPreservesUnsubscribeAcrossHeaderlessDeltas(t *testing.T) {
 		t.Fatal("sync 3: UnsubscribeOneClick = true, want false (no new URL)")
 	}
 }
+
+func TestSyncStampsUnsubscribeCarrierIndependentOfPageOrder(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	oldTime := now.Add(-10 * time.Minute)
+
+	accounts := newAccountRepo()
+	if _, err := accounts.Create(ctx, domain.ConnectedAccount{
+		ID: "a1", UserID: "u1", Provider: domain.ProviderGoogle,
+		Email: "owner@acme.com", Status: domain.AccountActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.SaveTokens(ctx, "a1", port.TokenSet{
+		AccessToken: "tok", RefreshToken: "r", ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mail := newMailProvider()
+	threads := newThreadRepo()
+	svc := NewSyncService(SyncServiceDeps{
+		Accounts: accounts, Labels: newLabelRepo(), Threads: threads,
+		Messages: newMessageRepo(), SyncState: newSyncStateRepo(),
+		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
+		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+		Clock:         newClock(now),
+	})
+
+	t.Run("carrier-after-headerless", func(t *testing.T) {
+		// Older message with headers comes AFTER newer headerless message in the page.
+		// This should still stamp the thread, but current code fails because the running max
+		// already saw the newer message, so the older one's branch never runs.
+		mail.syncPage = port.MailSyncPage{
+			Threads: []domain.Thread{{ProviderThreadID: "pt1", Subject: "Test", LastMessageAt: now, InInbox: true}},
+			Messages: []port.IncomingMessage{
+				// Newer message, no headers
+				{
+					Message: domain.Message{
+						ProviderMessageID: "pm2", ThreadID: "pt1",
+						From:   domain.EmailAddress{Email: "owner@acme.com"},
+						To:     []domain.EmailAddress{{Email: "news@example.com"}},
+						SentAt: now,
+					},
+					Headers: map[string]string{}, // no List-Unsubscribe header
+				},
+				// Older message with headers (comes after in the slice)
+				{
+					Message: domain.Message{
+						ProviderMessageID: "pm1", ThreadID: "pt1",
+						From:   domain.EmailAddress{Email: "news@example.com"},
+						To:     []domain.EmailAddress{{Email: "owner@acme.com"}},
+						SentAt: oldTime,
+					},
+					Headers: map[string]string{
+						"List-Unsubscribe": "<mailto:unsub@news.example>",
+					},
+				},
+			},
+		}
+		if err := svc.SyncAccount(ctx, "a1"); err != nil {
+			t.Fatalf("SyncAccount: %v", err)
+		}
+
+		th, err := threads.GetByProviderID(ctx, "a1", "pt1")
+		if err != nil {
+			t.Fatalf("GetByProviderID: %v", err)
+		}
+		// The carrier's info should be stamped even though it came AFTER the headerless message
+		if th.UnsubscribeMailto == nil || *th.UnsubscribeMailto != "mailto:unsub@news.example" {
+			t.Fatalf("UnsubscribeMailto = %v, want mailto:unsub@news.example", th.UnsubscribeMailto)
+		}
+	})
+
+	t.Run("carrier-before-headerless", func(t *testing.T) {
+		// Older message with headers comes BEFORE newer headerless message in the page.
+		// This should also work (and probably does with current code).
+		mail.syncPage = port.MailSyncPage{
+			Threads: []domain.Thread{{ProviderThreadID: "pt2", Subject: "Test2", LastMessageAt: now, InInbox: true}},
+			Messages: []port.IncomingMessage{
+				// Older message with headers (comes first in the slice)
+				{
+					Message: domain.Message{
+						ProviderMessageID: "pm3", ThreadID: "pt2",
+						From:   domain.EmailAddress{Email: "news@example.com"},
+						To:     []domain.EmailAddress{{Email: "owner@acme.com"}},
+						SentAt: oldTime,
+					},
+					Headers: map[string]string{
+						"List-Unsubscribe": "<https://news.example/u?id=1>",
+					},
+				},
+				// Newer message, no headers
+				{
+					Message: domain.Message{
+						ProviderMessageID: "pm4", ThreadID: "pt2",
+						From:   domain.EmailAddress{Email: "owner@acme.com"},
+						To:     []domain.EmailAddress{{Email: "news@example.com"}},
+						SentAt: now,
+					},
+					Headers: map[string]string{}, // no List-Unsubscribe header
+				},
+			},
+		}
+		if err := svc.SyncAccount(ctx, "a1"); err != nil {
+			t.Fatalf("SyncAccount: %v", err)
+		}
+
+		th, err := threads.GetByProviderID(ctx, "a1", "pt2")
+		if err != nil {
+			t.Fatalf("GetByProviderID: %v", err)
+		}
+		if th.UnsubscribeURL == nil || *th.UnsubscribeURL != "https://news.example/u?id=1" {
+			t.Fatalf("UnsubscribeURL = %v, want https://news.example/u?id=1", th.UnsubscribeURL)
+		}
+	})
+
+	t.Run("two-carriers-newer-wins", func(t *testing.T) {
+		// Two carriers in one page: the newer one should win regardless of order.
+		mail.syncPage = port.MailSyncPage{
+			Threads: []domain.Thread{{ProviderThreadID: "pt3", Subject: "Test3", LastMessageAt: now, InInbox: true}},
+			Messages: []port.IncomingMessage{
+				// Older carrier
+				{
+					Message: domain.Message{
+						ProviderMessageID: "pm5", ThreadID: "pt3",
+						From:   domain.EmailAddress{Email: "news@example.com"},
+						To:     []domain.EmailAddress{{Email: "owner@acme.com"}},
+						SentAt: oldTime,
+					},
+					Headers: map[string]string{
+						"List-Unsubscribe": "<mailto:old@example.com>",
+					},
+				},
+				// Newer carrier
+				{
+					Message: domain.Message{
+						ProviderMessageID: "pm6", ThreadID: "pt3",
+						From:   domain.EmailAddress{Email: "news@example.com"},
+						To:     []domain.EmailAddress{{Email: "owner@acme.com"}},
+						SentAt: now,
+					},
+					Headers: map[string]string{
+						"List-Unsubscribe": "<mailto:new@example.com>",
+					},
+				},
+			},
+		}
+		if err := svc.SyncAccount(ctx, "a1"); err != nil {
+			t.Fatalf("SyncAccount: %v", err)
+		}
+
+		th, err := threads.GetByProviderID(ctx, "a1", "pt3")
+		if err != nil {
+			t.Fatalf("GetByProviderID: %v", err)
+		}
+		// The newer carrier should win
+		if th.UnsubscribeMailto == nil || *th.UnsubscribeMailto != "mailto:new@example.com" {
+			t.Fatalf("UnsubscribeMailto = %v, want mailto:new@example.com (newer carrier wins)", th.UnsubscribeMailto)
+		}
+	})
+}
