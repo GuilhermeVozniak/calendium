@@ -492,8 +492,8 @@ type fakePrefsService struct {
 	getRet domain.UserPrefs
 	getErr error
 
-	updateRet domain.UserPrefs
-	updateErr error
+	updateRet      domain.UserPrefs
+	updateErr      error
 	gotUpdatePrefs domain.UserPrefs
 }
 
