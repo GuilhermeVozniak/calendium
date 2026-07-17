@@ -193,6 +193,12 @@ type DeviceService interface {
 	Unregister(ctx context.Context, userID, deviceID string) error
 }
 
+// PrefsService covers user preferences like split reordering.
+type PrefsService interface {
+	GetPrefs(ctx context.Context, userID string) (domain.UserPrefs, error)
+	UpdatePrefs(ctx context.Context, userID string, p domain.UserPrefs) (domain.UserPrefs, error)
+}
+
 // SyncService is consumed by cmd/worker: provider polling plus scheduled
 // work (delayed sends, snooze wake-ups, follow-up reminders).
 type SyncService interface {

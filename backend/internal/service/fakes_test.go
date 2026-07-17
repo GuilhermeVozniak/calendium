@@ -1201,3 +1201,20 @@ func (u *fakeUnsubscriber) PostOneClick(_ context.Context, url string) error {
 }
 
 var _ port.UnsubscribeGateway = (*fakeUnsubscriber)(nil)
+
+// --- prefs repo --------------------------------------------------------------
+
+type fakePrefsRepo struct{ byUser map[string]domain.UserPrefs }
+
+func newPrefsRepo() *fakePrefsRepo { return &fakePrefsRepo{byUser: map[string]domain.UserPrefs{}} }
+
+func (r *fakePrefsRepo) Get(_ context.Context, userID string) (domain.UserPrefs, error) {
+	return r.byUser[userID], nil
+}
+
+func (r *fakePrefsRepo) Save(_ context.Context, userID string, p domain.UserPrefs) error {
+	r.byUser[userID] = p
+	return nil
+}
+
+var _ port.PrefsRepo = (*fakePrefsRepo)(nil)

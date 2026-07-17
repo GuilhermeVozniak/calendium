@@ -224,6 +224,13 @@ type SyncStateRepo interface {
 	DeleteByAccount(ctx context.Context, accountID string) error
 }
 
+// PrefsRepo persists user preferences.
+type PrefsRepo interface {
+	// Get returns the user's preferences, or the zero value when absent (never ErrNotFound).
+	Get(ctx context.Context, userID string) (domain.UserPrefs, error)
+	Save(ctx context.Context, userID string, p domain.UserPrefs) error
+}
+
 // StripeEventRepo records processed Stripe webhook event ids for idempotency.
 type StripeEventRepo interface {
 	// Record inserts the event id; firstTime is false when it was already

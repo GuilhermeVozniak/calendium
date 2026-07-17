@@ -26,6 +26,7 @@ var (
 	_ port.SearchService   = (*fakeSearchService)(nil)
 	_ port.AIService       = (*fakeAIService)(nil)
 	_ port.DeviceService   = (*fakeDeviceService)(nil)
+	_ port.PrefsService    = (*fakePrefsService)(nil)
 )
 
 const (
@@ -485,6 +486,25 @@ func (f *fakeDeviceService) Unregister(ctx context.Context, userID, deviceID str
 	return f.unregisterErr
 }
 
+// --- PrefsService -----------------------------------------------------------
+
+type fakePrefsService struct {
+	getRet domain.UserPrefs
+	getErr error
+
+	updateRet domain.UserPrefs
+	updateErr error
+	gotUpdatePrefs domain.UserPrefs
+}
+
+func (f *fakePrefsService) GetPrefs(ctx context.Context, userID string) (domain.UserPrefs, error) {
+	return f.getRet, f.getErr
+}
+func (f *fakePrefsService) UpdatePrefs(ctx context.Context, userID string, p domain.UserPrefs) (domain.UserPrefs, error) {
+	f.gotUpdatePrefs = p
+	return f.updateRet, f.updateErr
+}
+
 // --- harness -----------------------------------------------------------------
 
 type harness struct {
@@ -499,6 +519,7 @@ type harness struct {
 	search    *fakeSearchService
 	ai        *fakeAIService
 	devices   *fakeDeviceService
+	prefs     *fakePrefsService
 }
 
 // newHarness wires every double into Deps with a discard logger and one
@@ -520,6 +541,7 @@ func newHarness(t *testing.T) *harness {
 		search:    &fakeSearchService{},
 		ai:        &fakeAIService{},
 		devices:   &fakeDeviceService{},
+		prefs:     &fakePrefsService{},
 	}
 	h.deps = Deps{
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -532,6 +554,7 @@ func newHarness(t *testing.T) *harness {
 		Search:    h.search,
 		AI:        h.ai,
 		Devices:   h.devices,
+		Prefs:     h.prefs,
 	}
 	return h
 }

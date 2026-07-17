@@ -148,6 +148,7 @@ func run(logger *slog.Logger) error {
 		SelfHosted:    cfg.Instance.SelfHosted,
 	})
 	devices := service.NewDeviceService(store.Devices(), clock)
+	prefs := service.NewPrefsService(store.Prefs())
 
 	// --- instance discovery document (GET /v1/instance) ---
 	mode := httpapi.ModeCloud
@@ -204,6 +205,7 @@ func run(logger *slog.Logger) error {
 		Search:             search,
 		AI:                 aiSvc,
 		Devices:            devices,
+		Prefs:              prefs,
 		Payments:           stripe,
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,

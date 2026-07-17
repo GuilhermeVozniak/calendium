@@ -24,6 +24,7 @@ type Deps struct {
 	Search    port.SearchService
 	AI        port.AIService
 	Devices   port.DeviceService
+	Prefs     port.PrefsService
 	// Payments is the raw Stripe gateway. The webhook route verifies and
 	// applies events through Billing; the port is part of Deps so the
 	// composition surface matches the adapter contract.
@@ -116,6 +117,9 @@ func New(deps Deps) http.Handler {
 
 	authed("POST /v1/devices", s.handleRegisterDevice)
 	authed("DELETE /v1/devices/{id}", s.handleUnregisterDevice)
+
+	authed("GET /v1/prefs", s.handleGetPrefs)
+	authed("PUT /v1/prefs", s.handleUpdatePrefs)
 
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins)
