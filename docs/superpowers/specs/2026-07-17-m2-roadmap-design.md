@@ -35,6 +35,12 @@ Teams/membership model + permissions (new backend domain); shared conversations 
 ### M2.8 — Calendar life integrations & long tail (plan: `2026-07-17-m2-8-integrations-longtail.md`)
 Tasks/todos on the grid (+ external todo tools); docs/notes attached to events; travel time + Maps locations; FocusGuard + focus auto-decline + auto buffers; OOO auto-decline; time analytics/insights; weather; interesting-calendar subscriptions; email-to-event drag; CRM integrations (HubSpot/Salesforce/Pipedrive); concierge onboarding; delight extras.
 
+## Cross-plan notes
+
+- **Migration numbering:** phase plans were authored in parallel and each references provisional migration filenames (e.g. `0005_*.sql`); the executing agent assigns the next free number in `backend/migrations/` at execution time.
+- **Declared dependencies:** M2.7 team scheduling links build on M2.4 `booking_links`; M2.3's ai_jobs worker loop and M2.4's hold-expiry sweep both extend `cmd/worker`.
+- M2.6's audit found a real existing gap to fix in that phase: `handleListThreads` never parses `accountId` although `ThreadQuery.AccountID` filtering exists.
+
 ## Execution model
 
 Each phase: brainstorm deltas if needed → detailed implementation plan (TDD, bite-sized tasks) → execute → full test gates → ship → next phase. Phase plans for later phases are written at task granularity now (files, interfaces, test strategy) and get a final code-level pass when their turn arrives, so they never rot. M2.1's plan is written execution-ready immediately.
