@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"calendium/backend/internal/domain"
@@ -315,6 +316,25 @@ func (r *fakeThreadRepo) AppendSentMessage(_ context.Context, id string, sentAt 
 		r.byID[id] = t
 	}
 	return nil
+}
+
+func (r *fakeThreadRepo) ListInboxBefore(_ context.Context, userID string, before time.Time, limit int) ([]domain.Thread, error) {
+	var threads []domain.Thread
+	for _, t := range r.byID {
+		// Filter: in_inbox, not snoozed, and last_message_at before cutoff
+		if t.InInbox && t.SnoozedUntil == nil && t.LastMessageAt.Before(before) {
+			threads = append(threads, t)
+		}
+	}
+	// Sort by LastMessageAt ascending (oldest first)
+	sort.Slice(threads, func(i, j int) bool {
+		return threads[i].LastMessageAt.Before(threads[j].LastMessageAt)
+	})
+	// Cap at limit
+	if limit > 0 && len(threads) > limit {
+		threads = threads[:limit]
+	}
+	return threads, nil
 }
 
 var _ port.ThreadRepo = (*fakeThreadRepo)(nil)

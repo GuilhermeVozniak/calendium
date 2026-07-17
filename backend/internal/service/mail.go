@@ -284,6 +284,35 @@ func (s *MailService) SetReminder(ctx context.Context, userID, threadID string, 
 	return t, nil
 }
 
+// ArchiveOlderThan is Get Me To Zero: archive every inbox thread older than
+// the cutoff, paging until none remain. Archiving clears in_inbox, so each
+// page shrinks and the loop terminates. Returns how many were archived.
+func (s *MailService) ArchiveOlderThan(ctx context.Context, userID string, olderThan time.Time) (int, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return 0, err
+	}
+	archived := 0
+	for {
+		batch, err := s.threads.ListInboxBefore(ctx, userID, olderThan, maxBulkThreads)
+		if err != nil {
+			return archived, err
+		}
+		if len(batch) == 0 {
+			return archived, nil
+		}
+		for _, t := range batch {
+			acct, err := s.accounts.GetByID(ctx, t.AccountID)
+			if err != nil {
+				return archived, err
+			}
+			if _, err := s.applyAction(ctx, t, acct, domain.ThreadActionArchive); err != nil {
+				return archived, err
+			}
+			archived++
+		}
+	}
+}
+
 // --- Drafts ---
 
 func (s *MailService) CreateDraft(ctx context.Context, userID string, in port.DraftInput) (domain.Draft, error) {

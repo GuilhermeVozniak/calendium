@@ -1213,3 +1213,45 @@ func TestListSnippets(t *testing.T) {
 		}
 	})
 }
+
+// --- MailService.ArchiveOlderThan --------------------------------------------------
+
+func TestArchiveOlderThanArchivesInBatches(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	cutoff := f.clock.Now().Add(-7 * 24 * time.Hour)
+	old1 := f.seedThread(t, "t-old-1", "a1", func(th *domain.Thread) { th.LastMessageAt = cutoff.Add(-time.Hour) })
+	old2 := f.seedThread(t, "t-old-2", "a1", func(th *domain.Thread) { th.LastMessageAt = cutoff.Add(-2 * time.Hour) })
+	f.seedThread(t, "t-new", "a1", func(th *domain.Thread) { th.LastMessageAt = f.clock.Now() })
+
+	// fakeThreadRepo serves ListInboxBefore from byID (implemented in this
+	// task): first call returns the two old threads, after archiving both
+	// leave in_inbox and the second call returns none.
+	archived, err := f.svc.ArchiveOlderThan(ctx, "u1", cutoff)
+	if err != nil {
+		t.Fatalf("ArchiveOlderThan: %v", err)
+	}
+	if archived != 2 {
+		t.Fatalf("archived = %d, want 2", archived)
+	}
+	for _, id := range []string{old1.ID, old2.ID} {
+		got, err := f.threads.GetByID(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.InInbox {
+			t.Fatalf("thread %s still InInbox", id)
+		}
+	}
+	gotNew, err := f.threads.GetByID(ctx, "t-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gotNew.InInbox {
+		t.Fatal("recent thread was archived by Get Me To Zero")
+	}
+	if f.provider.modifyLabelsCalls != 2 {
+		t.Fatalf("provider write-throughs = %d, want 2", f.provider.modifyLabelsCalls)
+	}
+}

@@ -103,6 +103,9 @@ type MailService interface {
 	UnsnoozeThread(ctx context.Context, userID, threadID string) (domain.Thread, error)
 	// SetReminder sets (or clears, with nil) a follow-up reminder.
 	SetReminder(ctx context.Context, userID, threadID string, remindAt *time.Time) (domain.Thread, error)
+	// ArchiveOlderThan is Get Me To Zero: archive every inbox thread older than
+	// the cutoff, paging until none remain. Returns how many were archived.
+	ArchiveOlderThan(ctx context.Context, userID string, olderThan time.Time) (archived int, err error)
 
 	CreateDraft(ctx context.Context, userID string, in DraftInput) (domain.Draft, error)
 	UpdateDraft(ctx context.Context, userID, draftID string, in DraftInput) (domain.Draft, error)

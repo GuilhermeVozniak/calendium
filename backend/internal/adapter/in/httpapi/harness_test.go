@@ -213,6 +213,12 @@ type fakeMailService struct {
 	gotReminderID string
 	gotRemindAt   *time.Time
 
+	// ArchiveOlderThan
+	zeroCount    int
+	zeroErr      error
+	zeroUserID   string
+	zeroOlderThan time.Time
+
 	// drafts
 	createDraftRet domain.Draft
 	createDraftErr error
@@ -280,6 +286,10 @@ func (f *fakeMailService) BulkActOnThreads(ctx context.Context, userID string, t
 func (f *fakeMailService) SetReminder(ctx context.Context, userID, threadID string, remindAt *time.Time) (domain.Thread, error) {
 	f.gotReminderID, f.gotRemindAt = threadID, remindAt
 	return f.reminderRet, f.reminderErr
+}
+func (f *fakeMailService) ArchiveOlderThan(ctx context.Context, userID string, olderThan time.Time) (int, error) {
+	f.zeroUserID, f.zeroOlderThan = userID, olderThan
+	return f.zeroCount, f.zeroErr
 }
 func (f *fakeMailService) CreateDraft(ctx context.Context, userID string, in port.DraftInput) (domain.Draft, error) {
 	f.gotCreateDraft = in

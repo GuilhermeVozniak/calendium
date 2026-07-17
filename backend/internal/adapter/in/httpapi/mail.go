@@ -157,6 +157,26 @@ func (s *server) handleThreadReminder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, thread)
 }
 
+func (s *server) handleGetMeToZero(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		OlderThan time.Time `json:"olderThan"`
+	}
+	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if in.OlderThan.IsZero() {
+		s.writeError(w, r, fmt.Errorf("%w: olderThan is required (RFC 3339)", domain.ErrValidation))
+		return
+	}
+	count, err := s.deps.Mail.ArchiveOlderThan(r.Context(), userFrom(r).ID, in.OlderThan)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"archivedCount": count})
+}
+
 // --- drafts --------------------------------------------------------------
 
 func (s *server) handleListDrafts(w http.ResponseWriter, r *http.Request) {

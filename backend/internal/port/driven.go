@@ -122,6 +122,9 @@ type ThreadRepo interface {
 	// AppendSentMessage bumps message_count and advances last_message_at for a
 	// newly delivered message, atomically in the database.
 	AppendSentMessage(ctx context.Context, id string, sentAt time.Time) error
+	// ListInboxBefore returns inbox threads (in_inbox, not snoozed) with
+	// last_message_at strictly before the cutoff, oldest first.
+	ListInboxBefore(ctx context.Context, userID string, before time.Time, limit int) ([]domain.Thread, error)
 }
 
 // MessageRepo persists mirrored mail messages.

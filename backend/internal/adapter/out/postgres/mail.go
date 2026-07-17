@@ -352,6 +352,24 @@ func (r threadRepo) AppendSentMessage(ctx context.Context, id string, sentAt tim
 		WHERE id = $1`, id, sentAt))
 }
 
+func (r threadRepo) ListInboxBefore(ctx context.Context, userID string, before time.Time, limit int) ([]domain.Thread, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := r.q(ctx).QueryContext(ctx, `
+		SELECT `+threadCols+`
+		FROM threads t
+		JOIN connected_accounts ca ON ca.id = t.account_id
+		WHERE ca.user_id = $1 AND t.in_inbox AND t.snoozed_until IS NULL
+		  AND t.last_message_at < $2
+		ORDER BY t.last_message_at ASC, t.id LIMIT $3`, userID, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return collectThreads(rows)
+}
+
 func collectThreads(rows *sql.Rows) ([]domain.Thread, error) {
 	threads := []domain.Thread{}
 	for rows.Next() {
