@@ -595,6 +595,50 @@ const methodCases: MethodCase[] = [
     method: 'DELETE',
     path: '/v1/devices/dev1',
   },
+
+  // --- Triage power / mail labels ---
+  { name: 'listLabels', call: (c) => c.listLabels(), method: 'GET', path: '/v1/mail/labels' },
+  {
+    name: 'setThreadLabel',
+    call: (c) => c.setThreadLabel('t1', 'lbl1', true),
+    method: 'POST',
+    path: '/v1/mail/threads/t1/labels',
+    body: { labelId: 'lbl1', add: true },
+  },
+  {
+    name: 'bulkThreadAction',
+    call: (c) => c.bulkThreadAction({ threadIds: ['t1'], action: 'archive' }),
+    method: 'POST',
+    path: '/v1/mail/threads/bulk-actions',
+    body: { threadIds: ['t1'], action: 'archive' },
+  },
+  {
+    name: 'unsnoozeThread',
+    call: (c) => c.unsnoozeThread('t1'),
+    method: 'DELETE',
+    path: '/v1/mail/threads/t1/snooze',
+  },
+  {
+    name: 'unsubscribeThread',
+    call: (c) => c.unsubscribeThread('t1'),
+    method: 'POST',
+    path: '/v1/mail/threads/t1/unsubscribe',
+  },
+  {
+    name: 'archiveOlderThan',
+    call: (c) => c.archiveOlderThan('2026-07-10T00:00:00Z'),
+    method: 'POST',
+    path: '/v1/mail/threads/zero',
+    body: { olderThan: '2026-07-10T00:00:00Z' },
+  },
+  { name: 'getPrefs', call: (c) => c.getPrefs(), method: 'GET', path: '/v1/prefs' },
+  {
+    name: 'updatePrefs',
+    call: (c) => c.updatePrefs({ splitOrder: ['vip', 'important'] }),
+    method: 'PUT',
+    path: '/v1/prefs',
+    body: { splitOrder: ['vip', 'important'] },
+  },
 ];
 
 describe('method contracts (path, verb, body, auth, response passthrough)', () => {

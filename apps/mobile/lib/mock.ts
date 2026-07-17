@@ -88,6 +88,9 @@ function thread(partial: {
     openedAt: null,
     snoozedUntil: null,
     remindAt: null,
+    unsubscribeMailto: null,
+    unsubscribeUrl: null,
+    unsubscribeOneClick: false,
   };
 }
 
