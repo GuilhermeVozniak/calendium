@@ -2,6 +2,8 @@ import type {
   AiComposeRequest,
   AiComposeResponse,
   AvailabilitySlot,
+  BulkAction,
+  BulkActionResult,
   Calendar,
   ConnectedAccount,
   DevicePlatform,
@@ -11,6 +13,7 @@ import type {
   EventInput,
   EventPatch,
   InstanceInfo,
+  Label,
   Message,
   NotificationDevice,
   Page,
@@ -20,7 +23,9 @@ import type {
   Subscription,
   Thread,
   ThreadAction,
+  UnsubscribeResult,
   User,
+  UserPrefs,
 } from './types';
 
 /**
@@ -218,6 +223,35 @@ export class ApiClient {
   }
   deleteSnippet(snippetId: string) {
     return this.request<void>('DELETE', `/v1/mail/snippets/${snippetId}`);
+  }
+  listLabels() {
+    return this.request<Label[]>('GET', '/v1/mail/labels');
+  }
+  /** Adds (add=true) or removes a label on a thread. */
+  setThreadLabel(threadId: string, labelId: string, add: boolean) {
+    return this.request<Thread>('POST', `/v1/mail/threads/${threadId}/labels`, { labelId, add });
+  }
+  /** Bulk archive/read/label… up to 200 threads; label actions need labelId. */
+  bulkThreadAction(input: { threadIds: string[]; action: BulkAction; labelId?: string }) {
+    return this.request<BulkActionResult>('POST', '/v1/mail/threads/bulk-actions', input);
+  }
+  /** Clears a pending snooze (undo of snooze). */
+  unsnoozeThread(threadId: string) {
+    return this.request<Thread>('DELETE', `/v1/mail/threads/${threadId}/snooze`);
+  }
+  /** Executes unsubscribe server-side; method "link" returns a URL to open. */
+  unsubscribeThread(threadId: string) {
+    return this.request<UnsubscribeResult>('POST', `/v1/mail/threads/${threadId}/unsubscribe`);
+  }
+  /** Get Me To Zero: archives inbox mail older than the RFC 3339 cutoff. */
+  archiveOlderThan(olderThan: string) {
+    return this.request<{ archivedCount: number }>('POST', '/v1/mail/threads/zero', { olderThan });
+  }
+  getPrefs() {
+    return this.request<UserPrefs>('GET', '/v1/prefs');
+  }
+  updatePrefs(prefs: UserPrefs) {
+    return this.request<UserPrefs>('PUT', '/v1/prefs', prefs);
   }
 
   // --- Calendar ---

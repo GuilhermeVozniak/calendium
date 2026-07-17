@@ -40,6 +40,9 @@ function makeThread(participants: EmailAddress[], overrides: Partial<Thread> = {
     openedAt: null,
     snoozedUntil: null,
     remindAt: null,
+    unsubscribeMailto: null,
+    unsubscribeUrl: null,
+    unsubscribeOneClick: false,
     ...overrides,
   };
 }

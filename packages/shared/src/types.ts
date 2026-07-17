@@ -81,6 +81,10 @@ export interface Thread {
   snoozedUntil: string | null;
   /** Follow-up reminder: resurface if nobody replies by this time. */
   remindAt: string | null;
+  /** Parsed List-Unsubscribe targets from the newest message (RFC 2369/8058). */
+  unsubscribeMailto: string | null;
+  unsubscribeUrl: string | null;
+  unsubscribeOneClick: boolean;
 }
 
 export interface Attachment {
@@ -162,6 +166,26 @@ export type ThreadAction =
   | 'unread'
   | 'spam'
   | 'move_to_inbox';
+
+export type BulkAction = ThreadAction | 'label' | 'unlabel';
+
+export interface BulkActionResult {
+  threads: Thread[];
+  failedIds: string[];
+}
+
+export type UnsubscribeMethod = 'one_click' | 'mailto' | 'link';
+
+/** "one_click"/"mailto" completed server-side; "link" = open url in a browser. */
+export interface UnsubscribeResult {
+  method: UnsubscribeMethod;
+  url?: string;
+}
+
+/** Per-user layout preferences, shared across devices (GET/PUT /v1/prefs). */
+export interface UserPrefs {
+  splitOrder: InboxSplit[];
+}
 
 // ---------------------------------------------------------------------------
 // Calendar

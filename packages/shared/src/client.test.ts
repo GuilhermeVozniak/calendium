@@ -623,3 +623,63 @@ describe('method contracts (path, verb, body, auth, response passthrough)', () =
     });
   }
 });
+
+describe('triage power endpoints', () => {
+  it('bulkThreadAction POSTs ids + action to /v1/mail/threads/bulk-actions', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { threads: [], failedIds: ['ghost'] } }],
+    });
+    const res = await client.bulkThreadAction({ threadIds: ['t1', 'ghost'], action: 'archive' });
+    expect(res.failedIds).toEqual(['ghost']);
+    expect(calls[0]!.url).toBe('https://api.calendium.test/v1/mail/threads/bulk-actions');
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.body).toEqual({
+      threadIds: ['t1', 'ghost'],
+      action: 'archive',
+    });
+  });
+
+  it('setThreadLabel POSTs labelId+add to the thread labels route', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: { id: 't1' } }] });
+    await client.setThreadLabel('t1', 'lbl1', true);
+    expect(calls[0]!.url).toBe('https://api.calendium.test/v1/mail/threads/t1/labels');
+    expect(calls[0]!.body).toEqual({ labelId: 'lbl1', add: true });
+  });
+
+  it('unsnoozeThread DELETEs the snooze', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: { id: 't1' } }] });
+    await client.unsnoozeThread('t1');
+    expect(calls[0]!.url).toBe('https://api.calendium.test/v1/mail/threads/t1/snooze');
+    expect(calls[0]!.method).toBe('DELETE');
+  });
+
+  it('unsubscribeThread POSTs and returns the method', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: { method: 'one_click' } }] });
+    const res = await client.unsubscribeThread('t1');
+    expect(res.method).toBe('one_click');
+    expect(calls[0]!.url).toBe('https://api.calendium.test/v1/mail/threads/t1/unsubscribe');
+  });
+
+  it('archiveOlderThan POSTs the cutoff to /zero', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: { archivedCount: 7 } }] });
+    const res = await client.archiveOlderThan('2026-07-10T00:00:00Z');
+    expect(res.archivedCount).toBe(7);
+    expect(calls[0]!.url).toBe('https://api.calendium.test/v1/mail/threads/zero');
+    expect(calls[0]!.body).toEqual({ olderThan: '2026-07-10T00:00:00Z' });
+  });
+
+  it('prefs round-trip GET/PUT /v1/prefs', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: { splitOrder: ['vip', 'important'] } }] });
+    await client.getPrefs();
+    await client.updatePrefs({ splitOrder: ['vip', 'important'] });
+    expect(calls[0]!.url).toBe('https://api.calendium.test/v1/prefs');
+    expect(calls[1]!.method).toBe('PUT');
+  });
+
+  it('listLabels GETs the labels list', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: [] }] });
+    await client.listLabels();
+    expect(calls[0]!.url).toBe('https://api.calendium.test/v1/mail/labels');
+    expect(calls[0]!.method).toBe('GET');
+  });
+});

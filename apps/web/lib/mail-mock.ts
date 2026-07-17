@@ -132,6 +132,9 @@ function build(spec: ThreadSpec): ThreadRecord {
       openedAt: spec.unread ? null : hoursAgo(0),
       snoozedUntil: null,
       remindAt: null,
+      unsubscribeMailto: null,
+      unsubscribeUrl: null,
+      unsubscribeOneClick: false,
     },
   };
 }
