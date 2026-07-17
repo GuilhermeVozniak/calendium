@@ -31,4 +31,26 @@ test.describe('Mail — inbox triage', () => {
     // thread no longer matches the (still active) Important split filter.
     await expect(page.getByRole('button', { name: /Renewal terms for FY27/ })).toHaveCount(0);
   });
+
+  test('Z undoes an archive, restoring the thread to the list', async ({ page }) => {
+    await page.goto('/mail');
+    const target = page.getByRole('button', { name: /Postmortem: checkout latency spike/ });
+    await expect(target).toBeVisible();
+    await target.hover(); // hover selects the row (onMouseEnter)
+    await page.keyboard.press('e');
+    await expect(page.getByText('Archived', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Postmortem: checkout latency spike/ })).toHaveCount(0);
+
+    await page.keyboard.press('z');
+    await expect(page.getByText('Undone', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Postmortem: checkout latency spike/ })).toBeVisible();
+  });
+
+  test('H opens the snooze picker (rebound from Z)', async ({ page }) => {
+    await page.goto('/mail');
+    await expect(page.getByRole('button', { name: /Renewal terms for FY27/ }).first()).toBeVisible();
+    await page.keyboard.press('h');
+    await expect(page.getByText('Snooze until…')).toBeVisible();
+    await page.keyboard.press('Escape');
+  });
 });

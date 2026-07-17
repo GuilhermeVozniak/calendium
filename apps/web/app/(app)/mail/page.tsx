@@ -144,9 +144,16 @@ function MailClient() {
   const closeThread = React.useCallback(() => navigate({ t: null }), [navigate]);
 
   // --- Actions -------------------------------------------------------------
-  const { act, snooze, remind } = useMailActions();
+  const { act, snooze, remind, undoLast } = useMailActions();
   const [snoozeOpen, setSnoozeOpen] = React.useState(false);
   const [remindOpen, setRemindOpen] = React.useState(false);
+
+  const undo = React.useCallback(() => {
+    void undoLast().then((did) => {
+      if (did) toast.success('Undone');
+      else toast.message('Nothing to undo');
+    });
+  }, [undoLast]);
 
   const moveSelection = React.useCallback(
     (delta: number) => {
@@ -167,9 +174,9 @@ function MailClient() {
     if (openThreadId === archivedId) navigate({ t: next?.id ?? null });
     void act(archivedId, 'archive');
     toast.success('Archived', {
-      action: { label: 'Undo', onClick: () => void act(archivedId, 'move_to_inbox') },
+      action: { label: 'Undo', onClick: () => void undoLast() },
     });
-  }, [selectedThread, threads, selectedIndex, openThreadId, navigate, act]);
+  }, [selectedThread, threads, selectedIndex, openThreadId, navigate, act, undoLast]);
 
   const toggleStar = React.useCallback(() => {
     if (!selectedThread) return;
@@ -211,8 +218,9 @@ function MailClient() {
     { keys: 's', description: 'Star', handler: toggleStar },
     { keys: 'u', description: 'Toggle unread', handler: toggleUnread },
     { keys: 'shift+i', description: 'Mark read', handler: markRead },
-    { keys: 'z', description: 'Snooze', handler: () => selectedThread && setSnoozeOpen(true) },
-    { keys: 'h', description: 'Follow-up reminder', handler: () => selectedThread && setRemindOpen(true) },
+    { keys: 'h', description: 'Snooze', handler: () => selectedThread && setSnoozeOpen(true) },
+    { keys: 'shift+h', description: 'Follow-up reminder', handler: () => selectedThread && setRemindOpen(true) },
+    { keys: 'z', description: 'Undo last action', handler: undo },
     { keys: '/', description: 'Search', handler: focusSearch },
   ]);
 
@@ -220,8 +228,8 @@ function MailClient() {
   // Same-route commands arrive as a DOM event; cross-route commands are queued
   // (lib/mail-utils) and consumed here on mount, so neither is dropped by a
   // listener that isn't attached yet.
-  const commandHandlers = React.useRef({ archiveSelected, toggleStar, toggleUnread, markRead, focusSearch });
-  commandHandlers.current = { archiveSelected, toggleStar, toggleUnread, markRead, focusSearch };
+  const commandHandlers = React.useRef({ archiveSelected, toggleStar, toggleUnread, markRead, focusSearch, undo });
+  commandHandlers.current = { archiveSelected, toggleStar, toggleUnread, markRead, focusSearch, undo };
 
   const runCommand = React.useCallback((command: MailCommand) => {
     const handlers = commandHandlers.current;
@@ -232,6 +240,7 @@ function MailClient() {
     else if (command === 'search') handlers.focusSearch();
     else if (command === 'snooze') setSnoozeOpen(true);
     else if (command === 'reminder') setRemindOpen(true);
+    else if (command === 'undo') handlers.undo();
   }, []);
 
   React.useEffect(() => onMailCommand(runCommand), [runCommand]);
@@ -347,7 +356,10 @@ function MailClient() {
             <Kbd size="sm">E</Kbd> archive
           </span>
           <span className="flex items-center gap-1">
-            <Kbd size="sm">Z</Kbd> snooze
+            <Kbd size="sm">H</Kbd> snooze
+          </span>
+          <span className="flex items-center gap-1">
+            <Kbd size="sm">Z</Kbd> undo
           </span>
           <span className="flex items-center gap-1">
             <Kbd size="sm">C</Kbd> compose
@@ -625,7 +637,7 @@ function EmptyState({ view, q }: { view: MailboxView | null; q: string }) {
     sub = 'Press S on any conversation to star it.';
   } else if (view === 'snoozed') {
     headline = 'Nothing snoozed';
-    sub = 'Press Z to snooze a conversation until later.';
+    sub = 'Press H to snooze a conversation until later.';
   } else if (view === 'sent') {
     headline = 'No sent mail yet';
     sub = 'Messages you send will appear here.';

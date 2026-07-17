@@ -14,6 +14,7 @@ import {
   Monitor,
   Moon,
   PenLine,
+  RotateCcw,
   Search,
   Send,
   Settings,
@@ -170,14 +171,19 @@ export function CommandPalette() {
             <Clock />
             Snooze…
             <Kbd size="sm" className="ml-auto">
-              Z
+              H
             </Kbd>
           </CommandItem>
           <CommandItem onSelect={() => runMailCommand('reminder')}>
             <BellRing />
             Set follow-up reminder…
+            <KbdGroup size="sm" keys={['⇧', 'H']} className="ml-auto" />
+          </CommandItem>
+          <CommandItem onSelect={() => runMailCommand('undo')}>
+            <RotateCcw />
+            Undo last action
             <Kbd size="sm" className="ml-auto">
-              H
+              Z
             </Kbd>
           </CommandItem>
           <CommandItem onSelect={() => runMailCommand('star')}>
