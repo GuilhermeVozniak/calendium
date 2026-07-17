@@ -7,37 +7,64 @@
 export interface Selection {
   readonly anchorId: string | null;
   readonly ids: ReadonlySet<string>;
+  /** Last range endpoint reached via extendSelection (the "cursor"). */
+  readonly cursor: string | null;
+  /** Ids currently part of the live anchor->cursor range (a subset of `ids`). */
+  readonly rangeIds: ReadonlySet<string>;
 }
 
-export const EMPTY_SELECTION: Selection = { anchorId: null, ids: new Set() };
+export const EMPTY_SELECTION: Selection = {
+  anchorId: null,
+  ids: new Set(),
+  cursor: null,
+  rangeIds: new Set(),
+};
 
 /** Toggle one conversation (the `x` key); the toggled row becomes the anchor. */
 export function toggleSelected(sel: Selection, id: string): Selection {
   const ids = new Set(sel.ids);
-  if (ids.has(id)) ids.delete(id);
-  else ids.add(id);
-  return { anchorId: id, ids };
+  const selecting = !ids.has(id);
+  if (selecting) ids.add(id);
+  else ids.delete(id);
+
+  // A freshly toggled-on id becomes a brand new anchor/range of its own, so a
+  // later extendSelection only ever grows or shrinks *this* range. Toggling
+  // off just drops the id from the live range without disturbing the anchor
+  // or cursor of whatever range is still in effect.
+  if (selecting) {
+    return { anchorId: id, ids, cursor: id, rangeIds: new Set([id]) };
+  }
+  const rangeIds = new Set(sel.rangeIds);
+  rangeIds.delete(id);
+  return { anchorId: id, ids, cursor: sel.cursor, rangeIds };
 }
 
 /**
- * Extend the selection from the anchor to the cursor (shift+j / shift+k),
- * unioning with what is already selected (Superhuman range semantics). An
- * unknown anchor or cursor degrades to a plain toggle so keyboard flow never
- * dead-ends after a list refetch.
+ * Extend the selection from the anchor to the cursor (shift+j / shift+k).
+ * The contiguous anchor->cursor range tracks the cursor exactly: retreating
+ * after an overshoot releases the ids that are no longer in range, while ids
+ * selected via toggleSelected outside the range are preserved (file-manager /
+ * Superhuman semantics). An unknown anchor or cursor degrades to a plain
+ * toggle so keyboard flow never dead-ends after a list refetch.
  */
 export function extendSelection(
   sel: Selection,
   orderedIds: readonly string[],
-  cursorId: string
+  targetId: string
 ): Selection {
-  const anchor = sel.anchorId ?? cursorId;
+  const anchor = sel.anchorId ?? targetId;
   const a = orderedIds.indexOf(anchor);
-  const c = orderedIds.indexOf(cursorId);
-  if (a < 0 || c < 0) return toggleSelected(sel, cursorId);
-  const [lo, hi] = a <= c ? [a, c] : [c, a];
+  const c = orderedIds.indexOf(targetId);
+  if (a < 0 || c < 0) return toggleSelected(sel, targetId);
+  const lo = Math.min(a, c);
+  const hi = Math.max(a, c);
+  const newRange = new Set(orderedIds.slice(lo, hi + 1));
+
   const ids = new Set(sel.ids);
-  for (let i = lo; i <= hi; i++) ids.add(orderedIds[i]!);
-  return { anchorId: anchor, ids };
+  for (const id of sel.rangeIds) ids.delete(id);
+  for (const id of newRange) ids.add(id);
+
+  return { anchorId: anchor, ids, cursor: targetId, rangeIds: newRange };
 }
 
 export function clearSelection(): Selection {

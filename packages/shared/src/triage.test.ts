@@ -26,8 +26,12 @@ describe('selection model', () => {
     sel = extendSelection(sel, order, 'd');
     expect([...sel.ids].sort()).toEqual(['b', 'c', 'd']);
     expect(sel.anchorId).toBe('b');
-    sel = extendSelection(sel, order, 'a'); // reverse direction unions
-    expect([...sel.ids].sort()).toEqual(['a', 'b', 'c', 'd']);
+    // Range-replacement semantics (updated from the old always-union behavior):
+    // extending from anchor 'b' to 'a' replaces the range with [a, b] — 'c' and
+    // 'd' were only ever part of the anchor->cursor range, so they're released
+    // rather than unioned in.
+    sel = extendSelection(sel, order, 'a');
+    expect([...sel.ids].sort()).toEqual(['a', 'b']);
   });
 
   it('extendSelection with no anchor behaves like toggle', () => {
@@ -36,8 +40,41 @@ describe('selection model', () => {
   });
 
   it('extendSelection tolerates ids missing from the current order', () => {
-    const sel = extendSelection({ anchorId: 'zz', ids: new Set(['zz']) }, order, 'b');
+    const sel = extendSelection(
+      { anchorId: 'zz', ids: new Set(['zz']), cursor: 'zz', rangeIds: new Set(['zz']) },
+      order,
+      'b'
+    );
     expect(sel.ids.has('b')).toBe(true);
+  });
+
+  it('extendSelection overshoot-then-retreat releases the overshot ids', () => {
+    let sel = toggleSelected(EMPTY_SELECTION, 'c'); // anchor c (index 2)
+    sel = extendSelection(sel, order, 'e'); // overshoot to e (index 4)
+    expect([...sel.ids].sort()).toEqual(['c', 'd', 'e']);
+    sel = extendSelection(sel, order, 'd'); // retreat to d (index 3)
+    expect([...sel.ids].sort()).toEqual(['c', 'd']); // 'e' released
+    expect(sel.anchorId).toBe('c');
+    expect(sel.cursor).toBe('d');
+    expect([...sel.rangeIds].sort()).toEqual(['c', 'd']);
+  });
+
+  it('preserves toggled ids outside the range when the range shrinks', () => {
+    let sel = toggleSelected(EMPTY_SELECTION, 'a'); // toggled, outside any range
+    sel = toggleSelected(sel, 'c'); // new anchor c (index 2)
+    sel = extendSelection(sel, order, 'e'); // range -> c,d,e
+    sel = extendSelection(sel, order, 'd'); // retreat -> c,d ('e' released)
+    expect([...sel.ids].sort()).toEqual(['a', 'c', 'd']);
+  });
+
+  it('extending across the anchor replaces the range on the new side', () => {
+    let sel = toggleSelected(EMPTY_SELECTION, 'c'); // anchor c (index 2)
+    sel = extendSelection(sel, order, 'e'); // range -> c,d,e
+    sel = extendSelection(sel, order, 'a'); // cross the anchor to a (index 0)
+    expect([...sel.ids].sort()).toEqual(['a', 'b', 'c']); // d,e released
+    expect(sel.anchorId).toBe('c');
+    expect(sel.cursor).toBe('a');
+    expect([...sel.rangeIds].sort()).toEqual(['a', 'b', 'c']);
   });
 
   it('clearSelection empties everything', () => {
