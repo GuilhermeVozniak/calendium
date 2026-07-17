@@ -2,13 +2,14 @@
 
 import * as React from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import type { Draft, InboxSplit, Thread } from '@calendium/shared';
+import type { Draft, InboxSplit, Label, Thread } from '@calendium/shared';
 import { EMPTY_SELECTION, clearSelection, extendSelection, toggleSelected } from '@calendium/shared';
 import { Loader2, Search, Sparkles, Star, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { BulkBar } from '@/components/app/bulk-bar';
 import { htmlToText, useCompose } from '@/components/app/compose';
+import { LabelPicker } from '@/components/app/label-picker';
 import { TimePickerDialog } from '@/components/app/snooze-menu';
 import { ThreadView } from '@/components/app/thread-view';
 import { Kbd, KbdGroup } from '@/components/ui/kbd';
@@ -28,7 +29,7 @@ import {
 } from '@/lib/mail-utils';
 import { useSelfEmails } from '@/lib/use-identity';
 import { MOD_KEY, useShortcuts } from '@/lib/shortcuts';
-import { useDraftActions, useDrafts, useMailActions, useThreadList } from '@/lib/use-mail';
+import { useDraftActions, useDrafts, useLabels, useMailActions, useThreadList } from '@/lib/use-mail';
 import { cn } from '@/lib/utils';
 
 const SPLITS: { value: InboxSplit; label: string }[] = [
@@ -169,7 +170,7 @@ function MailClient() {
   const closeThread = React.useCallback(() => navigate({ t: null }), [navigate]);
 
   // --- Actions -------------------------------------------------------------
-  const { act, snooze, remind, undoLast, bulkAct } = useMailActions();
+  const { act, snooze, remind, undoLast, bulkAct, setLabel } = useMailActions();
   const [snoozeOpen, setSnoozeOpen] = React.useState(false);
   const [remindOpen, setRemindOpen] = React.useState(false);
 
@@ -238,6 +239,29 @@ function MailClient() {
 
   const focusSearch = React.useCallback(() => searchRef.current?.focus(), []);
 
+  // --- Labels ----------------------------------------------------------------
+  const [labelPickerOpen, setLabelPickerOpen] = React.useState(false);
+  const labelsQuery = useLabels();
+  const activeLabelIds = React.useMemo(
+    () => new Set(selectedIds.length === 0 ? (selectedThread?.labelIds ?? []) : []),
+    [selectedIds, selectedThread]
+  );
+
+  const pickLabel = React.useCallback(
+    (label: Label, add: boolean) => {
+      if (selectedIds.length > 0) {
+        const ids = selectedIds;
+        setSelection(clearSelection());
+        void bulkAct(ids, add ? 'label' : 'unlabel', label.id);
+        toast.success(`${add ? 'Labeled' : 'Unlabeled'} ${ids.length} conversations “${label.name}”`);
+      } else if (selectedThread) {
+        void setLabel(selectedThread.id, label.id, add);
+        toast.success(add ? `Labeled “${label.name}”` : `Removed “${label.name}”`);
+      }
+    },
+    [selectedIds, selectedThread, bulkAct, setLabel]
+  );
+
   // --- Keyboard ------------------------------------------------------------
   useShortcuts([
     { keys: 'j', description: 'Next conversation', handler: () => moveSelection(1) },
@@ -302,7 +326,11 @@ function MailClient() {
       description: 'Archive',
       handler: () => (selection.ids.size > 0 ? bulkArchive() : archiveSelected()),
     },
-    { keys: 's', description: 'Star', handler: toggleStar },
+    {
+      keys: 's',
+      description: 'Star',
+      handler: () => (selection.ids.size > 0 ? void bulkAct(selectedIds, 'star') : toggleStar()),
+    },
     { keys: 'u', description: 'Toggle unread', handler: toggleUnread },
     {
       keys: 'shift+i',
@@ -312,6 +340,11 @@ function MailClient() {
     { keys: 'h', description: 'Snooze', handler: () => selectedThread && setSnoozeOpen(true) },
     { keys: 'shift+h', description: 'Follow-up reminder', handler: () => selectedThread && setRemindOpen(true) },
     { keys: 'z', description: 'Undo last action', handler: undo },
+    {
+      keys: 'l',
+      description: 'Label',
+      handler: () => (selectedThread || selectedIds.length > 0) && setLabelPickerOpen(true),
+    },
     { keys: '/', description: 'Search', handler: focusSearch },
   ]);
 
@@ -350,6 +383,7 @@ function MailClient() {
     else if (command === 'snooze') setSnoozeOpen(true);
     else if (command === 'reminder') setRemindOpen(true);
     else if (command === 'undo') handlers.undo();
+    else if (command === 'label') setLabelPickerOpen(true);
   }, []);
 
   React.useEffect(() => onMailCommand(runCommand), [runCommand]);
@@ -460,7 +494,7 @@ function MailClient() {
           count={selection.ids.size}
           onArchive={bulkArchive}
           onMarkRead={bulkMarkRead}
-          onLabel={() => {}}
+          onLabel={() => setLabelPickerOpen(true)}
           onUnsubscribe={() => {}}
           onClear={() => setSelection(clearSelection())}
         />
@@ -497,6 +531,13 @@ function MailClient() {
         </section>
       )}
 
+      <LabelPicker
+        open={labelPickerOpen}
+        onOpenChange={setLabelPickerOpen}
+        labels={labelsQuery.data?.labels ?? []}
+        activeLabelIds={activeLabelIds}
+        onPick={pickLabel}
+      />
       <TimePickerDialog
         open={snoozeOpen}
         onOpenChange={setSnoozeOpen}

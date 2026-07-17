@@ -51,4 +51,14 @@ test.describe('Bulk triage', () => {
     await expect(page.getByText(/Archived 2 conversations/)).toBeVisible();
     await expect(first).not.toBeVisible();
   });
+
+  test('L labels the hovered conversation from the picker', async ({ page }) => {
+    await page.goto('/mail');
+    const first = page.getByRole('button', { name: /Postmortem: checkout latency spike/ });
+    await first.hover();
+    await page.keyboard.press('l');
+    await expect(page.getByPlaceholder('Label as…')).toBeVisible();
+    await page.getByText('Updates', { exact: true }).click();
+    await expect(page.getByText(/Labeled “Updates”/)).toBeVisible();
+  });
 });

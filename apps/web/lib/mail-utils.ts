@@ -107,7 +107,8 @@ export type MailCommand =
   | 'unread'
   | 'mark-read'
   | 'search'
-  | 'undo';
+  | 'undo'
+  | 'label';
 
 export const MAIL_COMMAND_EVENT = 'calendium:mail-command';
 

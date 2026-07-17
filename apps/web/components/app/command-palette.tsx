@@ -20,6 +20,7 @@ import {
   Settings,
   Star,
   Sun,
+  Tag,
 } from 'lucide-react';
 
 import { useQuery } from '@tanstack/react-query';
@@ -197,6 +198,13 @@ export function CommandPalette() {
             <MailOpen />
             Mark read
             <KbdGroup size="sm" keys={['⇧', 'I']} className="ml-auto" />
+          </CommandItem>
+          <CommandItem onSelect={() => runMailCommand('label')}>
+            <Tag />
+            Label conversation…
+            <Kbd size="sm" className="ml-auto">
+              L
+            </Kbd>
           </CommandItem>
         </CommandGroup>
 

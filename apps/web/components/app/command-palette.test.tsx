@@ -82,6 +82,19 @@ describe('CommandPalette — opening', () => {
     expect(screen.getByText('Sign out')).toBeInTheDocument();
   });
 
+  it('shows the H hint on Snooze and the ⇧H hint on the reminder item', async () => {
+    renderPalette();
+    await openPalette();
+    const snoozeItem = screen.getByText('Snooze…').closest('[cmdk-item]');
+    expect(snoozeItem).not.toBeNull();
+    expect(snoozeItem?.textContent).toContain('H');
+
+    const reminderItem = screen.getByText('Set follow-up reminder…').closest('[cmdk-item]');
+    expect(reminderItem).not.toBeNull();
+    expect(reminderItem?.textContent).toContain('⇧');
+    expect(reminderItem?.textContent).toContain('H');
+  });
+
   it('toggles closed on a second mod+k', async () => {
     renderPalette();
     await openPalette();
@@ -125,6 +138,32 @@ describe('CommandPalette — mail commands', () => {
     await user.click(screen.getByText('Set follow-up reminder…'));
     expect(pushMock).toHaveBeenCalledWith('/mail');
     expect(takePendingMailCommand()).toBe('reminder');
+  });
+
+  it('dispatches "Undo last action" via the undo mail command', async () => {
+    currentPathname = '/mail';
+    const received: MailCommand[] = [];
+    const unsubscribe = onMailCommand((command) => received.push(command));
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText('Undo last action'));
+    expect(received).toEqual(['undo']);
+    expect(pushMock).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it('dispatches "Label conversation…" via the label mail command', async () => {
+    currentPathname = '/mail';
+    const received: MailCommand[] = [];
+    const unsubscribe = onMailCommand((command) => received.push(command));
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText('Label conversation…'));
+    expect(received).toEqual(['label']);
+    expect(pushMock).not.toHaveBeenCalled();
+    unsubscribe();
   });
 });
 
