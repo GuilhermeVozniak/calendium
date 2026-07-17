@@ -3,9 +3,11 @@
 import * as React from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { Draft, InboxSplit, Thread } from '@calendium/shared';
+import { EMPTY_SELECTION, clearSelection, extendSelection, toggleSelected } from '@calendium/shared';
 import { Loader2, Search, Sparkles, Star, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { BulkBar } from '@/components/app/bulk-bar';
 import { htmlToText, useCompose } from '@/components/app/compose';
 import { TimePickerDialog } from '@/components/app/snooze-menu';
 import { ThreadView } from '@/components/app/thread-view';
@@ -118,6 +120,29 @@ function MailClient() {
     if (selectedId) rowRefs.current.get(selectedId)?.scrollIntoView({ block: 'nearest' });
   }, [selectedId]);
 
+  // --- Bulk range selection --------------------------------------------------
+  const [selection, setSelection] = React.useState(EMPTY_SELECTION);
+  const orderedIds = React.useMemo(() => threads.map((t) => t.id), [threads]);
+  const selectedIds = React.useMemo(
+    () => orderedIds.filter((id) => selection.ids.has(id)),
+    [orderedIds, selection]
+  );
+  // Drop selected ids that dropped out of the (possibly refetched) list so a
+  // stale selection never outlives the rows it points at.
+  React.useEffect(() => {
+    setSelection((s) => {
+      if (s.ids.size === 0) return s;
+      const idSet = new Set(orderedIds);
+      if ([...s.ids].every((id) => idSet.has(id))) return s;
+      return {
+        anchorId: s.anchorId && idSet.has(s.anchorId) ? s.anchorId : null,
+        ids: new Set([...s.ids].filter((id) => idSet.has(id))),
+        cursor: s.cursor && idSet.has(s.cursor) ? s.cursor : null,
+        rangeIds: new Set([...s.rangeIds].filter((id) => idSet.has(id))),
+      };
+    });
+  }, [orderedIds]);
+
   // --- URL helpers ---------------------------------------------------------
   const navigate = React.useCallback(
     (next: { split?: InboxSplit; view?: MailboxView | null; t?: string | null }) => {
@@ -144,7 +169,7 @@ function MailClient() {
   const closeThread = React.useCallback(() => navigate({ t: null }), [navigate]);
 
   // --- Actions -------------------------------------------------------------
-  const { act, snooze, remind, undoLast } = useMailActions();
+  const { act, snooze, remind, undoLast, bulkAct } = useMailActions();
   const [snoozeOpen, setSnoozeOpen] = React.useState(false);
   const [remindOpen, setRemindOpen] = React.useState(false);
 
@@ -193,6 +218,24 @@ function MailClient() {
     void act(selectedThread.id, 'read');
   }, [selectedThread, act]);
 
+  const bulkArchive = React.useCallback(() => {
+    if (selectedIds.length === 0) return;
+    const ids = selectedIds;
+    setSelection(clearSelection());
+    void bulkAct(ids, 'archive');
+    toast.success(`Archived ${ids.length} conversations`, {
+      action: { label: 'Undo', onClick: () => void undoLast() },
+    });
+  }, [selectedIds, bulkAct, undoLast]);
+
+  const bulkMarkRead = React.useCallback(() => {
+    if (selectedIds.length === 0) return;
+    const ids = selectedIds;
+    setSelection(clearSelection());
+    void bulkAct(ids, 'read');
+    toast.success(`Marked ${ids.length} read`);
+  }, [selectedIds, bulkAct]);
+
   const focusSearch = React.useCallback(() => searchRef.current?.focus(), []);
 
   // --- Keyboard ------------------------------------------------------------
@@ -210,14 +253,62 @@ function MailClient() {
       keys: 'escape',
       description: 'Close conversation',
       handler: () => {
-        if (openThreadId) closeThread();
+        if (selection.ids.size > 0) setSelection(clearSelection());
+        else if (openThreadId) closeThread();
         else if (q) setQ('');
       },
     },
-    { keys: 'e', description: 'Archive', handler: archiveSelected },
+    {
+      keys: 'x',
+      description: 'Select conversation',
+      handler: () => selectedThread && setSelection((s) => toggleSelected(s, selectedThread.id)),
+    },
+    {
+      keys: 'shift+j',
+      description: 'Extend selection down',
+      handler: () => {
+        if (threads.length === 0) return;
+        const index = selectedIndex === -1 ? 0 : Math.min(selectedIndex + 1, threads.length - 1);
+        const next = threads[index]!;
+        setSelectedId(next.id);
+        setSelection((s) =>
+          extendSelection(
+            s.ids.size === 0 && selectedThread ? toggleSelected(s, selectedThread.id) : s,
+            orderedIds,
+            next.id
+          )
+        );
+      },
+    },
+    {
+      keys: 'shift+k',
+      description: 'Extend selection up',
+      handler: () => {
+        if (threads.length === 0) return;
+        const index = selectedIndex === -1 ? 0 : Math.max(selectedIndex - 1, 0);
+        const prev = threads[index]!;
+        setSelectedId(prev.id);
+        setSelection((s) =>
+          extendSelection(
+            s.ids.size === 0 && selectedThread ? toggleSelected(s, selectedThread.id) : s,
+            orderedIds,
+            prev.id
+          )
+        );
+      },
+    },
+    {
+      keys: 'e',
+      description: 'Archive',
+      handler: () => (selection.ids.size > 0 ? bulkArchive() : archiveSelected()),
+    },
     { keys: 's', description: 'Star', handler: toggleStar },
     { keys: 'u', description: 'Toggle unread', handler: toggleUnread },
-    { keys: 'shift+i', description: 'Mark read', handler: markRead },
+    {
+      keys: 'shift+i',
+      description: 'Mark read',
+      handler: () => (selection.ids.size > 0 ? bulkMarkRead() : markRead()),
+    },
     { keys: 'h', description: 'Snooze', handler: () => selectedThread && setSnoozeOpen(true) },
     { keys: 'shift+h', description: 'Follow-up reminder', handler: () => selectedThread && setRemindOpen(true) },
     { keys: 'z', description: 'Undo last action', handler: undo },
@@ -270,7 +361,7 @@ function MailClient() {
       {/* List pane */}
       <section
         className={cn(
-          'flex min-w-0 flex-col',
+          'relative flex min-w-0 flex-col',
           openThreadId ? 'hidden w-[24rem] shrink-0 border-r lg:flex' : 'flex-1'
         )}
       >
@@ -338,6 +429,7 @@ function MailClient() {
                   selected={thread.id === selectedId}
                   open={thread.id === openThreadId}
                   compact={!!openThreadId}
+                  bulkSelected={selection.ids.has(thread.id)}
                   onSelect={() => setSelectedId(thread.id)}
                   onOpen={() => openThread(thread.id)}
                 />
@@ -345,6 +437,15 @@ function MailClient() {
             </ul>
           )}
         </div>
+
+        <BulkBar
+          count={selection.ids.size}
+          onArchive={bulkArchive}
+          onMarkRead={bulkMarkRead}
+          onLabel={() => {}}
+          onUnsubscribe={() => {}}
+          onClear={() => setSelection(clearSelection())}
+        />
 
         {/* Shortcut hints */}
         <div className="text-muted-foreground hidden shrink-0 items-center gap-4 border-t px-4 py-1.5 text-xs lg:flex">
@@ -416,12 +517,13 @@ interface ThreadRowProps {
   selected: boolean;
   open: boolean;
   compact: boolean;
+  bulkSelected: boolean;
   onSelect: () => void;
   onOpen: () => void;
 }
 
 const ThreadRow = React.forwardRef<HTMLLIElement, ThreadRowProps>(function ThreadRow(
-  { thread, selfEmails, selected, open, compact, onSelect, onOpen },
+  { thread, selfEmails, selected, open, compact, bulkSelected, onSelect, onOpen },
   ref
 ) {
   return (
@@ -434,7 +536,8 @@ const ThreadRow = React.forwardRef<HTMLLIElement, ThreadRowProps>(function Threa
           'relative flex w-full items-center gap-2.5 border-b px-4 py-0 text-left',
           compact ? 'h-14' : 'h-11',
           selected ? 'bg-accent/70' : 'hover:bg-accent/40',
-          open && 'bg-accent'
+          open && 'bg-accent',
+          bulkSelected && 'bg-primary/10'
         )}
       >
         {/* Superhuman-style selection accent bar */}
@@ -444,6 +547,9 @@ const ThreadRow = React.forwardRef<HTMLLIElement, ThreadRowProps>(function Threa
             selected ? 'bg-primary' : 'bg-transparent'
           )}
         />
+        {bulkSelected && (
+          <span className="bg-primary size-2 shrink-0 rounded-full" aria-hidden data-testid="bulk-selected-dot" />
+        )}
         <span
           className={cn(
             'size-2 shrink-0 rounded-full',
