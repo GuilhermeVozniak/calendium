@@ -395,6 +395,16 @@ describe('parseQuickAdd', () => {
       const parsed = parseQuickAdd('standup for 45 min', REF)!;
       expect(parsed.durationMinutes).toBe(45);
     });
+
+    // Pin: DURATION_WORD_RE requires "half a/an hour" (the article between
+    // "half" and "hour"); the more natural "for a half hour" phrasing has no
+    // article there, so it is left unrecognized. Documenting this known gap
+    // rather than silently leaving it uncovered.
+    it('does not recognize "for a half hour" (known-unsupported duration phrasing)', () => {
+      const parsed = parseQuickAdd('Coffee tomorrow 3pm for a half hour', REF)!;
+      expect(parsed.durationMinutes).toBeNull();
+      expect(hm(parsed.end)).toBe(hm(new Date(parsed.start.getTime() + 60 * 60 * 1000)));
+    });
   });
 
   describe('attendees', () => {
