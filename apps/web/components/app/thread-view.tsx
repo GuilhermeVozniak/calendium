@@ -17,11 +17,13 @@ import {
   Send,
   Sparkles,
   Star,
+  User,
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { useCompose } from '@/components/app/compose';
+import { ContactPane } from '@/components/app/contact-pane';
 import { TimePickerDialog } from '@/components/app/snooze-menu';
 import { InstantReplies } from '@/components/mail/instant-replies';
 import { ThreadSummary } from '@/components/mail/thread-summary';
@@ -45,7 +47,7 @@ import {
   snoozeOptions,
 } from '@/lib/mail-utils';
 import { useSelfEmails } from '@/lib/use-identity';
-import { useShortcuts } from '@/lib/shortcuts';
+import { useChords, useShortcuts } from '@/lib/shortcuts';
 import { useInstance } from '@/lib/use-instance';
 import { runAiAsk, runAiSummarize, useMailActions, useThreadDetail } from '@/lib/use-mail';
 import { teachShortcut } from '@/lib/shortcut-hints';
@@ -202,10 +204,12 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
   const [quotedShown, setQuotedShown] = React.useState<Set<string>>(new Set());
   const [snoozeOpen, setSnoozeOpen] = React.useState(false);
   const [remindOpen, setRemindOpen] = React.useState(false);
+  const [contactPaneOpen, setContactPaneOpen] = React.useState(false);
 
   const thread = data?.thread ?? null;
   const messages = React.useMemo(() => data?.messages ?? [], [data]);
   const lastMessage = messages[messages.length - 1] ?? null;
+  const contactEmail = thread?.participants.find((p) => !isMe(p))?.email ?? null;
 
   // Expand the newest message whenever the thread changes.
   React.useEffect(() => {
@@ -273,6 +277,15 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
     { keys: 'f', description: 'Forward', handler: () => openReply('forward') },
   ]);
 
+  useChords([
+    {
+      keys: 'o c',
+      description: 'Toggle contact pane',
+      enabled: !!contactEmail,
+      handler: () => setContactPaneOpen((open) => !open),
+    },
+  ]);
+
   if (isLoading) {
     return (
       <div className="flex h-full flex-col gap-4 p-6">
@@ -295,7 +308,8 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
   }
 
   return (
-    <div className="flex h-full min-w-0 flex-col">
+    <div className="relative flex h-full min-w-0 flex-row">
+    <div className="flex h-full min-w-0 flex-1 flex-col">
       {/* Header */}
       <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2.5">
         <Tooltip>
@@ -402,6 +416,25 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
               Star <Kbd size="sm">S</Kbd>
             </TooltipContent>
           </Tooltip>
+          {contactEmail && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  aria-label="Toggle contact pane"
+                  aria-pressed={contactPaneOpen}
+                  onClick={() => setContactPaneOpen((open) => !open)}
+                >
+                  <User className={cn('size-4', contactPaneOpen && 'text-primary')} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                Contact <KbdGroup size="sm" keys={['O', 'C']} />
+              </TooltipContent>
+            </Tooltip>
+          )}
           {aiEnabled && onProposeEvent && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -610,6 +643,10 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
           toast.success(`Reminder set for ${formatOptionTime(when)}`);
         }}
       />
+    </div>
+      {contactPaneOpen && contactEmail && (
+        <ContactPane email={contactEmail} onClose={() => setContactPaneOpen(false)} />
+      )}
     </div>
   );
 }

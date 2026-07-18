@@ -7,6 +7,7 @@ import type {
   AiEventProposal,
   AiSource,
   BulkAction,
+  ContactSummary,
   Draft,
   InboxSplit,
   Label,
@@ -25,6 +26,7 @@ import { DEMO_MODE } from '@/lib/demo';
 import {
   applyMockAction,
   applyMockLabel,
+  getMockContact,
   getMockLabels,
   getMockThread,
   getMockThreads,
@@ -79,9 +81,40 @@ export interface DraftListResult {
   source: DataSource;
 }
 
+export interface ContactResult {
+  contact: ContactSummary;
+  source: DataSource;
+}
+
 /** Outcome of a bulk mutation — callers derive the succeeded count from it. */
 export interface BulkActResult {
   failedCount: number;
+}
+
+/**
+ * Aggregated sender insights for the contact pane (GET /v1/mail/contacts/{email}).
+ * Outside demo mode this surfaces genuine loading/error/empty states — a
+ * contact with no shared history resolves to `null` rather than a fabricated
+ * summary. `email` may be blank while the caller hasn't resolved a contact yet.
+ */
+export function useContact(email: string | null) {
+  return useQuery({
+    queryKey: ['contact', email ?? null],
+    enabled: !!email,
+    queryFn: async (): Promise<ContactResult | null> => {
+      if (!email) return null;
+      try {
+        const contact = await getApiClient().getContact(email);
+        return { contact, source: 'api' };
+      } catch (err) {
+        if (DEMO_MODE) {
+          const contact = getMockContact(email);
+          return contact ? { contact, source: 'demo' } : null;
+        }
+        throw err;
+      }
+    },
+  });
 }
 
 /** Lightweight reachability probe driving the offline/demo banner. */

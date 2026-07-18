@@ -3,6 +3,7 @@ import type {
   AiComposeResponse,
   AiEventProposal,
   AiSource,
+  ContactSummary,
   EmailAddress,
   InboxSplit,
   Label,
@@ -621,6 +622,43 @@ export function getMockThread(threadId: string): { thread: Thread; messages: Mes
   const record = store.get(threadId);
   if (!record) return null;
   return { thread: { ...record.thread }, messages: record.messages.map((m) => ({ ...m })) };
+}
+
+/**
+ * Demo-mode fallback for GET /v1/mail/contacts/{email} — aggregates the local
+ * sample dataset the same way the backend's mirror does: every thread the
+ * address participated in, newest five surfaced, counts over all of them.
+ * Returns null when the address never appears (honest "no data" — the pane
+ * shows an empty state rather than a fabricated summary).
+ */
+export function getMockContact(email: string): ContactSummary | null {
+  const target = email.trim().toLowerCase();
+  const records = [...store.values()].filter(
+    (r) =>
+      !r.trashed &&
+      (r.thread.participants.some((p) => p.email.toLowerCase() === target) ||
+        r.messages.some((m) => m.from.email.toLowerCase() === target))
+  );
+  if (records.length === 0) return null;
+
+  const sorted = [...records].sort(
+    (a, b) => new Date(b.thread.lastMessageAt).getTime() - new Date(a.thread.lastMessageAt).getTime()
+  );
+  const messageCount = records.reduce((sum, r) => sum + r.messages.length, 0);
+  const fromMessage = sorted
+    .flatMap((r) => r.messages)
+    .find((m) => m.from.email.toLowerCase() === target);
+  const asParticipant = sorted[0]!.thread.participants.find((p) => p.email.toLowerCase() === target);
+
+  return {
+    email: target,
+    name: fromMessage?.from.name ?? asParticipant?.name ?? null,
+    domain: target.split('@')[1] ?? '',
+    threadCount: records.length,
+    messageCount,
+    lastMessageAt: sorted[0]!.thread.lastMessageAt,
+    recentThreads: sorted.slice(0, 5).map((r) => ({ ...r.thread })),
+  };
 }
 
 export function applyMockAction(threadId: string, action: ThreadAction): void {
