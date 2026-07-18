@@ -14,6 +14,20 @@ export function eventTouchesDay(event: Event, day: Date): boolean {
   return new Date(event.start) < endOfDay(day) && new Date(event.end) > startOfDay(day);
 }
 
+/**
+ * Event count per `yyyy-MM-dd` across `[from, to)`. Feeds the 0-3 intensity
+ * dots MiniMonth renders under each day at quarter/year zoom levels, where
+ * individual events are too numerous to render directly.
+ */
+export function buildDensityMap(events: Event[], from: Date, to: Date): Map<string, number> {
+  const map = new Map<string, number>();
+  for (let day = startOfDay(from); day < to; day = addDays(day, 1)) {
+    const count = events.filter((e) => eventTouchesDay(e, day)).length;
+    if (count > 0) map.set(format(day, 'yyyy-MM-dd'), count);
+  }
+  return map;
+}
+
 function hourLabel(hour: number): string {
   const h12 = hour % 12 === 0 ? 12 : hour % 12;
   return `${h12} ${hour < 12 ? 'AM' : 'PM'}`;
