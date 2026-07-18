@@ -2,6 +2,7 @@ import { ApiRequestError } from '@calendium/shared';
 import {
   isApiUnreachable,
   isDemoMode,
+  mockEventTemplates,
   mockEvents,
   mockThreadDetail,
   mockThreadPage,
@@ -109,5 +110,17 @@ describe('mock data generators (sanity)', () => {
       expect(new Date(e.start).getTime()).toBeLessThanOrEqual(new Date(to).getTime());
       expect(new Date(e.end).getTime()).toBeGreaterThanOrEqual(new Date(from).getTime());
     }
+  });
+
+  it('mockEventTemplates has well-formed, non-empty saved templates for the template picker', () => {
+    expect(mockEventTemplates.length).toBeGreaterThan(0);
+    for (const t of mockEventTemplates) {
+      expect(t.id).toBeTruthy();
+      expect(t.name).toBeTruthy();
+      expect(t.title).toBeTruthy();
+      expect(t.durationMinutes).toBeGreaterThan(0);
+    }
+    // Unique ids so the template picker can key off them.
+    expect(new Set(mockEventTemplates.map((t) => t.id)).size).toBe(mockEventTemplates.length);
   });
 });
