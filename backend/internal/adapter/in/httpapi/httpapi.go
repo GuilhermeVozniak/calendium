@@ -7,6 +7,7 @@ package httpapi
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"calendium/backend/internal/port"
 )
@@ -25,6 +26,10 @@ type Deps struct {
 	AI        port.AIService
 	Devices   port.DeviceService
 	Prefs     port.PrefsService
+	// Scheduling covers booking links, public booking, meeting polls,
+	// propose-new-time, and guest free/busy (owner surface authed elsewhere;
+	// New wires its public methods below without the auth middleware).
+	Scheduling port.SchedulingService
 	// Payments is the raw Stripe gateway. The webhook route verifies and
 	// applies events through Billing; the port is part of Deps so the
 	// composition surface matches the adapter contract.
@@ -58,6 +63,17 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("GET /v1/instance", s.handleInstance)
 	mux.HandleFunc("POST /v1/webhooks/stripe", s.handleStripeWebhook)
 	mux.HandleFunc("GET /v1/accounts/callback/{provider}", s.handleAccountCallback)
+
+	// Public scheduling surface (unauthenticated, rate limited): booking
+	// pages/slots/bookings and meeting-poll view/vote. Two buckets — reads
+	// generous, writes tight — per-IP, in-process (see ratelimit.go).
+	publicRead := newRateLimiter(60, 30, time.Now) // GETs: 60/min, burst 30
+	publicWrite := newRateLimiter(5, 5, time.Now)  // POSTs: 5/min, burst 5
+	mux.HandleFunc("GET /v1/public/booking/{slug}", s.rateLimited(publicRead, s.handlePublicBookingPage))
+	mux.HandleFunc("GET /v1/public/booking/{slug}/slots", s.rateLimited(publicRead, s.handlePublicSlots))
+	mux.HandleFunc("POST /v1/public/booking/{slug}/bookings", s.rateLimited(publicWrite, s.handlePublicBook))
+	mux.HandleFunc("GET /v1/public/polls/{token}", s.rateLimited(publicRead, s.handlePublicPoll))
+	mux.HandleFunc("POST /v1/public/polls/{token}/votes", s.rateLimited(publicWrite, s.handlePublicPollVote))
 
 	// Authenticated surface.
 	authed := func(pattern string, h http.HandlerFunc) {
