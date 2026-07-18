@@ -181,6 +181,8 @@ const ACCOUNT_GOOGLE: ConnectedAccount = {
   status: 'active',
   scopes: [],
   vipSenders: [],
+  signatureHtml: '',
+  autoBcc: [],
   lastSyncedAt: null,
   createdAt: new Date(2026, 0, 1).toISOString(),
 };
@@ -192,6 +194,8 @@ const ACCOUNT_MICROSOFT: ConnectedAccount = {
   status: 'active',
   scopes: [],
   vipSenders: [],
+  signatureHtml: '',
+  autoBcc: [],
   lastSyncedAt: null,
   createdAt: new Date(2026, 0, 1).toISOString(),
 };

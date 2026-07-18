@@ -336,7 +336,10 @@ export class ApiClient {
     });
   }
   removeReaction(messageId: string, emoji: string) {
-    return this.request<void>('DELETE', `/v1/mail/messages/${messageId}/reactions/${emoji}`);
+    return this.request<void>(
+      'DELETE',
+      `/v1/mail/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`
+    );
   }
 
   // --- Calendar ---

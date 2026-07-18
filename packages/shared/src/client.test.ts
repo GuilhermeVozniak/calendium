@@ -496,12 +496,23 @@ describe('mail M2.5 endpoints', () => {
     expect(calls[0]!.body).toEqual({ emoji: '\u{1F44D}', sendReply: true });
   });
 
-  it('removeReaction DELETEs the emoji-scoped reactions route', async () => {
+  it('removeReaction DELETEs the percent-encoded emoji-scoped reactions route', async () => {
     const { client, calls } = makeClient({ responses: [{ status: 204 }] });
     const result = await client.removeReaction('m1', '\u{1F44D}');
-    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/mail/messages/m1/reactions/\u{1F44D}`);
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/mail/messages/m1/reactions/%F0%9F%91%8D`);
     expect(calls[0]!.method).toBe('DELETE');
     expect(result).toBeUndefined();
+  });
+
+  // Keycap sequences (e.g. '#️⃣') start with ASCII '#', which the WHATWG URL
+  // state machine treats as the fragment delimiter in every runtime. Raw
+  // interpolation would silently truncate the DELETE path before the emoji;
+  // encodeURIComponent must run first so '#' never reaches the URL parser.
+  it('removeReaction percent-encodes keycap emoji so the leading "#" cannot truncate the URL path', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    await client.removeReaction('m1', '#\u{FE0F}\u{20E3}');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/mail/messages/m1/reactions/%23%EF%B8%8F%E2%83%A3`);
+    expect(calls[0]!.url).not.toContain('#');
   });
 });
 
