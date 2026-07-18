@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ApiClient, ApiRequestError, fetchInstance } from './client';
-import type { AiComposeRequest, CalendarSetInput, DraftInput, EventInput, EventPatch, EventTemplateInput } from './types';
+import type {
+  AiAskRequest,
+  AiComposeRequest,
+  CalendarSetInput,
+  ClassifierInput,
+  DraftInput,
+  EventInput,
+  EventPatch,
+  EventTemplateInput,
+} from './types';
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -417,6 +426,18 @@ const AI_REQUEST: AiComposeRequest = {
   threadId: 't1',
 };
 
+const AI_ASK_REQUEST: AiAskRequest = {
+  question: 'When is the deadline?',
+  threadId: 't1',
+};
+
+const CLASSIFIER_INPUT: ClassifierInput = {
+  name: 'Invoices',
+  prompt: 'invoice emails',
+  targetSplit: 'important',
+  enabled: true,
+};
+
 interface MethodCase {
   name: string;
   call: (client: ApiClient) => Promise<unknown>;
@@ -599,6 +620,66 @@ const methodCases: MethodCase[] = [
     method: 'POST',
     path: '/v1/ai/compose',
     body: { prompt: 'when is the meeting?', threadId: 't1', action: 'ask' },
+  },
+  {
+    name: 'aiAskCited',
+    call: (c) => c.aiAskCited(AI_ASK_REQUEST),
+    method: 'POST',
+    path: '/v1/ai/ask',
+    body: AI_ASK_REQUEST,
+  },
+  {
+    name: 'getInstantReplies',
+    call: (c) => c.getInstantReplies('t1'),
+    method: 'GET',
+    path: '/v1/mail/threads/t1/instant-replies',
+  },
+  {
+    name: 'aiEditDraft (no tone)',
+    call: (c) => c.aiEditDraft('improve', 'd1'),
+    method: 'POST',
+    path: '/v1/ai/compose',
+    body: { action: 'improve', draftId: 'd1', prompt: '' },
+  },
+  {
+    name: 'aiEditDraft (change_tone with tone)',
+    call: (c) => c.aiEditDraft('change_tone', 'd1', 'formal'),
+    method: 'POST',
+    path: '/v1/ai/compose',
+    body: { action: 'change_tone', draftId: 'd1', prompt: '', tone: 'formal' },
+  },
+  {
+    name: 'proposeEvent',
+    call: (c) => c.proposeEvent('t1'),
+    method: 'POST',
+    path: '/v1/ai/event-proposal',
+    body: { threadId: 't1' },
+  },
+  {
+    name: 'listClassifiers',
+    call: (c) => c.listClassifiers(),
+    method: 'GET',
+    path: '/v1/classifiers',
+  },
+  {
+    name: 'createClassifier',
+    call: (c) => c.createClassifier(CLASSIFIER_INPUT),
+    method: 'POST',
+    path: '/v1/classifiers',
+    body: CLASSIFIER_INPUT,
+  },
+  {
+    name: 'updateClassifier',
+    call: (c) => c.updateClassifier('c1', CLASSIFIER_INPUT),
+    method: 'PATCH',
+    path: '/v1/classifiers/c1',
+    body: CLASSIFIER_INPUT,
+  },
+  {
+    name: 'deleteClassifier',
+    call: (c) => c.deleteClassifier('c1'),
+    method: 'DELETE',
+    path: '/v1/classifiers/c1',
   },
 
   // --- Push devices ---
