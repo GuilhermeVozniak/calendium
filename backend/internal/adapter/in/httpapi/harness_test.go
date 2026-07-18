@@ -553,9 +553,12 @@ type fakeAIService struct {
 	err    error
 	gotReq domain.AiComposeRequest
 
-	askRet    domain.AiAskResponse
-	askErr    error
-	gotAskReq domain.AiAskRequest
+	askRet           domain.AiAskResponse
+	askErr           error
+	gotAskReq        domain.AiAskRequest
+	proposeRet       domain.AiEventProposal
+	proposeErr       error
+	gotProposeThread string
 }
 
 func (f *fakeAIService) Compose(ctx context.Context, userID string, req domain.AiComposeRequest) (domain.AiComposeResponse, error) {
@@ -566,6 +569,11 @@ func (f *fakeAIService) Compose(ctx context.Context, userID string, req domain.A
 func (f *fakeAIService) Ask(ctx context.Context, userID string, req domain.AiAskRequest) (domain.AiAskResponse, error) {
 	f.gotAskReq = req
 	return f.askRet, f.askErr
+}
+
+func (f *fakeAIService) ProposeEvent(ctx context.Context, userID, threadID string) (domain.AiEventProposal, error) {
+	f.gotProposeThread = threadID
+	return f.proposeRet, f.proposeErr
 }
 
 // --- DeviceService -----------------------------------------------------------

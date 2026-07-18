@@ -28,6 +28,7 @@ type AIServiceDeps struct {
 	Threads       port.ThreadRepo
 	Messages      port.MessageRepo
 	Drafts        port.DraftRepo
+	Calendar      port.CalendarService
 	VoiceProfiles port.VoiceProfileRepo // optional: nil skips voice-style injection
 	AI            port.AI
 	Clock         port.Clock
@@ -45,6 +46,8 @@ type AIService struct {
 	drafts        port.DraftRepo
 	voiceProfiles port.VoiceProfileRepo
 	ai            port.AI
+	calendar      port.CalendarService
+	clock         port.Clock
 }
 
 var _ port.AIService = (*AIService)(nil)
@@ -58,6 +61,8 @@ func NewAIService(d AIServiceDeps) *AIService {
 		drafts:        d.Drafts,
 		voiceProfiles: d.VoiceProfiles,
 		ai:            d.AI,
+		calendar:      d.Calendar,
+		clock:         d.Clock,
 	}
 }
 
@@ -253,6 +258,134 @@ func newestAskCandidates(msgs []domain.Message, t domain.Thread, limit int) []as
 	out := make([]askCandidate, 0, len(msgs)-start)
 	for _, m := range msgs[start:] {
 		out = append(out, askCandidate{msg: m, thread: t})
+	}
+	return out
+}
+
+// --- ProposeEvent (Instant Event AI, Task 14) -------------------------------
+
+const (
+	eventProposalWindow         = 7 * 24 * time.Hour
+	eventProposalSlotDuration   = 30 * time.Minute
+	eventProposalSlotLimit      = 10
+	eventProposalMinMinutes     = 15
+	eventProposalMaxMinutes     = 480
+	eventProposalDefaultMinutes = 30
+)
+
+// ProposeEvent reads the thread, computes real availability over the next 7
+// days, and asks the model to propose a concrete event. Model output is
+// validated against that context rather than passed through: an
+// unparseable/unoffered preferredSlot falls back to the first offered slot,
+// duration is clamped to [15, 480] minutes (default 30 when unset), and
+// attendees are intersected with the thread's actual participants (plus the
+// owning account, always included).
+func (s *AIService) ProposeEvent(ctx context.Context, userID, threadID string) (domain.AiEventProposal, error) {
+	var zero domain.AiEventProposal
+	if err := s.ent.require(ctx, userID); err != nil {
+		return zero, err
+	}
+	t, account, err := ownedThread(ctx, s.threads, s.accounts, userID, threadID)
+	if err != nil {
+		return zero, err
+	}
+	msgs, err := s.messages.ListByThread(ctx, t.ID)
+	if err != nil {
+		return zero, err
+	}
+
+	now := s.clock.Now()
+	slots, err := s.calendar.Availability(ctx, userID, now, now.Add(eventProposalWindow), eventProposalSlotDuration)
+	if err != nil {
+		return zero, err
+	}
+	if len(slots) == 0 {
+		return zero, fmt.Errorf("%w: no free slots", domain.ErrConflict)
+	}
+	if len(slots) > eventProposalSlotLimit {
+		slots = slots[:eventProposalSlotLimit]
+	}
+
+	var out eventProposalOut
+	if _, err := s.ai.CompleteJSON(ctx, eventProposalSystemPrompt, buildEventProposalUser(t.Subject, msgs, slots), &out); err != nil {
+		return zero, err
+	}
+
+	start, ok := matchOfferedSlot(out.PreferredSlot, slots)
+	if !ok {
+		start = slots[0].Start
+	}
+
+	title := strings.TrimSpace(out.Title)
+	if title == "" {
+		title = t.Subject
+	}
+
+	return domain.AiEventProposal{
+		Title:     title,
+		Attendees: intersectAttendees(out.AttendeeEmails, t.Participants, account.Email),
+		Start:     start,
+		End:       start.Add(time.Duration(clampDurationMinutes(out.DurationMinutes)) * time.Minute),
+		Location:  out.Location,
+		Notes:     out.Notes,
+	}, nil
+}
+
+// matchOfferedSlot parses candidate as RFC3339 and returns the offered slot
+// start it exactly matches; ok is false when candidate doesn't parse or
+// doesn't equal any offered slot (caller falls back to the first slot).
+func matchOfferedSlot(candidate string, slots []domain.AvailabilitySlot) (time.Time, bool) {
+	parsed, err := time.Parse(time.RFC3339, candidate)
+	if err != nil {
+		return time.Time{}, false
+	}
+	for _, s := range slots {
+		if s.Start.Equal(parsed) {
+			return s.Start, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// clampDurationMinutes bounds a model-proposed duration to [15, 480] minutes,
+// defaulting to 30 when unset (zero or negative).
+func clampDurationMinutes(m int) int {
+	switch {
+	case m <= 0:
+		return eventProposalDefaultMinutes
+	case m < eventProposalMinMinutes:
+		return eventProposalMinMinutes
+	case m > eventProposalMaxMinutes:
+		return eventProposalMaxMinutes
+	default:
+		return m
+	}
+}
+
+// intersectAttendees keeps only model-proposed emails that are actual thread
+// participants (case-insensitive dedup), always including the account owner.
+func intersectAttendees(proposed []string, participants []domain.EmailAddress, ownerEmail string) []string {
+	allowed := make(map[string]bool, len(participants))
+	for _, p := range participants {
+		allowed[strings.ToLower(p.Email)] = true
+	}
+	out := []string{}
+	seen := map[string]bool{}
+	add := func(email string) {
+		key := strings.ToLower(email)
+		if key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, email)
+	}
+	if ownerEmail != "" {
+		add(ownerEmail)
+	}
+	for _, e := range proposed {
+		if allowed[strings.ToLower(e)] {
+			add(e)
+		}
 	}
 	return out
 }

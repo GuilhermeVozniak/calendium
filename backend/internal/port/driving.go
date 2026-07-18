@@ -202,6 +202,10 @@ type AIService interface {
 	// thread when req.ThreadID is set) and returns the answer plus the thread/
 	// message ids it drew on. Counts against the daily AI budget.
 	Ask(ctx context.Context, userID string, req domain.AiAskRequest) (domain.AiAskResponse, error)
+	// ProposeEvent reads the thread and proposes a calendar event (title,
+	// attendees from participants, start/end aligned to real availability).
+	// The client reviews and creates it via the existing POST /v1/events.
+	ProposeEvent(ctx context.Context, userID, threadID string) (domain.AiEventProposal, error)
 }
 
 // DeviceService manages push-notification device registrations.

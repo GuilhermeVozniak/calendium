@@ -1260,6 +1260,8 @@ type fakeCalendarService struct {
 
 	lastAvailFrom time.Time
 	lastAvailTo   time.Time
+	lastAvailDur  time.Duration
+	availCalls    int
 }
 
 func newCalendarService() *fakeCalendarService { return &fakeCalendarService{} }
@@ -1290,8 +1292,9 @@ func (c *fakeCalendarService) RSVP(_ context.Context, _, _ string, _ domain.Rsvp
 	return domain.Event{}, nil
 }
 
-func (c *fakeCalendarService) Availability(_ context.Context, _ string, from, to time.Time, _ time.Duration) ([]domain.AvailabilitySlot, error) {
-	c.lastAvailFrom, c.lastAvailTo = from, to
+func (c *fakeCalendarService) Availability(_ context.Context, _ string, from, to time.Time, dur time.Duration) ([]domain.AvailabilitySlot, error) {
+	c.availCalls++
+	c.lastAvailFrom, c.lastAvailTo, c.lastAvailDur = from, to, dur
 	return c.slots, c.availErr
 }
 
