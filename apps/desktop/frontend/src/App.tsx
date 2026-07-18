@@ -290,7 +290,7 @@ export default function App() {
             </CommandItem>
             <CommandItem onSelect={() => runPalette(() => emitMailAction('snooze'))}>
               <Clock /> Snooze 3 hours
-              <CommandShortcut>Z</CommandShortcut>
+              <CommandShortcut>H</CommandShortcut>
             </CommandItem>
           </CommandGroup>
         </CommandList>

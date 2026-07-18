@@ -86,7 +86,7 @@ export function ThreadPane({
           <Tooltip
             label={
               <>
-                Snooze 3h <Kbd className="bg-primary-foreground/20 text-primary-foreground">Z</Kbd>
+                Snooze 3h <Kbd className="bg-primary-foreground/20 text-primary-foreground">H</Kbd>
               </>
             }
           >
