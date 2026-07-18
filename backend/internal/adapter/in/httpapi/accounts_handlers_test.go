@@ -130,6 +130,79 @@ func TestHandleSetVipSenders(t *testing.T) {
 	})
 }
 
+func TestHandleSetSignature(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		h := newHarness(t)
+		h.accounts.sigRet = domain.ConnectedAccount{ID: "acc1"}
+		rec := h.authed(http.MethodPut, "/v1/accounts/acc1/signature", jsonBody(t, map[string]string{"signatureHtml": "<p>Best,<br>Me</p>"}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.accounts.gotSigID != "acc1" || h.accounts.gotSig != "<p>Best,<br>Me</p>" {
+			t.Fatalf("gotSigID=%q gotSig=%q", h.accounts.gotSigID, h.accounts.gotSig)
+		}
+		var got domain.ConnectedAccount
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.ID != "acc1" {
+			t.Fatalf("got = %+v", got)
+		}
+	})
+
+	t.Run("other user's account not found", func(t *testing.T) {
+		h := newHarness(t)
+		h.accounts.sigErr = domain.ErrNotFound
+		rec := h.authed(http.MethodPut, "/v1/accounts/acc1/signature", jsonBody(t, map[string]string{"signatureHtml": "<p>x</p>"}))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("malformed JSON rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPut, "/v1/accounts/acc1/signature", strings.NewReader("{"))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+}
+
+func TestHandleSetAutoBcc(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		h := newHarness(t)
+		h.accounts.autoBccRet = domain.ConnectedAccount{ID: "acc1"}
+		rec := h.authed(http.MethodPut, "/v1/accounts/acc1/auto-bcc", jsonBody(t, map[string][]string{"autoBcc": {"archive@x.com"}}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.accounts.gotAutoBccID != "acc1" {
+			t.Fatalf("gotAutoBccID = %q, want acc1", h.accounts.gotAutoBccID)
+		}
+		want := []string{"archive@x.com"}
+		if !reflect.DeepEqual(h.accounts.gotAutoBcc, want) {
+			t.Fatalf("gotAutoBcc = %v, want %v", h.accounts.gotAutoBcc, want)
+		}
+	})
+
+	t.Run("other user's account not found", func(t *testing.T) {
+		h := newHarness(t)
+		h.accounts.autoBccErr = domain.ErrNotFound
+		rec := h.authed(http.MethodPut, "/v1/accounts/acc1/auto-bcc", jsonBody(t, map[string][]string{"autoBcc": {"archive@x.com"}}))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("malformed JSON rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPut, "/v1/accounts/acc1/auto-bcc", strings.NewReader("{"))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+}
+
 func TestHandleDisconnectAccount(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		h := newHarness(t)

@@ -299,27 +299,45 @@ type fakeMailService struct {
 	gotUnsubscribeID string
 
 	// M2.5: opens feed, smart send, attachments, contact, reactions
-	listOpensRet domain.Page[domain.OpenEvent]
-	listOpensErr error
+	listOpensRet     domain.Page[domain.OpenEvent]
+	listOpensErr     error
+	gotListOpensUser string
+	gotListOpensCur  string
+	gotListOpensLim  int
 
-	suggestSendRet domain.SendSuggestion
-	suggestSendErr error
+	suggestSendRet     domain.SendSuggestion
+	suggestSendErr     error
+	gotSuggestSendUser string
+	gotSuggestSendMail string
 
-	searchAttachmentsRet domain.Page[domain.AttachmentHit]
-	searchAttachmentsErr error
+	searchAttachmentsRet     domain.Page[domain.AttachmentHit]
+	searchAttachmentsErr     error
+	gotSearchAttachmentsUser string
+	gotSearchAttachmentsQ    port.AttachmentQuery
 
 	getAttachmentContentData     []byte
 	getAttachmentContentMimeType string
 	getAttachmentContentFilename string
 	getAttachmentContentErr      error
+	gotGetAttachmentContentUser  string
+	gotGetAttachmentContentID    string
 
-	getContactRet domain.ContactSummary
-	getContactErr error
+	getContactRet     domain.ContactSummary
+	getContactErr     error
+	gotGetContactUser string
+	gotGetContactMail string
 
-	reactRet port.ReactionResult
-	reactErr error
+	reactRet          port.ReactionResult
+	reactErr          error
+	gotReactUser      string
+	gotReactMessageID string
+	gotReactEmoji     string
+	gotReactSendReply bool
 
-	removeReactionErr error
+	removeReactionErr          error
+	gotRemoveReactionUser      string
+	gotRemoveReactionMessageID string
+	gotRemoveReactionEmoji     string
 }
 
 func (f *fakeMailService) ListThreads(ctx context.Context, userID string, q port.ThreadQuery) (domain.Page[domain.Thread], error) {
@@ -412,24 +430,31 @@ func (f *fakeMailService) UnsubscribeThread(ctx context.Context, userID, threadI
 	return f.unsubscribeRet, f.unsubscribeErr
 }
 func (f *fakeMailService) ListOpens(ctx context.Context, userID, cursor string, limit int) (domain.Page[domain.OpenEvent], error) {
+	f.gotListOpensUser, f.gotListOpensCur, f.gotListOpensLim = userID, cursor, limit
 	return f.listOpensRet, f.listOpensErr
 }
 func (f *fakeMailService) SuggestSendTime(ctx context.Context, userID, recipientEmail string) (domain.SendSuggestion, error) {
+	f.gotSuggestSendUser, f.gotSuggestSendMail = userID, recipientEmail
 	return f.suggestSendRet, f.suggestSendErr
 }
 func (f *fakeMailService) SearchAttachments(ctx context.Context, userID string, q port.AttachmentQuery) (domain.Page[domain.AttachmentHit], error) {
+	f.gotSearchAttachmentsUser, f.gotSearchAttachmentsQ = userID, q
 	return f.searchAttachmentsRet, f.searchAttachmentsErr
 }
 func (f *fakeMailService) GetAttachmentContent(ctx context.Context, userID, attachmentID string) ([]byte, string, string, error) {
+	f.gotGetAttachmentContentUser, f.gotGetAttachmentContentID = userID, attachmentID
 	return f.getAttachmentContentData, f.getAttachmentContentMimeType, f.getAttachmentContentFilename, f.getAttachmentContentErr
 }
 func (f *fakeMailService) GetContact(ctx context.Context, userID, email string) (domain.ContactSummary, error) {
+	f.gotGetContactUser, f.gotGetContactMail = userID, email
 	return f.getContactRet, f.getContactErr
 }
 func (f *fakeMailService) ReactToMessage(ctx context.Context, userID, messageID, emoji string, sendReply bool) (port.ReactionResult, error) {
+	f.gotReactUser, f.gotReactMessageID, f.gotReactEmoji, f.gotReactSendReply = userID, messageID, emoji, sendReply
 	return f.reactRet, f.reactErr
 }
 func (f *fakeMailService) RemoveReaction(ctx context.Context, userID, messageID, emoji string) error {
+	f.gotRemoveReactionUser, f.gotRemoveReactionMessageID, f.gotRemoveReactionEmoji = userID, messageID, emoji
 	return f.removeReactionErr
 }
 

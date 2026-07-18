@@ -58,6 +58,40 @@ func (s *server) handleSetVipSenders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, account)
 }
 
+// handleSetSignature replaces the account's rich signature.
+func (s *server) handleSetSignature(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		SignatureHTML string `json:"signatureHtml"`
+	}
+	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	account, err := s.deps.Accounts.SetSignature(r.Context(), userFrom(r).ID, r.PathValue("id"), in.SignatureHTML)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, account)
+}
+
+// handleSetAutoBcc replaces the account's auto-BCC list applied at send.
+func (s *server) handleSetAutoBcc(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		AutoBcc []string `json:"autoBcc"`
+	}
+	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	account, err := s.deps.Accounts.SetAutoBcc(r.Context(), userFrom(r).ID, r.PathValue("id"), in.AutoBcc)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, account)
+}
+
 // handleAccountCallback is the browser-facing OAuth redirect target the
 // provider sends the code+state to (redirect_uri = this route). It is
 // unauthenticated (the one-time state authenticates the flow); after the

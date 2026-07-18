@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"calendium/backend/internal/domain"
@@ -346,6 +347,133 @@ func (s *server) handleUpdateSnippet(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleDeleteSnippet(w http.ResponseWriter, r *http.Request) {
 	if err := s.deps.Mail.DeleteSnippet(r.Context(), userFrom(r).ID, r.PathValue("id")); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- opens, smart send, attachments, contacts, reactions (M2.5) ----------
+
+func (s *server) handleListOpens(w http.ResponseWriter, r *http.Request) {
+	qs := r.URL.Query()
+	cursor := qs.Get("cursor")
+	limit := 0
+	if v := qs.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			s.writeError(w, r, fmt.Errorf("%w: limit must be a positive integer", domain.ErrValidation))
+			return
+		}
+		limit = n
+	}
+	page, err := s.deps.Mail.ListOpens(r.Context(), userFrom(r).ID, cursor, limit)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+// handleSendSuggestion returns the Smart Send recommendation for a
+// recipient. A 404 means "no suggestion yet" (thin history) — the client
+// treats it as absence, not an error toast.
+func (s *server) handleSendSuggestion(w http.ResponseWriter, r *http.Request) {
+	email := r.URL.Query().Get("email")
+	if email == "" {
+		s.writeError(w, r, fmt.Errorf("%w: email is required", domain.ErrValidation))
+		return
+	}
+	suggestion, err := s.deps.Mail.SuggestSendTime(r.Context(), userFrom(r).ID, email)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, suggestion)
+}
+
+func (s *server) handleSearchAttachments(w http.ResponseWriter, r *http.Request) {
+	qs := r.URL.Query()
+	q := port.AttachmentQuery{
+		Query:    qs.Get("q"),
+		Contact:  qs.Get("contact"),
+		ThreadID: qs.Get("threadId"),
+		Cursor:   qs.Get("cursor"),
+	}
+	if v := qs.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			s.writeError(w, r, fmt.Errorf("%w: limit must be a positive integer", domain.ErrValidation))
+			return
+		}
+		q.Limit = n
+	}
+	page, err := s.deps.Mail.SearchAttachments(r.Context(), userFrom(r).ID, q)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+// handleGetAttachmentContent streams the raw attachment bytes (no JSON
+// envelope): Content-Type from the provider's reported mime type and an
+// inline Content-Disposition so browsers preview rather than force-download.
+func (s *server) handleGetAttachmentContent(w http.ResponseWriter, r *http.Request) {
+	data, mimeType, filename, err := s.deps.Mail.GetAttachmentContent(r.Context(), userFrom(r).ID, r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Disposition", `inline; filename="`+escapeQuotedString(filename)+`"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+// escapeQuotedString escapes backslashes and double quotes so filename can
+// be safely embedded in a quoted-string HTTP header parameter (RFC 6266).
+func escapeQuotedString(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return s
+}
+
+func (s *server) handleGetContact(w http.ResponseWriter, r *http.Request) {
+	contact, err := s.deps.Mail.GetContact(r.Context(), userFrom(r).ID, r.PathValue("email"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, contact)
+}
+
+func (s *server) handleReactToMessage(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Emoji     string `json:"emoji"`
+		SendReply bool   `json:"sendReply"`
+	}
+	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if in.Emoji == "" {
+		s.writeError(w, r, fmt.Errorf("%w: emoji is required", domain.ErrValidation))
+		return
+	}
+	res, err := s.deps.Mail.ReactToMessage(r.Context(), userFrom(r).ID, r.PathValue("id"), in.Emoji, in.SendReply)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *server) handleRemoveReaction(w http.ResponseWriter, r *http.Request) {
+	if err := s.deps.Mail.RemoveReaction(r.Context(), userFrom(r).ID, r.PathValue("id"), r.PathValue("emoji")); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
