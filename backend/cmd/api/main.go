@@ -148,6 +148,7 @@ func run(logger *slog.Logger) error {
 		Usage:         store.AiUsage(),
 		VoiceProfiles: store.VoiceProfiles(),
 		Calendar:      calendars,
+		Classifiers:   store.Classifiers(),
 		AI:            ai,
 		Clock:         clock,
 		DailyLimit:    cfg.OpenRouter.DailyLimit,

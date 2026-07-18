@@ -453,10 +453,133 @@ func (s *AIJobService) accountZone(ctx context.Context, userID string) *time.Loc
 	return loc
 }
 
-// runClassify is a stub in this task; Task 9 fills in real classification.
+// runClassify evaluates every enabled classifier the user has defined
+// against the thread's newest message and, for genuine matches, routes the
+// thread split and/or attaches a local per-classifier label. It costs no
+// budget and makes no AI call when the user has no enabled classifiers.
 func (s *AIJobService) runClassify(ctx context.Context, j domain.AiJob) error {
-	_, err := s.threadFor(ctx, j)
-	return err
+	t, err := s.threadFor(ctx, j)
+	if err != nil {
+		return err
+	}
+	classifiers, err := s.d.Classifiers.ListEnabledByUser(ctx, j.UserID)
+	if err != nil {
+		return err
+	}
+	if len(classifiers) == 0 {
+		return nil // nothing to evaluate; complete without spending budget
+	}
+	msgs, err := s.d.Messages.ListByThread(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	if len(msgs) == 0 {
+		return nil // thread has no messages yet (shouldn't happen at ingest, but not fatal)
+	}
+	newest := msgs[len(msgs)-1] // ListByThread preserves insertion order; the newest ingested message is last
+	body := newest.BodyText
+	if body == "" {
+		body = newest.BodyHTML
+	}
+	user := fmt.Sprintf("Subject: %s\nFrom: %s\n\n%s", t.Subject, newest.From.Email, truncate(body, aiContextBodyMax))
+
+	var out classifyOut
+	if _, err := s.completeJSONBudgeted(ctx, j.UserID, buildClassifySystem(classifiers), user, &out); err != nil {
+		return err
+	}
+
+	byID := make(map[string]domain.AiClassifier, len(classifiers))
+	for _, c := range classifiers {
+		byID[c.ID] = c
+	}
+	// Hallucinated/unknown ids the model returns are silently dropped rather
+	// than erroring the job.
+	var matched []domain.AiClassifier
+	for _, id := range out.MatchedIDs {
+		if c, ok := byID[id]; ok {
+			matched = append(matched, c)
+		}
+	}
+	if len(matched) == 0 {
+		return nil
+	}
+
+	// Labels first (a dedicated, narrow write): union each matched
+	// classifier's local label onto the thread. The label is scoped to the
+	// classifier via a synthetic ProviderLabelID so re-matching the same
+	// classifier on a later message reuses the same label row instead of
+	// duplicating it.
+	var newLabelIDs []string
+	for _, c := range matched {
+		if c.LabelName == "" {
+			continue
+		}
+		label, err := s.d.Labels.Upsert(ctx, domain.Label{
+			ID:              newID(),
+			AccountID:       t.AccountID,
+			ProviderLabelID: "calendium-ai:" + c.ID,
+			Name:            c.LabelName,
+			Kind:            domain.LabelKindUser,
+		})
+		if err != nil {
+			return err
+		}
+		newLabelIDs = append(newLabelIDs, label.ID)
+	}
+	if len(newLabelIDs) > 0 {
+		fresh, err := s.d.Threads.GetByID(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		if err := s.d.Threads.SetLabels(ctx, t.ID, unionStrings(fresh.LabelIDs, newLabelIDs)); err != nil {
+			return err
+		}
+	}
+
+	// Split routing: the last matching classifier with a TargetSplit wins.
+	// ThreadRepo has no narrower "split-only" write, so this re-fetches the
+	// thread (picking up the label write above and any other concurrent
+	// change) immediately before a full Update — acceptable because
+	// classification runs within seconds of ingest, when the odds of a
+	// genuine concurrent user mutation racing this exact window are
+	// negligible.
+	var targetSplit domain.InboxSplit
+	for _, c := range matched {
+		if c.TargetSplit != "" {
+			targetSplit = c.TargetSplit
+		}
+	}
+	if targetSplit != "" {
+		fresh, err := s.d.Threads.GetByID(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		fresh.Split = targetSplit
+		if err := s.d.Threads.Update(ctx, fresh); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// unionStrings appends add's elements onto existing, skipping duplicates and
+// preserving existing's order followed by add's first-seen order.
+func unionStrings(existing, add []string) []string {
+	seen := make(map[string]struct{}, len(existing)+len(add))
+	out := make([]string, 0, len(existing)+len(add))
+	for _, id := range existing {
+		if _, ok := seen[id]; !ok {
+			seen[id] = struct{}{}
+			out = append(out, id)
+		}
+	}
+	for _, id := range add {
+		if _, ok := seen[id]; !ok {
+			seen[id] = struct{}{}
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // runReminderDetect judges whether the owner's sent mail (Task 5 enqueues

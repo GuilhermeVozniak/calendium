@@ -35,8 +35,11 @@ type AIServiceDeps struct {
 	// AIJobService's background handlers charge, so interactive and
 	// background AI usage share one cap.
 	Usage port.AiUsageRepo
-	AI    port.AI
-	Clock port.Clock
+	// Classifiers backs the user's custom natural-language classifier CRUD
+	// and the classify job kind's rule set.
+	Classifiers port.ClassifierRepo
+	AI          port.AI
+	Clock       port.Clock
 	// DailyLimit mirrors AIJobServiceDeps.DailyLimit (AI_DAILY_LIMIT,
 	// default 300 when unset/non-positive).
 	DailyLimit int
@@ -45,7 +48,7 @@ type AIServiceDeps struct {
 }
 
 // AIService implements port.AIService (OpenRouter-backed
-// compose/reply/summarize/ask/instant-replies).
+// compose/reply/summarize/ask/instant-replies, plus classifier CRUD).
 // voiceProfiles (AIServiceDeps.VoiceProfiles) is accepted now but not yet
 // stored/used here: it's wired ahead of Task 11 (voice-matched compose) so
 // that task's diff only adds behavior, not deps plumbing.
@@ -61,6 +64,7 @@ type AIService struct {
 	calendar      port.CalendarService
 	clock         port.Clock
 	dailyLimit    int
+	classifiers   port.ClassifierRepo
 }
 
 var _ port.AIService = (*AIService)(nil)
@@ -82,6 +86,7 @@ func NewAIService(d AIServiceDeps) *AIService {
 		calendar:      d.Calendar,
 		clock:         d.Clock,
 		dailyLimit:    limit,
+		classifiers:   d.Classifiers,
 	}
 }
 
@@ -452,6 +457,116 @@ func (s *AIService) InstantReplies(ctx context.Context, userID, threadID string)
 		return nil, err
 	}
 	return replies, nil
+}
+
+// maxClassifiersPerUser caps how many custom natural-language classifiers a
+// user may define, keeping buildClassifySystem's per-message prompt (every
+// enabled rule is sent on every classify job) bounded.
+const maxClassifiersPerUser = 20
+
+// --- Classifier CRUD (Task 9) ---
+
+func (s *AIService) ListClassifiers(ctx context.Context, userID string) ([]domain.AiClassifier, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return nil, err
+	}
+	cs, err := s.classifiers.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if cs == nil {
+		cs = []domain.AiClassifier{}
+	}
+	return cs, nil
+}
+
+func (s *AIService) CreateClassifier(ctx context.Context, userID string, in port.ClassifierInput) (domain.AiClassifier, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.AiClassifier{}, err
+	}
+	c, err := validateClassifierInput(in)
+	if err != nil {
+		return domain.AiClassifier{}, err
+	}
+	existing, err := s.classifiers.ListByUser(ctx, userID)
+	if err != nil {
+		return domain.AiClassifier{}, err
+	}
+	if len(existing) >= maxClassifiersPerUser {
+		return domain.AiClassifier{}, fmt.Errorf("%w: maximum of %d classifiers per user", domain.ErrValidation, maxClassifiersPerUser)
+	}
+	c.ID = newID()
+	c.UserID = userID
+	return s.classifiers.Create(ctx, c)
+}
+
+func (s *AIService) UpdateClassifier(ctx context.Context, userID, classifierID string, in port.ClassifierInput) (domain.AiClassifier, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.AiClassifier{}, err
+	}
+	existing, err := s.classifiers.GetByID(ctx, classifierID)
+	if err != nil {
+		return domain.AiClassifier{}, err
+	}
+	if existing.UserID != userID {
+		return domain.AiClassifier{}, domain.ErrNotFound
+	}
+	c, err := validateClassifierInput(in)
+	if err != nil {
+		return domain.AiClassifier{}, err
+	}
+	c.ID = existing.ID
+	c.UserID = userID
+	if err := s.classifiers.Update(ctx, c); err != nil {
+		return domain.AiClassifier{}, err
+	}
+	return c, nil
+}
+
+func (s *AIService) DeleteClassifier(ctx context.Context, userID, classifierID string) error {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return err
+	}
+	existing, err := s.classifiers.GetByID(ctx, classifierID)
+	if err != nil {
+		return err
+	}
+	if existing.UserID != userID {
+		return domain.ErrNotFound
+	}
+	return s.classifiers.Delete(ctx, classifierID)
+}
+
+// validateClassifierInput enforces: name and prompt required (trimmed
+// non-empty); TargetSplit, when set, must be a known domain.InboxSplit; at
+// least one of TargetSplit/LabelName must be set (otherwise a match would do
+// nothing). It returns a domain.AiClassifier with everything but ID/UserID
+// populated; callers set those.
+func validateClassifierInput(in port.ClassifierInput) (domain.AiClassifier, error) {
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		return domain.AiClassifier{}, fmt.Errorf("%w: name is required", domain.ErrValidation)
+	}
+	prompt := strings.TrimSpace(in.Prompt)
+	if prompt == "" {
+		return domain.AiClassifier{}, fmt.Errorf("%w: prompt is required", domain.ErrValidation)
+	}
+	if in.TargetSplit != "" {
+		if _, err := domain.ParseInboxSplit(string(in.TargetSplit)); err != nil {
+			return domain.AiClassifier{}, err
+		}
+	}
+	labelName := strings.TrimSpace(in.LabelName)
+	if in.TargetSplit == "" && labelName == "" {
+		return domain.AiClassifier{}, fmt.Errorf("%w: at least one of targetSplit or labelName is required", domain.ErrValidation)
+	}
+	return domain.AiClassifier{
+		Name:        name,
+		Prompt:      prompt,
+		TargetSplit: in.TargetSplit,
+		LabelName:   labelName,
+		Enabled:     in.Enabled,
+	}, nil
 }
 
 func systemPromptFor(req domain.AiComposeRequest) string {

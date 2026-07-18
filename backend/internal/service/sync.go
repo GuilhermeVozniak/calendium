@@ -32,49 +32,56 @@ type SyncServiceDeps struct {
 	OAuth             map[domain.Provider]port.OAuthGateway
 	Push              port.PushSender // optional; nil disables notifications
 	AiJobs            port.AiJobRepo  // optional; nil disables AI enqueueing
-	Clock             port.Clock
+	// Classifiers is optional (nil when AI is not configured); when set, it
+	// gates the classify job kind at enqueue time so a user with no enabled
+	// classifiers never pays a job-queue/budget cost for evaluating an empty
+	// rule set (see hasClassifiers in applyMailPage).
+	Classifiers port.ClassifierRepo
+	Clock       port.Clock
 }
 
 // SyncService implements port.SyncService: incremental provider sync (with
 // split-inbox classification at ingest) and scheduled work — delayed sends,
 // snooze wake-ups, and follow-up reminders.
 type SyncService struct {
-	accounts  port.AccountRepo
-	labels    port.LabelRepo
-	threads   port.ThreadRepo
-	messages  port.MessageRepo
-	drafts    port.DraftRepo
-	calendars port.CalendarRepo
-	events    port.EventRepo
-	devices   port.DeviceRepo
-	syncState port.SyncStateRepo
-	mail      map[domain.Provider]port.MailProvider
-	cal       map[domain.Provider]port.CalendarProvider
-	tokens    tokenSource
-	push      port.PushSender
-	aiJobs    port.AiJobRepo
-	clock     port.Clock
+	accounts    port.AccountRepo
+	labels      port.LabelRepo
+	threads     port.ThreadRepo
+	messages    port.MessageRepo
+	drafts      port.DraftRepo
+	calendars   port.CalendarRepo
+	events      port.EventRepo
+	devices     port.DeviceRepo
+	syncState   port.SyncStateRepo
+	mail        map[domain.Provider]port.MailProvider
+	cal         map[domain.Provider]port.CalendarProvider
+	tokens      tokenSource
+	push        port.PushSender
+	aiJobs      port.AiJobRepo
+	classifiers port.ClassifierRepo
+	clock       port.Clock
 }
 
 var _ port.SyncService = (*SyncService)(nil)
 
 func NewSyncService(d SyncServiceDeps) *SyncService {
 	return &SyncService{
-		accounts:  d.Accounts,
-		labels:    d.Labels,
-		threads:   d.Threads,
-		messages:  d.Messages,
-		drafts:    d.Drafts,
-		calendars: d.Calendars,
-		events:    d.Events,
-		devices:   d.Devices,
-		syncState: d.SyncState,
-		mail:      d.MailProviders,
-		cal:       d.CalendarProviders,
-		tokens:    tokenSource{accounts: d.Accounts, oauth: d.OAuth, clock: d.Clock},
-		push:      d.Push,
-		aiJobs:    d.AiJobs,
-		clock:     d.Clock,
+		accounts:    d.Accounts,
+		labels:      d.Labels,
+		threads:     d.Threads,
+		messages:    d.Messages,
+		drafts:      d.Drafts,
+		calendars:   d.Calendars,
+		events:      d.Events,
+		devices:     d.Devices,
+		syncState:   d.SyncState,
+		mail:        d.MailProviders,
+		cal:         d.CalendarProviders,
+		tokens:      tokenSource{accounts: d.Accounts, oauth: d.OAuth, clock: d.Clock},
+		push:        d.Push,
+		aiJobs:      d.AiJobs,
+		classifiers: d.Classifiers,
+		clock:       d.Clock,
 	}
 }
 
@@ -155,6 +162,18 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 		}
 		for _, l := range all {
 			labelIDByProvider[l.ProviderLabelID] = l.ID
+		}
+	}
+
+	// hasClassifiers gates the classify job kind below: computed once per
+	// page (not per thread) since it's the same answer for every thread on
+	// this account. A repo error is treated as "assume none" (skip
+	// enqueueing) rather than failing the whole sync page, consistent with
+	// enqueueIngestAiJobs's own best-effort Enqueue calls.
+	hasClassifiers := false
+	if s.classifiers != nil {
+		if cs, err := s.classifiers.ListEnabledByUser(ctx, acct.UserID); err == nil {
+			hasClassifiers = len(cs) > 0
 		}
 	}
 
@@ -251,7 +270,7 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 		hasReply := hasNewInboundReply(page.Messages, t.ProviderThreadID, acct.Email, since)
 		// Enqueue AI jobs for new inbound replies.
 		if hasReply {
-			s.enqueueIngestAiJobs(ctx, acct, saved)
+			s.enqueueIngestAiJobs(ctx, acct, saved, hasClassifiers)
 		}
 		// Push on newly-synced important/vip mail (a genuinely new inbound
 		// message the owner has not sent). Only worth collecting when push is
@@ -302,7 +321,7 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 // enqueueIngestAiJobs queues background AI work for a thread that just
 // received a genuinely new inbound message. Enqueue failures are intentionally
 // discarded — AI enqueueing must never fail sync.
-func (s *SyncService) enqueueIngestAiJobs(ctx context.Context, acct domain.ConnectedAccount, t domain.Thread) {
+func (s *SyncService) enqueueIngestAiJobs(ctx context.Context, acct domain.ConnectedAccount, t domain.Thread, hasClassifiers bool) {
 	if s.aiJobs == nil {
 		return
 	}
@@ -339,16 +358,21 @@ func (s *SyncService) enqueueIngestAiJobs(ctx context.Context, acct domain.Conne
 			RunAfter:  s.clock.Now(),
 		})
 	}
-	// classify: enqueued for every new-inbound thread regardless of split
-	_ = s.aiJobs.Enqueue(ctx, domain.AiJob{
-		ID:        newID(),
-		UserID:    acct.UserID,
-		AccountID: acct.ID,
-		Kind:      domain.AiJobClassify,
-		ThreadID:  &t.ID,
-		Payload:   map[string]string{},
-		RunAfter:  s.clock.Now(),
-	})
+	// classify: enqueued for every new-inbound thread regardless of split,
+	// but only when the user has at least one enabled classifier — otherwise
+	// the job would just spend a queue slot (and, once dispatched, an AI
+	// budget unit) evaluating an empty rule set for nothing.
+	if hasClassifiers {
+		_ = s.aiJobs.Enqueue(ctx, domain.AiJob{
+			ID:        newID(),
+			UserID:    acct.UserID,
+			AccountID: acct.ID,
+			Kind:      domain.AiJobClassify,
+			ThreadID:  &t.ID,
+			Payload:   map[string]string{},
+			RunAfter:  s.clock.Now(),
+		})
+	}
 }
 
 // vipSet builds the lowercased VIP-sender lookup passed to ClassifySplit;

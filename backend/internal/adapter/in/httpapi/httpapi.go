@@ -129,6 +129,11 @@ func New(deps Deps) http.Handler {
 	authed("POST /v1/ai/ask", s.handleAiAsk)
 	authed("POST /v1/ai/event-proposal", s.handleAiEventProposal)
 
+	authed("GET /v1/classifiers", s.handleListClassifiers)
+	authed("POST /v1/classifiers", s.handleCreateClassifier)
+	authed("PATCH /v1/classifiers/{id}", s.handleUpdateClassifier)
+	authed("DELETE /v1/classifiers/{id}", s.handleDeleteClassifier)
+
 	authed("POST /v1/devices", s.handleRegisterDevice)
 	authed("DELETE /v1/devices/{id}", s.handleUnregisterDevice)
 

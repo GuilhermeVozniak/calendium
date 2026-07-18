@@ -1428,15 +1428,17 @@ func TestProcessDueWorkNothingDue(t *testing.T) {
 // Table-driven tests for AI job enqueue at ingest.
 func TestSyncAccountEnqueueAiJobsAtIngest(t *testing.T) {
 	tests := []struct {
-		name          string
-		split         domain.InboxSplit
-		hasNewInbound bool
-		expectedKinds map[domain.AiJobKind]bool
+		name           string
+		split          domain.InboxSplit
+		hasNewInbound  bool
+		hasClassifiers bool
+		expectedKinds  map[domain.AiJobKind]bool
 	}{
 		{
-			name:          "important split with new inbound",
-			split:         domain.SplitImportant,
-			hasNewInbound: true,
+			name:           "important split with new inbound",
+			split:          domain.SplitImportant,
+			hasNewInbound:  true,
+			hasClassifiers: true,
 			expectedKinds: map[domain.AiJobKind]bool{
 				domain.AiJobThreadSummary:  true,
 				domain.AiJobInstantReplies: true,
@@ -1445,9 +1447,23 @@ func TestSyncAccountEnqueueAiJobsAtIngest(t *testing.T) {
 			},
 		},
 		{
-			name:          "vip split with new inbound",
-			split:         domain.SplitVIP,
-			hasNewInbound: true,
+			name:           "important split with new inbound but no enabled classifiers",
+			split:          domain.SplitImportant,
+			hasNewInbound:  true,
+			hasClassifiers: false,
+			expectedKinds: map[domain.AiJobKind]bool{
+				domain.AiJobThreadSummary:  true,
+				domain.AiJobInstantReplies: true,
+				domain.AiJobAutoDraft:      true,
+				// AiJobClassify deliberately absent: no enabled classifier for
+				// this user, so the classify job must not be enqueued.
+			},
+		},
+		{
+			name:           "vip split with new inbound",
+			split:          domain.SplitVIP,
+			hasNewInbound:  true,
+			hasClassifiers: true,
 			expectedKinds: map[domain.AiJobKind]bool{
 				domain.AiJobThreadSummary:  true,
 				domain.AiJobInstantReplies: true,
@@ -1456,9 +1472,10 @@ func TestSyncAccountEnqueueAiJobsAtIngest(t *testing.T) {
 			},
 		},
 		{
-			name:          "team split with new inbound",
-			split:         domain.SplitTeam,
-			hasNewInbound: true,
+			name:           "team split with new inbound",
+			split:          domain.SplitTeam,
+			hasNewInbound:  true,
+			hasClassifiers: true,
 			expectedKinds: map[domain.AiJobKind]bool{
 				domain.AiJobThreadSummary:  true,
 				domain.AiJobInstantReplies: true,
@@ -1466,9 +1483,10 @@ func TestSyncAccountEnqueueAiJobsAtIngest(t *testing.T) {
 			},
 		},
 		{
-			name:          "calendar split with new inbound",
-			split:         domain.SplitCalendar,
-			hasNewInbound: true,
+			name:           "calendar split with new inbound",
+			split:          domain.SplitCalendar,
+			hasNewInbound:  true,
+			hasClassifiers: true,
 			expectedKinds: map[domain.AiJobKind]bool{
 				domain.AiJobThreadSummary:  true,
 				domain.AiJobInstantReplies: true,
@@ -1476,18 +1494,20 @@ func TestSyncAccountEnqueueAiJobsAtIngest(t *testing.T) {
 			},
 		},
 		{
-			name:          "other split with new inbound",
-			split:         domain.SplitOther,
-			hasNewInbound: true,
+			name:           "other split with new inbound",
+			split:          domain.SplitOther,
+			hasNewInbound:  true,
+			hasClassifiers: true,
 			expectedKinds: map[domain.AiJobKind]bool{
 				domain.AiJobClassify: true,
 			},
 		},
 		{
-			name:          "important split without new inbound",
-			split:         domain.SplitImportant,
-			hasNewInbound: false,
-			expectedKinds: map[domain.AiJobKind]bool{},
+			name:           "important split without new inbound",
+			split:          domain.SplitImportant,
+			hasNewInbound:  false,
+			hasClassifiers: true,
+			expectedKinds:  map[domain.AiJobKind]bool{},
 		},
 	}
 
@@ -1515,6 +1535,14 @@ func TestSyncAccountEnqueueAiJobsAtIngest(t *testing.T) {
 			labels := newLabelRepo()
 			syncState := newSyncStateRepo()
 			aiJobs := newAiJobRepo()
+			classifiers := newClassifierRepo()
+			if tt.hasClassifiers {
+				if _, err := classifiers.Create(ctx, domain.AiClassifier{
+					UserID: "u1", Name: "test rule", Prompt: "test", LabelName: "Test", Enabled: true,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
 
 			page := port.MailSyncPage{
 				Threads:    []domain.Thread{{ProviderThreadID: "pt1", InInbox: true, LastMessageAt: now}},
@@ -1557,7 +1585,7 @@ func TestSyncAccountEnqueueAiJobsAtIngest(t *testing.T) {
 
 			svc := NewSyncService(SyncServiceDeps{
 				Accounts: accounts, Labels: labels, Threads: threads, Messages: messages,
-				SyncState: syncState, AiJobs: aiJobs,
+				SyncState: syncState, AiJobs: aiJobs, Classifiers: classifiers,
 				MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
 				OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
 				Clock:         newClock(now),
