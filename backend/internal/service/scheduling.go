@@ -49,8 +49,8 @@ type SchedulingServiceDeps struct {
 }
 
 // SchedulingService implements the booking-link surface of
-// port.SchedulingService (CRUD, public page, public slots). Book, meeting
-// polls, propose-new-time, and guest free/busy are added by later tasks in
+// port.SchedulingService (CRUD, public page, public slots), meeting polls,
+// and propose-new-time. Book and guest free/busy are added by later tasks in
 // additional files in this package.
 type SchedulingService struct {
 	ent       entitlement
@@ -62,6 +62,7 @@ type SchedulingService struct {
 	bookings  port.BookingRepo
 	settings  port.UserSettingsRepo
 	polls     port.PollRepo
+	proposals port.TimeProposalRepo
 	cal       map[domain.Provider]port.CalendarProvider
 	mail      map[domain.Provider]port.MailProvider
 	tokens    tokenSource
@@ -79,6 +80,7 @@ func NewSchedulingService(d SchedulingServiceDeps) *SchedulingService {
 		bookings:  d.Bookings,
 		settings:  d.Settings,
 		polls:     d.Polls,
+		proposals: d.Proposals,
 		cal:       d.CalendarProviders,
 		mail:      d.MailProviders,
 		tokens:    tokenSource{accounts: d.Accounts, oauth: d.OAuth, clock: d.Clock},
