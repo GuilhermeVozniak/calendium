@@ -1,8 +1,11 @@
 package service
 
 // ai_jobs_test.go covers AIJobService: graceful degradation with no AI
-// configured, batch claim + dispatch, the per-user daily budget gate, and
-// the retry/backoff/dead-letter/drop policy in runJob's error switch.
+// configured, batch claim + dispatch, and the retry/backoff/dead-letter/drop
+// policy in runJob (via classifyJobError). It also covers completeJSONBudgeted,
+// the per-user daily budget gate every real LLM-calling handler must go
+// through (Tasks 6-14) — direct-tested here since this task's handlers are
+// still stubs that don't call it yet.
 //
 // The run* handlers are stubs in this task (Tasks 6-11 fill in real
 // generation); the only real behavior they have today is the shared
@@ -13,9 +16,17 @@ package service
 // "unknown kind" scenarios both use an unrecognized Kind, since it's the
 // only source of a non-nil, non-ErrNotFound error while the six known kinds
 // are stubbed to succeed once their thread guard passes.
+//
+// Because the budget check now lives inside completeJSONBudgeted (called by
+// no stub handler yet), errAIBudgetExhausted can't be produced by driving a
+// job through ProcessDueAiJobs/dispatch today; its runJob mapping is instead
+// covered by TestClassifyJobError's table below, which exercises
+// classifyJobError directly as a pure function.
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +34,8 @@ import (
 	"calendium/backend/internal/domain"
 )
 
-func strPtr(s string) *string { return &s }
+func strPtr(s string) *string        { return &s }
+func timePtr(t time.Time) *time.Time { return &t }
 
 func TestProcessDueAiJobsNoAIConfigured(t *testing.T) {
 	jobs := newAiJobRepo()
@@ -82,47 +94,244 @@ func TestProcessDueAiJobsDispatchesClaimedBatch(t *testing.T) {
 	}
 }
 
-func TestRunJobBudgetExhaustedParksUntilNextMidnight(t *testing.T) {
-	ctx := context.Background()
-	now := time.Date(2026, 7, 18, 15, 30, 0, 0, time.UTC)
-	clock := newClock(now)
-
-	usage := newAiUsageRepo()
-	usage.calls["u1"] = 1 // one call already made against a limit of 1
-
-	jobs := newAiJobRepo()
-	jobs.queue = []domain.AiJob{
-		{ID: "j1", UserID: "u1", Kind: domain.AiJobThreadSummary, ThreadID: strPtr("missing"), Attempts: 1},
+// TestCompleteJSONBudgeted covers the budget choke point every real
+// LLM-calling handler (Tasks 6-14) must go through: IncrementAndCheck first,
+// s.d.AI.CompleteJSON only when allowed.
+func TestCompleteJSONBudgeted(t *testing.T) {
+	type out struct {
+		X string `json:"x"`
 	}
 
-	svc := NewAIJobService(AIJobServiceDeps{
-		Jobs:       jobs,
-		Usage:      usage,
-		Threads:    newThreadRepo(),
-		Clock:      clock,
-		AI:         newAI(),
-		DailyLimit: 1,
+	t.Run("allowed calls through to AI.CompleteJSON", func(t *testing.T) {
+		ctx := context.Background()
+		usage := newAiUsageRepo()
+		ai := newAI()
+		ai.jsonOut = `{"x":"hi"}`
+		ai.jsonModel = "gpt-test"
+
+		svc := NewAIJobService(AIJobServiceDeps{
+			Usage:      usage,
+			AI:         ai,
+			Clock:      newClock(time.Now()),
+			DailyLimit: 10,
+		})
+
+		var o out
+		model, err := svc.completeJSONBudgeted(ctx, "u1", "sys", "usr", &o)
+		if err != nil {
+			t.Fatalf("completeJSONBudgeted() error = %v, want nil", err)
+		}
+		if model != "gpt-test" {
+			t.Fatalf("model = %q, want gpt-test", model)
+		}
+		if o.X != "hi" {
+			t.Fatalf("out.X = %q, want hi", o.X)
+		}
+		if usage.calls["u1"] != 1 {
+			t.Fatalf("usage.calls[u1] = %d, want 1", usage.calls["u1"])
+		}
 	})
 
-	if err := svc.ProcessDueAiJobs(ctx); err != nil {
-		t.Fatalf("ProcessDueAiJobs() error = %v, want nil (budget exhaustion is not a job error)", err)
+	t.Run("over budget returns errAIBudgetExhausted without calling AI", func(t *testing.T) {
+		ctx := context.Background()
+		usage := newAiUsageRepo()
+		usage.calls["u1"] = 1 // already at the limit
+		ai := newAI()
+		ai.jsonOut = `{"x":"should not be reached"}`
+
+		svc := NewAIJobService(AIJobServiceDeps{
+			Usage:      usage,
+			AI:         ai,
+			Clock:      newClock(time.Now()),
+			DailyLimit: 1,
+		})
+
+		var o out
+		_, err := svc.completeJSONBudgeted(ctx, "u1", "sys", "usr", &o)
+		if !errors.Is(err, errAIBudgetExhausted) {
+			t.Fatalf("err = %v, want errAIBudgetExhausted", err)
+		}
+		if ai.lastSystem != "" || ai.lastUser != "" {
+			t.Fatalf("AI.CompleteJSON was called (lastSystem=%q lastUser=%q), want it skipped over budget", ai.lastSystem, ai.lastUser)
+		}
+	})
+
+	t.Run("usage repo error passes through, not errAIBudgetExhausted", func(t *testing.T) {
+		ctx := context.Background()
+		usage := newAiUsageRepo()
+		usageErr := errors.New("usage repo unavailable")
+		usage.err = usageErr
+		ai := newAI()
+
+		svc := NewAIJobService(AIJobServiceDeps{
+			Usage:      usage,
+			AI:         ai,
+			Clock:      newClock(time.Now()),
+			DailyLimit: 10,
+		})
+
+		var o out
+		_, err := svc.completeJSONBudgeted(ctx, "u1", "sys", "usr", &o)
+		if !errors.Is(err, usageErr) {
+			t.Fatalf("err = %v, want usageErr", err)
+		}
+		if errors.Is(err, errAIBudgetExhausted) {
+			t.Fatalf("err = %v, want NOT errAIBudgetExhausted (this is a repo error, not a budget verdict)", err)
+		}
+	})
+
+	t.Run("AI error passes through unchanged", func(t *testing.T) {
+		ctx := context.Background()
+		usage := newAiUsageRepo()
+		ai := newAI()
+		aiErr := fmt.Errorf("%w: upstream 500", domain.ErrAIUnavailable)
+		ai.jsonErr = aiErr
+
+		svc := NewAIJobService(AIJobServiceDeps{
+			Usage:      usage,
+			AI:         ai,
+			Clock:      newClock(time.Now()),
+			DailyLimit: 10,
+		})
+
+		var o out
+		_, err := svc.completeJSONBudgeted(ctx, "u1", "sys", "usr", &o)
+		if !errors.Is(err, domain.ErrAIUnavailable) {
+			t.Fatalf("err = %v, want it to wrap domain.ErrAIUnavailable", err)
+		}
+		if usage.calls["u1"] != 1 {
+			t.Fatalf("usage.calls[u1] = %d, want 1 (budget is charged for the attempt even though the AI call failed)", usage.calls["u1"])
+		}
+	})
+}
+
+// TestClassifyJobError table-tests the pure retry/dead-letter decision
+// function exhaustively, including the errAIBudgetExhausted and
+// ErrRateLimited/ErrAIUnavailable branches that no stub handler in this task
+// can yet reach through a full ProcessDueAiJobs run.
+func TestClassifyJobError(t *testing.T) {
+	now := time.Date(2026, 7, 18, 15, 30, 0, 0, time.UTC)
+	wantMidnight := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name           string
+		err            error
+		attempts       int
+		wantRetryAt    *time.Time
+		wantDeadLetter bool
+		wantDrop       bool
+	}{
+		{
+			name:     "ErrNotFound drops regardless of attempts",
+			err:      domain.ErrNotFound,
+			attempts: 1,
+			wantDrop: true,
+		},
+		{
+			name:     "wrapped ErrNotFound still drops",
+			err:      fmt.Errorf("%w: thread gone", domain.ErrNotFound),
+			attempts: 3,
+			wantDrop: true,
+		},
+		{
+			name:        "budget exhausted rearms at next UTC midnight",
+			err:         errAIBudgetExhausted,
+			attempts:    1,
+			wantRetryAt: &wantMidnight,
+		},
+		{
+			name:        "budget exhausted never dead-letters even at the attempts cap",
+			err:         errAIBudgetExhausted,
+			attempts:    aiJobMaxAttempts,
+			wantRetryAt: &wantMidnight,
+		},
+		{
+			name:        "ErrRateLimited rearms flat 15m at attempt 1",
+			err:         domain.ErrRateLimited,
+			attempts:    1,
+			wantRetryAt: timePtr(now.Add(15 * time.Minute)),
+		},
+		{
+			name:        "ErrRateLimited rearms flat 15m at attempt 10, never dead-letters",
+			err:         domain.ErrRateLimited,
+			attempts:    10,
+			wantRetryAt: timePtr(now.Add(15 * time.Minute)),
+		},
+		{
+			name:        "wrapped ErrRateLimited still matches via errors.Is",
+			err:         fmt.Errorf("%w: 429 from provider", domain.ErrRateLimited),
+			attempts:    10,
+			wantRetryAt: timePtr(now.Add(15 * time.Minute)),
+		},
+		{
+			name:        "ErrAIUnavailable rearms flat 15m at attempt 1",
+			err:         domain.ErrAIUnavailable,
+			attempts:    1,
+			wantRetryAt: timePtr(now.Add(15 * time.Minute)),
+		},
+		{
+			name:        "ErrAIUnavailable rearms flat 15m at attempt 10, never dead-letters",
+			err:         domain.ErrAIUnavailable,
+			attempts:    10,
+			wantRetryAt: timePtr(now.Add(15 * time.Minute)),
+		},
+		{
+			name:        "wrapped ErrAIUnavailable still matches via errors.Is",
+			err:         fmt.Errorf("%w: outage", domain.ErrAIUnavailable),
+			attempts:    10,
+			wantRetryAt: timePtr(now.Add(15 * time.Minute)),
+		},
+		{
+			name:        "generic error at attempt 1 backs off 1m",
+			err:         errors.New("boom"),
+			attempts:    1,
+			wantRetryAt: timePtr(now.Add(time.Minute)),
+		},
+		{
+			name:        "generic error at attempt 2 backs off 4m",
+			err:         errors.New("boom"),
+			attempts:    2,
+			wantRetryAt: timePtr(now.Add(4 * time.Minute)),
+		},
+		{
+			name:        "generic error at attempt 3 backs off 16m",
+			err:         errors.New("boom"),
+			attempts:    3,
+			wantRetryAt: timePtr(now.Add(16 * time.Minute)),
+		},
+		{
+			name:           "generic error at attempts cap dead-letters",
+			err:            errors.New("boom"),
+			attempts:       aiJobMaxAttempts,
+			wantDeadLetter: true,
+		},
+		{
+			name:           "generic error beyond attempts cap still dead-letters",
+			err:            errors.New("boom"),
+			attempts:       aiJobMaxAttempts + 5,
+			wantDeadLetter: true,
+		},
 	}
-	if len(jobs.completed) != 0 {
-		t.Fatalf("completed = %v, want none (budget check happens before dispatch)", jobs.completed)
-	}
-	if len(jobs.failed) != 1 {
-		t.Fatalf("failed count = %d, want 1", len(jobs.failed))
-	}
-	got := jobs.failed[0]
-	if got.ID != "j1" {
-		t.Fatalf("failed job id = %q, want j1", got.ID)
-	}
-	if got.ErrMsg != "daily ai budget exhausted" {
-		t.Fatalf("errMsg = %q, want %q", got.ErrMsg, "daily ai budget exhausted")
-	}
-	wantRetry := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
-	if got.RetryAt == nil || !got.RetryAt.Equal(wantRetry) {
-		t.Fatalf("retryAt = %v, want %v", got.RetryAt, wantRetry)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			retryAt, deadLetter, drop := classifyJobError(tc.err, tc.attempts, now)
+			if drop != tc.wantDrop {
+				t.Fatalf("drop = %v, want %v", drop, tc.wantDrop)
+			}
+			if deadLetter != tc.wantDeadLetter {
+				t.Fatalf("deadLetter = %v, want %v", deadLetter, tc.wantDeadLetter)
+			}
+			if tc.wantRetryAt == nil {
+				if retryAt != nil {
+					t.Fatalf("retryAt = %v, want nil", retryAt)
+				}
+				return
+			}
+			if retryAt == nil || !retryAt.Equal(*tc.wantRetryAt) {
+				t.Fatalf("retryAt = %v, want %v", retryAt, *tc.wantRetryAt)
+			}
+		})
 	}
 }
 
@@ -228,12 +437,14 @@ func TestRunJobErrNotFoundDropsJob(t *testing.T) {
 		{ID: "j1", UserID: "u1", Kind: domain.AiJobThreadSummary, ThreadID: strPtr("does-not-exist"), Attempts: 1},
 	}
 
+	usage := newAiUsageRepo()
 	svc := NewAIJobService(AIJobServiceDeps{
-		Jobs:    jobs,
-		Usage:   newAiUsageRepo(),
-		Threads: newThreadRepo(), // empty: GetByID returns domain.ErrNotFound
-		Clock:   newClock(time.Now()),
-		AI:      newAI(),
+		Jobs:       jobs,
+		Usage:      usage,
+		Threads:    newThreadRepo(), // empty: GetByID returns domain.ErrNotFound
+		Clock:      newClock(time.Now()),
+		AI:         newAI(),
+		DailyLimit: 10,
 	})
 
 	if err := svc.ProcessDueAiJobs(ctx); err != nil {
@@ -244,6 +455,12 @@ func TestRunJobErrNotFoundDropsJob(t *testing.T) {
 	}
 	if got := jobs.completed; len(got) != 1 || got[0] != "j1" {
 		t.Fatalf("completed = %v, want [j1]", got)
+	}
+	// Fix 1: the guard-fetch drop (deleted thread) must never spend budget —
+	// runJob no longer charges IncrementAndCheck before dispatch, so a
+	// dropped job leaves the usage fake untouched.
+	if len(usage.calls) != 0 {
+		t.Fatalf("usage.calls = %v, want empty (drop path must consume no budget)", usage.calls)
 	}
 }
 

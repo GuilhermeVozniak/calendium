@@ -1,7 +1,9 @@
 // Package service (this file): AIJobService drains the background AI job
 // queue (port.AiJobRepo), consumed by cmd/worker's third loop. It enforces
-// the per-user daily AI budget, dispatches to per-kind handlers, and retries
-// failures with capped exponential backoff before dead-lettering.
+// the per-user daily AI budget at the point of the actual LLM call (see
+// completeJSONBudgeted), dispatches to per-kind handlers, and retries
+// failures with capped exponential backoff before dead-lettering (see
+// classifyJobError).
 package service
 
 import (
@@ -19,6 +21,14 @@ const (
 	aiJobBatch       = 20
 	aiJobMaxAttempts = 4
 )
+
+// errAIBudgetExhausted is returned by completeJSONBudgeted when the caller's
+// daily AI usage budget is exhausted. classifyJobError maps it to a rearm at
+// the next UTC midnight instead of the generic backoff/dead-letter path:
+// exhausting the daily cap is an expected, account-wide condition (nothing
+// wrong with this particular job), not a per-job defect worth escalating
+// toward dead-lettering.
+var errAIBudgetExhausted = errors.New("daily ai budget exhausted")
 
 // AIJobServiceDeps wires AIJobService. AI nil disables the whole service
 // (graceful degradation when OPENROUTER_API_KEY is unset): ProcessDueAiJobs
@@ -80,36 +90,97 @@ func (s *AIJobService) ProcessDueAiJobs(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// runJob executes one claimed job: budget check, dispatch, retry/backoff.
+// runJob executes one claimed job: dispatch, then retry/backoff/dead-letter
+// per classifyJobError. There is no budget check here anymore — the guard
+// fetches inside dispatch's handlers (threadFor et al.) run first and can
+// drop a job (ErrNotFound) before any quota is spent; the budget is only
+// charged once a handler actually reaches completeJSONBudgeted for a real
+// LLM attempt.
 func (s *AIJobService) runJob(ctx context.Context, j domain.AiJob) error {
-	allowed, err := s.d.Usage.IncrementAndCheck(ctx, j.UserID, s.d.Clock.Now(), s.d.DailyLimit)
-	if err != nil {
-		return err
-	}
-	if !allowed {
-		// Budget exhausted: park until next UTC midnight, don't count attempt.
-		next := s.d.Clock.Now().UTC().Truncate(24 * time.Hour).Add(24 * time.Hour)
-		return s.d.Jobs.Fail(ctx, j.ID, &next, "daily ai budget exhausted")
-	}
-	err = s.dispatch(ctx, j)
-	switch {
-	case err == nil:
+	err := s.dispatch(ctx, j)
+	if err == nil {
 		return s.d.Jobs.Complete(ctx, j.ID)
-	case errors.Is(err, domain.ErrNotFound):
+	}
+	retryAt, deadLetter, drop := classifyJobError(err, j.Attempts, s.d.Clock.Now())
+	switch {
+	case drop:
 		// Thread/draft vanished under the job: drop it, not an error.
 		return s.d.Jobs.Complete(ctx, j.ID)
-	case j.Attempts >= aiJobMaxAttempts:
+	case deadLetter:
 		if ferr := s.d.Jobs.Fail(ctx, j.ID, nil, err.Error()); ferr != nil {
 			return errors.Join(err, ferr)
 		}
 		return fmt.Errorf("dead-lettered after %d attempts: %w", j.Attempts, err)
 	default:
-		retry := s.d.Clock.Now().Add(aiJobBackoff(j.Attempts))
-		if ferr := s.d.Jobs.Fail(ctx, j.ID, &retry, err.Error()); ferr != nil {
+		if ferr := s.d.Jobs.Fail(ctx, j.ID, retryAt, err.Error()); ferr != nil {
 			return errors.Join(err, ferr)
 		}
 		return err
 	}
+}
+
+// classifyJobError maps a dispatch error to runJob's retry/dead-letter
+// decision. It is a pure function of (err, attempts, now), kept separate
+// from runJob so every branch — including ones the current stub handlers
+// can't yet produce, like errAIBudgetExhausted — can be table-tested without
+// driving a job through dispatch.
+//
+//   - domain.ErrNotFound (thread/draft vanished under the job): drop=true,
+//     the job is completed rather than retried or failed.
+//   - errAIBudgetExhausted: retryAt is the next UTC midnight, checked before
+//     the attempts cap so it NEVER dead-letters no matter how many attempts
+//     the job has racked up — an exhausted daily cap is an account-wide
+//     condition, not a defect in this job.
+//   - domain.ErrRateLimited / domain.ErrAIUnavailable (and anything wrapping
+//     them, via errors.Is): flat 15m rearm regardless of attempts, also
+//     checked before the attempts cap so provider outages never dead-letter
+//     either. Trade-off: retries for these two sentinels are unbounded — a
+//     job stuck behind a *permanent* misconfiguration that happens to
+//     surface as one of them (rather than a generic error) would retry
+//     forever every 15m instead of dead-lettering. In practice, auth/config
+//     failures (e.g. a bad or revoked API key, 401-class responses) are
+//     expected to come back as a generic error from the AI adapter, not
+//     wrapped in ErrRateLimited/ErrAIUnavailable, so they fall through to
+//     the branch below and DO dead-letter normally.
+//   - everything else: capped exponential backoff (aiJobBackoff), dead-
+//     lettering once attempts reaches aiJobMaxAttempts.
+func classifyJobError(err error, attempts int, now time.Time) (retryAt *time.Time, deadLetter bool, drop bool) {
+	switch {
+	case errors.Is(err, domain.ErrNotFound):
+		return nil, false, true
+	case errors.Is(err, errAIBudgetExhausted):
+		next := now.UTC().Truncate(24 * time.Hour).Add(24 * time.Hour)
+		return &next, false, false
+	case errors.Is(err, domain.ErrRateLimited), errors.Is(err, domain.ErrAIUnavailable):
+		retry := now.Add(15 * time.Minute)
+		return &retry, false, false
+	case attempts >= aiJobMaxAttempts:
+		return nil, true, false
+	default:
+		retry := now.Add(aiJobBackoff(attempts))
+		return &retry, false, false
+	}
+}
+
+// completeJSONBudgeted is THE choke point every job handler that calls the
+// LLM must go through (Tasks 6-14 wire their real generation through this,
+// not s.d.AI.CompleteJSON directly): it charges the caller's daily AI usage
+// budget via Usage.IncrementAndCheck and only proceeds to s.d.AI.CompleteJSON
+// once the budget allows it. Handlers must run their own existence/guard
+// fetches (e.g. threadFor) BEFORE calling this, so a job whose target
+// vanished (domain.ErrNotFound) is dropped without ever reaching here and
+// without spending any quota. On an exhausted budget this returns
+// errAIBudgetExhausted, which classifyJobError recognizes and rearms at the
+// next UTC midnight instead of the generic backoff/dead-letter path.
+func (s *AIJobService) completeJSONBudgeted(ctx context.Context, userID, system, user string, out any) (string, error) {
+	allowed, err := s.d.Usage.IncrementAndCheck(ctx, userID, s.d.Clock.Now(), s.d.DailyLimit)
+	if err != nil {
+		return "", err
+	}
+	if !allowed {
+		return "", errAIBudgetExhausted
+	}
+	return s.d.AI.CompleteJSON(ctx, system, user, out)
 }
 
 func (s *AIJobService) dispatch(ctx context.Context, j domain.AiJob) error {
