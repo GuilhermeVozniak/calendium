@@ -150,8 +150,10 @@ func newAskTestService(accounts *fakeAccountRepo, threads *fakeThreadRepo, messa
 		Threads:       threads,
 		Messages:      messages,
 		Drafts:        newDraftRepo(accounts),
+		Usage:         newAiUsageRepo(),
 		AI:            ai,
 		Clock:         newClock(time.Now()),
+		DailyLimit:    100,
 		SelfHosted:    true,
 	})
 }
@@ -328,6 +330,89 @@ func TestAIAskNilAIIsUnavailable(t *testing.T) {
 	_, err := svc.Ask(context.Background(), "u1", domain.AiAskRequest{Question: "hello?"})
 	if !errors.Is(err, domain.ErrAIUnavailable) {
 		t.Fatalf("err = %v, want ErrAIUnavailable", err)
+	}
+}
+
+// TestAIAskBudgetExhaustedBlocksAndSkipsAI covers the daily AI budget gate on
+// Ask (mirroring InstantReplies): once the shared per-user counter is at the
+// limit, Ask must fail with domain.ErrRateLimited and never reach the model
+// -- no CompleteJSON call, no wasted candidate work spent for nothing.
+func TestAIAskBudgetExhaustedBlocksAndSkipsAI(t *testing.T) {
+	const owner = "u1"
+	accounts := newAccountRepo()
+	accounts.byID["a1"] = domain.ConnectedAccount{ID: "a1", UserID: owner}
+	threads := newThreadRepo()
+	threads.byID["t1"] = domain.Thread{ID: "t1", AccountID: "a1", Subject: "Thread"}
+	messages := newMessageRepo()
+	mustUpsert(t, messages, domain.Message{
+		ID: "m1", ThreadID: "t1", From: domain.EmailAddress{Email: "a@x.com"},
+		BodyText: "Body.", SentAt: time.Now(),
+	})
+
+	ai := newAI()
+	ai.jsonOut = `{"answer":"should not be reached","sourceMessageIds":[]}`
+	usage := newAiUsageRepo()
+	usage.calls[owner] = 1 // already at the limit
+
+	svc := NewAIService(AIServiceDeps{
+		Subscriptions: newSubscriptionRepo(),
+		Accounts:      accounts,
+		Threads:       threads,
+		Messages:      messages,
+		Drafts:        newDraftRepo(accounts),
+		Usage:         usage,
+		AI:            ai,
+		Clock:         newClock(time.Now()),
+		DailyLimit:    1,
+		SelfHosted:    true,
+	})
+
+	_, err := svc.Ask(context.Background(), owner, domain.AiAskRequest{Question: "what's up?", ThreadID: "t1"})
+	if !errors.Is(err, domain.ErrRateLimited) {
+		t.Fatalf("err = %v, want domain.ErrRateLimited", err)
+	}
+	if ai.lastSystem != "" || ai.lastUser != "" {
+		t.Fatalf("AI was called (lastSystem=%q, lastUser=%q), want budget exhaustion to skip generation entirely", ai.lastSystem, ai.lastUser)
+	}
+}
+
+// TestAIAskBudgetChargedOnceOnSuccess covers the charge side of the same
+// gate: a single successful Ask call increments the shared daily counter
+// exactly once.
+func TestAIAskBudgetChargedOnceOnSuccess(t *testing.T) {
+	const owner = "u1"
+	accounts := newAccountRepo()
+	accounts.byID["a1"] = domain.ConnectedAccount{ID: "a1", UserID: owner}
+	threads := newThreadRepo()
+	threads.byID["t1"] = domain.Thread{ID: "t1", AccountID: "a1", Subject: "Thread"}
+	messages := newMessageRepo()
+	mustUpsert(t, messages, domain.Message{
+		ID: "m1", ThreadID: "t1", From: domain.EmailAddress{Email: "a@x.com"},
+		BodyText: "Body.", SentAt: time.Now(),
+	})
+
+	ai := newAI()
+	ai.jsonOut = `{"answer":"yes","sourceMessageIds":["m1"]}`
+	usage := newAiUsageRepo()
+
+	svc := NewAIService(AIServiceDeps{
+		Subscriptions: newSubscriptionRepo(),
+		Accounts:      accounts,
+		Threads:       threads,
+		Messages:      messages,
+		Drafts:        newDraftRepo(accounts),
+		Usage:         usage,
+		AI:            ai,
+		Clock:         newClock(time.Now()),
+		DailyLimit:    10,
+		SelfHosted:    true,
+	})
+
+	if _, err := svc.Ask(context.Background(), owner, domain.AiAskRequest{Question: "what's up?", ThreadID: "t1"}); err != nil {
+		t.Fatalf("Ask() error = %v, want nil", err)
+	}
+	if usage.calls[owner] != 1 {
+		t.Fatalf("usage.calls[owner] = %d, want 1 (charged once on success)", usage.calls[owner])
 	}
 }
 

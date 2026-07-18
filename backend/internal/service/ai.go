@@ -181,7 +181,11 @@ type askCandidate struct {
 // thread when req.ThreadID is set) and returns the answer plus the cited
 // thread/message sources. It never fabricates citations: every id the model
 // returns is checked against the retrieved candidate set and dropped if it
-// doesn't match an actual message the service fetched.
+// doesn't match an actual message the service fetched. Once candidates are
+// retrieved, it charges the shared daily AI budget (the same per-user
+// counter InstantReplies and AIJobService's background handlers charge)
+// before calling the model, failing with domain.ErrRateLimited when
+// exhausted.
 func (s *AIService) Ask(ctx context.Context, userID string, req domain.AiAskRequest) (domain.AiAskResponse, error) {
 	var zero domain.AiAskResponse
 	question := strings.TrimSpace(req.Question)
@@ -195,6 +199,14 @@ func (s *AIService) Ask(ctx context.Context, userID string, req domain.AiAskRequ
 	candidates, err := s.askCandidates(ctx, userID, req)
 	if err != nil {
 		return zero, err
+	}
+
+	allowed, err := s.usage.IncrementAndCheck(ctx, userID, s.clock.Now(), s.dailyLimit)
+	if err != nil {
+		return zero, err
+	}
+	if !allowed {
+		return zero, fmt.Errorf("%w: daily ai budget exhausted", domain.ErrRateLimited)
 	}
 
 	var b strings.Builder

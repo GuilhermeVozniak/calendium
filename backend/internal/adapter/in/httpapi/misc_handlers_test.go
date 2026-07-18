@@ -172,6 +172,18 @@ func TestHandleAiAsk(t *testing.T) {
 		}
 	})
 
+	t.Run("daily AI budget exhausted is a 429", func(t *testing.T) {
+		h := newHarness(t)
+		h.ai.askErr = domain.ErrRateLimited
+		rec := h.authed(http.MethodPost, "/v1/ai/ask", jsonBody(t, map[string]string{"question": "anything?"}))
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want 429 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if got := decodeErr(t, rec); got.Code != "rate_limited" {
+			t.Fatalf("code = %q, want rate_limited", got.Code)
+		}
+	})
+
 	t.Run("malformed JSON rejected", func(t *testing.T) {
 		h := newHarness(t)
 		rec := h.authed(http.MethodPost, "/v1/ai/ask", strings.NewReader("{"))
