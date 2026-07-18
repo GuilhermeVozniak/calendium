@@ -234,6 +234,49 @@ func (c *Client) RSVP(ctx context.Context, accessToken, providerCalendarID, prov
 	return c.doJSON(ctx, http.MethodPatch, endpoint, accessToken, map[string]any{"attendees": ev.Attendees}, nil)
 }
 
+// FreeBusy queries busy intervals for a set of attendee emails via the
+// Calendar freeBusy endpoint. Emails the API reports an error for (unknown
+// calendar, no access) are omitted from the result.
+func (c *Client) FreeBusy(ctx context.Context, accessToken string, emails []string, from, to time.Time) (map[string][]domain.BusyInterval, error) {
+	items := make([]map[string]string, 0, len(emails))
+	for _, email := range emails {
+		items = append(items, map[string]string{"id": email})
+	}
+	body := map[string]any{
+		"timeMin": from.UTC().Format(time.RFC3339),
+		"timeMax": to.UTC().Format(time.RFC3339),
+		"items":   items,
+	}
+	var res struct {
+		Calendars map[string]struct {
+			Busy []struct {
+				Start string `json:"start"`
+				End   string `json:"end"`
+			} `json:"busy"`
+			Errors []struct {
+				Reason string `json:"reason"`
+			} `json:"errors"`
+		} `json:"calendars"`
+	}
+	if err := c.doJSON(ctx, http.MethodPost, calendarBase+"/freeBusy", accessToken, body, &res); err != nil {
+		return nil, err
+	}
+	out := make(map[string][]domain.BusyInterval, len(res.Calendars))
+	for email, cal := range res.Calendars {
+		if len(cal.Errors) > 0 {
+			continue // unresolvable calendar — leave the email out of the result
+		}
+		intervals := make([]domain.BusyInterval, 0, len(cal.Busy))
+		for _, b := range cal.Busy {
+			start, _ := time.Parse(time.RFC3339, b.Start)
+			end, _ := time.Parse(time.RFC3339, b.End)
+			intervals = append(intervals, domain.BusyInterval{Start: start, End: end})
+		}
+		out[email] = intervals
+	}
+	return out, nil
+}
+
 // --- wire types + mapping ---
 
 type gcalDateTime struct {

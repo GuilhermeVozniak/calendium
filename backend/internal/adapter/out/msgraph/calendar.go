@@ -224,6 +224,52 @@ func (c *Client) RSVP(ctx context.Context, accessToken, providerCalendarID, prov
 	return c.doJSON(ctx, http.MethodPost, endpoint, accessToken, map[string]any{"sendResponse": true}, nil)
 }
 
+// FreeBusy queries busy intervals for a set of attendee emails via the
+// getSchedule endpoint. Schedules the API reports an error for (unresolvable
+// mailbox) are omitted from the result.
+func (c *Client) FreeBusy(ctx context.Context, accessToken string, emails []string, from, to time.Time) (map[string][]domain.BusyInterval, error) {
+	body := map[string]any{
+		"schedules":                emails,
+		"startTime":                map[string]string{"dateTime": from.UTC().Format("2006-01-02T15:04:05"), "timeZone": "UTC"},
+		"endTime":                  map[string]string{"dateTime": to.UTC().Format("2006-01-02T15:04:05"), "timeZone": "UTC"},
+		"availabilityViewInterval": 60,
+	}
+	var res struct {
+		Value []struct {
+			ScheduleID string `json:"scheduleId"`
+			Error      *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+			ScheduleItems []struct {
+				Status string        `json:"status"`
+				Start  graphDateTime `json:"start"`
+				End    graphDateTime `json:"end"`
+			} `json:"scheduleItems"`
+		} `json:"value"`
+	}
+	if err := c.doJSON(ctx, http.MethodPost, graphBase+"/me/calendar/getSchedule", accessToken, body, &res); err != nil {
+		return nil, err
+	}
+	out := make(map[string][]domain.BusyInterval, len(res.Value))
+	for _, sched := range res.Value {
+		if sched.Error != nil {
+			continue // unresolvable mailbox — leave the schedule out of the result
+		}
+		intervals := make([]domain.BusyInterval, 0, len(sched.ScheduleItems))
+		for _, item := range sched.ScheduleItems {
+			if item.Status == "Free" || item.Status == "WorkingElsewhere" {
+				continue
+			}
+			intervals = append(intervals, domain.BusyInterval{
+				Start: parseGraphTime(item.Start),
+				End:   parseGraphTime(item.End),
+			})
+		}
+		out[sched.ScheduleID] = intervals
+	}
+	return out, nil
+}
+
 // --- wire types + mapping ---
 
 type graphDateTime struct {
