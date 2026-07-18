@@ -73,6 +73,11 @@ export interface DraftListResult {
   source: DataSource;
 }
 
+/** Outcome of a bulk mutation — callers derive the succeeded count from it. */
+export interface BulkActResult {
+  failedCount: number;
+}
+
 /** Lightweight reachability probe driving the offline/demo banner. */
 export function useApiOnline(): boolean {
   const { data } = useQuery({
@@ -416,7 +421,11 @@ export function useMailActions() {
     }
   }
 
-  async function bulkAct(threadIds: string[], action: BulkAction, labelId?: string): Promise<void> {
+  async function bulkAct(
+    threadIds: string[],
+    action: BulkAction,
+    labelId?: string
+  ): Promise<BulkActResult> {
     const previousLists = queryClient.getQueriesData<ThreadListResult | undefined>({
       queryKey: ['threads'],
     });
@@ -483,16 +492,18 @@ export function useMailActions() {
       if (isLabelAction) invalidateLabelCaches();
       const succeededIds = threadIds.filter((id) => !res.failedIds.includes(id));
       pushBulkUndo(succeededIds);
+      return { failedCount: res.failedIds.length };
     } catch {
       if (DEMO_MODE) {
         // Mock fallback already applied optimistically above — every id
         // "succeeded" locally, so undo should target all of them.
         if (isLabelAction) invalidateLabelCaches();
         pushBulkUndo(threadIds);
-        return;
+        return { failedCount: 0 };
       }
       for (const [key, data] of previousLists) queryClient.setQueryData(key, data);
       toast.error('Could not update the selected conversations.');
+      return { failedCount: threadIds.length };
     }
   }
 
@@ -507,7 +518,12 @@ export function useMailActions() {
     );
   }
 
-  async function setLabel(threadId: string, labelId: string, add: boolean): Promise<boolean> {
+  async function setLabel(
+    threadId: string,
+    labelId: string,
+    add: boolean,
+    opts?: { undoable?: boolean }
+  ): Promise<boolean> {
     const ok = await runOptimistic(
       threadId,
       (t) => ({
@@ -521,11 +537,15 @@ export function useMailActions() {
       () => applyMockLabel(threadId, labelId, add),
       'Could not update the label.'
     );
-    if (ok) {
+    if (ok && opts?.undoable !== false) {
       mailUndo.push({
         label: add ? 'Label' : 'Remove label',
         undo: async () => {
-          const undone = await setLabel(threadId, labelId, !add);
+          // {undoable:false}: this closure's own setLabel call must not push a
+          // fresh undo entry, or Z would toggle the label forever instead of
+          // draining the stack (only the entry currently being undone should
+          // ever be popped).
+          const undone = await setLabel(threadId, labelId, !add, { undoable: false });
           if (!undone) throw new Error('Could not undo label change');
         },
       });

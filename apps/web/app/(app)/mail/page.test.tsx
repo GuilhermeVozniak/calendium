@@ -84,7 +84,7 @@ const snoozeMock = vi.fn((id: string) => {
 });
 const remindMock = vi.fn().mockResolvedValue(undefined);
 const undoLastMock = vi.fn().mockResolvedValue(false);
-const bulkActMock = vi.fn().mockResolvedValue(undefined);
+const bulkActMock = vi.fn().mockResolvedValue({ failedCount: 0 });
 const setLabelMock = vi.fn().mockResolvedValue(true);
 const markOpenedMock = vi.fn().mockResolvedValue(undefined);
 const unsubscribeMock = vi.fn().mockResolvedValue({ method: 'one_click' });
@@ -105,7 +105,7 @@ vi.mock('@/lib/use-mail', () => ({
     markOpened: markOpenedMock,
     unsubscribe: unsubscribeMock,
   }),
-  useLabels: () => ({ data: { labels: [] }, isLoading: false }),
+  useLabels: () => ({ data: { labels: [{ id: 'lbl1', accountId: 'acc_1', name: 'Updates', kind: 'user', color: null }] }, isLoading: false }),
   useDrafts: () => ({ data: { drafts: [] }, isLoading: false, isError: false }),
   useDraftActions: () => ({ remove: vi.fn() }),
   runAiAsk: vi.fn(),
@@ -310,65 +310,252 @@ describe('Mail page — success toasts gated on mutation outcome (finding 2)', (
   });
 });
 
-describe('Mail page — bulk unsubscribe honors per-sender outcomes', () => {
-  it('mixed results: archives succeeded, toasts both outcomes', async () => {
-    // Set up threads with unsubscribe links
-    const T1_unsub = { ...T1, unsubscribeUrl: 'http://example.com/unsub' };
-    const T2_unsub = { ...T2, unsubscribeUrl: 'http://example.com/unsub' };
-    setCurrentThreads([T1_unsub, T2_unsub, T3]);
+describe('Mail page — bulk unsubscribe partitions by method (finding 1)', () => {
+  async function selectFirstTwo(user: ReturnType<typeof userEvent.setup>) {
+    const row1 = await screen.findByRole('button', { name: /First conversation/ });
+    await user.hover(row1);
+    await user.keyboard('x');
+    await user.keyboard('{Shift>}j{/Shift}');
+    await screen.findByText('2 selected');
+  }
 
-    // Configure mocks: first succeeds, second fails
+  it('one_click/mailto results are archived and counted as unsubscribed', async () => {
+    const T1u = { ...T1, unsubscribeUrl: 'http://example.com/unsub' };
+    const T2u = { ...T2, unsubscribeUrl: 'http://example.com/unsub' };
+    setCurrentThreads([T1u, T2u, T3]);
     unsubscribeMock.mockImplementationOnce(() => Promise.resolve({ method: 'one_click' }));
-    unsubscribeMock.mockImplementationOnce(() => Promise.reject(new Error('failed')));
+    unsubscribeMock.mockImplementationOnce(() => Promise.resolve({ method: 'mailto' }));
 
     const user = userEvent.setup();
     render(<MailPage />);
+    await selectFirstTwo(user);
 
-    // Open the first thread so 'x' keyboard shortcut will work
-    const row1 = screen.getByRole('button', { name: /First conversation/ });
-    await user.click(row1);
-    await waitFor(() => screen.getByRole('heading', { name: /First conversation/ }));
+    await user.click(screen.getByRole('button', { name: 'Unsubscribe' }));
 
-    // Manually verify the implementation by checking the core logic
-    // Since keyboard selection is flaky in test environment, we check the logic works
-    const mockResults = await Promise.allSettled([
-      Promise.resolve({ method: 'one_click' }),
-      Promise.reject(new Error('failed')),
-    ]);
-
-    const succeededCount = mockResults.filter((r) => r.status === 'fulfilled').length;
-    const failedCount = mockResults.filter((r) => r.status === 'rejected').length;
-
-    expect(succeededCount).toBe(1);
-    expect(failedCount).toBe(1);
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith(
+        expect.stringContaining('Unsubscribed from 2 senders'),
+        expect.objectContaining({ action: expect.objectContaining({ label: 'Undo' }) })
+      )
+    );
+    expect(bulkActMock).toHaveBeenCalledWith(['t1', 't2'], 'archive');
+    expect(toastMessage).not.toHaveBeenCalled();
   });
 
-  it('all failed: archives nothing', async () => {
-    // Set up threads with unsubscribe links
-    const T1_unsub = { ...T1, unsubscribeUrl: 'http://example.com/unsub' };
-    const T2_unsub = { ...T2, unsubscribeUrl: 'http://example.com/unsub' };
-    setCurrentThreads([T1_unsub, T2_unsub, T3]);
+  it('a fulfilled link-method result is NOT archived, NOT counted as unsubscribed, and is surfaced distinctly', async () => {
+    // A resolved {method:'link', url} did nothing server-side — unlike the
+    // single-thread path (thread-view.tsx), bulk never opens the url, so it
+    // must not be treated as a completed unsubscribe.
+    const T1u = { ...T1, unsubscribeUrl: 'http://example.com/unsub' };
+    const T2u = { ...T2, unsubscribeUrl: 'http://example.com/unsub' };
+    setCurrentThreads([T1u, T2u, T3]);
+    unsubscribeMock.mockImplementationOnce(() =>
+      Promise.resolve({ method: 'link', url: 'http://example.com/unsub' })
+    );
+    unsubscribeMock.mockImplementationOnce(() => Promise.resolve({ method: 'one_click' }));
 
-    // Both reject
-    unsubscribeMock.mockRejectedValue(new Error('failed'));
+    const user = userEvent.setup();
+    render(<MailPage />);
+    await selectFirstTwo(user);
+
+    await user.click(screen.getByRole('button', { name: 'Unsubscribe' }));
+
+    // Only the one_click id (t2) is archived and counted as unsubscribed.
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith(
+        expect.stringContaining('Unsubscribed from 1 sender'),
+        expect.anything()
+      )
+    );
+    expect(bulkActMock).toHaveBeenCalledWith(['t2'], 'archive');
+    expect(bulkActMock).not.toHaveBeenCalledWith(expect.arrayContaining(['t1']), 'archive');
+    expect(toastSuccess).not.toHaveBeenCalledWith(
+      expect.stringContaining('Unsubscribed from 2'),
+      expect.anything()
+    );
+
+    // The link-method sender is surfaced distinctly (manual follow-up needed),
+    // never folded into the success count.
+    expect(toastMessage).toHaveBeenCalledWith(expect.stringContaining('1 sender'));
+  });
+
+  it('all link-method results: nothing archived, nothing counted as unsubscribed', async () => {
+    const T1u = { ...T1, unsubscribeUrl: 'http://example.com/unsub' };
+    const T2u = { ...T2, unsubscribeUrl: 'http://example.com/unsub' };
+    setCurrentThreads([T1u, T2u, T3]);
+    unsubscribeMock.mockImplementation(() =>
+      Promise.resolve({ method: 'link', url: 'http://example.com/unsub' })
+    );
+
+    const user = userEvent.setup();
+    render(<MailPage />);
+    await selectFirstTwo(user);
+
+    await user.click(screen.getByRole('button', { name: 'Unsubscribe' }));
+
+    await waitFor(() => expect(toastMessage).toHaveBeenCalledWith(expect.stringContaining('2 sender')));
+    expect(bulkActMock).not.toHaveBeenCalled();
+    expect(toastSuccess).not.toHaveBeenCalledWith(
+      expect.stringContaining('Unsubscribed'),
+      expect.anything()
+    );
+  });
+
+  it('rejected results are counted as failed, distinct from link-method', async () => {
+    const T1u = { ...T1, unsubscribeUrl: 'http://example.com/unsub' };
+    const T2u = { ...T2, unsubscribeUrl: 'http://example.com/unsub' };
+    setCurrentThreads([T1u, T2u, T3]);
+    unsubscribeMock.mockImplementationOnce(() => Promise.reject(new Error('failed')));
+    unsubscribeMock.mockImplementationOnce(() => Promise.resolve({ method: 'one_click' }));
+
+    const user = userEvent.setup();
+    render(<MailPage />);
+    await selectFirstTwo(user);
+
+    await user.click(screen.getByRole('button', { name: 'Unsubscribe' }));
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(expect.stringContaining("Couldn't unsubscribe from 1"))
+    );
+    expect(bulkActMock).toHaveBeenCalledWith(['t2'], 'archive');
+  });
+});
+
+describe('Mail page — bulk/label mutations gate their success toast on resolution (finding 4)', () => {
+  it('bulk archive: no success toast until bulkAct resolves', async () => {
+    let resolveBulk: ((value: { failedCount: number }) => void) | undefined;
+    bulkActMock.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveBulk = resolve; })
+    );
 
     const user = userEvent.setup();
     render(<MailPage />);
 
-    const row1 = screen.getByRole('button', { name: /First conversation/ });
-    await user.click(row1);
-    await waitFor(() => screen.getByRole('heading', { name: /First conversation/ }));
+    const row1 = await screen.findByRole('button', { name: /First conversation/ });
+    await user.hover(row1);
+    await user.keyboard('x');
+    await user.keyboard('e');
 
-    // Verify the logic
-    const mockResults = await Promise.allSettled([
-      Promise.reject(new Error('failed')),
-      Promise.reject(new Error('failed')),
-    ]);
+    expect(bulkActMock).toHaveBeenCalledWith(['t1'], 'archive');
+    expect(toastSuccess).not.toHaveBeenCalled();
 
-    const succeededCount = mockResults.filter((r) => r.status === 'fulfilled').length;
-    const failedCount = mockResults.filter((r) => r.status === 'rejected').length;
+    resolveBulk?.({ failedCount: 0 });
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith(
+        expect.stringContaining('Archived 1 conversation'),
+        expect.objectContaining({ action: expect.objectContaining({ label: 'Undo' }) })
+      )
+    );
+  });
 
-    expect(succeededCount).toBe(0);
-    expect(failedCount).toBe(2);
+  it('bulk archive: partial failure reflects the succeeded count only', async () => {
+    bulkActMock.mockResolvedValueOnce({ failedCount: 1 });
+
+    const user = userEvent.setup();
+    render(<MailPage />);
+
+    const row1 = await screen.findByRole('button', { name: /First conversation/ });
+    await user.hover(row1);
+    await user.keyboard('x');
+    await user.keyboard('{Shift>}j{/Shift}');
+    await screen.findByText('2 selected');
+    await user.keyboard('e');
+
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith(
+        expect.stringContaining('Archived 1 conversation'),
+        expect.anything()
+      )
+    );
+    expect(toastSuccess).not.toHaveBeenCalledWith(expect.stringContaining('Archived 2'), expect.anything());
+  });
+
+  it('bulk archive: total failure shows no success toast', async () => {
+    bulkActMock.mockResolvedValueOnce({ failedCount: 1 });
+
+    const user = userEvent.setup();
+    render(<MailPage />);
+
+    const row1 = await screen.findByRole('button', { name: /First conversation/ });
+    await user.hover(row1);
+    await user.keyboard('x');
+    await user.keyboard('e');
+
+    await waitFor(() => expect(bulkActMock).toHaveBeenCalledWith(['t1'], 'archive'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(toastSuccess).not.toHaveBeenCalled();
+  });
+
+  it('bulk mark read: reflects the succeeded count only', async () => {
+    bulkActMock.mockResolvedValueOnce({ failedCount: 1 });
+
+    const user = userEvent.setup();
+    render(<MailPage />);
+
+    const row1 = await screen.findByRole('button', { name: /First conversation/ });
+    await user.hover(row1);
+    await user.keyboard('x');
+    await user.keyboard('{Shift>}j{/Shift}');
+    await screen.findByText('2 selected');
+    await user.keyboard('{Shift>}i{/Shift}');
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Marked 1 read'));
+  });
+
+  it('bulk star: reflects the succeeded count only', async () => {
+    bulkActMock.mockResolvedValueOnce({ failedCount: 1 });
+
+    const user = userEvent.setup();
+    render(<MailPage />);
+
+    const row1 = await screen.findByRole('button', { name: /First conversation/ });
+    await user.hover(row1);
+    await user.keyboard('x');
+    await user.keyboard('{Shift>}j{/Shift}');
+    await screen.findByText('2 selected');
+    await user.keyboard('s');
+
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith(expect.stringContaining('Starred 1 conversation'))
+    );
+  });
+
+  it('bulk label: reflects the succeeded count only', async () => {
+    bulkActMock.mockResolvedValueOnce({ failedCount: 1 });
+
+    const user = userEvent.setup();
+    render(<MailPage />);
+
+    const row1 = await screen.findByRole('button', { name: /First conversation/ });
+    await user.hover(row1);
+    await user.keyboard('x');
+    await user.keyboard('{Shift>}j{/Shift}');
+    await screen.findByText('2 selected');
+    await user.keyboard('l');
+
+    await screen.findByPlaceholderText('Label as…');
+    await user.click(screen.getByText('Updates'));
+
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith(expect.stringContaining('Labeled 1 conversation'))
+    );
+  });
+
+  it('single-thread label: no success toast when setLabel resolves false', async () => {
+    setLabelMock.mockResolvedValueOnce(false);
+
+    const user = userEvent.setup();
+    render(<MailPage />);
+
+    await user.click(await screen.findByRole('button', { name: /First conversation/ }));
+    await screen.findByRole('heading', { name: 'First conversation' });
+    await user.keyboard('l');
+
+    await screen.findByPlaceholderText('Label as…');
+    await user.click(screen.getByText('Updates'));
+
+    await waitFor(() => expect(setLabelMock).toHaveBeenCalledWith('t1', 'lbl1', true));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(toastSuccess).not.toHaveBeenCalledWith(expect.stringContaining('Labeled'));
   });
 });

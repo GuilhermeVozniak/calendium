@@ -22,10 +22,12 @@ vi.mock('@/lib/demo', () => ({
 
 const actOnThreadMock = vi.fn();
 const bulkThreadActionMock = vi.fn();
+const setThreadLabelMock = vi.fn();
 vi.mock('@/lib/api', () => ({
   getApiClient: () => ({
     actOnThread: (...args: unknown[]) => actOnThreadMock(...args),
     bulkThreadAction: (...args: unknown[]) => bulkThreadActionMock(...args),
+    setThreadLabel: (...args: unknown[]) => setThreadLabelMock(...args),
   }),
 }));
 
@@ -205,5 +207,26 @@ describe('useMailActions undo/bulk honesty', () => {
 
     await expect(result.current.undoLast()).resolves.toBe(false);
     expect(toastErrorMock).toHaveBeenCalled();
+  });
+
+  it('setLabel(): undoing a label change does not push a new undo entry (no Z ping-pong)', async () => {
+    const queryClient = new QueryClient();
+    seedThreads(queryClient, [makeThread('t1')]);
+    setThreadLabelMock.mockResolvedValue(undefined);
+
+    const { result } = renderMailActions(queryClient);
+
+    const ok = await result.current.setLabel('t1', 'lbl1', true);
+    expect(ok).toBe(true);
+    expect(mailUndo.size).toBe(1);
+
+    const undone = await result.current.undoLast();
+
+    expect(undone).toBe(true);
+    expect(setThreadLabelMock).toHaveBeenNthCalledWith(2, 't1', 'lbl1', false);
+    // The undo closure's own setLabel call must be non-undoable — otherwise
+    // every Z press here would push a fresh undo entry and Z would toggle
+    // the label forever instead of draining the stack.
+    expect(mailUndo.size).toBe(0);
   });
 });

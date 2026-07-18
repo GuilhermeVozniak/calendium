@@ -251,9 +251,12 @@ function MailClient() {
     if (selectedIds.length === 0) return;
     const ids = selectedIds;
     setSelection(clearSelection());
-    void bulkAct(ids, 'archive');
-    toast.success(`Archived ${ids.length} conversation${ids.length === 1 ? '' : 's'}`, {
-      action: { label: 'Undo', onClick: () => void undoLast() },
+    void bulkAct(ids, 'archive').then(({ failedCount }) => {
+      const succeeded = ids.length - failedCount;
+      if (succeeded === 0) return;
+      toast.success(`Archived ${succeeded} conversation${succeeded === 1 ? '' : 's'}`, {
+        action: { label: 'Undo', onClick: () => void undoLast() },
+      });
     });
   }, [selectedIds, bulkAct, undoLast]);
 
@@ -261,8 +264,10 @@ function MailClient() {
     if (selectedIds.length === 0) return;
     const ids = selectedIds;
     setSelection(clearSelection());
-    void bulkAct(ids, 'read');
-    toast.success(`Marked ${ids.length} read`);
+    void bulkAct(ids, 'read').then(({ failedCount }) => {
+      const succeeded = ids.length - failedCount;
+      if (succeeded > 0) toast.success(`Marked ${succeeded} read`);
+    });
   }, [selectedIds, bulkAct]);
 
   const bulkUnsubscribe = React.useCallback(async () => {
@@ -276,34 +281,43 @@ function MailClient() {
     const ids = targets.map((t) => t.id);
     setSelection(clearSelection());
 
-    // Partition settled results into succeeded and failed
+    // Partition settled results by outcome AND by method: only one_click/mailto
+    // actually complete server-side, so only those count as "unsubscribed" and
+    // get archived. A fulfilled {method:'link', url} did nothing server-side —
+    // the single-thread path (thread-view.tsx) opens the url itself, but the
+    // bulk gesture can't fan that out to N tabs (popup blockers would eat
+    // them), so link-method senders are surfaced distinctly instead.
     const results = await Promise.allSettled(ids.map((id) => unsubscribe(id)));
-    const succeededIds: string[] = [];
-    const failedCount = results.filter((result, index) => {
+    const completedIds: string[] = [];
+    const manualIds: string[] = [];
+    let failedCount = 0;
+    results.forEach((result, index) => {
+      const id = ids[index]!;
       if (result.status === 'fulfilled') {
-        succeededIds.push(ids[index]!);
-        return false;
+        if (result.value.method === 'link') manualIds.push(id);
+        else completedIds.push(id);
+      } else {
+        failedCount++;
       }
-      return true;
-    }).length;
+    });
 
-    // Archive only the succeeded ids
-    if (succeededIds.length > 0) {
-      void bulkAct(succeededIds, 'archive');
+    // Archive only the ids that actually completed server-side.
+    if (completedIds.length > 0) {
+      void bulkAct(completedIds, 'archive');
     }
 
-    // Toast based on outcomes
-    if (failedCount === 0) {
-      // All succeeded
-      toast.success(`Unsubscribed from ${succeededIds.length} sender${succeededIds.length === 1 ? '' : 's'}`, {
-        action: { label: 'Undo', onClick: () => void undoLast() },
-      });
-    } else if (succeededIds.length > 0) {
-      // Mixed: some succeeded, some failed
-      toast.success(`Unsubscribed from ${succeededIds.length} sender${succeededIds.length === 1 ? '' : 's'}`);
-      toast.error(`Couldn't unsubscribe from ${failedCount} sender${failedCount === 1 ? '' : 's'}`);
-    } else {
-      // All failed
+    if (completedIds.length > 0) {
+      toast.success(
+        `Unsubscribed from ${completedIds.length} sender${completedIds.length === 1 ? '' : 's'}`,
+        { action: { label: 'Undo', onClick: () => void undoLast() } }
+      );
+    }
+    if (manualIds.length > 0) {
+      toast.message(
+        `${manualIds.length} sender${manualIds.length === 1 ? '' : 's'} need${manualIds.length === 1 ? 's' : ''} manual unsubscribe — open each conversation and use Unsubscribe there`
+      );
+    }
+    if (failedCount > 0) {
       toast.error(`Couldn't unsubscribe from ${failedCount} sender${failedCount === 1 ? '' : 's'}`);
     }
   }, [threads, selection, unsubscribe, bulkAct, undoLast]);
@@ -327,11 +341,19 @@ function MailClient() {
       if (selectedIds.length > 0) {
         const ids = selectedIds;
         setSelection(clearSelection());
-        void bulkAct(ids, add ? 'label' : 'unlabel', label.id);
-        toast.success(`${add ? 'Labeled' : 'Unlabeled'} ${ids.length} conversations “${label.name}”`);
+        void bulkAct(ids, add ? 'label' : 'unlabel', label.id).then(({ failedCount }) => {
+          const succeeded = ids.length - failedCount;
+          if (succeeded === 0) return;
+          toast.success(
+            `${add ? 'Labeled' : 'Unlabeled'} ${succeeded} conversation${succeeded === 1 ? '' : 's'} “${label.name}”`
+          );
+        });
       } else if (selectedThread) {
-        void setLabel(selectedThread.id, label.id, add);
-        toast.success(add ? `Labeled “${label.name}”` : `Removed “${label.name}”`);
+        const id = selectedThread.id;
+        void setLabel(id, label.id, add).then((ok) => {
+          if (!ok) return;
+          toast.success(add ? `Labeled “${label.name}”` : `Removed “${label.name}”`);
+        });
       }
     },
     [selectedIds, selectedThread, bulkAct, setLabel]
@@ -408,8 +430,12 @@ function MailClient() {
         if (selection.ids.size > 0) {
           const ids = selectedIds;
           setSelection(clearSelection());
-          void bulkAct(ids, 'star');
-          toast.success(`Starred ${ids.length} conversation${ids.length === 1 ? '' : 's'}`);
+          void bulkAct(ids, 'star').then(({ failedCount }) => {
+            const succeeded = ids.length - failedCount;
+            if (succeeded > 0) {
+              toast.success(`Starred ${succeeded} conversation${succeeded === 1 ? '' : 's'}`);
+            }
+          });
         } else {
           toggleStar();
         }

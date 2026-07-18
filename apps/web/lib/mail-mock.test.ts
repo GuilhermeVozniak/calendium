@@ -43,6 +43,14 @@ describe('mail-mock triage extensions', () => {
     expect(mockUnsubscribe(oneClick!.id).method).toBe('one_click');
   });
 
+  it('mockUnsubscribe reports "link" with a url for a link-only sender (thr_21)', () => {
+    // thr_21 (Changelog News) only carries an unsubscribe url — no mailto, no
+    // one-click support — so it must never be reported as completed.
+    const result = mockUnsubscribe('thr_21');
+    expect(result.method).toBe('link');
+    expect(result.url).toBe('https://changelog.com/news/unsubscribe');
+  });
+
   it('mockArchiveOlderThan only archives strictly older inbox threads', () => {
     const before = getMockThreads({}).items.length;
     const count = mockArchiveOlderThan(new Date(Date.now() - 365 * 24 * 3_600_000).toISOString());
