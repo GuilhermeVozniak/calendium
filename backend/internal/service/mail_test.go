@@ -2076,3 +2076,220 @@ func (f *mailFixture) seedMessage(t *testing.T, id, threadID, accountID, fromEma
 	}
 	return got
 }
+
+func TestSearchAttachmentsScopesToCallerAndClampsLimit(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+
+	t.Run("default limit when unset", func(t *testing.T) {
+		if _, err := f.svc.SearchAttachments(ctx, "u1", port.AttachmentQuery{}); err != nil {
+			t.Fatalf("SearchAttachments: %v", err)
+		}
+		if f.messages.lastSearchQuery.UserID != "u1" {
+			t.Fatalf("UserID = %q, want u1 (must be overwritten from userID)", f.messages.lastSearchQuery.UserID)
+		}
+		if f.messages.lastSearchQuery.Limit != 50 {
+			t.Fatalf("Limit = %d, want default 50", f.messages.lastSearchQuery.Limit)
+		}
+	})
+
+	t.Run("limit clamped to max 100", func(t *testing.T) {
+		if _, err := f.svc.SearchAttachments(ctx, "u1", port.AttachmentQuery{Limit: 500}); err != nil {
+			t.Fatalf("SearchAttachments: %v", err)
+		}
+		if f.messages.lastSearchQuery.Limit != 100 {
+			t.Fatalf("Limit = %d, want clamped 100", f.messages.lastSearchQuery.Limit)
+		}
+	})
+
+	t.Run("a caller-supplied UserID is overwritten, never trusted", func(t *testing.T) {
+		if _, err := f.svc.SearchAttachments(ctx, "u1", port.AttachmentQuery{UserID: "someone-else"}); err != nil {
+			t.Fatalf("SearchAttachments: %v", err)
+		}
+		if f.messages.lastSearchQuery.UserID != "u1" {
+			t.Fatalf("UserID = %q, want u1", f.messages.lastSearchQuery.UserID)
+		}
+	})
+
+	t.Run("empty result normalizes to a non-nil slice", func(t *testing.T) {
+		page, err := f.svc.SearchAttachments(ctx, "u1", port.AttachmentQuery{})
+		if err != nil {
+			t.Fatalf("SearchAttachments: %v", err)
+		}
+		if page.Items == nil {
+			t.Fatal("Items = nil, want non-nil empty slice")
+		}
+	})
+}
+
+func TestGetAttachmentContentRejectsForeignAttachment(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	att := domain.Attachment{ID: "att1", Filename: "report.pdf", MimeType: "application/pdf", ProviderAttachmentID: "prov-att1"}
+	f.seedOwnedAttachment(t, "a1", "owner", "m1", att)
+
+	_, _, _, err := f.svc.GetAttachmentContent(ctx, "intruder", "att1")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if f.provider.fetchAttachmentCalls != 0 {
+		t.Fatal("ownership check must happen before the provider is ever called")
+	}
+}
+
+func TestGetAttachmentContentUnknownIDIsNotFound(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+
+	if _, _, _, err := f.svc.GetAttachmentContent(ctx, "u1", "ghost"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestGetAttachmentContentInvokesProviderWithMirroredIDs(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	att := domain.Attachment{ID: "att1", Filename: "report.pdf", MimeType: "application/pdf", ProviderAttachmentID: "prov-att1"}
+	f.seedOwnedAttachment(t, "a1", "u1", "m1", att)
+	f.provider.fetchAttachmentData = []byte("PDF-BYTES")
+	f.provider.fetchAttachmentMimeType = "application/pdf"
+
+	data, mimeType, filename, err := f.svc.GetAttachmentContent(ctx, "u1", "att1")
+	if err != nil {
+		t.Fatalf("GetAttachmentContent: %v", err)
+	}
+	if string(data) != "PDF-BYTES" {
+		t.Fatalf("data = %q, want PDF-BYTES", data)
+	}
+	if mimeType != "application/pdf" {
+		t.Fatalf("mimeType = %q, want application/pdf", mimeType)
+	}
+	if filename != "report.pdf" {
+		t.Fatalf("filename = %q, want report.pdf", filename)
+	}
+	if f.provider.lastFetchAttachmentToken != "tok-a1" {
+		t.Fatalf("token = %q, want tok-a1", f.provider.lastFetchAttachmentToken)
+	}
+	if f.provider.lastFetchMessageID != "p-m1" {
+		t.Fatalf("providerMessageID = %q, want p-m1 (msg.ProviderMessageID)", f.provider.lastFetchMessageID)
+	}
+	if f.provider.lastFetchAttachmentID != "prov-att1" {
+		t.Fatalf("providerAttachmentID = %q, want prov-att1 (att.ProviderAttachmentID)", f.provider.lastFetchAttachmentID)
+	}
+}
+
+func TestGetAttachmentContentFallsBackToMirroredMimeType(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	att := domain.Attachment{ID: "att1", Filename: "photo.png", MimeType: "image/png", ProviderAttachmentID: "prov-att1"}
+	f.seedOwnedAttachment(t, "a1", "u1", "m1", att)
+	f.provider.fetchAttachmentData = []byte("PNG-BYTES")
+	// Provider mimeType left empty: the msgraph adapter and Gmail's metadata
+	// path can both return "", meaning the mirrored Attachment.MimeType wins.
+
+	_, mimeType, _, err := f.svc.GetAttachmentContent(ctx, "u1", "att1")
+	if err != nil {
+		t.Fatalf("GetAttachmentContent: %v", err)
+	}
+	if mimeType != "image/png" {
+		t.Fatalf("mimeType = %q, want image/png (mirrored fallback)", mimeType)
+	}
+}
+
+func TestGetAttachmentContentUnsyncedIsNotFound(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	att := domain.Attachment{ID: "att1", Filename: "report.pdf", MimeType: "application/pdf"} // no ProviderAttachmentID
+	f.seedOwnedAttachment(t, "a1", "u1", "m1", att)
+
+	if _, _, _, err := f.svc.GetAttachmentContent(ctx, "u1", "att1"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if f.provider.fetchAttachmentCalls != 0 {
+		t.Fatal("an unsynced attachment must never reach the provider")
+	}
+}
+
+func TestGetAttachmentContentProviderErrorPropagatesRaw(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	att := domain.Attachment{ID: "att1", Filename: "report.pdf", MimeType: "application/pdf", ProviderAttachmentID: "prov-att1"}
+	f.seedOwnedAttachment(t, "a1", "u1", "m1", att)
+	f.provider.fetchAttachmentErr = domain.ErrConflict
+
+	if _, _, _, err := f.svc.GetAttachmentContent(ctx, "u1", "att1"); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("err = %v, want the provider's raw ErrConflict sentinel preserved", err)
+	}
+}
+
+func TestGetContactValidatesEmail(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+
+	if _, err := f.svc.GetContact(ctx, "u1", "not-an-email"); !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("err = %v, want ErrValidation", err)
+	}
+}
+
+func TestGetContactReturnsRepoSummaryForCanonicalEmail(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	want := domain.ContactSummary{Email: "bob@x.com", MessageCount: 3}
+	f.messages.contactSummaryErr = nil
+	f.messages.contactSummaryResult = want
+
+	// A display-name-wrapped, mixed-case address must resolve to the bare,
+	// lowercased address before reaching the repo (mirrors canonicalEmail's
+	// use elsewhere in the package, e.g. booking/poll voter emails).
+	got, err := f.svc.GetContact(ctx, "u1", "Bob <BOB@X.com>")
+	if err != nil {
+		t.Fatalf("GetContact: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("summary = %+v, want %+v", got, want)
+	}
+	if f.messages.lastContactEmail != "bob@x.com" {
+		t.Fatalf("lastContactEmail = %q, want canonicalized bob@x.com", f.messages.lastContactEmail)
+	}
+}
+
+func TestGetContactRequiresEntitlement(t *testing.T) {
+	f := newMailFixture(t)
+	f.svc = NewMailService(MailServiceDeps{
+		Subscriptions: newSubscriptionRepo(), // unseeded: GetByUserID -> ErrNotFound
+		Accounts:      f.accounts,
+		Threads:       f.threads,
+		Messages:      f.messages,
+		Drafts:        f.drafts,
+		Snippets:      f.snippets,
+		Labels:        f.labels,
+		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: f.provider},
+		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: f.oauth},
+		Unsubscriber:  f.unsub,
+		Clock:         f.clock,
+		SelfHosted:    false, // paywall enforced; no subscription seeded
+	})
+
+	if _, err := f.svc.GetContact(context.Background(), "u1", "bob@x.com"); !errors.Is(err, domain.ErrPaymentRequired) {
+		t.Fatalf("err = %v, want ErrPaymentRequired", err)
+	}
+}
+
+func (f *mailFixture) seedOwnedAttachment(t *testing.T, accountID, userID, messageID string, att domain.Attachment) {
+	t.Helper()
+	f.seedAccount(t, accountID, userID)
+	msg := domain.Message{
+		ID:                messageID,
+		AccountID:         accountID,
+		ProviderMessageID: "p-" + messageID,
+		Attachments:       []domain.Attachment{att},
+	}
+	if _, err := f.messages.Upsert(context.Background(), msg); err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+	f.messages.seedAttachment(messageID, att)
+}

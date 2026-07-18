@@ -826,11 +826,6 @@ func emptyIfNil(addrs []domain.EmailAddress) []domain.EmailAddress {
 // docs/superpowers/plans/2026-07-17-m2-5-compose-contact.md). Recent Opens
 // and Smart Send (below) are implemented here (task 8); the heuristic itself
 // lives in smartsend.go.
-//
-// errNotImplemented aliases domain.ErrNotImplemented (rather than a bare
-// errors.New) so callers can errors.Is against the shared sentinel and the
-// HTTP adapter maps every stub uniformly to 501.
-var errNotImplemented = domain.ErrNotImplemented
 
 // maxOpensPageSize caps GET /v1/mail/opens page size.
 const maxOpensPageSize = 100
@@ -872,16 +867,79 @@ func (s *MailService) SuggestSendTime(ctx context.Context, userID, recipientEmai
 	return suggestion, nil
 }
 
+const (
+	defaultAttachmentPageSize = 50
+	maxAttachmentPageSize     = 100
+)
+
 func (s *MailService) SearchAttachments(ctx context.Context, userID string, q port.AttachmentQuery) (domain.Page[domain.AttachmentHit], error) {
-	return domain.Page[domain.AttachmentHit]{}, errNotImplemented
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.Page[domain.AttachmentHit]{}, err
+	}
+	q.UserID = userID
+	if q.Limit <= 0 {
+		q.Limit = defaultAttachmentPageSize
+	}
+	if q.Limit > maxAttachmentPageSize {
+		q.Limit = maxAttachmentPageSize
+	}
+	page, err := s.messages.SearchAttachments(ctx, q)
+	if err != nil {
+		return domain.Page[domain.AttachmentHit]{}, err
+	}
+	if page.Items == nil {
+		page.Items = []domain.AttachmentHit{}
+	}
+	return page, nil
 }
 
 func (s *MailService) GetAttachmentContent(ctx context.Context, userID, attachmentID string) ([]byte, string, string, error) {
-	return nil, "", "", errNotImplemented
+	if err := s.ent.require(ctx, userID); err != nil {
+		return nil, "", "", err
+	}
+	att, messageID, err := s.messages.GetAttachment(ctx, attachmentID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	msg, err := s.messages.GetByID(ctx, messageID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	acct, err := ownedAccount(ctx, s.accounts, userID, msg.AccountID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if att.ProviderAttachmentID == "" {
+		return nil, "", "", fmt.Errorf("%w: attachment content not synced", domain.ErrNotFound)
+	}
+	provider, ok := s.mail[acct.Provider]
+	if !ok {
+		return nil, "", "", fmt.Errorf("%w: no mail provider for account", domain.ErrValidation)
+	}
+	token, err := s.tokens.accessToken(ctx, acct)
+	if err != nil {
+		return nil, "", "", err
+	}
+	// Provider errors propagate raw (sentinel-preserving): no fmt.Errorf wrap.
+	data, mimeType, err := provider.FetchAttachment(ctx, token, msg.ProviderMessageID, att.ProviderAttachmentID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if mimeType == "" {
+		mimeType = att.MimeType
+	}
+	return data, mimeType, att.Filename, nil
 }
 
 func (s *MailService) GetContact(ctx context.Context, userID, email string) (domain.ContactSummary, error) {
-	return domain.ContactSummary{}, errNotImplemented
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.ContactSummary{}, err
+	}
+	canonical, err := canonicalEmail(email)
+	if err != nil {
+		return domain.ContactSummary{}, fmt.Errorf("%w: invalid email %q", domain.ErrValidation, email)
+	}
+	return s.messages.ContactSummary(ctx, userID, canonical)
 }
 
 // ReactToMessage stores an emoji reaction on messageID (idempotent per

@@ -411,10 +411,17 @@ type fakeMessageRepo struct {
 	// histogramErr forces an error return.
 	histograms   map[string][24]int
 	histogramErr error
+
+	attachmentByID          map[string]fakeAttachmentRecord
+	searchAttachmentsResult domain.Page[domain.AttachmentHit]
+	lastSearchQuery         port.AttachmentQuery
+	contactSummaryResult    domain.ContactSummary
+	contactSummaryErr       error
+	lastContactEmail        string
 }
 
 func newMessageRepo() *fakeMessageRepo {
-	return &fakeMessageRepo{byID: map[string]domain.Message{}, histograms: map[string][24]int{}}
+	return &fakeMessageRepo{byID: map[string]domain.Message{}, attachmentByID: map[string]fakeAttachmentRecord{}, histograms: map[string][24]int{}}
 }
 
 func (r *fakeMessageRepo) Upsert(_ context.Context, m domain.Message) (domain.Message, error) {
@@ -493,15 +500,24 @@ func (r *fakeMessageRepo) OpenHourHistogram(_ context.Context, _, recipientEmail
 }
 
 func (r *fakeMessageRepo) SearchAttachments(_ context.Context, q port.AttachmentQuery) (domain.Page[domain.AttachmentHit], error) {
-	return domain.Page[domain.AttachmentHit]{Items: []domain.AttachmentHit{}}, nil
+	r.lastSearchQuery = q
+	return r.searchAttachmentsResult, nil
 }
 
 func (r *fakeMessageRepo) GetAttachment(_ context.Context, attachmentID string) (domain.Attachment, string, error) {
-	return domain.Attachment{}, "", domain.ErrNotFound
+	rec, ok := r.attachmentByID[attachmentID]
+	if !ok {
+		return domain.Attachment{}, "", domain.ErrNotFound
+	}
+	return rec.att, rec.messageID, nil
 }
 
 func (r *fakeMessageRepo) ContactSummary(_ context.Context, userID, email string) (domain.ContactSummary, error) {
-	return domain.ContactSummary{}, domain.ErrNotFound
+	r.lastContactEmail = email
+	if r.contactSummaryErr != nil {
+		return domain.ContactSummary{}, r.contactSummaryErr
+	}
+	return r.contactSummaryResult, nil
 }
 
 var _ port.MessageRepo = (*fakeMessageRepo)(nil)
@@ -1125,6 +1141,13 @@ type fakeMailProvider struct {
 	lastModifyThreadID string
 	lastModifyAdd      []string
 	lastModifyRemove   []string
+
+	fetchAttachmentData      []byte
+	fetchAttachmentMimeType  string
+	fetchAttachmentCalls     int
+	lastFetchAttachmentToken string
+	lastFetchMessageID       string // providerMessageID arg on the last FetchAttachment call
+	lastFetchAttachmentID    string // providerAttachmentID arg on the last FetchAttachment call
 }
 
 func newMailProvider() *fakeMailProvider { return &fakeMailProvider{} }
@@ -1163,8 +1186,15 @@ func (p *fakeMailProvider) ModifyLabels(_ context.Context, accessToken, provider
 // errors.Is against a shared sentinel rather than a bare nil-nil result.
 // fetchAttachmentErr lets a test override the returned error.
 func (p *fakeMailProvider) FetchAttachment(_ context.Context, accessToken, providerMessageID, providerAttachmentID string) ([]byte, string, error) {
+	p.fetchAttachmentCalls++
+	p.lastFetchAttachmentToken = accessToken
+	p.lastFetchMessageID = providerMessageID
+	p.lastFetchAttachmentID = providerAttachmentID
 	if p.fetchAttachmentErr != nil {
 		return nil, "", p.fetchAttachmentErr
+	}
+	if p.fetchAttachmentData != nil || p.fetchAttachmentMimeType != "" {
+		return p.fetchAttachmentData, p.fetchAttachmentMimeType, nil
 	}
 	return nil, "", domain.ErrNotImplemented
 }
@@ -2209,3 +2239,12 @@ func (r *fakeReactionRepo) DeleteByEmoji(_ context.Context, messageID, userID, e
 }
 
 var _ port.ReactionRepo = (*fakeReactionRepo)(nil)
+
+type fakeAttachmentRecord struct {
+	att       domain.Attachment
+	messageID string
+}
+
+func (r *fakeMessageRepo) seedAttachment(messageID string, att domain.Attachment) {
+	r.attachmentByID[att.ID] = fakeAttachmentRecord{att: att, messageID: messageID}
+}
