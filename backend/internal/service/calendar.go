@@ -22,6 +22,10 @@ type CalendarServiceDeps struct {
 	CalendarProviders map[domain.Provider]port.CalendarProvider
 	OAuth             map[domain.Provider]port.OAuthGateway
 	Clock             port.Clock
+	// Settings supplies the user's working hours for Availability. Left nil,
+	// Availability skips the working-hours intersection (existing callers
+	// that don't wire it up keep their prior free-gap-only behavior).
+	Settings port.UserSettingsRepo
 	// SelfHosted unlocks the paywall (open-core self-hosted mode).
 	SelfHosted bool
 }
@@ -38,6 +42,7 @@ type CalendarService struct {
 	cal       map[domain.Provider]port.CalendarProvider
 	tokens    tokenSource
 	clock     port.Clock
+	settings  port.UserSettingsRepo
 }
 
 var _ port.CalendarService = (*CalendarService)(nil)
@@ -53,6 +58,7 @@ func NewCalendarService(d CalendarServiceDeps) *CalendarService {
 		cal:       d.CalendarProviders,
 		tokens:    tokenSource{accounts: d.Accounts, oauth: d.OAuth, clock: d.Clock},
 		clock:     d.Clock,
+		settings:  d.Settings,
 	}
 }
 
@@ -289,6 +295,21 @@ func (s *CalendarService) Availability(ctx context.Context, userID string, from,
 	if to.Sub(cursor) >= slotDuration {
 		slots = append(slots, domain.AvailabilitySlot{Start: cursor, End: to})
 	}
+
+	if s.settings != nil {
+		settings, err := s.settings.Get(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		if len(settings.WorkingHours) > 0 {
+			tz, err := time.LoadLocation(settings.TimeZone)
+			if err != nil {
+				tz = time.UTC
+			}
+			slots = intersectWindows(slots, settings.WorkingHours, tz)
+		}
+	}
+
 	return slots, nil
 }
 

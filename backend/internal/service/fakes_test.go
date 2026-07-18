@@ -1752,9 +1752,17 @@ func (r *fakeBookingLinkRepo) ListByUser(_ context.Context, userID string) ([]do
 	return out, nil
 }
 
+// Update mirrors the real postgres adapter: a case-insensitive slug
+// collision with a DIFFERENT link returns domain.ErrConflict (the link's own
+// row keeping its current slug is not a collision with itself).
 func (r *fakeBookingLinkRepo) Update(_ context.Context, l domain.BookingLink) error {
 	if _, ok := r.byID[l.ID]; !ok {
 		return domain.ErrNotFound
+	}
+	for id, existing := range r.byID {
+		if id != l.ID && strings.EqualFold(existing.Slug, l.Slug) {
+			return domain.ErrConflict
+		}
 	}
 	r.byID[l.ID] = l
 	return nil

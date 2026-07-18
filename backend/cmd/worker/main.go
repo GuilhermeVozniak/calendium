@@ -142,6 +142,7 @@ func run(logger *slog.Logger) error {
 		CalendarProviders: calendarProviders,
 		OAuth:             oauth,
 		Clock:             service.SystemClock{},
+		Settings:          store.UserSettings(),
 		SelfHosted:        cfg.Instance.SelfHosted,
 	})
 	aiJobSvc := service.NewAIJobService(service.AIJobServiceDeps{

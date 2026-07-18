@@ -358,6 +358,121 @@ func TestAvailabilityValidation(t *testing.T) {
 	}
 }
 
+// TestAvailabilityRespectsWorkingHours proves Availability intersects its
+// computed free gaps with the user's working hours (in settings.TimeZone)
+// once CalendarServiceDeps.Settings is wired and WorkingHours is non-empty;
+// a nil Settings repo or empty WorkingHours (the zero value) must leave the
+// prior free-gap-only behavior untouched.
+func TestAvailabilityRespectsWorkingHours(t *testing.T) {
+	ctx := context.Background()
+	hm := func(h, m int) time.Time { return time.Date(2026, 7, 7, h, m, 0, 0, time.UTC) }
+	weekday := int(hm(0, 0).Weekday())
+
+	newSvc := func(t *testing.T, settings *fakeUserSettingsRepo) *CalendarService {
+		t.Helper()
+		return NewCalendarService(CalendarServiceDeps{
+			Accounts:   newAccountRepo(),
+			Calendars:  newCalendarRepo(),
+			Events:     newEventRepo(),
+			Settings:   settings,
+			Clock:      newClock(hm(0, 0)),
+			SelfHosted: true,
+		})
+	}
+
+	t.Run("no working hours configured: free gaps pass through unchanged", func(t *testing.T) {
+		settingsRepo := newUserSettingsRepo()
+		svc := newSvc(t, settingsRepo)
+
+		got, err := svc.Availability(ctx, "u1", hm(9, 0), hm(17, 0), 30*time.Minute)
+		if err != nil {
+			t.Fatalf("Availability: %v", err)
+		}
+		want := []domain.AvailabilitySlot{{Start: hm(9, 0), End: hm(17, 0)}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("slots = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("working hours narrower than the free gap clip it", func(t *testing.T) {
+		settingsRepo := newUserSettingsRepo()
+		if err := settingsRepo.Upsert(ctx, domain.UserSettings{
+			UserID:   "u1",
+			TimeZone: "UTC",
+			WorkingHours: []domain.AvailabilityWindow{
+				{Weekday: weekday, Start: "10:00", End: "15:00"},
+			},
+		}); err != nil {
+			t.Fatalf("seed settings: %v", err)
+		}
+		svc := newSvc(t, settingsRepo)
+
+		got, err := svc.Availability(ctx, "u1", hm(9, 0), hm(17, 0), 30*time.Minute)
+		if err != nil {
+			t.Fatalf("Availability: %v", err)
+		}
+		want := []domain.AvailabilitySlot{{Start: hm(10, 0), End: hm(15, 0)}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("slots = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("working hours declared in a different time zone than the calendar events", func(t *testing.T) {
+		// Working hours 09:00-17:00 America/New_York on the same calendar
+		// date; the free gap is the full UTC day. Only the portion inside
+		// the NY working window (converted to UTC, EDT = UTC-4 in July)
+		// should survive.
+		settingsRepo := newUserSettingsRepo()
+		if err := settingsRepo.Upsert(ctx, domain.UserSettings{
+			UserID:   "u1",
+			TimeZone: "America/New_York",
+			WorkingHours: []domain.AvailabilityWindow{
+				{Weekday: weekday, Start: "09:00", End: "17:00"},
+			},
+		}); err != nil {
+			t.Fatalf("seed settings: %v", err)
+		}
+		svc := newSvc(t, settingsRepo)
+
+		loc, err := time.LoadLocation("America/New_York")
+		if err != nil {
+			t.Fatalf("LoadLocation: %v", err)
+		}
+		from := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
+		to := from.AddDate(0, 0, 1)
+
+		got, err := svc.Availability(ctx, "u1", from, to, 30*time.Minute)
+		if err != nil {
+			t.Fatalf("Availability: %v", err)
+		}
+		want := []domain.AvailabilitySlot{{
+			Start: time.Date(2026, 7, 7, 9, 0, 0, 0, loc),
+			End:   time.Date(2026, 7, 7, 17, 0, 0, 0, loc),
+		}}
+		if len(got) != 1 || !got[0].Start.Equal(want[0].Start) || !got[0].End.Equal(want[0].End) {
+			t.Fatalf("slots = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("nil Settings repo leaves behavior unchanged", func(t *testing.T) {
+		svc := NewCalendarService(CalendarServiceDeps{
+			Accounts:   newAccountRepo(),
+			Calendars:  newCalendarRepo(),
+			Events:     newEventRepo(),
+			Clock:      newClock(hm(0, 0)),
+			SelfHosted: true,
+		})
+		got, err := svc.Availability(ctx, "u1", hm(9, 0), hm(17, 0), 30*time.Minute)
+		if err != nil {
+			t.Fatalf("Availability: %v", err)
+		}
+		want := []domain.AvailabilitySlot{{Start: hm(9, 0), End: hm(17, 0)}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("slots = %v, want %v", got, want)
+		}
+	})
+}
+
 // --- CalendarService.ListCalendars / UpdateCalendar --------------------------
 
 func TestListCalendars(t *testing.T) {
