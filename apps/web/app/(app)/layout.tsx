@@ -28,6 +28,7 @@ import {
   WifiOff,
 } from 'lucide-react';
 
+import { AskSidebarPanel, AskSidebarProvider } from '@/components/ai/ask-sidebar';
 import { CommandPalette } from '@/components/app/command-palette';
 import { ComposeProvider, useCompose } from '@/components/app/compose';
 import { useTheme } from '@/components/theme-provider';
@@ -70,19 +71,22 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <ComposeProvider>
-      <TooltipProvider>
-        <div className="bg-background flex h-svh overflow-hidden">
-          <React.Suspense fallback={<div className="w-60 shrink-0 border-r" />}>
-            <SideRail user={user} />
-          </React.Suspense>
-          <div className="flex min-w-0 flex-1 flex-col">
-            <OfflineBanner />
-            <main className="min-h-0 flex-1">{children}</main>
+      <AskSidebarProvider>
+        <TooltipProvider>
+          <div className="bg-background flex h-svh overflow-hidden">
+            <React.Suspense fallback={<div className="w-60 shrink-0 border-r" />}>
+              <SideRail user={user} />
+            </React.Suspense>
+            <div className="flex min-w-0 flex-1 flex-col">
+              <OfflineBanner />
+              <main className="min-h-0 flex-1">{children}</main>
+            </div>
+            <AskSidebarPanel />
           </div>
-        </div>
-        <CommandPalette />
-        <GlobalShortcuts />
-      </TooltipProvider>
+          <CommandPalette />
+          <GlobalShortcuts />
+        </TooltipProvider>
+      </AskSidebarProvider>
     </ComposeProvider>
   );
 }

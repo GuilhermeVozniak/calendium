@@ -7,6 +7,7 @@ import {
   BellRing,
   CalendarCheck2,
   CalendarDays,
+  CalendarPlus,
   Clock,
   FileText,
   Inbox,
@@ -14,6 +15,7 @@ import {
   ListChecks,
   LogOut,
   MailOpen,
+  MessageSquareText,
   Monitor,
   Moon,
   PanelRight,
@@ -23,6 +25,7 @@ import {
   Search,
   Send,
   Settings,
+  Sparkles,
   Star,
   Sun,
   Tag,
@@ -30,8 +33,10 @@ import {
 
 import { useQuery } from '@tanstack/react-query';
 
+import { useAskSidebar } from '@/components/ai/ask-sidebar';
 import { useCompose } from '@/components/app/compose';
 import { useTheme } from '@/components/theme-provider';
+import { dispatchAiEditCommand } from '@/components/compose/ai-edit-menu';
 import {
   CommandDialog,
   CommandEmpty,
@@ -52,6 +57,7 @@ import { fetchSearch } from '@/lib/search-data';
 import { MOD_KEY, useShortcuts } from '@/lib/shortcuts';
 import { teachShortcut } from '@/lib/shortcut-hints';
 import { fetchEventTemplates } from '@/lib/template-data';
+import { useInstance } from '@/lib/use-instance';
 
 /** Palette label per view, keyed off the same VIEW_KEYS map the calendar page
  * binds its d/w/m/q/y/a shortcuts from - deriving both here keeps the two
@@ -80,6 +86,8 @@ export function CommandPalette() {
   const pathname = usePathname();
   const { openCompose } = useCompose();
   const { setTheme, resolvedTheme } = useTheme();
+  const { openSidebar } = useAskSidebar();
+  const aiEnabled = useInstance().data?.features.ai ?? false;
 
   // Reset the query when the palette closes; debounce it for live search.
   React.useEffect(() => {
@@ -386,6 +394,41 @@ export function CommandPalette() {
         </CommandGroup>
 
         <CommandSeparator />
+
+        {aiEnabled && (
+          <>
+            <CommandGroup heading="AI">
+              <CommandItem onSelect={() => run(() => openSidebar())}>
+                <MessageSquareText />
+                Ask AI
+                <KbdGroup size="sm" keys={[MOD_KEY, 'J']} className="ml-auto" />
+              </CommandItem>
+              <CommandItem
+                onSelect={() => run(() => runMailCommand('propose-event'))}
+              >
+                <CalendarPlus />
+                Create event with AI
+              </CommandItem>
+              <CommandItem onSelect={() => run(() => dispatchAiEditCommand('improve'))}>
+                <Sparkles />
+                AI: Improve draft
+              </CommandItem>
+              <CommandItem onSelect={() => run(() => dispatchAiEditCommand('shorten'))}>
+                <Sparkles />
+                AI: Shorten draft
+              </CommandItem>
+              <CommandItem onSelect={() => run(() => dispatchAiEditCommand('simplify'))}>
+                <Sparkles />
+                AI: Simplify draft
+              </CommandItem>
+              <CommandItem onSelect={() => run(() => dispatchAiEditCommand('fix_grammar'))}>
+                <Sparkles />
+                AI: Fix grammar in draft
+              </CommandItem>
+            </CommandGroup>
+            <CommandSeparator />
+          </>
+        )}
 
         <CommandGroup heading="Appearance">
           <CommandItem onSelect={() => run(() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark'))}>

@@ -9,6 +9,8 @@ import { BellRing, Check, ChevronDown, Clock, Loader2, Send, Sparkles, X } from 
 import { toast } from 'sonner';
 
 import { TimePickerDialog } from '@/components/app/snooze-menu';
+import { AiEditMenu } from '@/components/compose/ai-edit-menu';
+import { AiDraftBadge } from '@/components/mail/ai-draft-badge';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
@@ -48,6 +50,8 @@ export interface ComposeInitial {
   accountId?: string;
   /** When reopening a server draft, edit it in place instead of creating a new one. */
   draftId?: string;
+  /** True when reopening an AI-generated draft (auto-reply / auto-draft) — shows the AI draft badge. */
+  aiGenerated?: boolean;
 }
 
 interface ComposeContextValue {
@@ -254,6 +258,10 @@ function ComposeForm({
   const [scheduledAt, setScheduledAt] = React.useState<Date | null>(null);
   const [remindAt, setRemindAt] = React.useState<{ label: string; when: Date } | null>(null);
   const [scheduleDialogOpen, setScheduleDialogOpen] = React.useState(false);
+  // Tracks the persisted draft id across the session: seeded from a reopened
+  // draft, or lazily created by ensureDraftId() the first time AI edit needs
+  // one. Once set, send/save use it (PUT) instead of creating a duplicate.
+  const [liveDraftId, setLiveDraftId] = React.useState<string | null>(initial?.draftId ?? null);
 
   const bodyRef = React.useRef<HTMLTextAreaElement>(null);
 
@@ -343,6 +351,41 @@ function ComposeForm({
     }
   }
 
+  // --- AI edit menu (Improve / Shorten / Simplify / Fix grammar / Change tone) -
+  /**
+   * aiEditDraft needs a real draftId. A brand-new compose session doesn't have
+   * one yet, so the first AI edit lazily persists the current form as a draft
+   * (matching the reopened-draft PUT-vs-POST logic in handleSend below) and
+   * remembers the id for the rest of the session. In demo mode, where saveDraft
+   * has no real backend to hit, a local id lets the edit proceed through its
+   * own demo fallback without a network round trip.
+   */
+  async function ensureDraftId(): Promise<string> {
+    if (liveDraftId) return liveDraftId;
+    const input: DraftInput = {
+      accountId: fromAccountId,
+      threadId: initial?.threadId ?? null,
+      to,
+      cc,
+      bcc,
+      subject,
+      bodyHtml: textToHtml(body),
+      scheduledAt: null,
+    };
+    try {
+      const draft = await getApiClient().saveDraft(input);
+      setLiveDraftId(draft.id);
+      return draft.id;
+    } catch (err) {
+      if (DEMO_MODE) {
+        const id = `draft-demo-${Date.now()}`;
+        setLiveDraftId(id);
+        return id;
+      }
+      throw err;
+    }
+  }
+
   // --- Undo send ------------------------------------------------------------
   async function handleUndo(draftId: string) {
     try {
@@ -386,10 +429,11 @@ function ComposeForm({
     };
     try {
       const api = getApiClient();
-      // Reopened drafts are edited in place (full-replace PUT) then sent, so a
-      // reopened draft isn't left behind as a duplicate.
-      const draft = initial?.draftId
-        ? await api.updateDraft(initial.draftId, input)
+      // Reopened drafts (or ones lazily created by ensureDraftId for AI edit)
+      // are edited in place (full-replace PUT) then sent, so a draft isn't
+      // left behind as a duplicate.
+      const draft = liveDraftId
+        ? await api.updateDraft(liveDraftId, input)
         : await api.saveDraft(input);
       await api.sendDraft(draft.id);
       if (remindAt && initial?.threadId) {
@@ -424,8 +468,9 @@ function ComposeForm({
     <div className="flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between border-b px-4 py-2.5">
-        <span className="text-sm font-medium">
+        <span className="flex items-center gap-2 text-sm font-medium">
           {initial?.threadId ? 'Reply' : 'New message'}
+          {initial?.aiGenerated && <AiDraftBadge />}
         </span>
         <div className="flex items-center gap-1">
           <span className="text-muted-foreground mr-1 hidden items-center gap-1 text-xs sm:flex">
@@ -642,40 +687,43 @@ function ComposeForm({
           </DropdownMenu>
         </div>
 
-        {/* AI assist (gated on server AI capability) */}
+        {/* AI assist + AI edit menu (both gated on server AI capability) */}
         {aiEnabled && (
-        <Popover open={aiOpen} onOpenChange={setAiOpen}>
-          <PopoverTrigger asChild>
-            <Button variant="outline" size="sm" className="gap-1.5">
-              <Sparkles />
-              AI assist
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent align="end" className="w-80 p-3">
-            <p className="text-sm font-medium">Draft with AI</p>
-            <p className="text-muted-foreground mt-0.5 text-xs">
-              Describe what you want to say — tone, ask, context.
-            </p>
-            <Textarea
-              value={aiPrompt}
-              onChange={(event) => setAiPrompt(event.target.value)}
-              onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                  event.preventDefault();
-                  void handleAi();
-                }
-              }}
-              placeholder="e.g. polite decline, propose next week instead"
-              className="mt-2 min-h-20 text-sm"
-            />
-            <div className="mt-2 flex justify-end">
-              <Button size="sm" onClick={() => void handleAi()} disabled={aiBusy || !aiPrompt.trim()}>
-                {aiBusy ? <Loader2 className="animate-spin" /> : <Sparkles />}
-                Draft it
-              </Button>
-            </div>
-          </PopoverContent>
-        </Popover>
+          <div className="flex items-center gap-1.5">
+            <AiEditMenu ensureDraftId={ensureDraftId} onApplied={(text) => setBody(text)} />
+            <Popover open={aiOpen} onOpenChange={setAiOpen}>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="sm" className="gap-1.5">
+                  <Sparkles />
+                  AI assist
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-80 p-3">
+                <p className="text-sm font-medium">Draft with AI</p>
+                <p className="text-muted-foreground mt-0.5 text-xs">
+                  Describe what you want to say — tone, ask, context.
+                </p>
+                <Textarea
+                  value={aiPrompt}
+                  onChange={(event) => setAiPrompt(event.target.value)}
+                  onKeyDown={(event) => {
+                    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                      event.preventDefault();
+                      void handleAi();
+                    }
+                  }}
+                  placeholder="e.g. polite decline, propose next week instead"
+                  className="mt-2 min-h-20 text-sm"
+                />
+                <div className="mt-2 flex justify-end">
+                  <Button size="sm" onClick={() => void handleAi()} disabled={aiBusy || !aiPrompt.trim()}>
+                    {aiBusy ? <Loader2 className="animate-spin" /> : <Sparkles />}
+                    Draft it
+                  </Button>
+                </div>
+              </PopoverContent>
+            </Popover>
+          </div>
         )}
       </div>
 
