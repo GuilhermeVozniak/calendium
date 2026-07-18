@@ -47,6 +47,11 @@ vi.mock('@/lib/template-data', async (importOriginal) => {
   };
 });
 
+const conflictWarningMock = vi.fn((_props: unknown) => null);
+vi.mock('@/components/app/calendar/conflict-warning', () => ({
+  ConflictWarning: (props: unknown) => conflictWarningMock(props),
+}));
+
 const toastSuccess = vi.fn();
 const toastError = vi.fn();
 vi.mock('sonner', () => ({
@@ -152,6 +157,46 @@ describe('EventDialog — title', () => {
     const titleInput = await screen.findByLabelText('Event title');
     await user.type(titleInput, 'Team sync');
     expect(titleInput).toHaveValue('Team sync');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ConflictWarning wiring (Task 12 integration — mounted by the controller)
+// ---------------------------------------------------------------------------
+
+describe('EventDialog — conflict warning wiring', () => {
+  it('mounts ConflictWarning with the parsed slot in create mode (no ignoreEventId)', async () => {
+    renderDialog();
+    await screen.findByLabelText('Event title');
+    expect(conflictWarningMock).toHaveBeenCalled();
+    const props = conflictWarningMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(props.allDay).toBe(false);
+    expect(props.start).toBeInstanceOf(Date);
+    expect(props.end).toBeInstanceOf(Date);
+    expect(props.ignoreEventId).toBeUndefined();
+  });
+
+  it('passes the edited event id as ignoreEventId in edit mode', async () => {
+    const event: Event = {
+      id: 'ev-conflict',
+      calendarId: 'cal-work',
+      title: 'Standup',
+      description: null,
+      location: null,
+      start: new Date(2026, 6, 8, 9, 0, 0, 0).toISOString(),
+      end: new Date(2026, 6, 8, 9, 30, 0, 0).toISOString(),
+      allDay: false,
+      recurrenceRule: null,
+      attendees: [],
+      conferencing: null,
+      reminderMinutes: [],
+      status: 'confirmed',
+      visibility: 'default',
+    };
+    renderDialog({ event });
+    await screen.findByLabelText('Event title');
+    const props = conflictWarningMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(props.ignoreEventId).toBe('ev-conflict');
   });
 });
 

@@ -28,6 +28,8 @@ import type {
   RsvpStatus,
 } from '@calendium/shared';
 
+import { ConflictWarning } from '@/components/app/calendar/conflict-warning';
+
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -558,6 +560,14 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
               )}
             </div>
           </FieldRow>
+
+          <ConflictWarning
+            calendars={calendars}
+            start={parseInput(start, allDay)}
+            end={parseInput(end, allDay)}
+            allDay={allDay}
+            ignoreEventId={event?.id}
+          />
 
           <FieldRow icon={MapPin}>
             <Input
