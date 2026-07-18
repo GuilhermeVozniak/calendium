@@ -4,6 +4,7 @@ import type * as React from 'react';
 import { Archive, MailCheck, MailX, Tag, X } from 'lucide-react';
 
 import { Kbd } from '@/components/ui/kbd';
+import { teachShortcut } from '@/lib/shortcut-hints';
 import { cn } from '@/lib/utils';
 
 export interface BulkBarProps {
@@ -28,13 +29,20 @@ export function BulkBar({ count, onArchive, onMarkRead, onLabel, onUnsubscribe, 
       )}
     >
       <span className="px-1.5 text-xs font-medium">{count} selected</span>
-      <BulkButton icon={<Archive className="size-3.5" />} label="Archive" kbd="E" onClick={onArchive} />
-      <BulkButton icon={<MailCheck className="size-3.5" />} label="Mark read" kbd="⇧I" onClick={onMarkRead} />
-      <BulkButton icon={<Tag className="size-3.5" />} label="Label" kbd="L" onClick={onLabel} />
+      <BulkButton icon={<Archive className="size-3.5" />} label="Archive" kbd="E" onClick={() => { teachShortcut('archive', 'E', 'Archive'); onArchive(); }} />
+      <BulkButton icon={<MailCheck className="size-3.5" />} label="Mark read" kbd="⇧I" onClick={() => { teachShortcut('mark-read', '⇧I', 'Mark read'); onMarkRead(); }} />
+      <BulkButton icon={<Tag className="size-3.5" />} label="Label" kbd="L" onClick={() => { teachShortcut('label', 'L', 'Label'); onLabel(); }} />
       <BulkButton icon={<MailX className="size-3.5" />} label="Unsubscribe" onClick={onUnsubscribe} />
       <BulkButton icon={<X className="size-3.5" />} label="Clear" kbd="Esc" onClick={onClear} />
     </div>
   );
+}
+
+interface BulkButtonProps {
+  icon: React.ReactNode;
+  label: string;
+  kbd?: string;
+  onClick: () => void;
 }
 
 function BulkButton({
@@ -42,12 +50,7 @@ function BulkButton({
   label,
   kbd,
   onClick,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  kbd?: string;
-  onClick: () => void;
-}) {
+}: BulkButtonProps) {
   return (
     <button
       type="button"

@@ -45,6 +45,7 @@ import { useSelfEmails } from '@/lib/use-identity';
 import { useShortcuts } from '@/lib/shortcuts';
 import { useInstance } from '@/lib/use-instance';
 import { runAiAsk, runAiSummarize, useMailActions, useThreadDetail } from '@/lib/use-mail';
+import { teachShortcut } from '@/lib/shortcut-hints';
 import { cn } from '@/lib/utils';
 
 type IsMe = (addr: EmailAddress) => boolean;
@@ -315,6 +316,7 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze }: ThreadVie
                 className="size-7"
                 aria-label="Archive"
                 onClick={() => {
+                  teachShortcut('archive', 'E', 'Archive');
                   if (onArchive) {
                     onArchive();
                   } else {

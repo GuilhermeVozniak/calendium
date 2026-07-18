@@ -41,6 +41,7 @@ import { dispatchMailCommand, queueMailCommand, type MailCommand } from '@/lib/m
 import { signOut } from '@/lib/auth-client';
 import { fetchSearch } from '@/lib/search-data';
 import { MOD_KEY, useShortcuts } from '@/lib/shortcuts';
+import { teachShortcut } from '@/lib/shortcut-hints';
 
 /** ⌘K command palette — every Calendium action, one keystroke away. */
 export function CommandPalette() {
@@ -154,21 +155,21 @@ export function CommandPalette() {
               C
             </Kbd>
           </CommandItem>
-          <CommandItem onSelect={() => runMailCommand('search')}>
+          <CommandItem onSelect={() => { teachShortcut('search', '/', 'Search'); runMailCommand('search'); }}>
             <Search />
             Search mail
             <Kbd size="sm" className="ml-auto">
               /
             </Kbd>
           </CommandItem>
-          <CommandItem onSelect={() => runMailCommand('archive')}>
+          <CommandItem onSelect={() => { teachShortcut('archive', 'E', 'Archive'); runMailCommand('archive'); }}>
             <Archive />
             Archive conversation
             <Kbd size="sm" className="ml-auto">
               E
             </Kbd>
           </CommandItem>
-          <CommandItem onSelect={() => runMailCommand('snooze')}>
+          <CommandItem onSelect={() => { teachShortcut('snooze', 'H', 'Snooze'); runMailCommand('snooze'); }}>
             <Clock />
             Snooze…
             <Kbd size="sm" className="ml-auto">
@@ -184,26 +185,26 @@ export function CommandPalette() {
             <Inbox />
             Get Me To Zero
           </CommandItem>
-          <CommandItem onSelect={() => runMailCommand('undo')}>
+          <CommandItem onSelect={() => { teachShortcut('undo', 'Z', 'Undo'); runMailCommand('undo'); }}>
             <RotateCcw />
             Undo last action
             <Kbd size="sm" className="ml-auto">
               Z
             </Kbd>
           </CommandItem>
-          <CommandItem onSelect={() => runMailCommand('star')}>
+          <CommandItem onSelect={() => { teachShortcut('star', 'S', 'Star'); runMailCommand('star'); }}>
             <Star />
             Star / unstar
             <Kbd size="sm" className="ml-auto">
               S
             </Kbd>
           </CommandItem>
-          <CommandItem onSelect={() => runMailCommand('mark-read')}>
+          <CommandItem onSelect={() => { teachShortcut('mark-read', '⇧I', 'Mark read'); runMailCommand('mark-read'); }}>
             <MailOpen />
             Mark read
             <KbdGroup size="sm" keys={['⇧', 'I']} className="ml-auto" />
           </CommandItem>
-          <CommandItem onSelect={() => runMailCommand('label')}>
+          <CommandItem onSelect={() => { teachShortcut('label', 'L', 'Label'); runMailCommand('label'); }}>
             <Tag />
             Label conversation…
             <Kbd size="sm" className="ml-auto">
