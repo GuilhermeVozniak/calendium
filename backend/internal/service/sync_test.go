@@ -1440,8 +1440,8 @@ func TestSyncAccountEnqueueAiJobsAtIngest(t *testing.T) {
 			expectedKinds: map[domain.AiJobKind]bool{
 				domain.AiJobThreadSummary:  true,
 				domain.AiJobInstantReplies: true,
-				domain.AiJobAutoDraft:       true,
-				domain.AiJobClassify:        true,
+				domain.AiJobAutoDraft:      true,
+				domain.AiJobClassify:       true,
 			},
 		},
 		{
@@ -1451,8 +1451,8 @@ func TestSyncAccountEnqueueAiJobsAtIngest(t *testing.T) {
 			expectedKinds: map[domain.AiJobKind]bool{
 				domain.AiJobThreadSummary:  true,
 				domain.AiJobInstantReplies: true,
-				domain.AiJobAutoDraft:       true,
-				domain.AiJobClassify:        true,
+				domain.AiJobAutoDraft:      true,
+				domain.AiJobClassify:       true,
 			},
 		},
 		{
@@ -1462,7 +1462,7 @@ func TestSyncAccountEnqueueAiJobsAtIngest(t *testing.T) {
 			expectedKinds: map[domain.AiJobKind]bool{
 				domain.AiJobThreadSummary:  true,
 				domain.AiJobInstantReplies: true,
-				domain.AiJobClassify:        true,
+				domain.AiJobClassify:       true,
 			},
 		},
 		{
@@ -1472,7 +1472,7 @@ func TestSyncAccountEnqueueAiJobsAtIngest(t *testing.T) {
 			expectedKinds: map[domain.AiJobKind]bool{
 				domain.AiJobThreadSummary:  true,
 				domain.AiJobInstantReplies: true,
-				domain.AiJobClassify:        true,
+				domain.AiJobClassify:       true,
 			},
 		},
 		{
@@ -1499,7 +1499,7 @@ func TestSyncAccountEnqueueAiJobsAtIngest(t *testing.T) {
 			pastSync := now.Add(-time.Hour) // Not a first sync
 			if _, err := accounts.Create(ctx, domain.ConnectedAccount{
 				ID: "a1", UserID: "u1", Provider: domain.ProviderGoogle,
-				Email: "me@acme.com",
+				Email:        "me@acme.com",
 				LastSyncedAt: &pastSync,
 			}); err != nil {
 				t.Fatal(err)
@@ -1517,7 +1517,7 @@ func TestSyncAccountEnqueueAiJobsAtIngest(t *testing.T) {
 			aiJobs := newAiJobRepo()
 
 			page := port.MailSyncPage{
-				Threads: []domain.Thread{{ProviderThreadID: "pt1", InInbox: true, LastMessageAt: now}},
+				Threads:    []domain.Thread{{ProviderThreadID: "pt1", InInbox: true, LastMessageAt: now}},
 				NextCursor: "cursor-1",
 				HasMore:    false,
 			}
@@ -1625,15 +1625,15 @@ func TestSyncAccountNoAiJobsWhenNilRepo(t *testing.T) {
 	}
 
 	svc := NewSyncService(SyncServiceDeps{
-		Accounts:          accounts,
-		Labels:            newLabelRepo(),
-		Threads:           newThreadRepo(),
-		Messages:          newMessageRepo(),
-		SyncState:         newSyncStateRepo(),
-		AiJobs:            nil, // Explicitly nil
-		MailProviders:     map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
-		OAuth:             map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
-		Clock:             newClock(now),
+		Accounts:      accounts,
+		Labels:        newLabelRepo(),
+		Threads:       newThreadRepo(),
+		Messages:      newMessageRepo(),
+		SyncState:     newSyncStateRepo(),
+		AiJobs:        nil, // Explicitly nil
+		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
+		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+		Clock:         newClock(now),
 	})
 
 	if err := svc.SyncAccount(ctx, "a1"); err != nil {
@@ -1665,15 +1665,15 @@ func TestSyncAccountEnqueueVoiceProfileOnFirstSync(t *testing.T) {
 	aiJobs := newAiJobRepo()
 
 	svc := NewSyncService(SyncServiceDeps{
-		Accounts:          accounts,
-		Labels:            newLabelRepo(),
-		Threads:           newThreadRepo(),
-		Messages:          newMessageRepo(),
-		SyncState:         newSyncStateRepo(),
-		AiJobs:            aiJobs,
-		MailProviders:     map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
-		OAuth:             map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
-		Clock:             newClock(now),
+		Accounts:      accounts,
+		Labels:        newLabelRepo(),
+		Threads:       newThreadRepo(),
+		Messages:      newMessageRepo(),
+		SyncState:     newSyncStateRepo(),
+		AiJobs:        aiJobs,
+		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
+		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+		Clock:         newClock(now),
 	})
 
 	if err := svc.SyncAccount(ctx, "a1"); err != nil {
@@ -1726,15 +1726,15 @@ func TestSyncAccountNoVoiceProfileOnSubsequentSync(t *testing.T) {
 	aiJobs := newAiJobRepo()
 
 	svc := NewSyncService(SyncServiceDeps{
-		Accounts:          accounts,
-		Labels:            newLabelRepo(),
-		Threads:           newThreadRepo(),
-		Messages:          newMessageRepo(),
-		SyncState:         newSyncStateRepo(),
-		AiJobs:            aiJobs,
-		MailProviders:     map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
-		OAuth:             map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
-		Clock:             newClock(now),
+		Accounts:      accounts,
+		Labels:        newLabelRepo(),
+		Threads:       newThreadRepo(),
+		Messages:      newMessageRepo(),
+		SyncState:     newSyncStateRepo(),
+		AiJobs:        aiJobs,
+		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
+		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+		Clock:         newClock(now),
 	})
 
 	if err := svc.SyncAccount(ctx, "a1"); err != nil {
@@ -1779,7 +1779,7 @@ func TestDeliverDraftEnqueueReminderDetect(t *testing.T) {
 	threadID := "t1"
 	if _, err := drafts.Create(ctx, domain.Draft{
 		ID: "d1", AccountID: "a1", ThreadID: &threadID,
-		To: []domain.EmailAddress{{Email: "friend@example.org"}},
+		To:          []domain.EmailAddress{{Email: "friend@example.org"}},
 		ScheduledAt: &now,
 	}); err != nil {
 		t.Fatal(err)
@@ -1793,14 +1793,14 @@ func TestDeliverDraftEnqueueReminderDetect(t *testing.T) {
 	aiJobs := newAiJobRepo()
 
 	svc := NewSyncService(SyncServiceDeps{
-		Accounts:          accounts,
-		Threads:           threads,
-		Drafts:            drafts,
-		Messages:          newMessageRepo(),
-		AiJobs:            aiJobs,
-		MailProviders:     map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
-		OAuth:             map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
-		Clock:             clock,
+		Accounts:      accounts,
+		Threads:       threads,
+		Drafts:        drafts,
+		Messages:      newMessageRepo(),
+		AiJobs:        aiJobs,
+		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
+		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+		Clock:         clock,
 	})
 
 	if err := svc.ProcessDueWork(ctx); err != nil {
@@ -1857,7 +1857,7 @@ func TestDeliverDraftNoReminderDetectForStandalone(t *testing.T) {
 	drafts := newDraftRepo(accounts)
 	if _, err := drafts.Create(ctx, domain.Draft{
 		ID: "d1", AccountID: "a1", ThreadID: nil, // Standalone draft
-		To: []domain.EmailAddress{{Email: "friend@example.org"}},
+		To:          []domain.EmailAddress{{Email: "friend@example.org"}},
 		ScheduledAt: &now,
 	}); err != nil {
 		t.Fatal(err)
@@ -1871,14 +1871,14 @@ func TestDeliverDraftNoReminderDetectForStandalone(t *testing.T) {
 	aiJobs := newAiJobRepo()
 
 	svc := NewSyncService(SyncServiceDeps{
-		Accounts:          accounts,
-		Threads:           newThreadRepo(),
-		Drafts:            drafts,
-		Messages:          newMessageRepo(),
-		AiJobs:            aiJobs,
-		MailProviders:     map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
-		OAuth:             map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
-		Clock:             clock,
+		Accounts:      accounts,
+		Threads:       newThreadRepo(),
+		Drafts:        drafts,
+		Messages:      newMessageRepo(),
+		AiJobs:        aiJobs,
+		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
+		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+		Clock:         clock,
 	})
 
 	if err := svc.ProcessDueWork(ctx); err != nil {

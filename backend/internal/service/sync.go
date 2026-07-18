@@ -30,8 +30,8 @@ type SyncServiceDeps struct {
 	MailProviders     map[domain.Provider]port.MailProvider
 	CalendarProviders map[domain.Provider]port.CalendarProvider
 	OAuth             map[domain.Provider]port.OAuthGateway
-	Push              port.PushSender      // optional; nil disables notifications
-	AiJobs            port.AiJobRepo       // optional; nil disables AI enqueueing
+	Push              port.PushSender // optional; nil disables notifications
+	AiJobs            port.AiJobRepo  // optional; nil disables AI enqueueing
 	Clock             port.Clock
 }
 
@@ -247,8 +247,10 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 			return err
 		}
 		localThreadByProvider[t.ProviderThreadID] = saved
+		// Compute hasNewInboundReply once to reuse for both AI-enqueue and push-notify.
+		hasReply := hasNewInboundReply(page.Messages, t.ProviderThreadID, acct.Email, since)
 		// Enqueue AI jobs for new inbound replies.
-		if hasNewInboundReply(page.Messages, t.ProviderThreadID, acct.Email, since) {
+		if hasReply {
 			s.enqueueIngestAiJobs(ctx, acct, saved)
 		}
 		// Push on newly-synced important/vip mail (a genuinely new inbound
@@ -256,7 +258,7 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 		// wired.
 		if s.push != nil && saved.InInbox &&
 			(saved.Split == domain.SplitImportant || saved.Split == domain.SplitVIP) &&
-			hasNewInboundReply(page.Messages, t.ProviderThreadID, acct.Email, since) {
+			hasReply {
 			notify = append(notify, saved)
 		}
 	}
@@ -298,8 +300,8 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 }
 
 // enqueueIngestAiJobs queues background AI work for a thread that just
-// received a genuinely new inbound message. Enqueue failures are logged,
-// never fatal to sync.
+// received a genuinely new inbound message. Enqueue failures are intentionally
+// discarded — AI enqueueing must never fail sync.
 func (s *SyncService) enqueueIngestAiJobs(ctx context.Context, acct domain.ConnectedAccount, t domain.Thread) {
 	if s.aiJobs == nil {
 		return
@@ -546,7 +548,7 @@ func (s *SyncService) deliverDraft(ctx context.Context, d domain.Draft) error {
 			return err
 		}
 		// Enqueue reminder_detect for threaded replies: give recipient 24h before judging "awaiting reply".
-		if s.aiJobs != nil && d.ThreadID != nil {
+		if s.aiJobs != nil {
 			_ = s.aiJobs.Enqueue(ctx, domain.AiJob{
 				ID:        newID(),
 				UserID:    acct.UserID,
