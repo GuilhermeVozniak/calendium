@@ -22,7 +22,7 @@ const BASE_URL = `http://127.0.0.1:${PORT}`;
 
 export default defineConfig({
   testDir: './e2e',
-  fullyParallel: true,
+  fullyParallel: true, // parallel for functional tests; perf project is serial (see below)
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? [['github'], ['list']] : [['list']],
@@ -30,7 +30,20 @@ export default defineConfig({
     baseURL: BASE_URL,
     trace: 'on-first-retry',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    {
+      name: 'chromium',
+      use: { ...devices['Desktop Chrome'] },
+      testIgnore: '**/perf.spec.ts',
+    },
+    {
+      name: 'perf',
+      use: { ...devices['Desktop Chrome'] },
+      testMatch: '**/perf.spec.ts',
+      fullyParallel: false, // Serialize perf tests to isolate from worker contention
+      dependencies: ['chromium'], // Run after chromium suite to warm up server
+    },
+  ],
   webServer: {
     command: process.env.CI
       ? `node_modules/.bin/next build && node_modules/.bin/next start -p ${PORT}`
