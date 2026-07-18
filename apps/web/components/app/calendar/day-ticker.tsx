@@ -46,7 +46,7 @@ export function DayTicker({ anchor, events, calendarById, onAnchorChange, onEven
   const selectedKey = format(anchor, 'yyyy-MM-dd');
   React.useEffect(() => {
     sectionNodes.current.get(selectedKey)?.scrollIntoView({ block: 'start' });
-  }, [selectedKey]);
+  }, [selectedKey, groups]);
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">

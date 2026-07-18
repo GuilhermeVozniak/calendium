@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -116,8 +116,12 @@ describe('MonthView', () => {
     expect(screen.queryByText('Meeting 3')).not.toBeInTheDocument();
 
     await user.click(screen.getByText('+2 more'));
-    expect(screen.getByText('Meeting 3')).toBeInTheDocument();
-    expect(screen.getByText('Meeting 4')).toBeInTheDocument();
+    // Popover should show only the overflow (3 and 4), NOT the visible pills (0, 1, 2)
+    const popoverContent = screen.getByText('Meeting 3').closest('[role="dialog"]');
+    expect(within(popoverContent as HTMLElement).getByText('Meeting 3')).toBeInTheDocument();
+    expect(within(popoverContent as HTMLElement).getByText('Meeting 4')).toBeInTheDocument();
+    expect(within(popoverContent as HTMLElement).queryByText('Meeting 0')).not.toBeInTheDocument();
+    expect(within(popoverContent as HTMLElement).queryByText('Meeting 2')).not.toBeInTheDocument();
   });
 
   it('shows a multi-day event pill on each day it touches', () => {

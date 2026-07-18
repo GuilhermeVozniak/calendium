@@ -159,4 +159,47 @@ describe('DayTicker', () => {
     await user.click(screen.getByText('Standup'));
     expect(onEventClick).toHaveBeenCalledWith(event);
   });
+
+  it('re-scrolls when events arrive after initial empty render', () => {
+    const scrollSpy = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollSpy;
+    try {
+      const anchor = new Date(2026, 0, 15);
+      const calendarById = new Map([[CAL.id, CAL]]);
+      const onAnchorChange = vi.fn();
+      const onEventClick = vi.fn();
+      const { rerender } = render(
+        <DayTicker
+          anchor={anchor}
+          events={[]}
+          calendarById={calendarById}
+          onAnchorChange={onAnchorChange}
+          onEventClick={onEventClick}
+        />
+      );
+      expect(scrollSpy).not.toHaveBeenCalled();
+      scrollSpy.mockClear();
+
+      const events = [
+        makeEvent({
+          id: 'evt-a',
+          start: new Date(2026, 0, 15, 9, 0, 0).toISOString(),
+          end: new Date(2026, 0, 15, 9, 15, 0).toISOString(),
+        }),
+      ];
+      rerender(
+        <DayTicker
+          anchor={anchor}
+          events={events}
+          calendarById={calendarById}
+          onAnchorChange={onAnchorChange}
+          onEventClick={onEventClick}
+        />
+      );
+      expect(scrollSpy).toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
 });

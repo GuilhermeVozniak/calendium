@@ -2,18 +2,16 @@
 
 import * as React from 'react';
 import { addDays, format, isToday } from 'date-fns';
-import { CalendarDays, MapPin, Video } from 'lucide-react';
+import { MapPin, Video } from 'lucide-react';
 
 import type { Calendar as CalendarModel, Event } from '@calendium/shared';
 
-import { Kbd } from '@/components/ui/kbd';
-import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 
 import { eventTouchesDay } from './time-grid';
+import { FALLBACK_COLOR } from './event-render';
 
 const AGENDA_DAYS = 14;
-const FALLBACK_COLOR = '#6366f1';
 
 export interface DayGroup {
   day: Date;
@@ -103,43 +101,7 @@ export function DayGroupList({ groups, calendarById, onEventClick, sectionRef, c
   );
 }
 
-export interface AgendaViewProps {
-  events: Event[];
-  calendarById: Map<string, CalendarModel>;
-  from: Date;
-  loading: boolean;
-  onEventClick: (event: Event) => void;
-}
-
-export function AgendaView({ events, calendarById, from, loading, onEventClick }: AgendaViewProps) {
-  const groups = React.useMemo(() => groupEventsByDay(events, from, AGENDA_DAYS), [events, from]);
-
-  if (loading) {
-    return (
-      <div className="flex-1 space-y-3 overflow-y-auto p-6">
-        <Skeleton className="h-6 w-40" />
-        <Skeleton className="h-24 w-full" />
-        <Skeleton className="h-6 w-40" />
-        <Skeleton className="h-24 w-full" />
-      </div>
-    );
-  }
-
-  if (groups.length === 0) {
-    return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
-        <CalendarDays className="size-8 text-muted-foreground" />
-        <p className="text-sm font-medium">No events in the next {AGENDA_DAYS} days</p>
-        <p className="text-xs text-muted-foreground">
-          Press <Kbd size="sm">C</Kbd> or use quick add to create one.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex-1 overflow-y-auto">
-      <DayGroupList groups={groups} calendarById={calendarById} onEventClick={onEventClick} />
-    </div>
-  );
-}
+/**
+ * This file contains the shared agenda engine: groupEventsByDay and DayGroupList
+ * are consumed by DayTicker and other views that need day-grouped event rendering.
+ */

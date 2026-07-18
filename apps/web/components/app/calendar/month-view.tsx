@@ -9,22 +9,10 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { cn } from '@/lib/utils';
 
 import { eventTouchesDay } from './time-grid';
+import { FALLBACK_COLOR, sortByAllDayThenStart, withAlpha } from './event-render';
 
 const MAX_VISIBLE_PILLS = 3;
-const FALLBACK_COLOR = '#6366f1';
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
-function withAlpha(hex: string, alpha: number): string {
-  const clean = hex.replace('#', '');
-  const full = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean;
-  const n = parseInt(full, 16);
-  if (Number.isNaN(n) || full.length !== 6) return hex;
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
-}
-
-function sortByAllDayThenStart(a: Event, b: Event): number {
-  return Number(b.allDay) - Number(a.allDay) || a.start.localeCompare(b.start);
-}
 
 export interface MonthViewProps {
   anchor: Date;
@@ -141,7 +129,7 @@ function MonthCell({ day, anchor, events, calendarById, onDayClick, onEventClick
             <PopoverContent className="w-64 p-2" onClick={(e) => e.stopPropagation()}>
               <div className="mb-1 text-xs font-semibold">{format(day, 'EEEE, MMMM d')}</div>
               <div className="flex flex-col gap-0.5">
-                {dayEvents.map((event) => {
+                {overflow.map((event) => {
                   const color = calendarById.get(event.calendarId)?.color ?? FALLBACK_COLOR;
                   return (
                     <button

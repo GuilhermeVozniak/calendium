@@ -7,8 +7,9 @@ import type { Calendar as CalendarModel, Event } from '@calendium/shared';
 
 import { cn } from '@/lib/utils';
 
+import { FALLBACK_COLOR, withAlpha } from './event-render';
+
 const HOUR_HEIGHT = 48; // px per hour in the time grid
-const FALLBACK_COLOR = '#6366f1';
 
 export function eventTouchesDay(event: Event, day: Date): boolean {
   return new Date(event.start) < endOfDay(day) && new Date(event.end) > startOfDay(day);
@@ -17,14 +18,6 @@ export function eventTouchesDay(event: Event, day: Date): boolean {
 function hourLabel(hour: number): string {
   const h12 = hour % 12 === 0 ? 12 : hour % 12;
   return `${h12} ${hour < 12 ? 'AM' : 'PM'}`;
-}
-
-function withAlpha(hex: string, alpha: number): string {
-  const clean = hex.replace('#', '');
-  const full = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean;
-  const n = parseInt(full, 16);
-  if (Number.isNaN(n) || full.length !== 6) return hex;
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
 interface PositionedEvent {
