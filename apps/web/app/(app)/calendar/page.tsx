@@ -20,6 +20,7 @@ import type { Calendar as CalendarModel, Event, EventInput } from '@calendium/sh
 
 import { AvailabilityDialog } from '@/components/app/availability';
 import { DayTicker } from '@/components/app/calendar/day-ticker';
+import { TimeTravelPicker, getStoredTimeTravelZone, setStoredTimeTravelZone } from '@/components/app/time-travel';
 import { MiniMonth } from '@/components/app/calendar/mini-month';
 import { MonthView } from '@/components/app/calendar/month-view';
 import { QuarterView } from '@/components/app/calendar/quarter-view';
@@ -80,6 +81,21 @@ export default function CalendarPage() {
   const [availabilityOpen, setAvailabilityOpen] = React.useState(false);
   const [templateManagerOpen, setTemplateManagerOpen] = React.useState(false);
   const [setSwitcherOpen, setSetSwitcherOpen] = React.useState(false);
+
+  // Time Travel (Task 16): overlays one city's clock on the grid without
+  // changing your own timezone, persisted separately from pinnedZones above
+  // (a transient toolbar toggle, not "pinned" world-clock state).
+  const [timeTravelZone, setTimeTravelZone] = React.useState<string | null>(null);
+  const [timeTravelPickerOpen, setTimeTravelPickerOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    setTimeTravelZone(getStoredTimeTravelZone());
+  }, []);
+
+  const changeTimeTravelZone = React.useCallback((tz: string | null) => {
+    setTimeTravelZone(tz);
+    setStoredTimeTravelZone(tz);
+  }, []);
 
   // Pinned world-clock timezones for the day/week grid gutters. Persisted to
   // localStorage (lib/timezones.ts) rather than /v1/prefs, which today only
@@ -321,19 +337,27 @@ export default function CalendarPage() {
         case 'toggle-set':
           toggleCalendarSet(command.setId);
           break;
+        case 'time-travel':
+          // Already overlaying a city: shift+z / the palette entry just exits
+          // it (mirrors Esc). Otherwise, open the picker's search so a city
+          // can be chosen — there's no sensible default city to jump to.
+          if (timeTravelZone) changeTimeTravelZone(null);
+          else setTimeTravelPickerOpen(true);
+          break;
       }
     },
-    [goToday, goNext, goPrev, openCreate, applyTemplateById, toggleCalendarSet]
+    [goToday, goNext, goPrev, openCreate, applyTemplateById, toggleCalendarSet, timeTravelZone, changeTimeTravelZone]
   );
 
   useCalendarCommands(runCalendarCommand);
 
   // Keyboard shortcuts: t (today), j/k (step by the view's unit), VIEW_KEYS
   // (d/w/m/q/y/a - the same map the palette's view rows read their hints from,
-  // so the two can't drift), c (create), s (share availability), / (focus
-  // quick-add). Suppressed while an input/dialog has focus (useShortcuts'
-  // default) and routed through runCalendarCommand so a keystroke and its
-  // matching palette entry always do exactly the same thing.
+  // so the two can't drift), c (create), s (share availability), shift+z
+  // (Time Travel), / (focus quick-add). Suppressed while an input/dialog has
+  // focus (useShortcuts' default) and routed through runCalendarCommand so a
+  // keystroke and its matching palette entry always do exactly the same
+  // thing.
   useShortcuts([
     { keys: 't', description: 'Go to today', handler: () => runCalendarCommand({ type: 'today' }) },
     {
@@ -360,6 +384,11 @@ export default function CalendarPage() {
       keys: 's',
       description: 'Share availability',
       handler: () => runCalendarCommand({ type: 'share-availability' }),
+    },
+    {
+      keys: 'shift+z',
+      description: "Time Travel: overlay a city's time zone",
+      handler: () => runCalendarCommand({ type: 'time-travel' }),
     },
     {
       keys: '/',
@@ -474,6 +503,12 @@ export default function CalendarPage() {
                   </Command>
                 </PopoverContent>
               </Popover>
+              <TimeTravelPicker
+                active={timeTravelZone}
+                onChange={changeTimeTravelZone}
+                open={timeTravelPickerOpen}
+                onOpenChange={setTimeTravelPickerOpen}
+              />
             </div>
           )}
           <Tabs value={view} onValueChange={(v) => setView(v as CalendarView)}>
@@ -646,6 +681,8 @@ export default function CalendarPage() {
               now={now}
               gmtLabel={gmtLabel}
               pinnedZones={pinnedZones}
+              timeTravelZone={timeTravelZone}
+              onExitTimeTravel={() => changeTimeTravelZone(null)}
               onSlotClick={handleSlotClick}
               onEventClick={handleEventClick}
             />

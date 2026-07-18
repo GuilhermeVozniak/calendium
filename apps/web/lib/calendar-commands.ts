@@ -20,7 +20,8 @@ export type CalendarCommand =
   | { type: 'new-event'; defaults?: Partial<EventInput> }
   | { type: 'new-from-template'; templateId: string }
   | { type: 'share-availability' }
-  | { type: 'toggle-set'; setId: string };
+  | { type: 'toggle-set'; setId: string }
+  | { type: 'time-travel' };
 
 export const CALENDAR_COMMAND_EVENT = 'calendium:calendar-command';
 

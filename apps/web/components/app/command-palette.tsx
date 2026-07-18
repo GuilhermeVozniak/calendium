@@ -10,6 +10,7 @@ import {
   CalendarPlus,
   Clock,
   FileText,
+  Globe,
   Inbox,
   LayoutTemplate,
   ListChecks,
@@ -368,6 +369,16 @@ export function CommandPalette() {
             <Kbd size="sm" className="ml-auto">
               S
             </Kbd>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              teachShortcut('cal-time-travel', '⇧Z', "overlay a city's time zone");
+              runCalendarCommand({ type: 'time-travel' });
+            }}
+          >
+            <Globe />
+            Time Travel: overlay a city's time zone
+            <KbdGroup size="sm" keys={['⇧', 'Z']} className="ml-auto" />
           </CommandItem>
           {templates?.slice(0, 5).map((template) => (
             <CommandItem
