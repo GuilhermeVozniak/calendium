@@ -14,6 +14,7 @@ import {
   extendSelection,
   inboxUndo,
   nextAfterRemoval,
+  pruneSelection,
   toggleSelected,
   type Selection,
 } from '@/lib/triage';
@@ -118,13 +119,12 @@ export function InboxView({ split }: { split: InboxSplit }) {
   }, [split]);
 
   // Drop selected ids that fell out of a (possibly refetched) list so a stale
-  // selection never outlives the rows it points at.
+  // selection never outlives the rows it points at. Prune stale ids only;
+  // keep valid ones and their anchor/cursor if still valid.
   useEffect(() => {
     setSelection((s) => {
-      if (s.ids.size === 0) return s;
       const idSet = new Set(threads.map((t) => t.id));
-      if ([...s.ids].every((id) => idSet.has(id))) return s;
-      return clearSelection();
+      return pruneSelection(s, idSet);
     });
   }, [threads]);
 
