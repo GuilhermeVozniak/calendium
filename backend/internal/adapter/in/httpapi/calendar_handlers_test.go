@@ -396,6 +396,14 @@ func TestHandleUpdateEventTemplate(t *testing.T) {
 			t.Fatalf("status = %d, want 404", rec.Code)
 		}
 	})
+
+	t.Run("malformed JSON rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPut, "/v1/event-templates/t1", strings.NewReader("{"))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
 }
 
 func TestHandleDeleteEventTemplate(t *testing.T) {
@@ -542,6 +550,14 @@ func TestHandleUpdateCalendarSet(t *testing.T) {
 		rec := h.authed(http.MethodPut, "/v1/calendar-sets/s1", jsonBody(t, input))
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404", rec.Code)
+		}
+	})
+
+	t.Run("malformed JSON rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPut, "/v1/calendar-sets/s1", strings.NewReader("{"))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
 		}
 	})
 }

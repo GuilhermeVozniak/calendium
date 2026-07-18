@@ -409,10 +409,10 @@ type fakeCalendarService struct {
 	listTemplatesErr   error
 	listTemplatesCalls int
 
-	createTemplateRet domain.EventTemplate
-	createTemplateErr error
-	gotCreateTemplate domain.EventTemplateInput
-	gotCreateTemplID  string
+	createTemplateRet    domain.EventTemplate
+	createTemplateErr    error
+	gotCreateTemplate    domain.EventTemplateInput
+	gotCreateTemplUserID string
 
 	updateTemplateRet domain.EventTemplate
 	updateTemplateErr error
@@ -431,10 +431,10 @@ type fakeCalendarService struct {
 	listSetsErr   error
 	listSetsCalls int
 
-	createSetRet   domain.CalendarSet
-	createSetErr   error
-	gotCreateSet   domain.CalendarSetInput
-	gotCreateSetID string
+	createSetRet       domain.CalendarSet
+	createSetErr       error
+	gotCreateSet       domain.CalendarSetInput
+	gotCreateSetUserID string
 
 	updateSetRet   domain.CalendarSet
 	updateSetErr   error
@@ -486,7 +486,7 @@ func (f *fakeCalendarService) ListEventTemplates(ctx context.Context, userID str
 
 func (f *fakeCalendarService) CreateEventTemplate(ctx context.Context, userID string, in domain.EventTemplateInput) (domain.EventTemplate, error) {
 	f.gotCreateTemplate = in
-	f.gotCreateTemplID = userID
+	f.gotCreateTemplUserID = userID
 	return f.createTemplateRet, f.createTemplateErr
 }
 
@@ -516,7 +516,7 @@ func (f *fakeCalendarService) ListCalendarSets(ctx context.Context, userID strin
 
 func (f *fakeCalendarService) CreateCalendarSet(ctx context.Context, userID string, in domain.CalendarSetInput) (domain.CalendarSet, error) {
 	f.gotCreateSet = in
-	f.gotCreateSetID = userID
+	f.gotCreateSetUserID = userID
 	return f.createSetRet, f.createSetErr
 }
 
