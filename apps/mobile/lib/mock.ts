@@ -10,6 +10,7 @@ import {
   type ConnectedAccount,
   type EmailAddress,
   type Event,
+  type EventTemplate,
   type InboxSplit,
   type Message,
   type Page,
@@ -277,7 +278,10 @@ export const mockCalendars: Calendar[] = [
   },
 ];
 
-interface EventTemplate {
+// Named `MockDayTemplate` (not `EventTemplate`) to avoid colliding with the
+// shared `EventTemplate` type (saved, user-facing event templates below) -
+// this one is purely an internal generator shape for the day's schedule.
+interface MockDayTemplate {
   title: string;
   hour: number;
   minute: number;
@@ -288,7 +292,7 @@ interface EventTemplate {
   conferencing?: boolean;
 }
 
-const EVENT_TEMPLATES: EventTemplate[] = [
+const EVENT_TEMPLATES: MockDayTemplate[] = [
   { title: 'Team standup', hour: 9, minute: 30, durationMin: 15, calendarId: 'cal_work', weekdaysOnly: true, conferencing: true },
   { title: 'Product review', hour: 11, minute: 0, durationMin: 50, calendarId: 'cal_work', weekdaysOnly: true, conferencing: true },
   { title: 'Lunch', hour: 12, minute: 30, durationMin: 45, calendarId: 'cal_personal', location: 'Café Central' },
@@ -333,6 +337,59 @@ export function mockEvents(fromIso: string, toIso: string): Event[] {
   }
   return events.sort((a, b) => a.start.localeCompare(b.start));
 }
+
+/**
+ * Saved event templates ("1:1", "Focus block") for the create-event sheet's
+ * template picker (Task 20, mirroring Task 17's web templates). Demo-mode
+ * only - real templates come from `api.listEventTemplates()`.
+ */
+export const mockEventTemplates: EventTemplate[] = [
+  {
+    id: 'tpl_1_1',
+    name: '1:1',
+    title: '1:1',
+    description: '',
+    location: '',
+    durationMinutes: 30,
+    allDay: false,
+    calendarId: 'cal_work',
+    attendeeEmails: [],
+    addConferencing: true,
+    reminderMinutes: [10],
+    recurrenceRule: null,
+    usageCount: 12,
+  },
+  {
+    id: 'tpl_focus',
+    name: 'Focus block',
+    title: 'Focus block',
+    description: 'Heads-down work, no meetings.',
+    location: '',
+    durationMinutes: 90,
+    allDay: false,
+    calendarId: 'cal_work',
+    attendeeEmails: [],
+    addConferencing: false,
+    reminderMinutes: [],
+    recurrenceRule: null,
+    usageCount: 8,
+  },
+  {
+    id: 'tpl_coffee',
+    name: 'Coffee chat',
+    title: 'Coffee chat',
+    description: '',
+    location: 'Cafe Central',
+    durationMinutes: 30,
+    allDay: false,
+    calendarId: 'cal_personal',
+    attendeeEmails: [],
+    addConferencing: false,
+    reminderMinutes: [10],
+    recurrenceRule: null,
+    usageCount: 3,
+  },
+];
 
 // ---------------------------------------------------------------------------
 // Accounts, billing, AI
