@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"calendium/backend/internal/domain"
@@ -249,10 +250,94 @@ func (s *AIJobService) runClassify(ctx context.Context, j domain.AiJob) error {
 	return err
 }
 
-// runReminderDetect is a stub in this task; Task 10 fills in real detection.
+// runReminderDetect judges whether the owner's sent mail (Task 5 enqueues
+// this job 24h after send, via payload["sentAt"] in RFC3339) still awaits a
+// reply from the recipient, and arms a follow-up reminder when it does.
+//
+// Guard order matters: both the inbound-reply check and the user-reminder
+// check return before completeJSONBudgeted, so neither spends any AI
+// budget — only a genuine "still no reply, no user reminder set" case
+// reaches the LLM.
 func (s *AIJobService) runReminderDetect(ctx context.Context, j domain.AiJob) error {
-	_, err := s.threadFor(ctx, j)
-	return err
+	t, err := s.threadFor(ctx, j)
+	if err != nil {
+		return err
+	}
+	// A user-set reminder is never overwritten by the AI heuristic.
+	if t.RemindAt != nil {
+		return nil
+	}
+
+	sentAt, err := reminderSentAt(j.Payload)
+	if err != nil {
+		return err
+	}
+
+	acct, err := s.d.Accounts.GetByID(ctx, t.AccountID)
+	if err != nil {
+		return err
+	}
+
+	msgs, err := s.d.Messages.ListByThread(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	if reminderHasInboundReplyAfter(msgs, acct.Email, sentAt) {
+		return nil // recipient already answered; nothing to remind about
+	}
+
+	var out reminderOut
+	if _, err := s.completeJSONBudgeted(ctx, j.UserID, reminderSystem, reminderUserPrompt(t.Subject, t.Snippet), &out); err != nil {
+		return err
+	}
+	if !out.AwaitingReply {
+		return nil
+	}
+
+	days := out.RemindDays
+	if days < 1 || days > 14 {
+		days = 3
+	}
+	remindAt := sentAt.AddDate(0, 0, days)
+	if now := s.d.Clock.Now(); !remindAt.After(now) {
+		// Target already elapsed (e.g. a long-delayed job run, or the model
+		// picking a short horizon on an old sentAt): still give the thread a
+		// fresh, forward-looking reminder rather than one that fires
+		// immediately (or never, if a scheduler skips past-due arms).
+		remindAt = now.Add(24 * time.Hour)
+	}
+	return s.d.Threads.SetReminderIfUnset(ctx, t.ID, remindAt)
+}
+
+// reminderSentAt parses the RFC3339 payload["sentAt"] set by sync.go's send
+// path when it enqueues a reminder_detect job.
+func reminderSentAt(payload map[string]string) (time.Time, error) {
+	raw := payload["sentAt"]
+	sentAt, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%w: reminder_detect job payload[sentAt] %q: %v", domain.ErrValidation, raw, err)
+	}
+	return sentAt, nil
+}
+
+// reminderHasInboundReplyAfter reports whether any message in msgs is from
+// someone other than the account owner and was sent after sentAt — the
+// recipient answering, which makes an AI-judged reminder moot. This mirrors
+// hasNewInboundReply's owner-vs-recipient direction check (sync.go) but over
+// the mirrored domain.Message list a job handler has on hand, rather than
+// the raw sync-page IncomingMessage batch.
+func reminderHasInboundReplyAfter(msgs []domain.Message, ownerEmail string, sentAt time.Time) bool {
+	owner := strings.ToLower(strings.TrimSpace(ownerEmail))
+	for _, m := range msgs {
+		from := strings.ToLower(strings.TrimSpace(m.From.Email))
+		if from == "" || from == owner {
+			continue
+		}
+		if m.SentAt.After(sentAt) {
+			return true
+		}
+	}
+	return false
 }
 
 // runVoiceProfile is a stub in this task; Task 11 fills in real learning.
