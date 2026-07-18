@@ -10,7 +10,6 @@ import {
   Clock,
   Globe,
   Plus,
-  Sparkles,
 } from 'lucide-react';
 
 import type { Calendar as CalendarModel, Event, EventInput } from '@calendium/shared';
@@ -18,10 +17,10 @@ import type { Calendar as CalendarModel, Event, EventInput } from '@calendium/sh
 import { AvailabilityDialog } from '@/components/app/availability';
 import { AgendaView } from '@/components/app/calendar/agenda-view';
 import { MiniMonth } from '@/components/app/calendar/mini-month';
+import { QuickAddBar } from '@/components/app/calendar/quick-add-bar';
 import { TimeGrid } from '@/components/app/calendar/time-grid';
 import { EventDialog } from '@/components/app/event-dialog';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Kbd } from '@/components/ui/kbd';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -29,7 +28,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { fetchCalendars, fetchEvents, patchCalendar } from '@/lib/calendar-data';
 import type { CalendarView } from '@/lib/calendar-views';
 import { rangeLabel, stepAnchor, viewRange } from '@/lib/calendar-views';
-import { parseQuickAdd } from '@/lib/quick-add';
 
 interface EventDialogState {
   open: boolean;
@@ -43,7 +41,6 @@ export default function CalendarPage() {
   const [view, setView] = React.useState<CalendarView>('week');
   const [anchor, setAnchor] = React.useState<Date>(() => new Date());
   const [now, setNow] = React.useState<Date>(() => new Date());
-  const [quickText, setQuickText] = React.useState('');
   const [dialog, setDialog] = React.useState<EventDialogState>({
     open: false,
     event: null,
@@ -140,18 +137,6 @@ export default function CalendarPage() {
     (event: Event) => setDialog({ open: true, event, defaults: null }),
     []
   );
-
-  const handleQuickAdd = () => {
-    const parsed = parseQuickAdd(quickText);
-    if (!parsed) return;
-    openCreate({
-      title: parsed.title,
-      start: parsed.start.toISOString(),
-      end: parsed.end.toISOString(),
-      allDay: parsed.allDay,
-    });
-    setQuickText('');
-  };
 
   // Navigation ---------------------------------------------------------------
   const goToday = React.useCallback(() => setAnchor(new Date()), []);
@@ -256,19 +241,7 @@ export default function CalendarPage() {
           </Button>
         </div>
         <h1 className="text-sm font-semibold tracking-tight">{rangeLabel(view, anchor)}</h1>
-        <div className="relative min-w-52 max-w-md flex-1">
-          <Sparkles className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={quickText}
-            onChange={(e) => setQuickText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleQuickAdd();
-            }}
-            placeholder='Quick add — try "lunch with Ana tomorrow 12:30-1:30"'
-            aria-label="Quick add event"
-            className="h-8 pl-8 text-sm"
-          />
-        </div>
+        <QuickAddBar calendars={calendars} events={events} onCreate={openCreate} />
         <div className="ml-auto flex items-center gap-2">
           <Tabs value={view} onValueChange={(v) => setView(v as CalendarView)}>
             <TabsList className="h-8">

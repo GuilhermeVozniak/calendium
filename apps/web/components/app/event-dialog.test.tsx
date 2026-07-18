@@ -254,6 +254,56 @@ describe('EventDialog — attendees', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Quick-add defaults prefill (location/reminderMinutes/attendeeEmails were
+// already wired; recurrenceRule is the piece this suite adds coverage for).
+// ---------------------------------------------------------------------------
+
+describe('EventDialog — quick-add defaults prefill', () => {
+  it('shows defaults.recurrenceRule in the recurrence field and pre-chips defaults.attendeeEmails', async () => {
+    renderDialog({
+      defaults: {
+        recurrenceRule: 'FREQ=WEEKLY;BYDAY=FR',
+        attendeeEmails: ['ana@acme.com'],
+        location: 'Cafe',
+      },
+    });
+
+    expect(await screen.findByText('Every week on FR')).toBeInTheDocument();
+    expect(screen.getByText('ana@acme.com')).toBeInTheDocument();
+    expect(screen.getByLabelText('Location')).toHaveValue('Cafe');
+  });
+
+  it('shows "Does not repeat" when no recurrence default is given', async () => {
+    renderDialog();
+    expect(await screen.findByText('Does not repeat')).toBeInTheDocument();
+  });
+
+  it('clears a prefilled recurrence via its remove button and omits it from the create payload', async () => {
+    const user = userEvent.setup();
+    renderDialog({ defaults: { recurrenceRule: 'FREQ=DAILY' } });
+    await screen.findByText('Every day');
+
+    await user.click(screen.getByRole('button', { name: 'Remove recurrence' }));
+    expect(screen.queryByText('Every day')).not.toBeInTheDocument();
+    expect(screen.getByText('Does not repeat')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /create event/i }));
+    await waitFor(() => expect(createEventApiMock).toHaveBeenCalledTimes(1));
+    expect(createEventApiMock.mock.calls[0]![0].recurrenceRule).toBeUndefined();
+  });
+
+  it('includes the prefilled recurrenceRule in the create payload when left untouched', async () => {
+    const user = userEvent.setup();
+    renderDialog({ defaults: { recurrenceRule: 'FREQ=WEEKLY;BYDAY=FR' } });
+    await screen.findByText('Every week on FR');
+
+    await user.click(screen.getByRole('button', { name: /create event/i }));
+    await waitFor(() => expect(createEventApiMock).toHaveBeenCalledTimes(1));
+    expect(createEventApiMock.mock.calls[0]![0].recurrenceRule).toBe('FREQ=WEEKLY;BYDAY=FR');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Reminders — exercises the unexported reminderLabel() helper indirectly.
 // ---------------------------------------------------------------------------
 

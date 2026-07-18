@@ -9,6 +9,7 @@ import {
   ExternalLink,
   MapPin,
   Plus,
+  Repeat,
   Trash2,
   Users,
   Video,
@@ -53,7 +54,31 @@ const DATETIME_FMT = "yyyy-MM-dd'T'HH:mm";
 const DATE_FMT = 'yyyy-MM-dd';
 const REMINDER_PRESETS = [0, 5, 10, 15, 30, 60, 120, 1440];
 
-function reminderLabel(minutes: number): string {
+const RECURRENCE_FREQ_LABEL: Record<string, string> = {
+  DAILY: 'day',
+  WEEKLY: 'week',
+  MONTHLY: 'month',
+  YEARLY: 'year',
+};
+
+/**
+ * Turns an RFC 5545 RRULE body (e.g. "FREQ=WEEKLY;BYDAY=MO,WE") into a short,
+ * human-readable label. Also used by QuickAddBar's live-preview chip so both
+ * surfaces describe a recurrence the same way.
+ */
+export function humanizeRecurrence(rule: string): string {
+  const params = new Map(rule.split(';').map((part) => part.split('=') as [string, string]));
+  const freq = params.get('FREQ') ?? '';
+  const interval = Number(params.get('INTERVAL') ?? '1');
+  const byday = params.get('BYDAY');
+  const unit = RECURRENCE_FREQ_LABEL[freq] ?? 'time';
+  let label = interval > 1 ? `Every ${interval} ${unit}s` : `Every ${unit}`;
+  if (byday) label += ` on ${byday.split(',').join(', ')}`;
+  return label;
+}
+
+/** Also used by QuickAddBar to label alert chips with the same wording. */
+export function reminderLabel(minutes: number): string {
   if (minutes === 0) return 'At start';
   if (minutes < 60) return `${minutes} min before`;
   if (minutes < 1440 && minutes % 60 === 0) return `${minutes / 60} ${minutes === 60 ? 'hour' : 'hours'} before`;
@@ -105,6 +130,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
   const [start, setStart] = React.useState('');
   const [end, setEnd] = React.useState('');
   const [location, setLocation] = React.useState('');
+  const [recurrenceRule, setRecurrenceRule] = React.useState<string | null>(null);
   const [description, setDescription] = React.useState('');
   const [attendees, setAttendees] = React.useState<string[]>([]);
   const [attendeeDraft, setAttendeeDraft] = React.useState('');
@@ -132,6 +158,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
       // All-day events store an exclusive end (next midnight); show the inclusive last day.
       setEnd(formatInput(event.allDay ? new Date(endDate.getTime() - 1) : endDate, event.allDay));
       setLocation(event.location ?? '');
+      setRecurrenceRule(event.recurrenceRule);
       setDescription(event.description ?? '');
       setAttendees(event.attendees.filter((a) => !a.organizer).map((a) => a.email));
       setMeet(event.conferencing != null);
@@ -155,6 +182,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
       setStart(formatInput(startDate, isAllDay));
       setEnd(formatInput(endDate, isAllDay));
       setLocation(d.location ?? '');
+      setRecurrenceRule(d.recurrenceRule ?? null);
       setDescription(d.description ?? '');
       setAttendees(d.attendeeEmails ?? []);
       setMeet(d.addConferencing ?? false);
@@ -241,6 +269,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
       start: startIso,
       end: endIso,
       allDay,
+      recurrenceRule: recurrenceRule ?? undefined,
       attendeeEmails: allAttendees.length > 0 ? allAttendees : undefined,
       addConferencing: meet || undefined,
       reminderMinutes:
@@ -260,6 +289,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
         start: input.start,
         end: input.end,
         allDay: input.allDay,
+        recurrenceRule: input.recurrenceRule,
         attendeeEmails: input.attendeeEmails,
         reminderMinutes: input.reminderMinutes,
       };
@@ -399,6 +429,26 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
               </SelectContent>
             </Select>
           </div>
+
+          <FieldRow icon={Repeat}>
+            <div className="flex min-h-8 items-center">
+              {recurrenceRule ? (
+                <Badge variant="outline" className="gap-1 font-normal">
+                  {humanizeRecurrence(recurrenceRule)}
+                  <button
+                    type="button"
+                    aria-label="Remove recurrence"
+                    className="opacity-60 hover:opacity-100"
+                    onClick={() => setRecurrenceRule(null)}
+                  >
+                    <X className="size-3" />
+                  </button>
+                </Badge>
+              ) : (
+                <span className="text-sm text-muted-foreground">Does not repeat</span>
+              )}
+            </div>
+          </FieldRow>
 
           <FieldRow icon={MapPin}>
             <Input
