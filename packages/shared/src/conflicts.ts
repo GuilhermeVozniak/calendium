@@ -64,9 +64,11 @@ export function mergeBusy(intervals: BusyInterval[]): Array<{ start: Date; end: 
   if (intervals.length === 0) return [];
   const sorted = [...intervals].sort((a, b) => a.start.getTime() - b.start.getTime());
   const out: Array<{ start: Date; end: Date }> = [];
-  let current = { start: sorted[0].start, end: sorted[0].end };
+  // Non-null: `sorted` is non-empty (the length===0 case returns above), and
+  // `i` stays within [1, sorted.length) in the loop below.
+  let current = { start: sorted[0]!.start, end: sorted[0]!.end };
   for (let i = 1; i < sorted.length; i++) {
-    const next = sorted[i];
+    const next = sorted[i]!;
     if (next.start.getTime() <= current.end.getTime()) {
       if (next.end.getTime() > current.end.getTime()) current = { ...current, end: next.end };
     } else {

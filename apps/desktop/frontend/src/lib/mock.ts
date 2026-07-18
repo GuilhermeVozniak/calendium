@@ -169,6 +169,15 @@ export function mockEvents(fromIso: string, toIso: string): Event[] {
     ev('evt_8', 'cal_personal', 'Dinner with Charles', addDays(today, 2), 19, 30, 120),
     ev('evt_9', 'cal_work', 'Interview — staff engineer', addDays(today, 3), 10, 0, 60),
     ev('evt_10', 'cal_personal', 'Flight to Recife', addDays(today, 5), 7, 45, 210),
+    // Conference link sniffed from free-text location (vs. evt_2's structured
+    // `conferencing` field) — exercises detectConference's location-fallback
+    // path so the month/week Join control has both fixtures to render.
+    ev('evt_11', 'cal_work', 'Vendor sync', today, 16, 0, 30, {
+      location: 'Zoom: https://zoom.us/j/5551234567?pwd=abc',
+    }),
+    // Further out than the current week so the month view has something to
+    // show beyond the 7 days the week view already covers.
+    ev('evt_12', 'cal_work', 'Quarterly planning', addDays(today, 18), 13, 0, 90),
   ];
   const from = new Date(fromIso).getTime();
   const to = new Date(toIso).getTime();
