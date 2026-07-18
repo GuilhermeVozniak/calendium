@@ -1,6 +1,6 @@
-import type { Calendar, Message, Thread } from '@calendium/shared';
+import type { AttachmentHit, Calendar, Message, Thread } from '@calendium/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,6 +10,7 @@ const fixtures = vi.hoisted(() => ({
   thread: null as { thread: Thread; messages: Message[] } | null,
   aiEnabled: true,
   calendars: [] as Calendar[],
+  attachments: [] as AttachmentHit[],
 }));
 
 const openComposeMock = vi.fn();
@@ -26,13 +27,23 @@ vi.mock('@/lib/api', () => ({
     proposeEvent: vi.fn(),
     listCalendars: vi.fn(),
     createEvent: vi.fn(),
+    searchAttachments: vi.fn(),
+    getContact: vi.fn(),
+    reactToMessage: vi.fn(),
+    removeReaction: vi.fn(),
   },
+  fetchAttachmentBlob: vi.fn(),
   orMock: async (_real: () => unknown, mock: () => unknown) => mock(),
 }));
 
+const reactMock = vi.fn();
+const removeReactionMock = vi.fn();
+
 // createMockEvent/mockEvents are the real implementations (via importActual) so
 // tests can assert the demo "Create event with AI" path actually lands in the
-// shared mock event store, not just that a promise resolves.
+// shared mock event store, not just that a promise resolves. mockContactSummary
+// is also left real: makeThread's default participant (grace@compilers.io)
+// matches the real thr_1 seed, so the contact header exercises real logic.
 vi.mock('@/lib/mock', async () => {
   const actual = await vi.importActual<typeof import('@/lib/mock')>('@/lib/mock');
   return {
@@ -53,6 +64,10 @@ vi.mock('@/lib/mock', async () => {
     get mockCalendars() {
       return fixtures.calendars;
     },
+    mockAttachmentsForThread: () => fixtures.attachments,
+    mockAttachmentBlob: () => new Blob(['%PDF-1.4'], { type: 'application/pdf' }),
+    mockReactToMessage: (...args: unknown[]) => reactMock(...args),
+    mockRemoveReaction: (...args: unknown[]) => removeReactionMock(...args),
   };
 });
 
@@ -123,6 +138,7 @@ function makeMessage(overrides: Partial<Message> = {}): Message {
     sentAt: new Date().toISOString(),
     isDraft: false,
     openedAt: null,
+    reactions: [],
     ...overrides,
   };
 }
@@ -141,9 +157,12 @@ describe('ThreadPane — AI suite', () => {
     fixtures.aiEnabled = true;
     fixtures.thread = { thread: makeThread(), messages: [makeMessage()] };
     fixtures.calendars = [makeCalendar()];
+    fixtures.attachments = [];
     openComposeMock.mockReset();
     aiAskCitedMock.mockReset();
     toastMock.mockReset();
+    reactMock.mockReset();
+    removeReactionMock.mockReset();
   });
 
   it('shows a skeleton shimmer while the thread has no summary yet', async () => {
@@ -205,5 +224,89 @@ describe('ThreadPane — AI suite', () => {
 
     await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ title: 'Event created' })));
     expect(mockEvents(wideRange.from, wideRange.to).some((e) => e.title === 'Follow-up')).toBe(true);
+  });
+
+  it('reacting to a message calls the reaction client and renders the returned delivery state', async () => {
+    reactMock.mockReturnValue({
+      reaction: {
+        id: 'rxn_1',
+        messageId: 'msg_1',
+        emoji: '👍',
+        delivery: 'sent',
+        createdAt: new Date().toISOString(),
+      },
+      draftId: 'draft_1',
+    });
+    renderPane();
+    await userEvent.click(await screen.findByLabelText(/react to message/i));
+    await userEvent.click(await screen.findByLabelText('React with 👍 and send as reply'));
+
+    await waitFor(() => expect(reactMock).toHaveBeenCalledWith('msg_1', '👍', true));
+    // The delivery badge reflects the server's actual response (delivery: 'sent'),
+    // not just that "send as reply" was requested.
+    await screen.findByLabelText('Delivered as a reply');
+  });
+
+  it('removes a reaction when clicking an already-reacted chip', async () => {
+    fixtures.thread = {
+      thread: makeThread(),
+      messages: [
+        makeMessage({
+          reactions: [
+            { id: 'rxn_1', messageId: 'msg_1', emoji: '🎉', delivery: 'local', createdAt: new Date().toISOString() },
+          ],
+        }),
+      ],
+    };
+    renderPane();
+    const chip = await screen.findByText('🎉');
+    await userEvent.click(chip);
+    await waitFor(() => expect(removeReactionMock).toHaveBeenCalledWith('msg_1', '🎉'));
+  });
+
+  it('opens a PDF attachment preview from the Attachments list', async () => {
+    fixtures.attachments = [
+      {
+        id: 'att_1',
+        filename: 'MSA-v3.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 245_760,
+        messageId: 'msg_1',
+        threadId: 'thr_1',
+        threadSubject: 'Q3 roadmap review — final pass',
+        from: { name: 'Grace Hopper', email: 'grace@compilers.io' },
+        sentAt: new Date().toISOString(),
+      },
+    ];
+    renderPane();
+    await userEvent.click(await screen.findByText(/MSA-v3\.pdf/));
+    const dialog = await screen.findByRole('dialog');
+    const iframe = await within(dialog).findByTitle('MSA-v3.pdf');
+    expect((iframe as HTMLIFrameElement).src).toContain('blob:');
+  });
+
+  it('does not open a preview for a non-PDF attachment', async () => {
+    fixtures.attachments = [
+      {
+        id: 'att_2',
+        filename: 'notes.txt',
+        mimeType: 'text/plain',
+        sizeBytes: 512,
+        messageId: 'msg_1',
+        threadId: 'thr_1',
+        threadSubject: 'Q3 roadmap review — final pass',
+        from: { name: 'Grace Hopper', email: 'grace@compilers.io' },
+        sentAt: new Date().toISOString(),
+      },
+    ];
+    renderPane();
+    await userEvent.click(await screen.findByText(/notes\.txt/));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('renders the contact summary header for a known correspondent', async () => {
+    renderPane();
+    await screen.findByText('Grace Hopper');
+    await screen.findByText('· compilers.io');
   });
 });

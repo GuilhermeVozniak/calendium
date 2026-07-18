@@ -1,11 +1,11 @@
-import type { BulkAction, InboxSplit, Thread } from '@calendium/shared';
+import type { BulkAction, InboxSplit, OpenEvent, Thread } from '@calendium/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { addHours, format, isToday } from 'date-fns';
-import { Loader2, Star } from 'lucide-react';
+import { Loader2, MailOpen, Star } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { api, orMock } from '@/lib/api';
-import { mockThreads } from '@/lib/mock';
+import { mockOpens, mockThreads } from '@/lib/mock';
 import { isDemoMode } from '@/lib/server-config';
 import {
   ACTION_INVERSE,
@@ -94,8 +94,48 @@ function ThreadRow({
   );
 }
 
+/** The Recent Opens feed (M2.5): sent messages the recipient has opened, newest first. */
+function OpensFeedList({ opens, isLoading }: { opens: OpenEvent[]; isLoading: boolean }) {
+  if (isLoading) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Loader2 className="text-muted-foreground size-5 animate-spin" />
+      </div>
+    );
+  }
+  if (opens.length === 0) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
+        <MailOpen className="text-muted-foreground/50 size-6" />
+        <p className="text-sm font-medium">No opens yet</p>
+        <p className="text-muted-foreground text-xs">
+          You'll see it here when a recipient opens a message you sent.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <ul className="divide-y">
+      {opens.map((open) => (
+        <li key={open.messageId} className="flex flex-col gap-0.5 px-3 py-2">
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-sm font-medium">{open.subject}</span>
+            <span className="text-muted-foreground ml-auto shrink-0 text-[11px] tabular-nums">
+              {threadTime(open.openedAt)}
+            </span>
+          </div>
+          <div className="text-muted-foreground truncate text-xs">
+            Opened by {open.recipients.map((r) => r.name ?? r.email).join(', ')}
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function InboxView({ split }: { split: InboxSplit }) {
   const queryClient = useQueryClient();
+  const [paneView, setPaneView] = useState<'inbox' | 'opens'>('inbox');
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['threads', split],
     queryFn: () =>
@@ -103,6 +143,11 @@ export function InboxView({ split }: { split: InboxSplit }) {
         async () => (await api.listThreads({ split, limit: 50 })).items,
         () => mockThreads(split)
       ),
+  });
+  const { data: opens = [], isLoading: opensLoading } = useQuery({
+    queryKey: ['opens'],
+    enabled: paneView === 'opens',
+    queryFn: () => orMock(async () => (await api.listOpens({ limit: 30 })).items, () => mockOpens()),
   });
 
   // Local working copy so j/k/e/s/h/z/x mutate optimistically.
@@ -547,15 +592,28 @@ export function InboxView({ split }: { split: InboxSplit }) {
     <div className="flex h-full min-w-0">
       <section className="relative flex w-[380px] shrink-0 flex-col border-r">
         <header className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
-          <h1 className="text-sm font-semibold">{SPLIT_LABELS[split]}</h1>
-          <Badge variant="secondary">{threads.length}</Badge>
-          <div className="text-muted-foreground ml-auto flex items-center gap-1 text-[11px]">
-            <Kbd>J</Kbd>
-            <Kbd>K</Kbd>
-            <span>navigate</span>
-          </div>
+          <h1 className="text-sm font-semibold">
+            {paneView === 'opens' ? 'Recent opens' : SPLIT_LABELS[split]}
+          </h1>
+          <Badge variant="secondary">{paneView === 'opens' ? opens.length : threads.length}</Badge>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ml-auto"
+            onClick={() => setPaneView((v) => (v === 'opens' ? 'inbox' : 'opens'))}
+          >
+            <MailOpen className="size-3.5" />
+            {paneView === 'opens' ? 'Back to inbox' : 'Opens'}
+          </Button>
+          {paneView === 'inbox' && (
+            <div className="text-muted-foreground flex items-center gap-1 text-[11px]">
+              <Kbd>J</Kbd>
+              <Kbd>K</Kbd>
+              <span>navigate</span>
+            </div>
+          )}
         </header>
-        {selection.ids.size > 0 && (
+        {paneView === 'inbox' && selection.ids.size > 0 && (
           <div className="bg-accent/60 text-accent-foreground flex h-7 shrink-0 items-center gap-1 border-b px-3 text-[11px]">
             <span className="font-medium">{selection.ids.size} selected</span>
             <span className="text-muted-foreground">
@@ -565,7 +623,9 @@ export function InboxView({ split }: { split: InboxSplit }) {
           </div>
         )}
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {isLoading ? (
+          {paneView === 'opens' ? (
+            <OpensFeedList opens={opens} isLoading={opensLoading} />
+          ) : isLoading ? (
             <div className="flex h-full items-center justify-center">
               <Loader2 className="text-muted-foreground size-5 animate-spin" />
             </div>

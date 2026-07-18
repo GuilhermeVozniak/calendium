@@ -1,7 +1,16 @@
-import type { AiClassifier, ClassifierInput, InboxSplit, Provider, SubscriptionStatus } from '@calendium/shared';
+import type {
+  AiClassifier,
+  ClassifierInput,
+  ConnectedAccount,
+  InboxSplit,
+  Provider,
+  SubscriptionStatus,
+} from '@calendium/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import {
+  ChevronDown,
+  ChevronRight,
   CreditCard,
   ExternalLink,
   Loader2,
@@ -16,6 +25,7 @@ import { type ReactNode, useEffect, useState } from 'react';
 
 import { api, apiConfigured, orMock } from '@/lib/api';
 import { clearStoredToken, signOut } from '@/lib/auth';
+import { htmlToText, toHtml } from '@/lib/compose';
 import {
   createMockClassifier,
   deleteMockClassifier,
@@ -23,7 +33,9 @@ import {
   mockAccounts,
   mockSubscription,
   mockUser,
+  updateMockAutoBcc,
   updateMockClassifier,
+  updateMockSignature,
 } from '@/lib/mock';
 import { useServerConfig, webOrigin } from '@/lib/server-config';
 import { errorMessage, toast } from '@/lib/toast';
@@ -217,6 +229,110 @@ function ClassifiersSection() {
   );
 }
 
+/**
+ * Per-account signature (HTML, appended at send) and auto-BCC list (M2.5).
+ * The signature is edited as plain text (mirroring ComposeView's body field)
+ * and converted with lib/compose's toHtml/htmlToText, the same round-trip
+ * ComposeView uses to auto-apply it.
+ */
+function AccountPreferences({ account }: { account: ConnectedAccount }) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [signature, setSignature] = useState(() => htmlToText(account.signatureHtml));
+  const [autoBcc, setAutoBcc] = useState(() => account.autoBcc.join(', '));
+
+  useEffect(() => {
+    setSignature(htmlToText(account.signatureHtml));
+    setAutoBcc(account.autoBcc.join(', '));
+  }, [account.signatureHtml, account.autoBcc]);
+
+  function applyUpdate(updated: ConnectedAccount) {
+    queryClient.setQueryData<ConnectedAccount[]>(['accounts'], (prev) =>
+      prev?.map((a) => (a.id === updated.id ? updated : a))
+    );
+  }
+
+  const saveSignature = useMutation({
+    mutationFn: (value: string) =>
+      orMock(
+        () => api.setSignature(account.id, value),
+        () => updateMockSignature(account.id, value)
+      ),
+    onSuccess: (updated) => {
+      applyUpdate(updated);
+      toast({ title: 'Signature saved' });
+    },
+    onError: (e) =>
+      toast({ title: 'Could not save the signature', description: errorMessage(e), variant: 'destructive' }),
+  });
+
+  const saveAutoBcc = useMutation({
+    mutationFn: (list: string[]) =>
+      orMock(
+        () => api.setAutoBcc(account.id, list),
+        () => updateMockAutoBcc(account.id, list)
+      ),
+    onSuccess: (updated) => {
+      applyUpdate(updated);
+      toast({ title: 'Auto-BCC saved' });
+    },
+    onError: (e) =>
+      toast({ title: 'Could not save auto-BCC', description: errorMessage(e), variant: 'destructive' }),
+  });
+
+  const saving = saveSignature.isPending || saveAutoBcc.isPending;
+
+  function submit() {
+    saveSignature.mutate(toHtml(signature));
+    const list = autoBcc
+      .split(/[,;\n]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    saveAutoBcc.mutate(list);
+  }
+
+  return (
+    <div className="border-t">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-xs text-muted-foreground hover:text-foreground"
+      >
+        {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+        Signature &amp; auto-BCC
+      </button>
+      {open && (
+        <div className="flex flex-col gap-2 px-3 pb-3">
+          <label className="text-xs font-medium text-muted-foreground" htmlFor={`sig-${account.id}`}>
+            Signature
+          </label>
+          <textarea
+            id={`sig-${account.id}`}
+            value={signature}
+            onChange={(e) => setSignature(e.target.value)}
+            rows={3}
+            placeholder="Appended to every message you send from this account"
+            className="w-full resize-none rounded-md border border-input bg-transparent px-2.5 py-1.5 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
+          <label className="text-xs font-medium text-muted-foreground" htmlFor={`bcc-${account.id}`}>
+            Auto-BCC
+          </label>
+          <Input
+            id={`bcc-${account.id}`}
+            value={autoBcc}
+            onChange={(e) => setAutoBcc(e.target.value)}
+            placeholder="name@example.com, name2@example.com"
+          />
+          <Button size="sm" className="self-start" disabled={saving} onClick={submit}>
+            {saving ? <Loader2 className="animate-spin" /> : null}
+            Save
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const STATUS_BADGE: Record<SubscriptionStatus, { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {
   active: { label: 'Active', variant: 'default' },
   trialing: { label: 'Trial', variant: 'secondary' },
@@ -390,26 +506,29 @@ export function SettingsView() {
           {accounts.length > 0 && (
             <ul className="divide-y">
               {accounts.map((account) => (
-                <li key={account.id} className="flex items-center gap-2 p-3">
-                  <Mail className="size-4 text-muted-foreground" />
-                  <span className="truncate text-sm">{account.email}</span>
-                  <Badge variant="outline" className="capitalize">
-                    {account.provider}
-                  </Badge>
-                  <Badge
-                    variant={account.status === 'active' ? 'secondary' : 'outline'}
-                    className="ml-auto capitalize"
-                  >
-                    {account.status.replace('_', ' ')}
-                  </Badge>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-muted-foreground"
-                    onClick={() => void disconnect(account.id)}
-                  >
-                    Disconnect
-                  </Button>
+                <li key={account.id}>
+                  <div className="flex items-center gap-2 p-3">
+                    <Mail className="size-4 text-muted-foreground" />
+                    <span className="truncate text-sm">{account.email}</span>
+                    <Badge variant="outline" className="capitalize">
+                      {account.provider}
+                    </Badge>
+                    <Badge
+                      variant={account.status === 'active' ? 'secondary' : 'outline'}
+                      className="ml-auto capitalize"
+                    >
+                      {account.status.replace('_', ' ')}
+                    </Badge>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-muted-foreground"
+                      onClick={() => void disconnect(account.id)}
+                    >
+                      Disconnect
+                    </Button>
+                  </div>
+                  <AccountPreferences account={account} />
                 </li>
               ))}
             </ul>
