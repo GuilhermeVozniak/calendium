@@ -328,6 +328,62 @@ type AiUsageRepo interface {
 	IncrementAndCheck(ctx context.Context, userID string, day time.Time, limit int) (allowed bool, err error)
 }
 
+// BookingLinkRepo persists booking links. Create returns domain.ErrConflict
+// on a (case-insensitive) slug collision.
+type BookingLinkRepo interface {
+	Create(ctx context.Context, l domain.BookingLink) (domain.BookingLink, error)
+	GetByID(ctx context.Context, id string) (domain.BookingLink, error)
+	// GetBySlug matches case-insensitively; domain.ErrNotFound when absent.
+	GetBySlug(ctx context.Context, slug string) (domain.BookingLink, error)
+	ListByUser(ctx context.Context, userID string) ([]domain.BookingLink, error)
+	Update(ctx context.Context, l domain.BookingLink) error
+	Delete(ctx context.Context, id string) error
+}
+
+// BookingRepo persists bookings. CreateHold inserts a status="hold" row and
+// returns domain.ErrConflict when the DB exclusion constraint rejects an
+// overlapping active booking (SQLSTATE 23P01).
+type BookingRepo interface {
+	CreateHold(ctx context.Context, b domain.Booking) (domain.Booking, error)
+	GetByID(ctx context.Context, id string) (domain.Booking, error)
+	// ListActiveInRange returns hold+confirmed bookings overlapping [from,to).
+	ListActiveInRange(ctx context.Context, linkID string, from, to time.Time) ([]domain.Booking, error)
+	ListByUser(ctx context.Context, userID string, limit int) ([]domain.Booking, error)
+	// Confirm promotes a hold: status="confirmed", event_id set, hold_expires_at cleared.
+	Confirm(ctx context.Context, id, eventID string) error
+	Cancel(ctx context.Context, id string) error
+	// ExpireHolds cancels holds whose hold_expires_at <= now; returns count.
+	ExpireHolds(ctx context.Context, now time.Time) (int64, error)
+}
+
+// PollRepo persists meeting polls and votes.
+type PollRepo interface {
+	Create(ctx context.Context, p domain.MeetingPoll) (domain.MeetingPoll, error)
+	GetByID(ctx context.Context, id string) (domain.MeetingPoll, error)
+	GetByToken(ctx context.Context, token string) (domain.MeetingPoll, error)
+	ListByUser(ctx context.Context, userID string) ([]domain.MeetingPoll, error)
+	Update(ctx context.Context, p domain.MeetingPoll) error
+	Delete(ctx context.Context, id string) error
+	// UpsertVotes replaces the voter's ballot (keyed poll_id+option_id+lower(email)).
+	UpsertVotes(ctx context.Context, votes []domain.PollVote) error
+	ListVotes(ctx context.Context, pollID string) ([]domain.PollVote, error)
+}
+
+// TimeProposalRepo persists propose-new-time counter-proposals.
+type TimeProposalRepo interface {
+	Create(ctx context.Context, p domain.TimeProposal) (domain.TimeProposal, error)
+	GetByID(ctx context.Context, id string) (domain.TimeProposal, error)
+	ListByEvent(ctx context.Context, eventID string) ([]domain.TimeProposal, error)
+	Update(ctx context.Context, p domain.TimeProposal) error
+}
+
+// UserSettingsRepo persists per-user scheduling settings; Get returns a
+// zero-value UserSettings (TimeZone "UTC") when no row exists.
+type UserSettingsRepo interface {
+	Get(ctx context.Context, userID string) (domain.UserSettings, error)
+	Upsert(ctx context.Context, s domain.UserSettings) error
+}
+
 // ---------------------------------------------------------------------------
 // Gateways (implemented by internal/adapter/out/{googleapi,msgraph,stripeapi,openrouter,push,authjwt})
 // ---------------------------------------------------------------------------
@@ -428,6 +484,10 @@ type CalendarProvider interface {
 	UpdateEvent(ctx context.Context, accessToken, providerCalendarID, providerEventID string, patch domain.EventPatch) (domain.Event, error)
 	DeleteEvent(ctx context.Context, accessToken, providerCalendarID, providerEventID string) error
 	RSVP(ctx context.Context, accessToken, providerCalendarID, providerEventID string, response domain.RsvpStatus) error
+	// FreeBusy returns busy intervals per requested attendee email between
+	// from and to (Google POST /freeBusy; Graph POST /me/calendar/getSchedule).
+	// Emails absent from the result were not resolvable by the provider.
+	FreeBusy(ctx context.Context, accessToken string, emails []string, from, to time.Time) (map[string][]domain.BusyInterval, error)
 }
 
 // CheckoutParams parameterizes a Stripe Checkout session for the single

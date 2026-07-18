@@ -142,3 +142,78 @@ function cityLabel(zone: string): string {
 export function zoneCaption(zone: string, at: Date): { city: string; gmt: string } {
   return { city: cityLabel(zone), gmt: formatGmtOffset(tzOffsetMinutes(zone, at)) };
 }
+
+// ---------------------------------------------------------------------------
+// Recipient-TZ availability text + Time Travel overlay (Task 16)
+// ---------------------------------------------------------------------------
+
+/** Every IANA zone id the runtime knows about, for a searchable TZ picker. Empty if unsupported. */
+export function listTimeZones(): string[] {
+  try {
+    return Intl.supportedValuesOf('timeZone');
+  } catch {
+    return [];
+  }
+}
+
+function timeZoneNamePart(zone: string, at: Date, style: 'longGeneric' | 'short'): string {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: zone, timeZoneName: style }).formatToParts(
+    at
+  );
+  return parts.find((p) => p.type === 'timeZoneName')?.value ?? zone;
+}
+
+/** Short zone abbreviation at instant `at`, e.g. "EDT" (summer) / "EST" (winter) — DST-aware. */
+export function tzAbbrev(zone: string, at: Date): string {
+  return timeZoneNamePart(zone, at, 'short');
+}
+
+/** Human-readable zone name + abbreviation at instant `at`, e.g. { name: "Eastern Time", abbrev: "EDT" }. */
+export function tzLongLabel(zone: string, at: Date): { name: string; abbrev: string } {
+  return { name: timeZoneNamePart(zone, at, 'longGeneric'), abbrev: timeZoneNamePart(zone, at, 'short') };
+}
+
+/**
+ * Formats a real UTC instant (an ISO string, e.g. an AvailabilitySlot's
+ * start/end) as it reads on a wall clock in `zone` — independent of the
+ * machine's local timezone, unlike date-fns' `format`. `'time'` yields
+ * "3:05 PM"; `'day'` yields a day heading like "Monday, Jul 20".
+ */
+export function formatInTZ(iso: string, zone: string, pattern: 'time' | 'day'): string {
+  const at = new Date(iso);
+  if (pattern === 'time') {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: zone,
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    }).format(at);
+  }
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: zone,
+    weekday: 'long',
+    month: 'short',
+    day: 'numeric',
+  }).format(at);
+}
+
+/** Groups slots by their calendar date *as observed in `zone`* (not the machine's local date). */
+export function groupSlotsByDayInZone<T extends { start: string }>(
+  slots: T[],
+  zone: string
+): Array<{ day: string; slots: T[] }> {
+  const dtf = new Intl.DateTimeFormat('en-CA', {
+    timeZone: zone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const map = new Map<string, T[]>();
+  for (const slot of slots) {
+    const key = dtf.format(new Date(slot.start));
+    const list = map.get(key) ?? [];
+    list.push(slot);
+    map.set(key, list);
+  }
+  return [...map.entries()].map(([day, daySlots]) => ({ day, slots: daySlots }));
+}

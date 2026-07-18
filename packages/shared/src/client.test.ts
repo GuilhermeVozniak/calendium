@@ -1,14 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ApiClient, ApiRequestError, fetchInstance } from './client';
+import {
+  ApiClient,
+  ApiRequestError,
+  createPublicBooking,
+  fetchInstance,
+  fetchPublicBookingPage,
+  fetchPublicPoll,
+  fetchPublicSlots,
+  votePublicPoll,
+} from './client';
 import type {
   AiAskRequest,
   AiComposeRequest,
+  BookingLinkInput,
+  BookingRequest,
   CalendarSetInput,
   ClassifierInput,
   DraftInput,
   EventInput,
   EventPatch,
   EventTemplateInput,
+  PollBallot,
+  PollInput,
+  TimeProposalInput,
+  UserSettings,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -438,6 +453,47 @@ const CLASSIFIER_INPUT: ClassifierInput = {
   enabled: true,
 };
 
+const BOOKING_LINK_INPUT: BookingLinkInput = {
+  slug: 'thirty-min',
+  title: '30 Minute Meeting',
+  description: 'Quick sync',
+  calendarId: 'cal1',
+  durationMinutes: 30,
+  timeZone: 'America/New_York',
+  windows: [{ weekday: 1, start: '09:00', end: '17:00' }],
+  bufferBeforeMin: 5,
+  bufferAfterMin: 5,
+  dailyLimit: 0,
+  minNoticeMin: 60,
+  maxAdvanceDays: 60,
+  respectWorkingHours: true,
+  addConferencing: true,
+  active: true,
+};
+
+const POLL_INPUT: PollInput = {
+  title: 'Team Sync',
+  description: 'Pick a time',
+  calendarId: 'cal1',
+  durationMinutes: 30,
+  options: [
+    { start: '2026-08-01T09:00:00Z', end: '2026-08-01T09:30:00Z' },
+    { start: '2026-08-01T10:00:00Z', end: '2026-08-01T10:30:00Z' },
+  ],
+};
+
+const TIME_PROPOSAL_INPUT: TimeProposalInput = {
+  start: '2026-08-01T09:00:00Z',
+  end: '2026-08-01T09:30:00Z',
+  note: 'Works better for me',
+};
+
+const USER_SETTINGS: UserSettings = {
+  timeZone: 'America/New_York',
+  workingHours: [{ weekday: 1, start: '09:00', end: '17:00' }],
+  workingLocation: 'home',
+};
+
 interface MethodCase {
   name: string;
   call: (client: ApiClient) => Promise<unknown>;
@@ -802,6 +858,101 @@ const methodCases: MethodCase[] = [
     method: 'DELETE',
     path: '/v1/calendar-sets/cs1',
   },
+
+  // --- Scheduling (M2.4) ---
+  {
+    name: 'listBookingLinks',
+    call: (c) => c.listBookingLinks(),
+    method: 'GET',
+    path: '/v1/booking-links',
+  },
+  {
+    name: 'createBookingLink',
+    call: (c) => c.createBookingLink(BOOKING_LINK_INPUT),
+    method: 'POST',
+    path: '/v1/booking-links',
+    body: BOOKING_LINK_INPUT,
+  },
+  {
+    name: 'updateBookingLink',
+    call: (c) => c.updateBookingLink('bl1', BOOKING_LINK_INPUT),
+    method: 'PUT',
+    path: '/v1/booking-links/bl1',
+    body: BOOKING_LINK_INPUT,
+  },
+  {
+    name: 'deleteBookingLink',
+    call: (c) => c.deleteBookingLink('bl1'),
+    method: 'DELETE',
+    path: '/v1/booking-links/bl1',
+  },
+  { name: 'listBookings', call: (c) => c.listBookings(), method: 'GET', path: '/v1/bookings' },
+  {
+    name: 'cancelBooking',
+    call: (c) => c.cancelBooking('bk1'),
+    method: 'POST',
+    path: '/v1/bookings/bk1/cancel',
+  },
+  { name: 'listPolls', call: (c) => c.listPolls(), method: 'GET', path: '/v1/polls' },
+  {
+    name: 'createPoll',
+    call: (c) => c.createPoll(POLL_INPUT),
+    method: 'POST',
+    path: '/v1/polls',
+    body: POLL_INPUT,
+  },
+  {
+    name: 'confirmPoll',
+    call: (c) => c.confirmPoll('p1', 'opt1'),
+    method: 'POST',
+    path: '/v1/polls/p1/confirm',
+    body: { optionId: 'opt1' },
+  },
+  { name: 'deletePoll', call: (c) => c.deletePoll('p1'), method: 'DELETE', path: '/v1/polls/p1' },
+  {
+    name: 'proposeTime',
+    call: (c) => c.proposeTime('e1', TIME_PROPOSAL_INPUT),
+    method: 'POST',
+    path: '/v1/events/e1/propose-time',
+    body: TIME_PROPOSAL_INPUT,
+  },
+  {
+    name: 'listProposals',
+    call: (c) => c.listProposals('e1'),
+    method: 'GET',
+    path: '/v1/events/e1/proposals',
+  },
+  {
+    name: 'acceptProposal',
+    call: (c) => c.acceptProposal('e1', 'tp1'),
+    method: 'POST',
+    path: '/v1/events/e1/proposals/tp1/accept',
+  },
+  {
+    name: 'declineProposal',
+    call: (c) => c.declineProposal('e1', 'tp1'),
+    method: 'POST',
+    path: '/v1/events/e1/proposals/tp1/decline',
+  },
+  {
+    name: 'getFreeBusy',
+    call: (c) => c.getFreeBusy(['a@example.com', 'b@example.com'], '2026-08-01T00:00:00Z', '2026-08-08T00:00:00Z'),
+    method: 'POST',
+    path: '/v1/freebusy',
+    body: {
+      emails: ['a@example.com', 'b@example.com'],
+      from: '2026-08-01T00:00:00Z',
+      to: '2026-08-08T00:00:00Z',
+    },
+  },
+  { name: 'getSettings', call: (c) => c.getSettings(), method: 'GET', path: '/v1/settings' },
+  {
+    name: 'updateSettings',
+    call: (c) => c.updateSettings(USER_SETTINGS),
+    method: 'PUT',
+    path: '/v1/settings',
+    body: USER_SETTINGS,
+  },
 ];
 
 describe('method contracts (path, verb, body, auth, response passthrough)', () => {
@@ -888,5 +1039,179 @@ describe('triage power endpoints', () => {
     await client.listLabels();
     expect(calls[0]!.url).toBe('https://api.calendium.test/v1/mail/labels');
     expect(calls[0]!.method).toBe('GET');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Public scheduling fetchers (M2.4) — standalone, unauthenticated.
+//
+// These back the public /book/{slug} and /poll/{token} visitor pages, which
+// load before any signed-in ApiClient exists, so every one of them must work
+// with no Authorization header at all.
+// ---------------------------------------------------------------------------
+
+const BOOKING_REQUEST: BookingRequest = {
+  start: '2026-08-01T09:00:00Z',
+  inviteeName: 'Ada Lovelace',
+  inviteeEmail: 'ada@example.com',
+  inviteeTimeZone: 'America/New_York',
+  note: 'Looking forward to it',
+};
+
+const POLL_BALLOT: PollBallot = {
+  voterEmail: 'ada@example.com',
+  voterName: 'Ada Lovelace',
+  choices: { opt1: 'yes', opt2: 'if_needed' },
+};
+
+describe('public scheduling fetchers', () => {
+  it('fetchPublicBookingPage GETs /v1/public/booking/{slug} with no auth', async () => {
+    const page = {
+      slug: 'thirty-min',
+      title: '30 Minute Meeting',
+      description: null,
+      ownerName: 'Ada Lovelace',
+      durationMinutes: 30,
+      timeZone: 'America/New_York',
+    };
+    const { fetchFn, calls } = createFakeFetch([{ status: 200, body: page }]);
+    const result = await fetchPublicBookingPage(BASE_URL, 'thirty-min', fetchFn as unknown as typeof fetch);
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/public/booking/thirty-min`);
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.headers.Authorization).toBeUndefined();
+    expect(result).toEqual(page);
+  });
+
+  it('fetchPublicSlots GETs /v1/public/booking/{slug}/slots with from/to and no auth', async () => {
+    const slots = [{ start: '2026-08-01T09:00:00Z', end: '2026-08-01T09:30:00Z' }];
+    const { fetchFn, calls } = createFakeFetch([{ status: 200, body: slots }]);
+    const result = await fetchPublicSlots(
+      BASE_URL,
+      'thirty-min',
+      '2026-08-01T00:00:00Z',
+      '2026-08-08T00:00:00Z',
+      fetchFn as unknown as typeof fetch
+    );
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe('/v1/public/booking/thirty-min/slots');
+    expect(searchParamsToObject(url.searchParams)).toEqual({
+      from: '2026-08-01T00:00:00Z',
+      to: '2026-08-08T00:00:00Z',
+    });
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.headers.Authorization).toBeUndefined();
+    expect(result).toEqual(slots);
+  });
+
+  it('createPublicBooking POSTs the booking request with no auth', async () => {
+    const booking = { id: 'bk1', linkId: 'bl1', status: 'hold' };
+    const { fetchFn, calls } = createFakeFetch([{ status: 200, body: booking }]);
+    const result = await createPublicBooking(
+      BASE_URL,
+      'thirty-min',
+      BOOKING_REQUEST,
+      fetchFn as unknown as typeof fetch
+    );
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/public/booking/thirty-min/bookings`);
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.headers.Authorization).toBeUndefined();
+    expect(calls[0]!.headers['Content-Type']).toBe('application/json');
+    expect(calls[0]!.body).toEqual(BOOKING_REQUEST);
+    expect(result).toEqual(booking);
+  });
+
+  it('fetchPublicPoll GETs /v1/public/polls/{token} with no auth', async () => {
+    const poll = { token: 'abc123', title: 'Team Sync', options: [], tallies: {} };
+    const { fetchFn, calls } = createFakeFetch([{ status: 200, body: poll }]);
+    const result = await fetchPublicPoll(BASE_URL, 'abc123', fetchFn as unknown as typeof fetch);
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/public/polls/abc123`);
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.headers.Authorization).toBeUndefined();
+    expect(result).toEqual(poll);
+  });
+
+  it('votePublicPoll POSTs the ballot with no auth', async () => {
+    const poll = { token: 'abc123', title: 'Team Sync', options: [], tallies: { opt1: { yes: 1, no: 0, ifNeeded: 0 } } };
+    const { fetchFn, calls } = createFakeFetch([{ status: 200, body: poll }]);
+    const result = await votePublicPoll(BASE_URL, 'abc123', POLL_BALLOT, fetchFn as unknown as typeof fetch);
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/public/polls/abc123/votes`);
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.headers.Authorization).toBeUndefined();
+    expect(calls[0]!.headers['Content-Type']).toBe('application/json');
+    expect(calls[0]!.body).toEqual(POLL_BALLOT);
+    expect(result).toEqual(poll);
+  });
+
+  it('strips trailing slashes from baseUrl', async () => {
+    const { fetchFn, calls } = createFakeFetch([{ status: 200, body: {} }]);
+    await fetchPublicBookingPage(`${BASE_URL}///`, 'thirty-min', fetchFn as unknown as typeof fetch);
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/public/booking/thirty-min`);
+  });
+
+  it('maps 400 validation_failed to ApiRequestError(400, "validation_failed")', async () => {
+    const { fetchFn } = createFakeFetch([
+      {
+        status: 400,
+        body: { error: { code: 'validation_failed', message: 'inviteeEmail is required' } },
+      },
+    ]);
+    await expect(
+      createPublicBooking(BASE_URL, 'thirty-min', BOOKING_REQUEST, fetchFn as unknown as typeof fetch)
+    ).rejects.toMatchObject({
+      status: 400,
+      code: 'validation_failed',
+      message: 'inviteeEmail is required',
+    });
+  });
+
+  it('maps 429 rate_limited to ApiRequestError(429, "rate_limited") so callers can branch on error.code', async () => {
+    const { fetchFn } = createFakeFetch([
+      {
+        status: 429,
+        body: { error: { code: 'rate_limited', message: 'too many requests, slow down' } },
+      },
+    ]);
+    await expect(
+      fetchPublicBookingPage(BASE_URL, 'thirty-min', fetchFn as unknown as typeof fetch)
+    ).rejects.toBeInstanceOf(ApiRequestError);
+    const { fetchFn: fetchFn2 } = createFakeFetch([
+      {
+        status: 429,
+        body: { error: { code: 'rate_limited', message: 'too many requests, slow down' } },
+      },
+    ]);
+    await expect(
+      fetchPublicBookingPage(BASE_URL, 'thirty-min', fetchFn2 as unknown as typeof fetch)
+    ).rejects.toMatchObject({
+      status: 429,
+      code: 'rate_limited',
+      message: 'too many requests, slow down',
+    });
+  });
+
+  it('maps 404 not_found to ApiRequestError for an unknown slug/token', async () => {
+    const { fetchFn } = createFakeFetch([
+      { status: 404, body: { error: { code: 'not_found', message: 'booking link not found' } } },
+    ]);
+    await expect(
+      fetchPublicBookingPage(BASE_URL, 'ghost', fetchFn as unknown as typeof fetch)
+    ).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
+      message: 'booking link not found',
+    });
+  });
+
+  it('uses the global fetch when no fetchImpl is provided', async () => {
+    const page = { slug: 'thirty-min', title: '30 Minute Meeting' };
+    const { fetchFn, calls } = createFakeFetch([{ status: 200, body: page }]);
+    vi.stubGlobal('fetch', fetchFn);
+    try {
+      const result = await fetchPublicBookingPage(BASE_URL, 'thirty-min');
+      expect(result).toEqual(page);
+      expect(calls[0]!.url).toBe(`${BASE_URL}/v1/public/booking/thirty-min`);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

@@ -10,8 +10,10 @@ import {
   CalendarPlus,
   Clock,
   FileText,
+  Globe,
   Inbox,
   LayoutTemplate,
+  Link2,
   ListChecks,
   LogOut,
   MailOpen,
@@ -29,6 +31,7 @@ import {
   Star,
   Sun,
   Tag,
+  Vote,
 } from 'lucide-react';
 
 import { useQuery } from '@tanstack/react-query';
@@ -369,6 +372,16 @@ export function CommandPalette() {
               S
             </Kbd>
           </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              teachShortcut('cal-time-travel', '⇧Z', "overlay a city's time zone");
+              runCalendarCommand({ type: 'time-travel' });
+            }}
+          >
+            <Globe />
+            Time Travel: overlay a city's time zone
+            <KbdGroup size="sm" keys={['⇧', 'Z']} className="ml-auto" />
+          </CommandItem>
           {templates?.slice(0, 5).map((template) => (
             <CommandItem
               key={`cal-tpl-${template.id}`}
@@ -391,6 +404,23 @@ export function CommandPalette() {
               <span className="truncate">Apply calendar set: {set.name}</span>
             </CommandItem>
           ))}
+        </CommandGroup>
+
+        <CommandSeparator />
+
+        <CommandGroup heading="Scheduling">
+          <CommandItem
+            onSelect={() => run(() => router.push('/settings?tab=scheduling&new=link'))}
+          >
+            <Link2 />
+            Create booking link
+          </CommandItem>
+          <CommandItem
+            onSelect={() => run(() => router.push('/settings?tab=scheduling&new=poll'))}
+          >
+            <Vote />
+            New meeting poll
+          </CommandItem>
         </CommandGroup>
 
         <CommandSeparator />

@@ -32,7 +32,21 @@ vi.mock('@/components/app/calendar/year-view', () => ({
   YearView: () => <div data-testid="view-year" />,
 }));
 vi.mock('@/components/app/calendar/time-grid', () => ({
-  TimeGrid: () => <div data-testid="view-timegrid" />,
+  TimeGrid: ({
+    timeTravelZone,
+    onExitTimeTravel,
+  }: {
+    timeTravelZone?: string | null;
+    onExitTimeTravel?: () => void;
+  }) => (
+    <div data-testid="view-timegrid" data-time-travel-zone={timeTravelZone ?? ''}>
+      {timeTravelZone && (
+        <button type="button" onClick={onExitTimeTravel}>
+          exit time travel (grid)
+        </button>
+      )}
+    </div>
+  ),
 }));
 vi.mock('@/components/app/calendar/quick-add-bar', () => ({
   QuickAddBar: () => <input aria-label="Quick add event" />,
@@ -144,6 +158,7 @@ async function renderReady() {
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true, now: NOW });
   vi.clearAllMocks();
+  window.localStorage.clear();
   fetchCalendarsMock.mockResolvedValue([CALENDAR_A, CALENDAR_B]);
   fetchAccountsMock.mockResolvedValue([]);
   fetchEventsMock.mockResolvedValue([]);
@@ -381,5 +396,90 @@ describe('CalendarPage — ?template= deep link', () => {
     await waitFor(() => expect(screen.getByTestId('view-month')).toBeInTheDocument());
 
     expect(fetchEventTemplatesMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('CalendarPage — Time Travel overlay', () => {
+  it('opens the Time Travel search popover on shift+z', async () => {
+    await renderReady();
+    expect(screen.queryByPlaceholderText('Jump to a city…')).not.toBeInTheDocument();
+
+    fireEvent.keyDown(document.body, { key: 'Z', shiftKey: true });
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText('Jump to a city…')).toBeInTheDocument()
+    );
+  });
+
+  it('reacts to a "time-travel" command dispatched from the palette by opening the search popover', async () => {
+    await renderReady();
+    dispatchCalendarCommand({ type: 'time-travel' });
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText('Jump to a city…')).toBeInTheDocument()
+    );
+  });
+
+  it('applies a picked city to the grid overlay and persists it to localStorage', async () => {
+    await renderReady();
+
+    fireEvent.keyDown(document.body, { key: 'Z', shiftKey: true });
+    const search = await screen.findByPlaceholderText('Jump to a city…');
+    fireEvent.change(search, { target: { value: 'Tokyo' } });
+    fireEvent.click(await screen.findByText('Asia/Tokyo'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('view-timegrid')).toHaveAttribute(
+        'data-time-travel-zone',
+        'Asia/Tokyo'
+      )
+    );
+    expect(window.localStorage.getItem('calendium.timetravel')).toBe('Asia/Tokyo');
+  });
+
+  it('restores a previously persisted Time Travel zone from localStorage on mount', async () => {
+    window.localStorage.setItem('calendium.timetravel', 'Europe/London');
+    await renderReady();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('view-timegrid')).toHaveAttribute(
+        'data-time-travel-zone',
+        'Europe/London'
+      )
+    );
+  });
+
+  it('exits Time Travel on a second shift+z once a zone is active', async () => {
+    window.localStorage.setItem('calendium.timetravel', 'Europe/London');
+    await renderReady();
+    await waitFor(() =>
+      expect(screen.getByTestId('view-timegrid')).toHaveAttribute(
+        'data-time-travel-zone',
+        'Europe/London'
+      )
+    );
+
+    fireEvent.keyDown(document.body, { key: 'Z', shiftKey: true });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('view-timegrid')).toHaveAttribute('data-time-travel-zone', '')
+    );
+    expect(window.localStorage.getItem('calendium.timetravel')).toBeNull();
+  });
+
+  it('exits Time Travel from the grid\'s own exit control', async () => {
+    window.localStorage.setItem('calendium.timetravel', 'Europe/London');
+    await renderReady();
+    await waitFor(() =>
+      expect(screen.getByTestId('view-timegrid')).toHaveAttribute(
+        'data-time-travel-zone',
+        'Europe/London'
+      )
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'exit time travel (grid)' }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('view-timegrid')).toHaveAttribute('data-time-travel-zone', '')
+    );
+    expect(window.localStorage.getItem('calendium.timetravel')).toBeNull();
   });
 });

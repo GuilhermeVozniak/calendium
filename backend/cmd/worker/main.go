@@ -37,6 +37,9 @@ const (
 	dueWorkInterval = 5 * time.Second
 	// aiJobInterval paces the background AI job queue drain.
 	aiJobInterval = 15 * time.Second
+	// expireHoldsInterval paces the booking-hold expiry sweep (unconfirmed
+	// holds past their hold_expires_at are cancelled, freeing the slot).
+	expireHoldsInterval = time.Minute
 	// perAccountTimeout bounds one account's sync pass.
 	perAccountTimeout = 5 * time.Minute
 )
@@ -142,7 +145,28 @@ func run(logger *slog.Logger) error {
 		CalendarProviders: calendarProviders,
 		OAuth:             oauth,
 		Clock:             service.SystemClock{},
+		Settings:          store.UserSettings(),
 		SelfHosted:        cfg.Instance.SelfHosted,
+	})
+	scheduling := service.NewSchedulingService(service.SchedulingServiceDeps{
+		Subscriptions:     store.Subscriptions(),
+		Users:             store.Users(),
+		Accounts:          store.Accounts(),
+		Calendars:         store.Calendars(),
+		Events:            store.Events(),
+		Links:             store.BookingLinks(),
+		Bookings:          store.Bookings(),
+		Polls:             store.Polls(),
+		Proposals:         store.TimeProposals(),
+		Settings:          store.UserSettings(),
+		Tx:                store,
+		CalendarProviders: calendarProviders,
+		MailProviders:     mailProviders,
+		OAuth:             oauth,
+		Clock:             service.SystemClock{},
+		SelfHosted:        cfg.Instance.SelfHosted,
+		PublicWebURL:      cfg.Instance.PublicWebURL,
+		Logger:            logger,
 	})
 	aiJobSvc := service.NewAIJobService(service.AIJobServiceDeps{
 		Jobs:          store.AiJobs(),
@@ -163,7 +187,7 @@ func run(logger *slog.Logger) error {
 
 	// --- loops ---
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		runLoop(ctx, syncInterval, func(ctx context.Context) {
@@ -175,6 +199,14 @@ func run(logger *slog.Logger) error {
 		runLoop(ctx, dueWorkInterval, func(ctx context.Context) {
 			if err := syncSvc.ProcessDueWork(ctx); err != nil {
 				logger.Error("worker: process due work", "error", err)
+			}
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		runLoop(ctx, expireHoldsInterval, func(ctx context.Context) {
+			if err := scheduling.ExpireHolds(ctx); err != nil {
+				logger.Error("worker: expire holds", "error", err)
 			}
 		})
 	}()

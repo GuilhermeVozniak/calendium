@@ -2,10 +2,11 @@
 
 import * as React from 'react';
 import { addDays, addMinutes, endOfDay, format, isSameDay, isToday, startOfDay } from 'date-fns';
+import { X } from 'lucide-react';
 
 import type { Calendar as CalendarModel, Event } from '@calendium/shared';
 
-import { hourLabelInZone, zoneCaption } from '@/lib/timezones';
+import { hourLabelInZone, tzAbbrev, zoneCaption } from '@/lib/timezones';
 import { cn } from '@/lib/utils';
 
 import { FALLBACK_COLOR, withAlpha } from './event-render';
@@ -123,6 +124,10 @@ export interface TimeGridProps {
   gmtLabel: string;
   /** Extra pinned IANA zones rendered as hour-label gutters left of the primary one. */
   pinnedZones?: string[];
+  /** Time Travel (Task 16): an extra overlay TZ gutter, distinct from pinnedZones — transient, toggled from the calendar toolbar, not "pinned" world-clock state. */
+  timeTravelZone?: string | null;
+  /** Clears the Time Travel overlay from its gutter's own exit control (mirrors Esc, wired in components/app/time-travel.tsx). */
+  onExitTimeTravel?: () => void;
   onSlotClick: (start: Date) => void;
   onEventClick: (event: Event) => void;
 }
@@ -134,6 +139,8 @@ export function TimeGrid({
   now,
   gmtLabel,
   pinnedZones = [],
+  timeTravelZone = null,
+  onExitTimeTravel,
   onSlotClick,
   onEventClick,
 }: TimeGridProps) {
@@ -170,6 +177,13 @@ export function TimeGrid({
       {/* Sticky day header */}
       <div className="sticky top-0 z-30 border-b bg-background">
         <div className="flex">
+          {timeTravelZone && (
+            <TimeTravelHeaderCaption
+              zone={timeTravelZone}
+              at={now}
+              onExit={onExitTimeTravel}
+            />
+          )}
           {pinnedZones.map((zone) => (
             <TzHeaderCaption
               key={zone}
@@ -227,6 +241,9 @@ export function TimeGrid({
 
       {/* Grid body */}
       <div className="flex">
+        {timeTravelZone && (
+          <TzGutter key={`time-travel-${timeTravelZone}`} zone={timeTravelZone} referenceDay={tzReferenceDay} testId="tz-gutter-timetravel" />
+        )}
         {pinnedZones.map((zone) => (
           <TzGutter key={zone} zone={zone} referenceDay={tzReferenceDay} />
         ))}
@@ -322,10 +339,56 @@ function TzHeaderCaption({
   );
 }
 
-function TzGutter({ zone, referenceDay }: { zone: string; referenceDay: Date }) {
+/**
+ * Time Travel's own gutter header: same city/GMT caption as a pinned zone's
+ * TzHeaderCaption, plus the abbreviation ("EDT") and an inline exit control
+ * (brief: "an 'exit' chip") — kept separate from TzHeaderCaption since pinned
+ * zones have no such affordance.
+ */
+function TimeTravelHeaderCaption({
+  zone,
+  at,
+  onExit,
+}: {
+  zone: string;
+  at: Date;
+  onExit?: () => void;
+}) {
+  const { city, gmt } = zoneCaption(zone, at);
+  const abbrev = tzAbbrev(zone, at);
   return (
     <div
-      data-testid={`tz-gutter-${zone}`}
+      data-testid="tz-header-timetravel"
+      className="flex w-16 shrink-0 flex-col items-end justify-end gap-0.5 pr-2 pb-1.5 text-right"
+    >
+      <span className="flex items-center gap-1 truncate text-[10px] font-medium text-muted-foreground">
+        {city} {abbrev}
+        <button
+          type="button"
+          onClick={onExit}
+          aria-label="Exit Time Travel"
+          className="rounded-full p-0.5 hover:bg-accent"
+        >
+          <X className="size-2.5" />
+        </button>
+      </span>
+      <span className="text-[9px] text-muted-foreground/70 tabular-nums">{gmt}</span>
+    </div>
+  );
+}
+
+function TzGutter({
+  zone,
+  referenceDay,
+  testId,
+}: {
+  zone: string;
+  referenceDay: Date;
+  testId?: string;
+}) {
+  return (
+    <div
+      data-testid={testId ?? `tz-gutter-${zone}`}
       className="relative w-14 shrink-0 select-none border-r border-border/60"
       style={{ height: 24 * HOUR_HEIGHT }}
     >

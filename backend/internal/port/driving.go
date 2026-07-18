@@ -259,3 +259,142 @@ type AIJobService interface {
 	// It is a no-op returning nil when AI is not configured.
 	ProcessDueAiJobs(ctx context.Context) error
 }
+
+// BookingLinkInput is the create/update booking-link payload.
+type BookingLinkInput struct {
+	Slug                string                      `json:"slug"`
+	Title               string                      `json:"title"`
+	Description         string                      `json:"description,omitempty"`
+	CalendarID          string                      `json:"calendarId"`
+	DurationMinutes     int                         `json:"durationMinutes"`
+	TimeZone            string                      `json:"timeZone"`
+	Windows             []domain.AvailabilityWindow `json:"windows"`
+	BufferBeforeMin     int                         `json:"bufferBeforeMin"`
+	BufferAfterMin      int                         `json:"bufferAfterMin"`
+	DailyLimit          int                         `json:"dailyLimit"`
+	MinNoticeMin        int                         `json:"minNoticeMin"`
+	MaxAdvanceDays      int                         `json:"maxAdvanceDays"`
+	RespectWorkingHours bool                        `json:"respectWorkingHours"`
+	AddConferencing     bool                        `json:"addConferencing"`
+	Active              bool                        `json:"active"`
+}
+
+// PublicBookingPage is the public GET /v1/public/booking/{slug} document —
+// no owner PII beyond display name.
+type PublicBookingPage struct {
+	Slug            string  `json:"slug"`
+	Title           string  `json:"title"`
+	Description     *string `json:"description"`
+	OwnerName       string  `json:"ownerName"`
+	DurationMinutes int     `json:"durationMinutes"`
+	TimeZone        string  `json:"timeZone"` // owner's link TZ (for "times shown in…" hints)
+}
+
+// BookingRequest is the public booking payload.
+type BookingRequest struct {
+	Start        time.Time `json:"start"`
+	InviteeName  string    `json:"inviteeName"`
+	InviteeEmail string    `json:"inviteeEmail"`
+	InviteeTZ    string    `json:"inviteeTimeZone"`
+	Note         string    `json:"note,omitempty"`
+}
+
+// PollInput is the create-poll payload.
+type PollInput struct {
+	Title           string              `json:"title"`
+	Description     string              `json:"description,omitempty"`
+	CalendarID      string              `json:"calendarId"`
+	DurationMinutes int                 `json:"durationMinutes"`
+	Options         []domain.PollOption `json:"options"` // IDs assigned server-side
+}
+
+// PublicPoll is the public poll document incl. anonymized tallies.
+type PublicPoll struct {
+	Token           string               `json:"token"`
+	Title           string               `json:"title"`
+	Description     *string              `json:"description"`
+	OrganizerName   string               `json:"organizerName"`
+	DurationMinutes int                  `json:"durationMinutes"`
+	Status          domain.PollStatus    `json:"status"`
+	Options         []domain.PollOption  `json:"options"`
+	Tallies         map[string]PollTally `json:"tallies"` // optionID → tally
+	WinnerOptionID  *string              `json:"winnerOptionId"`
+}
+
+// PollTally aggregates votes for one option.
+type PollTally struct {
+	Yes      int `json:"yes"`
+	No       int `json:"no"`
+	IfNeeded int `json:"ifNeeded"`
+}
+
+// PollBallot is one public voter's submission.
+type PollBallot struct {
+	VoterEmail string                           `json:"voterEmail"`
+	VoterName  string                           `json:"voterName"`
+	Choices    map[string]domain.PollVoteChoice `json:"choices"` // optionID → choice
+}
+
+// TimeProposalInput is the propose-new-time payload.
+type TimeProposalInput struct {
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
+	Note  string    `json:"note,omitempty"`
+}
+
+// FreeBusyRequest asks for guest busy intervals (Find-a-Time grid).
+type FreeBusyRequest struct {
+	Emails []string  `json:"emails"`
+	From   time.Time `json:"from"`
+	To     time.Time `json:"to"`
+}
+
+// SchedulingService covers booking links, public booking, meeting polls,
+// propose-new-time, and guest free/busy.
+type SchedulingService interface {
+	// Owner surface (authenticated).
+	CreateLink(ctx context.Context, userID string, in BookingLinkInput) (domain.BookingLink, error)
+	UpdateLink(ctx context.Context, userID, linkID string, in BookingLinkInput) (domain.BookingLink, error)
+	ListLinks(ctx context.Context, userID string) ([]domain.BookingLink, error)
+	DeleteLink(ctx context.Context, userID, linkID string) error
+	ListBookings(ctx context.Context, userID string) ([]domain.Booking, error)
+	CancelBooking(ctx context.Context, userID, bookingID string) error
+
+	// Public surface (unauthenticated, rate limited).
+	PublicPage(ctx context.Context, slug string) (PublicBookingPage, error)
+	// PublicSlots returns bookable start times between from and to.
+	PublicSlots(ctx context.Context, slug string, from, to time.Time) ([]domain.AvailabilitySlot, error)
+	// Book runs the hold → provider free/busy re-check → event create →
+	// confirm → email pipeline. domain.ErrConflict when the slot is taken.
+	Book(ctx context.Context, slug string, req BookingRequest) (domain.Booking, error)
+
+	// Meeting polls.
+	CreatePoll(ctx context.Context, userID string, in PollInput) (domain.MeetingPoll, error)
+	ListPolls(ctx context.Context, userID string) ([]domain.MeetingPoll, error)
+	// ConfirmPoll picks the winner, creates the event (write-through), and
+	// emails every yes/if_needed voter an invitation-style notice.
+	ConfirmPoll(ctx context.Context, userID, pollID, optionID string) (domain.MeetingPoll, error)
+	DeletePoll(ctx context.Context, userID, pollID string) error
+	PublicPollByToken(ctx context.Context, token string) (PublicPoll, error)
+	VotePoll(ctx context.Context, token string, ballot PollBallot) (PublicPoll, error)
+
+	// Propose-new-time (authenticated invitee → organizer accept).
+	ProposeTime(ctx context.Context, userID, eventID string, in TimeProposalInput) (domain.TimeProposal, error)
+	ListProposals(ctx context.Context, userID, eventID string) ([]domain.TimeProposal, error)
+	// AcceptProposal patches the event to the proposed time via provider
+	// write-through and supersedes sibling proposals.
+	AcceptProposal(ctx context.Context, userID, eventID, proposalID string) (domain.Event, error)
+	DeclineProposal(ctx context.Context, userID, eventID, proposalID string) error
+
+	// GuestFreeBusy powers the Find-a-Time grid via provider APIs.
+	GuestFreeBusy(ctx context.Context, userID string, req FreeBusyRequest) (map[string][]domain.BusyInterval, error)
+
+	// ExpireHolds is called by cmd/worker; cancels overdue holds.
+	ExpireHolds(ctx context.Context) error
+}
+
+// SettingsService reads/writes per-user scheduling settings.
+type SettingsService interface {
+	Get(ctx context.Context, userID string) (domain.UserSettings, error)
+	Update(ctx context.Context, userID string, s domain.UserSettings) (domain.UserSettings, error)
+}

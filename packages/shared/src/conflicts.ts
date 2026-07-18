@@ -6,8 +6,14 @@ import type { Attendee, Calendar, Event } from './types';
  * calendars included) so a hidden or other-account calendar can still block
  * time on the primary calendar — mirrors the backend's
  * CalendarService.Availability rules (backend/internal/service/calendar.go).
+ *
+ * Named ConflictInterval (not BusyInterval) to avoid colliding with the
+ * backend-mirroring domain.BusyInterval (start/end as ISO strings, from the
+ * guest free/busy API) exported from ./types — this one carries event
+ * provenance (eventId/calendarId/accountId/title) and Date fields for local
+ * conflict-detection math.
  */
-export interface BusyInterval {
+export interface ConflictInterval {
   start: Date;
   end: Date;
   eventId: string;
@@ -39,10 +45,10 @@ export function toBusyIntervals(
   calendars: Calendar[],
   ownEmails: string[],
   opts: { ignoreEventId?: string } = {}
-): BusyInterval[] {
+): ConflictInterval[] {
   const calendarById = new Map(calendars.map((c) => [c.id, c]));
   const ownEmailSet = new Set(ownEmails.map((e) => e.toLowerCase()));
-  const out: BusyInterval[] = [];
+  const out: ConflictInterval[] = [];
   for (const ev of events) {
     if (opts.ignoreEventId && ev.id === opts.ignoreEventId) continue;
     if (ev.status === 'cancelled' || ev.allDay) continue;
@@ -60,7 +66,7 @@ export function toBusyIntervals(
 }
 
 /** Sorted-sweep merge of overlapping/adjacent intervals. */
-export function mergeBusy(intervals: BusyInterval[]): Array<{ start: Date; end: Date }> {
+export function mergeBusy(intervals: ConflictInterval[]): Array<{ start: Date; end: Date }> {
   if (intervals.length === 0) return [];
   const sorted = [...intervals].sort((a, b) => a.start.getTime() - b.start.getTime());
   const out: Array<{ start: Date; end: Date }> = [];
@@ -81,7 +87,7 @@ export function mergeBusy(intervals: BusyInterval[]): Array<{ start: Date; end: 
 }
 
 /** Existing events overlapping a candidate slot → double-booking warning list. */
-export function findConflicts(start: Date, end: Date, busy: BusyInterval[]): BusyInterval[] {
+export function findConflicts(start: Date, end: Date, busy: ConflictInterval[]): ConflictInterval[] {
   return busy.filter((b) => overlaps(start, end, b.start, b.end));
 }
 
@@ -93,7 +99,7 @@ export function suggestFreeSlots(
   from: Date,
   to: Date,
   durationMinutes: number,
-  busy: BusyInterval[]
+  busy: ConflictInterval[]
 ): Array<{ start: Date; end: Date }> {
   const merged = mergeBusy(busy.filter((b) => overlaps(b.start, b.end, from, to)));
   const out: Array<{ start: Date; end: Date }> = [];

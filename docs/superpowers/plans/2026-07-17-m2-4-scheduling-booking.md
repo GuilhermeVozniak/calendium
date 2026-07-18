@@ -1246,7 +1246,9 @@ Public URL construction: `${window.location.origin}/book/${slug}` (web serves th
 - [ ] `bun run test:web && bun run --cwd apps/web typecheck && bun run lint:js`
 - [ ] Commit: `feat(web): booking-link manager, meeting polls, working-hours settings`
 
----### Task 15: Find-a-Time grid + propose-new-time UI
+---
+
+### Task 15: Find-a-Time grid + propose-new-time UI
 
 **Files:**
 - `apps/web/components/app/find-a-time.tsx` (new)

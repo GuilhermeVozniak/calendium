@@ -98,7 +98,9 @@ func truncateAll(t *testing.T) {
 		users, subscriptions, stripe_events, connected_accounts, oauth_states,
 		labels, threads, thread_labels, messages, attachments, drafts, snippets,
 		calendars, events, devices, sync_state, user_prefs, event_templates, calendar_sets,
-		ai_jobs, ai_classifiers, voice_profiles, ai_usage RESTART IDENTITY CASCADE`)
+		ai_jobs, ai_classifiers, voice_profiles, ai_usage,
+		booking_links, bookings, meeting_polls, poll_votes, time_proposals, user_settings
+		RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
 	}

@@ -775,11 +775,18 @@ type fakeEventRepo struct {
 	searchResult        []domain.Event
 	searchErr           error
 	deleteByProviderErr error
+	// upsertErr, when set, is returned by Upsert instead of storing the
+	// event — simulates a persistence failure between provider event
+	// creation and the local mirror write inside Book/ConfirmPoll's tx.
+	upsertErr error
 }
 
 func newEventRepo() *fakeEventRepo { return &fakeEventRepo{byID: map[string]domain.Event{}} }
 
 func (r *fakeEventRepo) Upsert(_ context.Context, e domain.Event) (domain.Event, error) {
+	if r.upsertErr != nil {
+		return domain.Event{}, r.upsertErr
+	}
 	if _, ok := r.byID[e.ID]; !ok {
 		r.order = append(r.order, e.ID)
 	}
@@ -1106,12 +1113,16 @@ var _ port.MailProvider = (*fakeMailProvider)(nil)
 
 // fakeCalendarProvider serves programmable calendars/sync-page/created/updated
 // events, records each RSVP response and the last create/update/delete args.
+// FreeBusy serves a programmable per-email busy map (freeBusyErr injects a
+// gateway failure); emails absent from freeBusyResult mirror a provider that
+// could not resolve that address.
 type fakeCalendarProvider struct {
 	// programmable
-	calendars    []domain.Calendar
-	syncPage     port.CalendarSyncPage
-	createdEvent domain.Event
-	updatedEvent domain.Event
+	calendars      []domain.Calendar
+	syncPage       port.CalendarSyncPage
+	createdEvent   domain.Event
+	updatedEvent   domain.Event
+	freeBusyResult map[string][]domain.BusyInterval
 
 	syncCalendarsErr error
 	syncEventsErr    error
@@ -1119,6 +1130,7 @@ type fakeCalendarProvider struct {
 	updateErr        error
 	deleteErr        error
 	rsvpErr          error
+	freeBusyErr      error
 
 	// recording
 	rsvpCalls            []domain.RsvpStatus
@@ -1127,6 +1139,9 @@ type fakeCalendarProvider struct {
 	lastUpdateEventID    string
 	lastUpdatePatch      domain.EventPatch
 	lastDeleteEventID    string
+	lastFreeBusyEmails   []string
+	lastFreeBusyFrom     time.Time
+	lastFreeBusyTo       time.Time
 }
 
 func newCalendarProvider() *fakeCalendarProvider { return &fakeCalendarProvider{} }
@@ -1159,6 +1174,12 @@ func (p *fakeCalendarProvider) DeleteEvent(_ context.Context, accessToken, provi
 func (p *fakeCalendarProvider) RSVP(_ context.Context, accessToken, providerCalendarID, providerEventID string, response domain.RsvpStatus) error {
 	p.rsvpCalls = append(p.rsvpCalls, response)
 	return p.rsvpErr
+}
+
+func (p *fakeCalendarProvider) FreeBusy(_ context.Context, accessToken string, emails []string, from, to time.Time) (map[string][]domain.BusyInterval, error) {
+	p.lastFreeBusyEmails = emails
+	p.lastFreeBusyFrom, p.lastFreeBusyTo = from, to
+	return p.freeBusyResult, p.freeBusyErr
 }
 
 var _ port.CalendarProvider = (*fakeCalendarProvider)(nil)
@@ -1684,3 +1705,381 @@ func (r *fakeVoiceProfileRepo) Upsert(_ context.Context, p domain.VoiceProfile) 
 }
 
 var _ port.VoiceProfileRepo = (*fakeVoiceProfileRepo)(nil)
+
+// --- booking link repo --------------------------------------------------------
+
+// fakeBookingLinkRepo enforces the same case-insensitive slug uniqueness as
+// the real postgres adapter: Create returns domain.ErrConflict when the slug
+// (case-insensitive) is already taken by another link.
+type fakeBookingLinkRepo struct {
+	byID map[string]domain.BookingLink
+}
+
+func newBookingLinkRepo() *fakeBookingLinkRepo {
+	return &fakeBookingLinkRepo{byID: map[string]domain.BookingLink{}}
+}
+
+func (r *fakeBookingLinkRepo) Create(_ context.Context, l domain.BookingLink) (domain.BookingLink, error) {
+	for _, existing := range r.byID {
+		if strings.EqualFold(existing.Slug, l.Slug) {
+			return domain.BookingLink{}, domain.ErrConflict
+		}
+	}
+	if l.ID == "" {
+		l.ID = newID()
+	}
+	r.byID[l.ID] = l
+	return l, nil
+}
+
+func (r *fakeBookingLinkRepo) GetByID(_ context.Context, id string) (domain.BookingLink, error) {
+	l, ok := r.byID[id]
+	if !ok {
+		return domain.BookingLink{}, domain.ErrNotFound
+	}
+	return l, nil
+}
+
+func (r *fakeBookingLinkRepo) GetBySlug(_ context.Context, slug string) (domain.BookingLink, error) {
+	for _, l := range r.byID {
+		if strings.EqualFold(l.Slug, slug) {
+			return l, nil
+		}
+	}
+	return domain.BookingLink{}, domain.ErrNotFound
+}
+
+func (r *fakeBookingLinkRepo) ListByUser(_ context.Context, userID string) ([]domain.BookingLink, error) {
+	out := []domain.BookingLink{}
+	for _, l := range r.byID {
+		if l.UserID == userID {
+			out = append(out, l)
+		}
+	}
+	return out, nil
+}
+
+// Update mirrors the real postgres adapter: a case-insensitive slug
+// collision with a DIFFERENT link returns domain.ErrConflict (the link's own
+// row keeping its current slug is not a collision with itself).
+func (r *fakeBookingLinkRepo) Update(_ context.Context, l domain.BookingLink) error {
+	if _, ok := r.byID[l.ID]; !ok {
+		return domain.ErrNotFound
+	}
+	for id, existing := range r.byID {
+		if id != l.ID && strings.EqualFold(existing.Slug, l.Slug) {
+			return domain.ErrConflict
+		}
+	}
+	r.byID[l.ID] = l
+	return nil
+}
+
+func (r *fakeBookingLinkRepo) Delete(_ context.Context, id string) error {
+	delete(r.byID, id)
+	return nil
+}
+
+var _ port.BookingLinkRepo = (*fakeBookingLinkRepo)(nil)
+
+// --- booking repo --------------------------------------------------------------
+
+// fakeBookingRepo mirrors the DB exclusion constraint in memory: CreateHold
+// rejects a hold/confirmed booking whose [Start,End) overlaps another active
+// (hold or confirmed) booking on the same link, returning domain.ErrConflict.
+// ListByUser scopes by owning link when the optional links pointer is set
+// (Booking carries no UserID); left nil, it returns every stored booking.
+type fakeBookingRepo struct {
+	byID  map[string]domain.Booking
+	links *fakeBookingLinkRepo
+	// forceCreateHoldErr, when set, is returned by CreateHold instead of the
+	// usual overlap check — simulates the DB exclusion constraint firing on
+	// a concurrent competitor the in-memory overlap scan wouldn't otherwise
+	// catch.
+	forceCreateHoldErr error
+}
+
+func newBookingRepo(links *fakeBookingLinkRepo) *fakeBookingRepo {
+	return &fakeBookingRepo{byID: map[string]domain.Booking{}, links: links}
+}
+
+func bookingsOverlap(a, b domain.Booking) bool {
+	return a.Start.Before(b.End) && b.Start.Before(a.End)
+}
+
+func (r *fakeBookingRepo) CreateHold(_ context.Context, b domain.Booking) (domain.Booking, error) {
+	if r.forceCreateHoldErr != nil {
+		return domain.Booking{}, r.forceCreateHoldErr
+	}
+	for _, existing := range r.byID {
+		if existing.LinkID != b.LinkID {
+			continue
+		}
+		if existing.Status == domain.BookingCancelled {
+			continue
+		}
+		if bookingsOverlap(existing, b) {
+			return domain.Booking{}, domain.ErrConflict
+		}
+	}
+	if b.ID == "" {
+		b.ID = newID()
+	}
+	r.byID[b.ID] = b
+	return b, nil
+}
+
+func (r *fakeBookingRepo) GetByID(_ context.Context, id string) (domain.Booking, error) {
+	b, ok := r.byID[id]
+	if !ok {
+		return domain.Booking{}, domain.ErrNotFound
+	}
+	return b, nil
+}
+
+func (r *fakeBookingRepo) ListActiveInRange(_ context.Context, linkID string, from, to time.Time) ([]domain.Booking, error) {
+	out := []domain.Booking{}
+	for _, b := range r.byID {
+		if b.LinkID != linkID || b.Status == domain.BookingCancelled {
+			continue
+		}
+		if b.End.After(from) && b.Start.Before(to) {
+			out = append(out, b)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeBookingRepo) ListByUser(_ context.Context, userID string, limit int) ([]domain.Booking, error) {
+	out := []domain.Booking{}
+	for _, b := range r.byID {
+		if r.links != nil {
+			link, ok := r.links.byID[b.LinkID]
+			if !ok || link.UserID != userID {
+				continue
+			}
+		}
+		out = append(out, b)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (r *fakeBookingRepo) Confirm(_ context.Context, id, eventID string) error {
+	b, ok := r.byID[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	b.Status = domain.BookingConfirmed
+	eid := eventID
+	b.EventID = &eid
+	b.HoldExpiresAt = nil
+	r.byID[id] = b
+	return nil
+}
+
+func (r *fakeBookingRepo) Cancel(_ context.Context, id string) error {
+	b, ok := r.byID[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	b.Status = domain.BookingCancelled
+	r.byID[id] = b
+	return nil
+}
+
+func (r *fakeBookingRepo) ExpireHolds(_ context.Context, now time.Time) (int64, error) {
+	var count int64
+	for id, b := range r.byID {
+		if b.Status != domain.BookingHold || b.HoldExpiresAt == nil {
+			continue
+		}
+		if !b.HoldExpiresAt.After(now) {
+			b.Status = domain.BookingCancelled
+			r.byID[id] = b
+			count++
+		}
+	}
+	return count, nil
+}
+
+var _ port.BookingRepo = (*fakeBookingRepo)(nil)
+
+// --- poll repo -----------------------------------------------------------------
+
+// fakePollRepo persists polls plus a votes table keyed by
+// pollID+optionID+lower(voterEmail), mirroring the DB's replace-ballot upsert.
+type fakePollRepo struct {
+	byID  map[string]domain.MeetingPoll
+	votes map[string]domain.PollVote
+
+	// createErrs, when non-empty, is consumed FIFO by Create (one error per
+	// call, poll not stored) instead of the normal insert path — lets a test
+	// simulate a token collision (domain.ErrConflict) that the service must
+	// retry past with a freshly generated token.
+	createErrs []error
+}
+
+func newPollRepo() *fakePollRepo {
+	return &fakePollRepo{byID: map[string]domain.MeetingPoll{}, votes: map[string]domain.PollVote{}}
+}
+
+func pollVoteKey(pollID, optionID, voterEmail string) string {
+	return pollID + "\x00" + optionID + "\x00" + strings.ToLower(voterEmail)
+}
+
+func (r *fakePollRepo) Create(_ context.Context, p domain.MeetingPoll) (domain.MeetingPoll, error) {
+	if len(r.createErrs) > 0 {
+		err := r.createErrs[0]
+		r.createErrs = r.createErrs[1:]
+		return domain.MeetingPoll{}, err
+	}
+	if p.ID == "" {
+		p.ID = newID()
+	}
+	if p.Token == "" {
+		p.Token = randomToken(16)
+	}
+	r.byID[p.ID] = p
+	return p, nil
+}
+
+func (r *fakePollRepo) GetByID(_ context.Context, id string) (domain.MeetingPoll, error) {
+	p, ok := r.byID[id]
+	if !ok {
+		return domain.MeetingPoll{}, domain.ErrNotFound
+	}
+	return p, nil
+}
+
+func (r *fakePollRepo) GetByToken(_ context.Context, token string) (domain.MeetingPoll, error) {
+	for _, p := range r.byID {
+		if p.Token == token {
+			return p, nil
+		}
+	}
+	return domain.MeetingPoll{}, domain.ErrNotFound
+}
+
+func (r *fakePollRepo) ListByUser(_ context.Context, userID string) ([]domain.MeetingPoll, error) {
+	out := []domain.MeetingPoll{}
+	for _, p := range r.byID {
+		if p.UserID == userID {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakePollRepo) Update(_ context.Context, p domain.MeetingPoll) error {
+	if _, ok := r.byID[p.ID]; !ok {
+		return domain.ErrNotFound
+	}
+	r.byID[p.ID] = p
+	return nil
+}
+
+func (r *fakePollRepo) Delete(_ context.Context, id string) error {
+	delete(r.byID, id)
+	for k, v := range r.votes {
+		if v.PollID == id {
+			delete(r.votes, k)
+		}
+	}
+	return nil
+}
+
+func (r *fakePollRepo) UpsertVotes(_ context.Context, votes []domain.PollVote) error {
+	for _, v := range votes {
+		r.votes[pollVoteKey(v.PollID, v.OptionID, v.VoterEmail)] = v
+	}
+	return nil
+}
+
+func (r *fakePollRepo) ListVotes(_ context.Context, pollID string) ([]domain.PollVote, error) {
+	out := []domain.PollVote{}
+	for _, v := range r.votes {
+		if v.PollID == pollID {
+			out = append(out, v)
+		}
+	}
+	return out, nil
+}
+
+var _ port.PollRepo = (*fakePollRepo)(nil)
+
+// --- time proposal repo ---------------------------------------------------------
+
+type fakeProposalRepo struct {
+	byID map[string]domain.TimeProposal
+}
+
+func newProposalRepo() *fakeProposalRepo {
+	return &fakeProposalRepo{byID: map[string]domain.TimeProposal{}}
+}
+
+func (r *fakeProposalRepo) Create(_ context.Context, p domain.TimeProposal) (domain.TimeProposal, error) {
+	if p.ID == "" {
+		p.ID = newID()
+	}
+	r.byID[p.ID] = p
+	return p, nil
+}
+
+func (r *fakeProposalRepo) GetByID(_ context.Context, id string) (domain.TimeProposal, error) {
+	p, ok := r.byID[id]
+	if !ok {
+		return domain.TimeProposal{}, domain.ErrNotFound
+	}
+	return p, nil
+}
+
+func (r *fakeProposalRepo) ListByEvent(_ context.Context, eventID string) ([]domain.TimeProposal, error) {
+	out := []domain.TimeProposal{}
+	for _, p := range r.byID {
+		if p.EventID == eventID {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeProposalRepo) Update(_ context.Context, p domain.TimeProposal) error {
+	if _, ok := r.byID[p.ID]; !ok {
+		return domain.ErrNotFound
+	}
+	r.byID[p.ID] = p
+	return nil
+}
+
+var _ port.TimeProposalRepo = (*fakeProposalRepo)(nil)
+
+// --- user settings repo ---------------------------------------------------------
+
+// fakeUserSettingsRepo mirrors the real adapter's absent-row default: Get
+// returns a zero-value UserSettings with TimeZone "UTC" when no row exists.
+type fakeUserSettingsRepo struct {
+	byUser map[string]domain.UserSettings
+}
+
+func newUserSettingsRepo() *fakeUserSettingsRepo {
+	return &fakeUserSettingsRepo{byUser: map[string]domain.UserSettings{}}
+}
+
+func (r *fakeUserSettingsRepo) Get(_ context.Context, userID string) (domain.UserSettings, error) {
+	s, ok := r.byUser[userID]
+	if !ok {
+		return domain.UserSettings{UserID: userID, TimeZone: "UTC"}, nil
+	}
+	return s, nil
+}
+
+func (r *fakeUserSettingsRepo) Upsert(_ context.Context, s domain.UserSettings) error {
+	r.byUser[s.UserID] = s
+	return nil
+}
+
+var _ port.UserSettingsRepo = (*fakeUserSettingsRepo)(nil)

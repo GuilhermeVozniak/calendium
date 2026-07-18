@@ -57,6 +57,29 @@ vi.mock('@/components/app/calendar/conflict-warning', () => ({
   ConflictWarning: (props: unknown) => conflictWarningMock(props),
 }));
 
+// find-a-time.tsx has its own unit tests (find-a-time.test.tsx) covering the
+// grid/proposal-form/proposals-list internals in isolation; here we only
+// verify EventDialog wires the right component with the right props/callback
+// under the right conditions, via lightweight stand-ins.
+const findATimeGridMock = vi.fn((_props: unknown) => (
+  <div data-testid="find-a-time-grid" />
+));
+const proposeTimeFormMock = vi.fn((_props: unknown) => (
+  <div data-testid="propose-time-form" />
+));
+const proposalsListMock = vi.fn((props: { onAccepted: () => void }) => (
+  <div data-testid="proposals-list">
+    <button type="button" onClick={props.onAccepted}>
+      Mock accept
+    </button>
+  </div>
+));
+vi.mock('@/components/app/find-a-time', () => ({
+  FindATimeGrid: (props: unknown) => findATimeGridMock(props),
+  ProposeTimeForm: (props: unknown) => proposeTimeFormMock(props),
+  ProposalsList: (props: { onAccepted: () => void }) => proposalsListMock(props),
+}));
+
 const toastSuccess = vi.fn();
 const toastError = vi.fn();
 vi.mock('sonner', () => ({
@@ -831,5 +854,107 @@ describe('EventDialog — save as template', () => {
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith('Could not save the template')
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Find-a-Time + propose-new-time wiring (Task 15). find-a-time.tsx owns its
+// own unit tests; these confirm EventDialog mounts the right piece with the
+// right props for each of the three states the brief calls out.
+// ---------------------------------------------------------------------------
+
+function attendeeEvent(overrides: Partial<Event> = {}): Event {
+  return {
+    id: 'ev1',
+    calendarId: 'cal-work',
+    title: 'Planning',
+    description: null,
+    location: null,
+    start: new Date(2026, 6, 8, 9, 0, 0, 0).toISOString(),
+    end: new Date(2026, 6, 8, 9, 30, 0, 0).toISOString(),
+    allDay: false,
+    recurrenceRule: null,
+    attendees: [
+      attendee({ email: 'me@example.com', organizer: true }),
+      attendee({ email: 'guest@example.com' }),
+    ],
+    conferencing: null,
+    status: 'confirmed',
+    visibility: 'default',
+    reminderMinutes: [],
+    ...overrides,
+  };
+}
+
+describe('EventDialog — Find-a-Time grid', () => {
+  it('shows the grid once an attendee is added while creating an event', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    expect(screen.queryByTestId('find-a-time-grid')).not.toBeInTheDocument();
+
+    const attendeeInput = await screen.findByLabelText('Add attendee');
+    await user.type(attendeeInput, 'guest@example.com{Enter}');
+
+    expect(await screen.findByTestId('find-a-time-grid')).toBeInTheDocument();
+    const props = findATimeGridMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(props.attendeeEmails).toEqual(['guest@example.com']);
+    expect(props.durationMinutes).toBe(30);
+  });
+
+  it('shows the grid in edit mode when the current user organizes the event', async () => {
+    renderDialog({ event: attendeeEvent() });
+    expect(await screen.findByTestId('find-a-time-grid')).toBeInTheDocument();
+  });
+
+  it('does not show the grid for a non-organizer viewing the event (propose-time flow instead)', async () => {
+    useSelfEmailsMock.mockReturnValue(new Set<string>(['guest@example.com']));
+    renderDialog({ event: attendeeEvent() });
+    await screen.findByLabelText('Event title');
+    expect(screen.queryByTestId('find-a-time-grid')).not.toBeInTheDocument();
+  });
+
+  it('picking a slot on the grid sets the start/end fields', async () => {
+    renderDialog({ event: attendeeEvent() });
+    await screen.findByTestId('find-a-time-grid');
+    const props = findATimeGridMock.mock.calls.at(-1)?.[0] as { onPick: (start: Date, end: Date) => void };
+    const onPick = props.onPick;
+    onPick(new Date(2026, 6, 9, 15, 0), new Date(2026, 6, 9, 15, 30));
+    const startInput = (await screen.findByLabelText('Start')) as HTMLInputElement;
+    expect(startInput.value).toBe(fmt(new Date(2026, 6, 9, 15, 0)));
+  });
+});
+
+describe('EventDialog — propose-new-time (non-organizer view)', () => {
+  it('shows the propose-time form instead of the grid or proposals list', async () => {
+    useSelfEmailsMock.mockReturnValue(new Set<string>(['guest@example.com']));
+    renderDialog({ event: attendeeEvent() });
+
+    expect(await screen.findByTestId('propose-time-form')).toBeInTheDocument();
+    expect(screen.queryByTestId('find-a-time-grid')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('proposals-list')).not.toBeInTheDocument();
+    const props = proposeTimeFormMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(props.eventId).toBe('ev1');
+  });
+});
+
+describe('EventDialog — pending proposals (organizer view)', () => {
+  it('shows the proposals list for the organizer, and accepting invalidates events and closes the dialog', async () => {
+    const user = userEvent.setup();
+    const { onOpenChange } = renderDialog({ event: attendeeEvent() });
+
+    expect(await screen.findByTestId('proposals-list')).toBeInTheDocument();
+    const props = proposalsListMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(props.eventId).toBe('ev1');
+
+    await user.click(screen.getByRole('button', { name: /mock accept/i }));
+
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(toastSuccess).toHaveBeenCalledWith('Proposal accepted');
+  });
+
+  it('does not show the proposals list while creating a new event', async () => {
+    renderDialog();
+    await screen.findByLabelText('Event title');
+    expect(screen.queryByTestId('proposals-list')).not.toBeInTheDocument();
   });
 });

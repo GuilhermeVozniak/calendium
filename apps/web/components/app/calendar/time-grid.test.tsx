@@ -32,6 +32,8 @@ function renderGrid(overrides: {
   pinnedZones?: string[];
   events?: Event[];
   now?: Date;
+  timeTravelZone?: string | null;
+  onExitTimeTravel?: () => void;
 } = {}) {
   const days = overrides.days ?? [new Date(2026, 0, 15)];
   return render(
@@ -42,6 +44,8 @@ function renderGrid(overrides: {
       now={overrides.now ?? new Date(2026, 0, 15, 9, 0)}
       gmtLabel="GMT+0"
       pinnedZones={overrides.pinnedZones ?? []}
+      timeTravelZone={overrides.timeTravelZone ?? null}
+      onExitTimeTravel={overrides.onExitTimeTravel}
       onSlotClick={vi.fn()}
       onEventClick={vi.fn()}
     />
@@ -130,6 +134,71 @@ describe('TimeGrid — multi-timezone gutters', () => {
     ];
     renderGrid({ days, pinnedZones: ['America/New_York'] });
     expect(screen.getByTestId('tz-dst-marker-America/New_York')).toBeInTheDocument();
+  });
+});
+
+describe('TimeGrid — Time Travel overlay', () => {
+  let originalTz: string | undefined;
+
+  beforeEach(() => {
+    originalTz = process.env.TZ;
+    process.env.TZ = 'UTC';
+  });
+
+  afterEach(() => {
+    process.env.TZ = originalTz;
+  });
+
+  it('renders no overlay gutter when timeTravelZone is null', () => {
+    renderGrid();
+    expect(screen.queryByTestId('tz-gutter-timetravel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('tz-header-timetravel')).not.toBeInTheDocument();
+  });
+
+  it('renders the overlay gutter left of any pinned-zone gutters and the primary gutter', () => {
+    renderGrid({ timeTravelZone: 'Asia/Kolkata', pinnedZones: ['America/New_York'] });
+    const overlay = screen.getByTestId('tz-gutter-timetravel');
+    const pinned = screen.getByTestId('tz-gutter-America/New_York');
+    const primary = screen.getByTestId('time-gutter-primary');
+    expect(overlay.compareDocumentPosition(pinned) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(overlay.compareDocumentPosition(primary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows hour labels converted into the overlay zone (DST-aware)', () => {
+    // Same fixed-offset case as the pinned-zone gutter test: Asia/Kolkata has
+    // no DST, so the 12:00 UTC row reads 5:30 PM.
+    renderGrid({ timeTravelZone: 'Asia/Kolkata' });
+    const gutter = screen.getByTestId('tz-gutter-timetravel');
+    expect(within(gutter).getByText('5:30 PM')).toBeInTheDocument();
+  });
+
+  it('shows hour labels that correctly shift across a DST boundary week', () => {
+    // Same DST-transition week as the pinned-zone test: America/New_York
+    // falls back from EDT to EST on 2026-11-01. The reference day (Oct 29,
+    // still EDT) must show the noon-UTC row as 8 AM.
+    const days = [
+      new Date(2026, 9, 29),
+      new Date(2026, 9, 30),
+      new Date(2026, 9, 31),
+      new Date(2026, 10, 1),
+      new Date(2026, 10, 2),
+    ];
+    renderGrid({ days, timeTravelZone: 'America/New_York' });
+    const gutter = screen.getByTestId('tz-gutter-timetravel');
+    expect(within(gutter).getByText('8 AM')).toBeInTheDocument();
+  });
+
+  it('shows the city name and abbreviation in the gutter header', () => {
+    renderGrid({ timeTravelZone: 'America/New_York', now: new Date(2026, 6, 15, 12, 0) });
+    const header = screen.getByTestId('tz-header-timetravel');
+    expect(header).toHaveTextContent('NYC EDT');
+  });
+
+  it('calls onExitTimeTravel when the header\'s exit control is clicked', () => {
+    const onExitTimeTravel = vi.fn();
+    renderGrid({ timeTravelZone: 'Asia/Kolkata', onExitTimeTravel });
+    screen.getByRole('button', { name: 'Exit Time Travel' }).click();
+    expect(onExitTimeTravel).toHaveBeenCalledTimes(1);
   });
 });
 

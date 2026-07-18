@@ -224,6 +224,95 @@ func (c *Client) RSVP(ctx context.Context, accessToken, providerCalendarID, prov
 	return c.doJSON(ctx, http.MethodPost, endpoint, accessToken, map[string]any{"sendResponse": true}, nil)
 }
 
+// freeBusyChunkSize caps how many mailboxes go in a single getSchedule
+// request — Graph documents a hard cap around 20-50 schedules per call
+// depending on tenant; chunking at 20 keeps every call well under that and
+// isolates one bad mailbox's error from the rest of the batch.
+const freeBusyChunkSize = 20
+
+// FreeBusy queries busy intervals for a set of attendee emails via the
+// getSchedule endpoint, chunking requests at freeBusyChunkSize emails.
+// Schedules the API reports an error for (unresolvable mailbox) are omitted
+// from the result. Result keys are lowercased emails (scheduleId echoes the
+// requested schedule verbatim, so casing is normalized here).
+func (c *Client) FreeBusy(ctx context.Context, accessToken string, emails []string, from, to time.Time) (map[string][]domain.BusyInterval, error) {
+	out := make(map[string][]domain.BusyInterval, len(emails))
+	for _, chunk := range chunkStrings(emails, freeBusyChunkSize) {
+		if err := c.freeBusyChunk(ctx, accessToken, chunk, from, to, out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (c *Client) freeBusyChunk(ctx context.Context, accessToken string, emails []string, from, to time.Time, out map[string][]domain.BusyInterval) error {
+	body := map[string]any{
+		"schedules":                emails,
+		"startTime":                map[string]string{"dateTime": from.UTC().Format("2006-01-02T15:04:05"), "timeZone": "UTC"},
+		"endTime":                  map[string]string{"dateTime": to.UTC().Format("2006-01-02T15:04:05"), "timeZone": "UTC"},
+		"availabilityViewInterval": 30,
+	}
+	var res struct {
+		Value []struct {
+			ScheduleID string `json:"scheduleId"`
+			Error      *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+			ScheduleItems []struct {
+				Status string        `json:"status"`
+				Start  graphDateTime `json:"start"`
+				End    graphDateTime `json:"end"`
+			} `json:"scheduleItems"`
+		} `json:"value"`
+	}
+	if err := c.doJSON(ctx, http.MethodPost, graphBase+"/me/calendar/getSchedule", accessToken, body, &res); err != nil {
+		return err
+	}
+	for _, sched := range res.Value {
+		if sched.Error != nil {
+			continue // unresolvable mailbox — leave the schedule out of the result
+		}
+		intervals := make([]domain.BusyInterval, 0, len(sched.ScheduleItems))
+		for _, item := range sched.ScheduleItems {
+			// freeBusyStatus is a lowercase enum: free, tentative, busy, oof,
+			// workingElsewhere. Compare case-insensitively so a differently
+			// cased response never gets misreported as busy (or vice versa).
+			if strings.EqualFold(item.Status, "free") || strings.EqualFold(item.Status, "workingElsewhere") {
+				continue
+			}
+			start, err := parseGraphFreeBusyTime(item.Start)
+			if err != nil {
+				return fmt.Errorf("msgraph: parse freeBusy scheduleItem start %q: %w", item.Start.DateTime, err)
+			}
+			end, err := parseGraphFreeBusyTime(item.End)
+			if err != nil {
+				return fmt.Errorf("msgraph: parse freeBusy scheduleItem end %q: %w", item.End.DateTime, err)
+			}
+			intervals = append(intervals, domain.BusyInterval{Start: start, End: end})
+		}
+		out[strings.ToLower(sched.ScheduleID)] = intervals
+	}
+	return nil
+}
+
+// chunkStrings splits items into consecutive slices of at most size. A nil
+// or empty items yields no chunks (so a zero-email FreeBusy call makes no
+// HTTP requests).
+func chunkStrings(items []string, size int) [][]string {
+	if len(items) == 0 {
+		return nil
+	}
+	chunks := make([][]string, 0, (len(items)+size-1)/size)
+	for i := 0; i < len(items); i += size {
+		end := i + size
+		if end > len(items) {
+			end = len(items)
+		}
+		chunks = append(chunks, items[i:end])
+	}
+	return chunks
+}
+
 // --- wire types + mapping ---
 
 type graphDateTime struct {
@@ -329,6 +418,19 @@ func parseGraphTime(t graphDateTime) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+// parseGraphFreeBusyTime is parseGraphTime's error-surfacing counterpart:
+// getSchedule bounds feed availability decisions directly, so a malformed
+// timestamp must fail the call rather than silently degrade to the zero
+// value (which would read as "busy from the Unix-time epoch").
+func parseGraphFreeBusyTime(t graphDateTime) (time.Time, error) {
+	for _, layout := range []string{"2006-01-02T15:04:05.9999999", "2006-01-02T15:04:05", time.RFC3339} {
+		if p, err := time.Parse(layout, t.DateTime); err == nil {
+			return p.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unrecognized time format %q", t.DateTime)
 }
 
 func graphTime(t time.Time, allDay bool) graphDateTime {

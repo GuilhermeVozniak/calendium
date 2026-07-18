@@ -36,6 +36,20 @@ func randomToken(n int) string {
 
 func ptr[T any](v T) *T { return &v }
 
+// validIANATimeZone reports whether tz is a genuine, unambiguous IANA time
+// zone name. time.LoadLocation alone is not a sufficient check: it silently
+// accepts "" (interpreted as UTC) and "Local" (the process's own OS-configured
+// zone) as valid locations, either of which would let a caller store an
+// ambiguous or server-dependent time zone on a user-facing field (settings,
+// booking links, invitee time zone) instead of a real, portable IANA name.
+func validIANATimeZone(tz string) bool {
+	if tz == "" || tz == "Local" {
+		return false
+	}
+	_, err := time.LoadLocation(tz)
+	return err == nil
+}
+
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
 		if v != "" {
