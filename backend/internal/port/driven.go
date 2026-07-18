@@ -419,7 +419,13 @@ type Payments interface {
 
 // AI is the OpenRouter chat-completions surface.
 type AI interface {
+	// Complete sends one system+user exchange and returns freeform text.
 	Complete(ctx context.Context, system, user string) (text, model string, err error)
+	// CompleteJSON sends one system+user exchange requesting a JSON-object
+	// response (OpenRouter response_format json_object) and decodes it into
+	// out. It returns domain.ErrAIOutput-wrapped errors when the model's
+	// reply is not valid JSON for out.
+	CompleteJSON(ctx context.Context, system, user string, out any) (model string, err error)
 }
 
 // PushSender fans a notification out to one device via APNs / FCM / Web Push.

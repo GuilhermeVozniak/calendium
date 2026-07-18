@@ -53,6 +53,12 @@ func statusFor(err error) (int, string) {
 		return http.StatusConflict, "conflict"
 	case errors.Is(err, domain.ErrSelfHosted):
 		return http.StatusNotImplemented, "self_hosted"
+	case errors.Is(err, domain.ErrAIOutput):
+		return http.StatusBadGateway, "ai_output_invalid"
+	case errors.Is(err, domain.ErrAIUnavailable):
+		return http.StatusServiceUnavailable, "ai_unavailable"
+	case errors.Is(err, domain.ErrRateLimited):
+		return http.StatusTooManyRequests, "rate_limited"
 	default:
 		return http.StatusInternalServerError, "internal"
 	}
@@ -75,6 +81,12 @@ func safeMessage(code string) string {
 		return "The request conflicts with the current state of the resource."
 	case "self_hosted":
 		return "Billing is disabled on self-hosted instances."
+	case "ai_output_invalid":
+		return "The AI returned an unexpected response."
+	case "ai_unavailable":
+		return "AI features are not available on this deployment."
+	case "rate_limited":
+		return "You have exceeded the usage limit. Please try again later."
 	default:
 		return "Internal server error."
 	}

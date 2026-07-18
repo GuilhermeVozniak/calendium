@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"calendium/backend/internal/domain"
 	"calendium/backend/internal/port"
@@ -45,17 +46,50 @@ type chatMessage struct {
 
 // Complete sends one system+user exchange and returns the generated text
 // plus the model that actually served it. Cancellation flows through ctx.
-func (c *Client) Complete(ctx context.Context, system, user string) (text, model string, err error) {
+func (c *Client) Complete(ctx context.Context, system, user string) (string, string, error) {
+	return c.complete(ctx, system, user, false)
+}
+
+// CompleteJSON sends one system+user exchange requesting a JSON-object
+// response (OpenRouter response_format json_object) and decodes it into out.
+// It returns domain.ErrAIOutput-wrapped errors when the model's reply is not
+// valid JSON for out.
+func (c *Client) CompleteJSON(ctx context.Context, system, user string, out any) (string, error) {
+	text, model, err := c.complete(ctx, system, user, true)
+	if err != nil {
+		return "", err
+	}
+	if err := json.Unmarshal([]byte(stripJSONFences(text)), out); err != nil {
+		return "", fmt.Errorf("%w: openrouter: decode structured output: %w", domain.ErrAIOutput, err)
+	}
+	return model, nil
+}
+
+// stripJSONFences tolerates models that wrap JSON in ```json fences.
+func stripJSONFences(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	return strings.TrimSpace(s)
+}
+
+// complete is the shared request path; jsonMode adds response_format.
+func (c *Client) complete(ctx context.Context, system, user string, jsonMode bool) (text, model string, err error) {
 	messages := make([]chatMessage, 0, 2)
 	if system != "" {
 		messages = append(messages, chatMessage{Role: "system", Content: system})
 	}
 	messages = append(messages, chatMessage{Role: "user", Content: user})
 
-	payload, err := json.Marshal(map[string]any{
+	body := map[string]any{
 		"model":    c.model,
 		"messages": messages,
-	})
+	}
+	if jsonMode {
+		body["response_format"] = map[string]string{"type": "json_object"}
+	}
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return "", "", fmt.Errorf("openrouter: encode request: %w", err)
 	}

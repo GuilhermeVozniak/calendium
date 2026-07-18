@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sort"
 	"time"
 
@@ -1142,10 +1144,16 @@ var _ port.Payments = (*fakePayments)(nil)
 // --- ai ----------------------------------------------------------------------
 
 // fakeAI serves programmable text/model/err and records the last prompts.
+// CompleteJSON unmarshals the scripted jsonOut string into the caller's out;
+// jsonErr, when set, short-circuits before decoding (parity with a gateway
+// error from the real adapter).
 type fakeAI struct {
 	text       string
 	model      string
 	err        error
+	jsonOut    string
+	jsonModel  string
+	jsonErr    error
 	lastSystem string
 	lastUser   string
 }
@@ -1155,6 +1163,17 @@ func newAI() *fakeAI { return &fakeAI{} }
 func (a *fakeAI) Complete(_ context.Context, system, user string) (string, string, error) {
 	a.lastSystem, a.lastUser = system, user
 	return a.text, a.model, a.err
+}
+
+func (a *fakeAI) CompleteJSON(_ context.Context, system, user string, out any) (string, error) {
+	a.lastSystem, a.lastUser = system, user
+	if a.jsonErr != nil {
+		return "", a.jsonErr
+	}
+	if err := json.Unmarshal([]byte(a.jsonOut), out); err != nil {
+		return "", fmt.Errorf("%w: fakeAI: decode structured output: %w", domain.ErrAIOutput, err)
+	}
+	return a.jsonModel, nil
 }
 
 var _ port.AI = (*fakeAI)(nil)

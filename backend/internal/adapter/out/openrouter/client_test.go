@@ -151,3 +151,91 @@ func TestComplete(t *testing.T) {
 		}
 	})
 }
+
+func TestCompleteJSON(t *testing.T) {
+	t.Run("requests json_object response_format and decodes result", func(t *testing.T) {
+		var gotBody map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(raw, &gotBody)
+			_, _ = w.Write([]byte(`{"model":"m","choices":[{"message":{"content":"{\"name\":\"Ada\",\"age\":30}"}}]}`))
+		}))
+		defer srv.Close()
+
+		c := NewClient("k", "m", rewriteClient(t, srv.URL))
+		var out struct {
+			Name string `json:"name"`
+			Age  int    `json:"age"`
+		}
+		model, err := c.CompleteJSON(context.Background(), "sys", "usr", &out)
+		if err != nil {
+			t.Fatalf("CompleteJSON: %v", err)
+		}
+		if model != "m" {
+			t.Errorf("model = %q", model)
+		}
+		if out.Name != "Ada" || out.Age != 30 {
+			t.Errorf("out = %+v", out)
+		}
+		rf, ok := gotBody["response_format"].(map[string]any)
+		if !ok {
+			t.Fatalf("response_format = %v, want map", gotBody["response_format"])
+		}
+		if rf["type"] != "json_object" {
+			t.Errorf("response_format.type = %v, want json_object", rf["type"])
+		}
+	})
+
+	t.Run("tolerates fenced JSON", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("{\"model\":\"m\",\"choices\":[{\"message\":{\"content\":\"```json\\n{\\\"ok\\\":true}\\n```\"}}]}"))
+		}))
+		defer srv.Close()
+
+		c := NewClient("k", "m", rewriteClient(t, srv.URL))
+		var out struct {
+			OK bool `json:"ok"`
+		}
+		if _, err := c.CompleteJSON(context.Background(), "", "hi", &out); err != nil {
+			t.Fatalf("CompleteJSON: %v", err)
+		}
+		if !out.OK {
+			t.Errorf("out.OK = false, want true")
+		}
+	})
+
+	t.Run("invalid JSON wraps domain.ErrAIOutput", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"model":"m","choices":[{"message":{"content":"not json"}}]}`))
+		}))
+		defer srv.Close()
+
+		c := NewClient("k", "m", rewriteClient(t, srv.URL))
+		var out map[string]any
+		_, err := c.CompleteJSON(context.Background(), "", "hi", &out)
+		if err == nil {
+			t.Fatal("want error")
+		}
+		if !errors.Is(err, domain.ErrAIOutput) {
+			t.Fatalf("err = %v, want wrap of domain.ErrAIOutput", err)
+		}
+	})
+
+	t.Run("401 maps to domain.ErrUnauthorized (parity with Complete)", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"bad key"}}`))
+		}))
+		defer srv.Close()
+
+		c := NewClient("k", "m", rewriteClient(t, srv.URL))
+		var out map[string]any
+		_, err := c.CompleteJSON(context.Background(), "", "hi", &out)
+		if err == nil {
+			t.Fatal("want error")
+		}
+		if !errors.Is(err, domain.ErrUnauthorized) {
+			t.Fatalf("err = %v, want wrap of domain.ErrUnauthorized", err)
+		}
+	})
+}

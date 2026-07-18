@@ -23,6 +23,9 @@ func TestStatusFor(t *testing.T) {
 		{"not found", fmt.Errorf("x: %w", domain.ErrNotFound), http.StatusNotFound, "not_found"},
 		{"conflict", fmt.Errorf("x: %w", domain.ErrConflict), http.StatusConflict, "conflict"},
 		{"self hosted", fmt.Errorf("x: %w", domain.ErrSelfHosted), http.StatusNotImplemented, "self_hosted"},
+		{"ai output invalid", fmt.Errorf("x: %w", domain.ErrAIOutput), http.StatusBadGateway, "ai_output_invalid"},
+		{"ai unavailable", fmt.Errorf("x: %w", domain.ErrAIUnavailable), http.StatusServiceUnavailable, "ai_unavailable"},
+		{"rate limited", fmt.Errorf("x: %w", domain.ErrRateLimited), http.StatusTooManyRequests, "rate_limited"},
 		{"unmapped error", errors.New("anything else"), http.StatusInternalServerError, "internal"},
 	}
 	for _, tt := range tests {
@@ -46,6 +49,9 @@ func TestSafeMessage(t *testing.T) {
 		{"not_found", "The requested resource was not found."},
 		{"conflict", "The request conflicts with the current state of the resource."},
 		{"self_hosted", "Billing is disabled on self-hosted instances."},
+		{"ai_output_invalid", "The AI returned an unexpected response."},
+		{"ai_unavailable", "AI features are not available on this deployment."},
+		{"rate_limited", "You have exceeded the usage limit. Please try again later."},
 		{"internal", "Internal server error."},
 		{"something_unrecognized", "Internal server error."},
 	}
@@ -74,6 +80,9 @@ func TestStatusForViaHandler(t *testing.T) {
 		{"not found", fmt.Errorf("wrapped: %w", domain.ErrNotFound), http.StatusNotFound, "not_found"},
 		{"conflict", fmt.Errorf("wrapped: %w", domain.ErrConflict), http.StatusConflict, "conflict"},
 		{"self hosted", fmt.Errorf("wrapped: %w", domain.ErrSelfHosted), http.StatusNotImplemented, "self_hosted"},
+		{"ai output invalid", fmt.Errorf("wrapped: %w", domain.ErrAIOutput), http.StatusBadGateway, "ai_output_invalid"},
+		{"ai unavailable", fmt.Errorf("wrapped: %w", domain.ErrAIUnavailable), http.StatusServiceUnavailable, "ai_unavailable"},
+		{"rate limited", fmt.Errorf("wrapped: %w", domain.ErrRateLimited), http.StatusTooManyRequests, "rate_limited"},
 		{"internal", errors.New("boom"), http.StatusInternalServerError, "internal"},
 	}
 	for _, tt := range tests {
