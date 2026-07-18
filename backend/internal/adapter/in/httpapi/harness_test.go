@@ -437,6 +437,46 @@ func (f *fakeCalendarService) Availability(ctx context.Context, userID string, f
 	return f.availRet, f.availErr
 }
 
+// --- Event Template Methods
+
+func (f *fakeCalendarService) ListEventTemplates(ctx context.Context, userID string) ([]domain.EventTemplate, error) {
+	return nil, nil
+}
+
+func (f *fakeCalendarService) CreateEventTemplate(ctx context.Context, userID string, in domain.EventTemplateInput) (domain.EventTemplate, error) {
+	return domain.EventTemplate{}, nil
+}
+
+func (f *fakeCalendarService) UpdateEventTemplate(ctx context.Context, userID, templateID string, in domain.EventTemplateInput) (domain.EventTemplate, error) {
+	return domain.EventTemplate{}, nil
+}
+
+func (f *fakeCalendarService) DeleteEventTemplate(ctx context.Context, userID, templateID string) error {
+	return nil
+}
+
+func (f *fakeCalendarService) UseEventTemplate(ctx context.Context, userID, templateID string) error {
+	return nil
+}
+
+// --- Calendar Set Methods
+
+func (f *fakeCalendarService) ListCalendarSets(ctx context.Context, userID string) ([]domain.CalendarSet, error) {
+	return nil, nil
+}
+
+func (f *fakeCalendarService) CreateCalendarSet(ctx context.Context, userID string, in domain.CalendarSetInput) (domain.CalendarSet, error) {
+	return domain.CalendarSet{}, nil
+}
+
+func (f *fakeCalendarService) UpdateCalendarSet(ctx context.Context, userID, setID string, in domain.CalendarSetInput) (domain.CalendarSet, error) {
+	return domain.CalendarSet{}, nil
+}
+
+func (f *fakeCalendarService) DeleteCalendarSet(ctx context.Context, userID, setID string) error {
+	return nil
+}
+
 // --- SearchService -----------------------------------------------------------
 
 type fakeSearchService struct {

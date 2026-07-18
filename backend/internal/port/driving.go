@@ -157,7 +157,7 @@ type CalendarPatch struct {
 }
 
 // CalendarService covers calendars, events (provider write-through), rsvp,
-// and availability.
+// availability, event templates, and calendar sets.
 type CalendarService interface {
 	ListCalendars(ctx context.Context, userID string) ([]domain.Calendar, error)
 	UpdateCalendar(ctx context.Context, userID, calendarID string, patch CalendarPatch) (domain.Calendar, error)
@@ -169,6 +169,19 @@ type CalendarService interface {
 	// Availability returns free windows of at least slotDuration between
 	// from and to, computed from the user's visible calendars.
 	Availability(ctx context.Context, userID string, from, to time.Time, slotDuration time.Duration) ([]domain.AvailabilitySlot, error)
+
+	// Event template methods
+	ListEventTemplates(ctx context.Context, userID string) ([]domain.EventTemplate, error)
+	CreateEventTemplate(ctx context.Context, userID string, in domain.EventTemplateInput) (domain.EventTemplate, error)
+	UpdateEventTemplate(ctx context.Context, userID, templateID string, in domain.EventTemplateInput) (domain.EventTemplate, error)
+	DeleteEventTemplate(ctx context.Context, userID, templateID string) error
+	UseEventTemplate(ctx context.Context, userID, templateID string) error
+
+	// Calendar set methods
+	ListCalendarSets(ctx context.Context, userID string) ([]domain.CalendarSet, error)
+	CreateCalendarSet(ctx context.Context, userID string, in domain.CalendarSetInput) (domain.CalendarSet, error)
+	UpdateCalendarSet(ctx context.Context, userID, setID string, in domain.CalendarSetInput) (domain.CalendarSet, error)
+	DeleteCalendarSet(ctx context.Context, userID, setID string) error
 }
 
 // SearchResult is the unified GET /v1/search response.

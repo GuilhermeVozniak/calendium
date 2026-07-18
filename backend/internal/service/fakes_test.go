@@ -1218,3 +1218,125 @@ func (r *fakePrefsRepo) Save(_ context.Context, userID string, p domain.UserPref
 }
 
 var _ port.PrefsRepo = (*fakePrefsRepo)(nil)
+
+// --- event template repo ----------------------------------------------------
+
+type fakeEventTemplateRepo struct {
+	byID   map[string]domain.EventTemplate
+	order  []string
+	owners map[string]string // id -> userID
+}
+
+func newEventTemplateRepo() *fakeEventTemplateRepo {
+	return &fakeEventTemplateRepo{
+		byID:   map[string]domain.EventTemplate{},
+		owners: map[string]string{},
+	}
+}
+
+func (r *fakeEventTemplateRepo) Create(_ context.Context, userID string, t domain.EventTemplate) (domain.EventTemplate, error) {
+	if t.ID == "" {
+		t.ID = newID()
+	}
+	r.byID[t.ID] = t
+	r.owners[t.ID] = userID
+	r.order = append(r.order, t.ID)
+	return t, nil
+}
+
+func (r *fakeEventTemplateRepo) GetByID(_ context.Context, id string) (domain.EventTemplate, string, error) {
+	t, ok := r.byID[id]
+	if !ok {
+		return domain.EventTemplate{}, "", domain.ErrNotFound
+	}
+	userID := r.owners[id]
+	return t, userID, nil
+}
+
+func (r *fakeEventTemplateRepo) ListByUser(_ context.Context, userID string) ([]domain.EventTemplate, error) {
+	out := []domain.EventTemplate{}
+	for _, id := range r.order {
+		if t, ok := r.byID[id]; ok && r.owners[id] == userID {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeEventTemplateRepo) Update(_ context.Context, t domain.EventTemplate) error {
+	r.byID[t.ID] = t
+	return nil
+}
+
+func (r *fakeEventTemplateRepo) IncrementUsage(_ context.Context, id string) error {
+	if t, ok := r.byID[id]; ok {
+		t.UsageCount++
+		r.byID[id] = t
+	}
+	return nil
+}
+
+func (r *fakeEventTemplateRepo) Delete(_ context.Context, id string) error {
+	delete(r.byID, id)
+	delete(r.owners, id)
+	return nil
+}
+
+var _ port.EventTemplateRepo = (*fakeEventTemplateRepo)(nil)
+
+// --- calendar set repo -------------------------------------------------------
+
+type fakeCalendarSetRepo struct {
+	byID   map[string]domain.CalendarSet
+	order  []string
+	owners map[string]string // id -> userID
+}
+
+func newCalendarSetRepo() *fakeCalendarSetRepo {
+	return &fakeCalendarSetRepo{
+		byID:   map[string]domain.CalendarSet{},
+		owners: map[string]string{},
+	}
+}
+
+func (r *fakeCalendarSetRepo) Create(_ context.Context, userID string, s domain.CalendarSet) (domain.CalendarSet, error) {
+	if s.ID == "" {
+		s.ID = newID()
+	}
+	r.byID[s.ID] = s
+	r.owners[s.ID] = userID
+	r.order = append(r.order, s.ID)
+	return s, nil
+}
+
+func (r *fakeCalendarSetRepo) GetByID(_ context.Context, id string) (domain.CalendarSet, string, error) {
+	s, ok := r.byID[id]
+	if !ok {
+		return domain.CalendarSet{}, "", domain.ErrNotFound
+	}
+	userID := r.owners[id]
+	return s, userID, nil
+}
+
+func (r *fakeCalendarSetRepo) ListByUser(_ context.Context, userID string) ([]domain.CalendarSet, error) {
+	out := []domain.CalendarSet{}
+	for _, id := range r.order {
+		if s, ok := r.byID[id]; ok && r.owners[id] == userID {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeCalendarSetRepo) Update(_ context.Context, s domain.CalendarSet) error {
+	r.byID[s.ID] = s
+	return nil
+}
+
+func (r *fakeCalendarSetRepo) Delete(_ context.Context, id string) error {
+	delete(r.byID, id)
+	delete(r.owners, id)
+	return nil
+}
+
+var _ port.CalendarSetRepo = (*fakeCalendarSetRepo)(nil)

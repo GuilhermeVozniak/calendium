@@ -30,6 +30,8 @@ type calFixture struct {
 	accounts  *fakeAccountRepo
 	calendars *fakeCalendarRepo
 	events    *fakeEventRepo
+	templates *fakeEventTemplateRepo
+	sets      *fakeCalendarSetRepo
 	provider  *fakeCalendarProvider
 	clock     *fakeClock
 }
@@ -61,18 +63,23 @@ func newCalFixture(t *testing.T) *calFixture {
 	}
 
 	events := newEventRepo()
+	templates := newEventTemplateRepo()
+	sets := newCalendarSetRepo()
 	provider := newCalendarProvider()
 
 	svc := NewCalendarService(CalendarServiceDeps{
+		Subscriptions:     newSubscriptionRepo(),
 		Accounts:          accounts,
 		Calendars:         calendars,
 		Events:            events,
+		Templates:         templates,
+		Sets:              sets,
 		CalendarProviders: map[domain.Provider]port.CalendarProvider{domain.ProviderGoogle: provider},
 		OAuth:             map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
 		Clock:             clock,
 		SelfHosted:        true,
 	})
-	return &calFixture{svc, accounts, calendars, events, provider, clock}
+	return &calFixture{svc, accounts, calendars, events, templates, sets, provider, clock}
 }
 
 // seedEvent stores an event directly into the fixture's event mirror (via
@@ -1089,5 +1096,367 @@ func TestCalendarPaywall(t *testing.T) {
 	// None of the above should have reached a repo write.
 	if len(calendars.byID) != 0 || len(events.byID) != 0 {
 		t.Fatal("paywall allowed a repo write")
+	}
+}
+
+// --- Event Template tests ----
+
+func TestEventTemplateList(t *testing.T) {
+	ctx := context.Background()
+	f := newCalFixture(t)
+
+	// Create templates for different users
+	t1, _ := f.svc.CreateEventTemplate(ctx, "u1", domain.EventTemplateInput{
+		Name: "Meeting", Title: "Team Meeting", DurationMinutes: 60,
+	})
+	t2, _ := f.svc.CreateEventTemplate(ctx, "u1", domain.EventTemplateInput{
+		Name: "Standup", Title: "Daily Standup", DurationMinutes: 15,
+	})
+	f.svc.CreateEventTemplate(ctx, "u2", domain.EventTemplateInput{
+		Name: "Other", Title: "Other User's", DurationMinutes: 30,
+	})
+
+	result, err := f.svc.ListEventTemplates(ctx, "u1")
+	if err != nil {
+		t.Fatalf("ListEventTemplates failed: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 templates for u1, got %d", len(result))
+	}
+	if result[0].ID != t1.ID || result[1].ID != t2.ID {
+		t.Fatalf("templates mismatch")
+	}
+}
+
+func TestEventTemplateCreate(t *testing.T) {
+	type testcase struct {
+		name      string
+		userID    string
+		input     domain.EventTemplateInput
+		wantErr   bool
+		wantErrIs error
+	}
+	tests := []testcase{
+		{
+			name:   "valid template with defaults",
+			userID: "u1",
+			input: domain.EventTemplateInput{
+				Name: "Meeting", Title: "Team Meeting",
+			},
+			wantErr: false,
+		},
+		{
+			name:   "default duration to 30",
+			userID: "u1",
+			input: domain.EventTemplateInput{
+				Name: "Quick", Title: "Quick Call", DurationMinutes: 0,
+			},
+			wantErr: false,
+		},
+		{
+			name:   "empty name validation",
+			userID: "u1",
+			input: domain.EventTemplateInput{
+				Name: "  ", Title: "Test",
+			},
+			wantErr:   true,
+			wantErrIs: domain.ErrValidation,
+		},
+		{
+			name:   "invalid calendar id",
+			userID: "u1",
+			input: domain.EventTemplateInput{
+				Name: "Test", Title: "Test", CalendarID: ptr("unknown-cal"),
+			},
+			wantErr:   true,
+			wantErrIs: domain.ErrNotFound,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			f := newCalFixture(t)
+
+			result, err := f.svc.CreateEventTemplate(ctx, tc.userID, tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tc.wantErrIs != nil && !errors.Is(err, tc.wantErrIs) {
+					t.Fatalf("err = %v, want %v", err, tc.wantErrIs)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("CreateEventTemplate failed: %v", err)
+				}
+				if result.Name != strings.TrimSpace(tc.input.Name) {
+					t.Fatalf("name mismatch: got %q, want %q", result.Name, strings.TrimSpace(tc.input.Name))
+				}
+				if tc.input.DurationMinutes == 0 && result.DurationMinutes != 30 {
+					t.Fatalf("expected default duration 30, got %d", result.DurationMinutes)
+				}
+				if result.UsageCount != 0 {
+					t.Fatalf("expected UsageCount=0, got %d", result.UsageCount)
+				}
+			}
+		})
+	}
+}
+
+func TestEventTemplateUpdate(t *testing.T) {
+	ctx := context.Background()
+	f := newCalFixture(t)
+
+	// Create a template
+	created, _ := f.svc.CreateEventTemplate(ctx, "u1", domain.EventTemplateInput{
+		Name: "Original", Title: "Original Title", DurationMinutes: 30,
+	})
+
+	// Update it
+	updated, err := f.svc.UpdateEventTemplate(ctx, "u1", created.ID, domain.EventTemplateInput{
+		Name: "Updated", Title: "Updated Title", DurationMinutes: 60,
+	})
+	if err != nil {
+		t.Fatalf("UpdateEventTemplate failed: %v", err)
+	}
+	if updated.Name != "Updated" || updated.Title != "Updated Title" || updated.DurationMinutes != 60 {
+		t.Fatalf("update failed")
+	}
+	if updated.UsageCount != 0 {
+		t.Fatalf("expected UsageCount preserved as 0")
+	}
+
+	// Try to update another user's template
+	_, err = f.svc.UpdateEventTemplate(ctx, "u2", created.ID, domain.EventTemplateInput{
+		Name: "Hijacked", Title: "Hijacked", DurationMinutes: 15,
+	})
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for other user's template, got %v", err)
+	}
+}
+
+func TestEventTemplateDelete(t *testing.T) {
+	ctx := context.Background()
+	f := newCalFixture(t)
+
+	created, _ := f.svc.CreateEventTemplate(ctx, "u1", domain.EventTemplateInput{
+		Name: "ToDelete", Title: "Delete Me", DurationMinutes: 30,
+	})
+
+	// Delete it
+	err := f.svc.DeleteEventTemplate(ctx, "u1", created.ID)
+	if err != nil {
+		t.Fatalf("DeleteEventTemplate failed: %v", err)
+	}
+
+	// Verify it's gone
+	_, err = f.svc.ListEventTemplates(ctx, "u1")
+	if err != nil {
+		t.Fatalf("ListEventTemplates failed: %v", err)
+	}
+
+	// Try to delete another user's template
+	created2, _ := f.svc.CreateEventTemplate(ctx, "u1", domain.EventTemplateInput{
+		Name: "Another", Title: "Another", DurationMinutes: 30,
+	})
+	err = f.svc.DeleteEventTemplate(ctx, "u2", created2.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestUseEventTemplate(t *testing.T) {
+	ctx := context.Background()
+	f := newCalFixture(t)
+
+	created, _ := f.svc.CreateEventTemplate(ctx, "u1", domain.EventTemplateInput{
+		Name: "Template", Title: "Test", DurationMinutes: 30,
+	})
+
+	// Use it
+	err := f.svc.UseEventTemplate(ctx, "u1", created.ID)
+	if err != nil {
+		t.Fatalf("UseEventTemplate failed: %v", err)
+	}
+
+	// Verify usage count incremented
+	templates, _ := f.svc.ListEventTemplates(ctx, "u1")
+	if len(templates) != 1 || templates[0].UsageCount != 1 {
+		t.Fatalf("expected UsageCount=1 after use")
+	}
+
+	// Use it again
+	f.svc.UseEventTemplate(ctx, "u1", created.ID)
+	templates, _ = f.svc.ListEventTemplates(ctx, "u1")
+	if templates[0].UsageCount != 2 {
+		t.Fatalf("expected UsageCount=2 after second use")
+	}
+
+	// Try to use another user's template
+	err = f.svc.UseEventTemplate(ctx, "u2", created.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for other user's template, got %v", err)
+	}
+}
+
+// --- Calendar Set tests ----
+
+func TestCalendarSetList(t *testing.T) {
+	ctx := context.Background()
+	f := newCalFixture(t)
+
+	// Ensure cal1 is in user's calendars
+	f.calendars.order = []string{"cal1"}
+
+	// Create sets for different users
+	s1, _ := f.svc.CreateCalendarSet(ctx, "u1", domain.CalendarSetInput{
+		Name: "Work", CalendarIDs: []string{"cal1"},
+	})
+	s2, _ := f.svc.CreateCalendarSet(ctx, "u1", domain.CalendarSetInput{
+		Name: "Personal", CalendarIDs: []string{},
+	})
+	f.svc.CreateCalendarSet(ctx, "u2", domain.CalendarSetInput{
+		Name: "Other", CalendarIDs: []string{},
+	})
+
+	result, err := f.svc.ListCalendarSets(ctx, "u1")
+	if err != nil {
+		t.Fatalf("ListCalendarSets failed: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 sets for u1, got %d", len(result))
+	}
+	if result[0].ID != s1.ID || result[1].ID != s2.ID {
+		t.Fatalf("sets mismatch")
+	}
+}
+
+func TestCalendarSetCreate(t *testing.T) {
+	type testcase struct {
+		name      string
+		userID    string
+		input     domain.CalendarSetInput
+		wantErr   bool
+		wantErrIs error
+	}
+	tests := []testcase{
+		{
+			name:   "valid set with calendar",
+			userID: "u1",
+			input: domain.CalendarSetInput{
+				Name: "Work", CalendarIDs: []string{"cal1"},
+			},
+			wantErr: false,
+		},
+		{
+			name:   "empty name validation",
+			userID: "u1",
+			input: domain.CalendarSetInput{
+				Name: "  ", CalendarIDs: []string{},
+			},
+			wantErr:   true,
+			wantErrIs: domain.ErrValidation,
+		},
+		{
+			name:   "unknown calendar id",
+			userID: "u1",
+			input: domain.CalendarSetInput{
+				Name: "Bad", CalendarIDs: []string{"unknown"},
+			},
+			wantErr:   true,
+			wantErrIs: domain.ErrValidation,
+		},
+		{
+			name:   "duplicate calendar ids de-duped",
+			userID: "u1",
+			input: domain.CalendarSetInput{
+				Name: "Deduped", CalendarIDs: []string{"cal1", "cal1", "cal1"},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			f := newCalFixture(t)
+			f.calendars.order = []string{"cal1"}
+
+			result, err := f.svc.CreateCalendarSet(ctx, tc.userID, tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tc.wantErrIs != nil && !errors.Is(err, tc.wantErrIs) {
+					t.Fatalf("err = %v, want %v", err, tc.wantErrIs)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("CreateCalendarSet failed: %v", err)
+				}
+				if result.Name != strings.TrimSpace(tc.input.Name) {
+					t.Fatalf("name mismatch")
+				}
+				if strings.Contains(tc.name, "Deduped") {
+					if len(result.CalendarIDs) != 1 {
+						t.Fatalf("expected deduped to have 1 calendar, got %d", len(result.CalendarIDs))
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCalendarSetUpdate(t *testing.T) {
+	ctx := context.Background()
+	f := newCalFixture(t)
+	f.calendars.order = []string{"cal1"}
+
+	created, _ := f.svc.CreateCalendarSet(ctx, "u1", domain.CalendarSetInput{
+		Name: "Original", CalendarIDs: []string{"cal1"},
+	})
+
+	updated, err := f.svc.UpdateCalendarSet(ctx, "u1", created.ID, domain.CalendarSetInput{
+		Name:        "Updated",
+		CalendarIDs: []string{},
+	})
+	if err != nil {
+		t.Fatalf("UpdateCalendarSet failed: %v", err)
+	}
+	if updated.Name != "Updated" || len(updated.CalendarIDs) != 0 {
+		t.Fatalf("update failed")
+	}
+
+	// Try to update another user's set
+	_, err = f.svc.UpdateCalendarSet(ctx, "u2", created.ID, domain.CalendarSetInput{
+		Name: "Hijacked", CalendarIDs: []string{},
+	})
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestCalendarSetDelete(t *testing.T) {
+	ctx := context.Background()
+	f := newCalFixture(t)
+	f.calendars.order = []string{"cal1"}
+
+	created, _ := f.svc.CreateCalendarSet(ctx, "u1", domain.CalendarSetInput{
+		Name: "ToDelete", CalendarIDs: []string{"cal1"},
+	})
+
+	err := f.svc.DeleteCalendarSet(ctx, "u1", created.ID)
+	if err != nil {
+		t.Fatalf("DeleteCalendarSet failed: %v", err)
+	}
+
+	// Try to delete another user's set
+	created2, _ := f.svc.CreateCalendarSet(ctx, "u1", domain.CalendarSetInput{
+		Name: "Another", CalendarIDs: []string{},
+	})
+	err = f.svc.DeleteCalendarSet(ctx, "u2", created2.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }

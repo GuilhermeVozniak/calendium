@@ -131,6 +131,8 @@ func run(logger *slog.Logger) error {
 		Accounts:          store.Accounts(),
 		Calendars:         store.Calendars(),
 		Events:            store.Events(),
+		Templates:         store.EventTemplates(),
+		Sets:              store.CalendarSets(),
 		CalendarProviders: calendarProviders,
 		OAuth:             oauth,
 		Clock:             clock,
