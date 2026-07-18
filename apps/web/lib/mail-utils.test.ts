@@ -11,6 +11,7 @@ import {
   formatOptionTime,
   initials,
   onMailCommand,
+  orderSplits,
   participantsLine,
   queueMailCommand,
   reminderOptions,
@@ -216,6 +217,34 @@ describe('zeroCutoffOptions', () => {
       expect(option.when.getTime()).toBeLessThan(now.getTime());
     }
     expect(options[0]!.when.toISOString()).toBe('2026-07-10T12:00:00.000Z');
+  });
+});
+
+describe('orderSplits', () => {
+  const defaults = [
+    { value: 'important', label: 'Important' },
+    { value: 'vip', label: 'VIP' },
+    { value: 'team', label: 'Team' },
+  ] as const;
+
+  it('returns defaults for an empty preference', () => {
+    expect(orderSplits(defaults, []).map((s) => s.value)).toEqual(['important', 'vip', 'team']);
+  });
+
+  it('puts preferred splits first, in preference order', () => {
+    expect(orderSplits(defaults, ['team', 'important']).map((s) => s.value)).toEqual([
+      'team',
+      'important',
+      'vip',
+    ]);
+  });
+
+  it('ignores unknown splits in the preference', () => {
+    expect(orderSplits(defaults, ['calendar', 'vip'] as never).map((s) => s.value)).toEqual([
+      'vip',
+      'important',
+      'team',
+    ]);
   });
 });
 

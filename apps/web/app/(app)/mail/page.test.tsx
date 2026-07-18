@@ -120,6 +120,11 @@ vi.mock('@/lib/use-instance', () => ({
   useInstance: () => ({ data: { features: { ai: false } } }),
 }));
 
+vi.mock('@/lib/prefs-data', () => ({
+  usePrefs: () => ({ data: { prefs: { splitOrder: [] } }, isLoading: false }),
+  useUpdatePrefs: () => vi.fn().mockResolvedValue(undefined),
+}));
+
 const openComposeMock = vi.fn();
 vi.mock('@/components/app/compose', () => ({
   useCompose: () => ({ openCompose: openComposeMock }),

@@ -5,6 +5,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format, formatDistanceToNow } from 'date-fns';
 import {
   Bell,
+  ChevronDown,
+  ChevronUp,
   CreditCard,
   Crown,
   ExternalLink,
@@ -67,6 +69,8 @@ import {
   setVipSendersApi,
   startConnect,
 } from '@/lib/settings-data';
+import { DEFAULT_SPLITS, orderSplits } from '@/lib/mail-utils';
+import { usePrefs, useUpdatePrefs } from '@/lib/prefs-data';
 import { useInstance } from '@/lib/use-instance';
 import {
   disableWebPush,
@@ -78,12 +82,13 @@ import { cn } from '@/lib/utils';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-type SettingsTab = 'accounts' | 'snippets' | 'appearance' | 'notifications' | 'billing';
+type SettingsTab = 'accounts' | 'snippets' | 'appearance' | 'mailbox' | 'notifications' | 'billing';
 
 const KNOWN_TABS: SettingsTab[] = [
   'accounts',
   'snippets',
   'appearance',
+  'mailbox',
   'notifications',
   'billing',
 ];
@@ -99,6 +104,7 @@ export default function SettingsPage() {
       'accounts',
       'snippets',
       'appearance',
+      'mailbox',
       ...(pushEnabled ? (['notifications'] as SettingsTab[]) : []),
       ...(billingEnabled ? (['billing'] as SettingsTab[]) : []),
     ],
@@ -143,7 +149,7 @@ export default function SettingsPage() {
       <div className="mx-auto max-w-3xl px-6 py-8">
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Accounts, snippets, appearance{pushEnabled ? ', notifications' : ''}
+          Accounts, snippets, appearance, mailbox{pushEnabled ? ', notifications' : ''}
           {billingEnabled ? ', and billing' : ''}.
         </p>
 
@@ -156,6 +162,7 @@ export default function SettingsPage() {
             <TabsTrigger value="accounts">Accounts</TabsTrigger>
             <TabsTrigger value="snippets">Snippets</TabsTrigger>
             <TabsTrigger value="appearance">Appearance</TabsTrigger>
+            <TabsTrigger value="mailbox">Mailbox</TabsTrigger>
             {pushEnabled && <TabsTrigger value="notifications">Notifications</TabsTrigger>}
             {billingEnabled && <TabsTrigger value="billing">Billing</TabsTrigger>}
           </TabsList>
@@ -167,6 +174,9 @@ export default function SettingsPage() {
           </TabsContent>
           <TabsContent value="appearance" className="mt-4">
             <AppearanceSection />
+          </TabsContent>
+          <TabsContent value="mailbox" className="mt-4">
+            <MailboxSection />
           </TabsContent>
           {pushEnabled && (
             <TabsContent value="notifications" className="mt-4">
@@ -624,6 +634,99 @@ function AppearanceSection() {
             </button>
           ))}
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Mailbox (Split order)
+// ---------------------------------------------------------------------------
+
+function MailboxSection() {
+  const prefsQuery = usePrefs();
+  const updatePrefs = useUpdatePrefs();
+  const [order, setOrder] = React.useState<string[]>([]);
+
+  // Initialize order from prefs
+  React.useEffect(() => {
+    if (prefsQuery.data?.prefs.splitOrder) {
+      setOrder(prefsQuery.data.prefs.splitOrder);
+    }
+  }, [prefsQuery.data]);
+
+  const splits = React.useMemo(
+    () => orderSplits(DEFAULT_SPLITS, order as any),
+    [order]
+  );
+
+  const moveUp = (index: number) => {
+    if (index <= 0) return;
+    const newOrder = [...splits];
+    [newOrder[index], newOrder[index - 1]] = [newOrder[index - 1]!, newOrder[index]!];
+    const nextOrder = newOrder.map((s) => s.value);
+    setOrder(nextOrder);
+    void updatePrefs({ splitOrder: nextOrder as any });
+  };
+
+  const moveDown = (index: number) => {
+    if (index >= splits.length - 1) return;
+    const newOrder = [...splits];
+    [newOrder[index], newOrder[index + 1]] = [newOrder[index + 1]!, newOrder[index]!];
+    const nextOrder = newOrder.map((s) => s.value);
+    setOrder(nextOrder);
+    void updatePrefs({ splitOrder: nextOrder as any });
+  };
+
+  if (prefsQuery.isLoading) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Split order</CardTitle>
+          <CardDescription>Reorder your inbox splits — the first split is your landing tab.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2">
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-12 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Split order</CardTitle>
+        <CardDescription>Reorder your inbox splits — the first split is your landing tab.</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        {splits.map((split, index) => (
+          <div key={split.value} className="flex items-center gap-2 rounded-lg border p-3">
+            <span className="text-sm font-medium">{split.label}</span>
+            <div className="ml-auto flex gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8"
+                onClick={() => moveUp(index)}
+                disabled={index === 0}
+                aria-label={`Move ${split.label} up`}
+              >
+                <ChevronUp className="size-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8"
+                onClick={() => moveDown(index)}
+                disabled={index === splits.length - 1}
+                aria-label={`Move ${split.label} down`}
+              >
+                <ChevronDown className="size-4" />
+              </Button>
+            </div>
+          </div>
+        ))}
       </CardContent>
     </Card>
   );

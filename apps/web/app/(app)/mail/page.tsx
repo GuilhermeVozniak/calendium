@@ -19,9 +19,11 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { getApiClient } from '@/lib/api';
 import { sharedLabelIds } from '@/lib/mail-helpers';
 import {
+  DEFAULT_SPLITS,
   formatListTime,
   formatOptionTime,
   onMailCommand,
+  orderSplits,
   participantsLine,
   reminderOptions,
   snoozeOptions,
@@ -29,20 +31,11 @@ import {
   type MailboxView,
   type MailCommand,
 } from '@/lib/mail-utils';
+import { usePrefs } from '@/lib/prefs-data';
 import { useSelfEmails } from '@/lib/use-identity';
 import { MOD_KEY, useShortcuts } from '@/lib/shortcuts';
 import { useDraftActions, useDrafts, useLabels, useMailActions, useThreadList } from '@/lib/use-mail';
 import { cn } from '@/lib/utils';
-
-const SPLITS: { value: InboxSplit; label: string }[] = [
-  { value: 'important', label: 'Important' },
-  { value: 'vip', label: 'VIP' },
-  { value: 'team', label: 'Team' },
-  { value: 'calendar', label: 'Calendar' },
-  { value: 'news', label: 'News' },
-  { value: 'social', label: 'Social' },
-  { value: 'other', label: 'Other' },
-];
 
 const VIEW_TITLES: Record<MailboxView, string> = {
   starred: 'Starred',
@@ -52,7 +45,7 @@ const VIEW_TITLES: Record<MailboxView, string> = {
 };
 
 function isSplit(value: string | null): value is InboxSplit {
-  return SPLITS.some((s) => s.value === value);
+  return DEFAULT_SPLITS.some((s) => s.value === value);
 }
 
 function isView(value: string | null): value is MailboxView {
@@ -94,6 +87,11 @@ function MailClient() {
 
   const isDrafts = view === 'drafts';
   const selfEmails = useSelfEmails();
+  const prefs = usePrefs();
+  const splits = React.useMemo(
+    () => orderSplits(DEFAULT_SPLITS, prefs.data?.prefs.splitOrder ?? []),
+    [prefs.data]
+  );
   const { data, isLoading, isError } = useThreadList({
     split: view ? undefined : split,
     view: isDrafts ? undefined : (view ?? undefined),
@@ -519,7 +517,7 @@ function MailClient() {
           ) : (
             <Tabs value={split} onValueChange={(value) => navigate({ split: value as InboxSplit, view: null, t: null })}>
               <TabsList className="h-8">
-                {SPLITS.map((s) => (
+                {splits.map((s) => (
                   <TabsTrigger key={s.value} value={s.value} className="px-2.5 text-xs">
                     {s.label}
                   </TabsTrigger>

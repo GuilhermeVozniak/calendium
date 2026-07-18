@@ -8,9 +8,26 @@ import { getApiClient } from '@/lib/api';
 import { DEMO_MODE } from '@/lib/demo';
 import type { DataSource } from '@/lib/use-mail';
 
-// Demo-only in-memory prefs store (honesty policy: reached only when
+// Demo-only prefs store (honesty policy: reached only when
 // DEMO_MODE is on and the real API is unreachable).
-let demoPrefs: UserPrefs = { splitOrder: [] };
+// Uses localStorage for persistence across page reloads in tests/demos.
+function getDemoPrefs(): UserPrefs {
+  if (typeof window === 'undefined') return { splitOrder: [] };
+  const stored = window.localStorage.getItem('calendium.demo-prefs');
+  if (stored) {
+    try {
+      return JSON.parse(stored);
+    } catch {
+      return { splitOrder: [] };
+    }
+  }
+  return { splitOrder: [] };
+}
+
+function setDemoPrefs(prefs: UserPrefs): void {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem('calendium.demo-prefs', JSON.stringify(prefs));
+}
 
 export interface PrefsResult {
   prefs: UserPrefs;
@@ -25,7 +42,7 @@ export function usePrefs() {
       try {
         return { prefs: await getApiClient().getPrefs(), source: 'api' };
       } catch (err) {
-        if (DEMO_MODE) return { prefs: demoPrefs, source: 'demo' };
+        if (DEMO_MODE) return { prefs: getDemoPrefs(), source: 'demo' };
         throw err;
       }
     },
@@ -39,7 +56,7 @@ export function useUpdatePrefs() {
     queryClient.setQueryData<PrefsResult | undefined>(['prefs'], (data) =>
       data ? { ...data, prefs } : { prefs, source: 'api' }
     );
-    if (DEMO_MODE) demoPrefs = prefs;
+    if (DEMO_MODE) setDemoPrefs(prefs);
     try {
       await getApiClient().updatePrefs(prefs);
     } catch (err) {

@@ -1,8 +1,42 @@
-import type { EmailAddress, Thread } from '@calendium/shared';
+import type { EmailAddress, InboxSplit, Thread } from '@calendium/shared';
 import { addDays, addHours, format, isThisYear, isToday, nextMonday, nextSaturday, set, subDays, subMonths } from 'date-fns';
 
 /** Non-split mailbox views shown in the left rail. */
 export type MailboxView = 'starred' | 'snoozed' | 'sent' | 'drafts';
+
+// ---------------------------------------------------------------------------
+// Split ordering
+// ---------------------------------------------------------------------------
+
+export interface SplitTab {
+  value: InboxSplit;
+  label: string;
+}
+
+/**
+ * Orders split tabs by the user's saved preference; splits missing from the
+ * preference keep their default relative order after the preferred ones.
+ * An empty preference returns the default order unchanged.
+ */
+export function orderSplits(
+  defaults: readonly SplitTab[],
+  preferred: readonly InboxSplit[]
+): SplitTab[] {
+  const byValue = new Map(defaults.map((s) => [s.value, s]));
+  const head = preferred.map((v) => byValue.get(v)).filter((s): s is SplitTab => s !== undefined);
+  const headSet = new Set(head.map((s) => s.value));
+  return [...head, ...defaults.filter((s) => !headSet.has(s.value))];
+}
+
+export const DEFAULT_SPLITS: SplitTab[] = [
+  { value: 'important', label: 'Important' },
+  { value: 'vip', label: 'VIP' },
+  { value: 'team', label: 'Team' },
+  { value: 'calendar', label: 'Calendar' },
+  { value: 'news', label: 'News' },
+  { value: 'social', label: 'Social' },
+  { value: 'other', label: 'Other' },
+];
 
 // ---------------------------------------------------------------------------
 // Time formatting (Superhuman-dense list times)
