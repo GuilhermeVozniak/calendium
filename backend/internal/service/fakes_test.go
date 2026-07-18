@@ -2121,3 +2121,67 @@ func (r *fakeUserSettingsRepo) Upsert(_ context.Context, s domain.UserSettings) 
 }
 
 var _ port.UserSettingsRepo = (*fakeUserSettingsRepo)(nil)
+
+// --- reaction repo -----------------------------------------------------------
+
+// fakeReactionRepo mirrors the real postgres adapter's semantics: Create is
+// idempotent on (message_id, user_id, emoji) — re-reacting returns the
+// existing row's stored Delivery/CreatedAt rather than the caller's new
+// values (matching the ON CONFLICT DO UPDATE SET emoji = emoji no-op in
+// reaction.go, which never rewrites Delivery on a duplicate Create).
+// DeleteByEmoji reports domain.ErrNotFound when nothing matched.
+type fakeReactionRepo struct {
+	byID  map[string]domain.Reaction
+	order []string
+}
+
+func newReactionRepo() *fakeReactionRepo {
+	return &fakeReactionRepo{byID: map[string]domain.Reaction{}}
+}
+
+func (r *fakeReactionRepo) Create(_ context.Context, react domain.Reaction) (domain.Reaction, error) {
+	for _, id := range r.order {
+		existing := r.byID[id]
+		if existing.MessageID == react.MessageID && existing.UserID == react.UserID && existing.Emoji == react.Emoji {
+			return existing, nil
+		}
+	}
+	if react.ID == "" {
+		react.ID = newID()
+	}
+	if react.Delivery == "" {
+		react.Delivery = "local"
+	}
+	r.byID[react.ID] = react
+	r.order = append(r.order, react.ID)
+	return react, nil
+}
+
+func (r *fakeReactionRepo) ListByMessages(_ context.Context, messageIDs []string) (map[string][]domain.Reaction, error) {
+	want := map[string]struct{}{}
+	for _, id := range messageIDs {
+		want[id] = struct{}{}
+	}
+	out := map[string][]domain.Reaction{}
+	for _, id := range r.order {
+		react := r.byID[id]
+		if _, ok := want[react.MessageID]; ok {
+			out[react.MessageID] = append(out[react.MessageID], react)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeReactionRepo) DeleteByEmoji(_ context.Context, messageID, userID, emoji string) error {
+	for i, id := range r.order {
+		react := r.byID[id]
+		if react.MessageID == messageID && react.UserID == userID && react.Emoji == emoji {
+			delete(r.byID, id)
+			r.order = append(r.order[:i:i], r.order[i+1:]...)
+			return nil
+		}
+	}
+	return domain.ErrNotFound
+}
+
+var _ port.ReactionRepo = (*fakeReactionRepo)(nil)

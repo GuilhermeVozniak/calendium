@@ -167,6 +167,24 @@ func ownedThread(ctx context.Context, threads port.ThreadRepo, accounts port.Acc
 	return t, a, nil
 }
 
+// ownedMessage loads a message and enforces ownership via its account's
+// UserID; foreign rows are indistinguishable from missing ones (404, never
+// 403).
+func ownedMessage(ctx context.Context, messages port.MessageRepo, accounts port.AccountRepo, userID, messageID string) (domain.Message, domain.ConnectedAccount, error) {
+	m, err := messages.GetByID(ctx, messageID)
+	if err != nil {
+		return domain.Message{}, domain.ConnectedAccount{}, err
+	}
+	a, err := accounts.GetByID(ctx, m.AccountID)
+	if err != nil {
+		return domain.Message{}, domain.ConnectedAccount{}, err
+	}
+	if a.UserID != userID {
+		return domain.Message{}, domain.ConnectedAccount{}, domain.ErrNotFound
+	}
+	return m, a, nil
+}
+
 func ownedDraft(ctx context.Context, drafts port.DraftRepo, accounts port.AccountRepo, userID, draftID string) (domain.Draft, domain.ConnectedAccount, error) {
 	d, err := drafts.GetByID(ctx, draftID)
 	if err != nil {
