@@ -3,12 +3,12 @@
 import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { addDays, addMinutes, format, isSameDay, startOfDay, startOfWeek } from 'date-fns';
-import { CalendarDays, Plus, Video, X } from 'lucide-react';
+import { CalendarDays, Plus, X } from 'lucide-react';
 
 import type { Event, EventInput } from '@calendium/shared';
-import { detectConference, isJoinable } from '@calendium/shared';
 
 import { EventDialog } from '@/components/app/event-dialog';
+import { JoinButton } from '@/components/app/calendar/join-button';
 import { eventTouchesDay, TimeGrid } from '@/components/app/calendar/time-grid';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -18,18 +18,6 @@ import { WEEK_OPTS } from '@/lib/calendar-views';
 import { cn } from '@/lib/utils';
 
 const STORAGE_KEY = 'calendium.calendarPeek';
-
-/** Human label per detected conference provider — a small local stand-in for
- *  the shared `JoinButton` (Task 13), which hadn't landed yet when this panel
- *  was built. Replace this inline affordance with `<JoinButton>` once it's
- *  available; the provider taxonomy here intentionally matches its contract. */
-const PROVIDER_LABEL: Record<string, string> = {
-  meet: 'Google Meet',
-  zoom: 'Zoom',
-  teams: 'Teams',
-  webex: 'Webex',
-  other: 'video call',
-};
 
 /** Reads the persisted open/closed preference (SSR-safe; defaults closed). */
 export function readStoredCalendarPeekOpen(): boolean {
@@ -139,10 +127,6 @@ export function CalendarPeek({ open, onOpenChange }: CalendarPeekProps) {
     );
   }, [events, now]);
 
-  const nextConference = nextEvent ? detectConference(nextEvent) : null;
-  const nextJoinable =
-    !!nextEvent && !!nextConference && isJoinable(now, new Date(nextEvent.start), new Date(nextEvent.end));
-
   const defaultCalendarId = React.useMemo(() => {
     const c =
       calendars.find((x) => x.isPrimary && x.canWrite) ??
@@ -218,17 +202,9 @@ export function CalendarPeek({ open, onOpenChange }: CalendarPeekProps) {
                 {format(new Date(nextEvent.start), 'h:mm a')} –{' '}
                 {format(new Date(nextEvent.end), 'h:mm a')}
               </p>
-              {nextConference && nextJoinable && (
-                <a
-                  href={nextConference.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="bg-primary text-primary-foreground mt-2 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium"
-                >
-                  <Video className="size-3.5" />
-                  Join {PROVIDER_LABEL[nextConference.provider] ?? 'call'}
-                </a>
-              )}
+              <div className="mt-2">
+                <JoinButton event={nextEvent} now={now} />
+              </div>
             </div>
           )}
 

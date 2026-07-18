@@ -173,7 +173,8 @@ describe('CalendarPeek', () => {
     ]);
     renderPeek();
     const card = await screen.findByTestId('peek-next-event');
-    expect(within(card).getByRole('link', { name: /join/i })).toBeInTheDocument();
+    const joinButton = within(card).getByRole('button', { name: /join/i });
+    expect(joinButton).toHaveAttribute('data-joinable', 'true');
   });
 
   it('hides the Join button when the conference event is not yet in its join window', async () => {
@@ -189,7 +190,10 @@ describe('CalendarPeek', () => {
     ]);
     renderPeek();
     const card = await screen.findByTestId('peek-next-event');
-    expect(within(card).queryByRole('link', { name: /join/i })).not.toBeInTheDocument();
+    // The shared JoinButton renders for any detected conference but is only
+    // "live" (solid variant) inside the join window.
+    const joinButton = within(card).getByRole('button', { name: /join/i });
+    expect(joinButton).toHaveAttribute('data-joinable', 'false');
   });
 
   it('toggles between Day and Week modes, revealing a 7-day strip in Week mode', async () => {
