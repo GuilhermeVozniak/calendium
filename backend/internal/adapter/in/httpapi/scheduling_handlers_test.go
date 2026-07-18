@@ -575,7 +575,7 @@ func TestSchedulingSettings_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestSchedulingSettings_InvalidTimeZoneIs422(t *testing.T) {
+func TestSchedulingSettings_InvalidTimeZoneIs400(t *testing.T) {
 	h := newHarness(t)
 	h.settings.updateErr = fmt.Errorf("%w: invalid time zone %q", domain.ErrValidation, "Not/AZone")
 

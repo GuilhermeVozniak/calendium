@@ -322,6 +322,149 @@ func TestBookUnknownOrInactiveLink(t *testing.T) {
 			t.Fatalf("err = %v, want ErrValidation", err)
 		}
 	})
+
+	// "" and "Local" are silently accepted by time.LoadLocation alone (as
+	// UTC and the process's own OS zone respectively) despite not being
+	// genuine portable IANA zone names, so every site validating a
+	// caller-supplied time zone must reject them explicitly.
+	for _, tz := range []string{"Not/AZone", "", "Local"} {
+		t.Run("invalid invitee time zone "+tz, func(t *testing.T) {
+			f := newBookingFixture(t)
+			req := f.validBookingRequest(t)
+			req.InviteeTZ = tz
+			_, err := f.svc.Book(ctx, "intro-call", req)
+			if !errors.Is(err, domain.ErrValidation) {
+				t.Fatalf("err = %v, want ErrValidation for InviteeTZ %q", err, tz)
+			}
+		})
+	}
+}
+
+// TestBookRevalidatesDailyLimitAcrossFullDayNotJustSlot is a fail-first
+// regression test for MUST-FIX 1: Book's re-validation window used to equal
+// the requested slot itself, so DailyLimit's confirmedPerDay count only saw
+// bookings that happened to overlap that narrow window. A day already at
+// DailyLimit would then still accept a crafted request for a different,
+// non-overlapping slot later the same day.
+func TestBookRevalidatesDailyLimitAcrossFullDayNotJustSlot(t *testing.T) {
+	ctx := context.Background()
+	f := newBookingFixture(t)
+
+	l := f.link
+	l.DailyLimit = 1
+	f.links.byID[l.ID] = l
+
+	day := time.Date(2026, 8, 3, 9, 0, 0, 0, time.UTC)
+	existing, err := f.bookings.CreateHold(ctx, domain.Booking{
+		ID: "existing", LinkID: l.ID, Status: domain.BookingHold,
+		Start: day, End: day.Add(30 * time.Minute), CreatedAt: f.clock.now,
+	})
+	if err != nil {
+		t.Fatalf("seed existing hold: %v", err)
+	}
+	if err := f.bookings.Confirm(ctx, existing.ID, "seed-event"); err != nil {
+		t.Fatalf("confirm seed hold: %v", err)
+	}
+
+	req := port.BookingRequest{
+		Start:        day.Add(3 * time.Hour), // 12:00 UTC — doesn't overlap 09:00-09:30
+		InviteeName:  "Ivy Invitee",
+		InviteeEmail: "ivy@example.com",
+		InviteeTZ:    "America/New_York",
+	}
+	if _, err := f.svc.Book(ctx, "intro-call", req); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("err = %v, want ErrConflict (day already at DailyLimit)", err)
+	}
+}
+
+// TestBookRevalidatesBufferAcrossFullDayNotJustSlot is a fail-first
+// regression test for MUST-FIX 1: an owner event ending just before the
+// requested slot, whose BufferAfterMin padding reaches into the slot from
+// OUTSIDE the slot's own [start,end) window, used to never be fetched by the
+// narrow re-validation window and so never blocked the booking.
+func TestBookRevalidatesBufferAcrossFullDayNotJustSlot(t *testing.T) {
+	ctx := context.Background()
+	f := newBookingFixture(t)
+
+	l := f.link
+	l.BufferAfterMin = 30
+	f.links.byID[l.ID] = l
+
+	day := time.Date(2026, 8, 3, 9, 0, 0, 0, time.UTC)
+	if _, err := f.events.Upsert(ctx, domain.Event{
+		ID: "owner-evt", CalendarID: "cal1",
+		Start: day, End: day.Add(45 * time.Minute), // 09:00-09:45
+	}); err != nil {
+		t.Fatalf("seed owner event: %v", err)
+	}
+
+	req := port.BookingRequest{
+		// 10:00-10:30: the owner event's BufferAfterMin-padded end (09:45 +
+		// 30min = 10:15) overlaps this slot even though the event itself
+		// doesn't.
+		Start:        day.Add(time.Hour),
+		InviteeName:  "Ivy Invitee",
+		InviteeEmail: "ivy@example.com",
+		InviteeTZ:    "America/New_York",
+	}
+	if _, err := f.svc.Book(ctx, "intro-call", req); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("err = %v, want ErrConflict (buffer-after overlap)", err)
+	}
+}
+
+// TestBookStoresCanonicalInviteeEmail is a regression test for MINOR 3: a
+// display-name-wrapped invitee email ("Bob <bob@x.com>") is syntactically
+// valid per mail.ParseAddress but must never be stored or handed to the
+// provider/mail as-is — only the bare, lowercased address.
+func TestBookStoresCanonicalInviteeEmail(t *testing.T) {
+	ctx := context.Background()
+	f := newBookingFixture(t)
+	req := f.validBookingRequest(t)
+	req.InviteeEmail = "Ivy Invitee <IVY@Example.com>"
+
+	got, err := f.svc.Book(ctx, "intro-call", req)
+	if err != nil {
+		t.Fatalf("Book: %v", err)
+	}
+	if got.InviteeEmail != "ivy@example.com" {
+		t.Fatalf("InviteeEmail = %q, want bare lowercased address", got.InviteeEmail)
+	}
+	for _, e := range f.calProv.lastCreateInput.AttendeeEmails {
+		if e == req.InviteeEmail {
+			t.Fatalf("attendee list carries the raw display-name-wrapped input: %v", f.calProv.lastCreateInput.AttendeeEmails)
+		}
+	}
+	if len(f.mailProv.sent) != 1 || f.mailProv.sent[0].To[0].Email != "ivy@example.com" {
+		t.Fatalf("confirmation To = %+v, want bare lowercased address", f.mailProv.sent[0].To)
+	}
+}
+
+// TestBookDeletesOrphanedProviderEventOnConfirmFailure is a regression test
+// for MINOR 5: when the tx-confirm step (events.Upsert + bookings.Confirm)
+// fails after the provider event was already created, that provider event
+// must be best-effort deleted rather than left orphaned on the owner's
+// calendar.
+func TestBookDeletesOrphanedProviderEventOnConfirmFailure(t *testing.T) {
+	ctx := context.Background()
+	f := newBookingFixture(t)
+	req := f.validBookingRequest(t)
+
+	f.events.upsertErr = errors.New("db unavailable")
+
+	_, err := f.svc.Book(ctx, "intro-call", req)
+	if err == nil {
+		t.Fatal("Book: want error when the tx-confirm step fails")
+	}
+	if f.calProv.lastDeleteEventID != f.calProv.createdEvent.ProviderEventID {
+		t.Fatalf("provider DeleteEvent lastDeleteEventID = %q, want the orphaned event %q",
+			f.calProv.lastDeleteEventID, f.calProv.createdEvent.ProviderEventID)
+	}
+
+	end := req.Start.Add(30 * time.Minute)
+	holds, _ := f.bookings.ListActiveInRange(ctx, f.link.ID, req.Start, end)
+	if len(holds) != 0 {
+		t.Fatalf("active bookings after tx-confirm failure = %v, want none (hold cancelled)", holds)
+	}
 }
 
 func TestExpireHoldsSweep(t *testing.T) {

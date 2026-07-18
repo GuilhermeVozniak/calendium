@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"calendium/backend/internal/domain"
 	"calendium/backend/internal/port"
@@ -39,7 +38,7 @@ func (s *SettingsService) Get(ctx context.Context, userID string) (domain.UserSe
 // Update validates TimeZone (must be a loadable IANA zone) and every
 // WorkingHours window, then upserts.
 func (s *SettingsService) Update(ctx context.Context, userID string, in domain.UserSettings) (domain.UserSettings, error) {
-	if _, err := time.LoadLocation(in.TimeZone); err != nil {
+	if !validIANATimeZone(in.TimeZone) {
 		return domain.UserSettings{}, fmt.Errorf("%w: invalid time zone %q", domain.ErrValidation, in.TimeZone)
 	}
 	for _, w := range in.WorkingHours {

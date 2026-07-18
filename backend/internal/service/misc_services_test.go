@@ -759,16 +759,31 @@ func TestSettingsServiceUpdate_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestSettingsServiceUpdate_InvalidTimeZone covers time.LoadLocation
-// rejection: an unloadable zone name is a validation error, not persisted.
+// TestSettingsServiceUpdate_InvalidTimeZone covers time zone rejection: an
+// unloadable zone name is a validation error, not persisted — and so are ""
+// and "Local", which time.LoadLocation alone would silently accept (as UTC
+// and the process's own OS zone respectively) despite being ambiguous rather
+// than genuine portable IANA zone names.
 func TestSettingsServiceUpdate_InvalidTimeZone(t *testing.T) {
-	repo := newUserSettingsRepo()
-	svc := NewSettingsService(repo)
+	for _, tz := range []string{"Not/AZone", "", "Local"} {
+		t.Run(tz, func(t *testing.T) {
+			repo := newUserSettingsRepo()
+			svc := NewSettingsService(repo)
 
-	_, err := svc.Update(context.Background(), "u1", domain.UserSettings{TimeZone: "Not/AZone"})
-	if !errors.Is(err, domain.ErrValidation) {
-		t.Fatalf("err = %v, want ErrValidation", err)
+			_, err := svc.Update(context.Background(), "u1", domain.UserSettings{TimeZone: tz})
+			if !errors.Is(err, domain.ErrValidation) {
+				t.Fatalf("err = %v, want ErrValidation for TimeZone %q", err, tz)
+			}
+		})
 	}
+
+	t.Run("valid zone is accepted", func(t *testing.T) {
+		repo := newUserSettingsRepo()
+		svc := NewSettingsService(repo)
+		if _, err := svc.Update(context.Background(), "u1", domain.UserSettings{TimeZone: "America/New_York"}); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+	})
 }
 
 // TestSettingsServiceUpdate_InvalidWorkingHours covers AvailabilityWindow

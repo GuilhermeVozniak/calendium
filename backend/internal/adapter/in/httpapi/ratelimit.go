@@ -12,6 +12,14 @@ import (
 // the public (unauthenticated) endpoints; per-process by design — a
 // horizontal deployment multiplies the effective limit by replica count,
 // which is acceptable for M2.4.
+//
+// Deployment constraint: keys are derived from clientIP, i.e. r.RemoteAddr
+// only (see clientIP below) — no X-Forwarded-For/X-Real-IP support. This
+// assumes M2.4's deployment model where the API is directly exposed and
+// terminates its own TLS. Placing this behind a reverse proxy/load balancer
+// without adding trusted-proxy-aware IP extraction would make every request
+// arrive with the same RemoteAddr (the proxy's), collapsing all callers into
+// one shared bucket.
 type rateLimiter struct {
 	mu      sync.Mutex
 	perMin  float64

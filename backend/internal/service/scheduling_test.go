@@ -68,6 +68,7 @@ func newPollFixture(t *testing.T) *pollFixture {
 		Events:            events,
 		Polls:             polls,
 		Users:             users,
+		Tx:                newTxRunner(),
 		CalendarProviders: map[domain.Provider]port.CalendarProvider{domain.ProviderGoogle: calProv},
 		MailProviders:     map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mailProv},
 		OAuth:             map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
@@ -283,6 +284,34 @@ func TestPollPublicByToken_UnknownToken(t *testing.T) {
 	}
 }
 
+// TestPollPublicView_OrganizerWithoutDisplayNameFallsBackToNeutralLabel is a
+// regression test for MINOR 2: publicPollView must never leak the
+// organizer's account email into the public poll payload as a stand-in
+// display name.
+func TestPollPublicView_OrganizerWithoutDisplayNameFallsBackToNeutralLabel(t *testing.T) {
+	ctx := context.Background()
+	f := newPollFixture(t)
+	if _, err := f.users.Upsert(ctx, domain.User{ID: "u1", Email: "organizer@x.com"}); err != nil {
+		t.Fatalf("seed user without a display name: %v", err)
+	}
+
+	poll, err := f.svc.CreatePoll(ctx, "u1", validPollInput(f.clock.Now()))
+	if err != nil {
+		t.Fatalf("CreatePoll: %v", err)
+	}
+
+	pub, err := f.svc.PublicPollByToken(ctx, poll.Token)
+	if err != nil {
+		t.Fatalf("PublicPollByToken: %v", err)
+	}
+	if pub.OrganizerName == "organizer@x.com" {
+		t.Fatalf("OrganizerName = %q, must not leak the account email", pub.OrganizerName)
+	}
+	if pub.OrganizerName != "The organizer" {
+		t.Fatalf("OrganizerName = %q, want the neutral fallback label", pub.OrganizerName)
+	}
+}
+
 func TestPollVote_TalliesAndHidesVoterEmails(t *testing.T) {
 	ctx := context.Background()
 	f := newPollFixture(t)
@@ -346,6 +375,35 @@ func TestPollVote_RevoteReplacesRatherThanAppends(t *testing.T) {
 	}
 	if got, want := pub.Tallies[opt1], (port.PollTally{No: 1}); got != want {
 		t.Fatalf("tallies[opt1] after re-vote = %+v, want %+v (replaced, not appended)", got, want)
+	}
+}
+
+// TestPollVote_StoresCanonicalVoterEmail is a regression test for MINOR 3: a
+// display-name-wrapped voter email is syntactically valid per
+// mail.ParseAddress but must never be persisted as-is — only the bare,
+// lowercased address.
+func TestPollVote_StoresCanonicalVoterEmail(t *testing.T) {
+	ctx := context.Background()
+	f := newPollFixture(t)
+	poll, err := f.svc.CreatePoll(ctx, "u1", validPollInput(f.clock.Now()))
+	if err != nil {
+		t.Fatalf("CreatePoll: %v", err)
+	}
+	opt1 := poll.Options[0].ID
+
+	if _, err := f.svc.VotePoll(ctx, poll.Token, port.PollBallot{
+		VoterEmail: "Alice Wrapped <ALICE@Example.com>",
+		Choices:    map[string]domain.PollVoteChoice{opt1: domain.VoteYes},
+	}); err != nil {
+		t.Fatalf("VotePoll: %v", err)
+	}
+
+	votes, err := f.polls.ListVotes(ctx, poll.ID)
+	if err != nil || len(votes) != 1 {
+		t.Fatalf("ListVotes = %v, %v; want 1 vote", votes, err)
+	}
+	if votes[0].VoterEmail != "alice@example.com" {
+		t.Fatalf("VoterEmail = %q, want bare lowercased address", votes[0].VoterEmail)
 	}
 }
 
@@ -530,6 +588,52 @@ func TestPollConfirm_IdempotentSameOption(t *testing.T) {
 	}
 	if len(f.mailProv.sent) != sentBefore {
 		t.Fatal("idempotent re-confirm re-sent confirmation emails")
+	}
+}
+
+// TestPollConfirm_PersistFailureLeavesPollOpen is a regression test for
+// MINOR 6: events.Upsert and the poll's confirmed/winner/event-id flip
+// (polls.Update) must commit atomically. Before this fix there was a window
+// after provider.CreateEvent succeeded but before polls.Update where a
+// persistence failure would leave the poll open while a duplicate-risking
+// provider event already existed; a client retry would then re-run
+// CreateEvent and produce a second calendar event. Forcing events.Upsert to
+// fail proves the poll stays open (never flips to confirmed on a partial
+// write) and that the orphaned provider event gets a best-effort delete
+// attempt.
+func TestPollConfirm_PersistFailureLeavesPollOpen(t *testing.T) {
+	ctx := context.Background()
+	f := newPollFixture(t)
+	poll, err := f.svc.CreatePoll(ctx, "u1", validPollInput(f.clock.Now()))
+	if err != nil {
+		t.Fatalf("CreatePoll: %v", err)
+	}
+	opt1 := poll.Options[0].ID
+	if _, err := f.svc.VotePoll(ctx, poll.Token, port.PollBallot{
+		VoterEmail: "alice@example.com", Choices: map[string]domain.PollVoteChoice{opt1: domain.VoteYes},
+	}); err != nil {
+		t.Fatalf("VotePoll: %v", err)
+	}
+
+	f.calProv.createdEvent = domain.Event{ID: "provider-assigned", ProviderEventID: "prov-evt-1"}
+	f.events.upsertErr = errors.New("db unavailable")
+
+	if _, err := f.svc.ConfirmPoll(ctx, "u1", poll.ID, opt1); err == nil {
+		t.Fatal("ConfirmPoll: want error when the persistence tx fails")
+	}
+
+	persisted, err := f.polls.GetByID(ctx, poll.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if persisted.Status != domain.PollOpen {
+		t.Fatalf("Status = %q after persistence failure, want still open", persisted.Status)
+	}
+	if persisted.WinnerOptionID != nil || persisted.EventID != nil {
+		t.Fatalf("poll = %+v, want no winner/event persisted on failure", persisted)
+	}
+	if f.calProv.lastDeleteEventID != "prov-evt-1" {
+		t.Fatalf("provider DeleteEvent lastDeleteEventID = %q, want best-effort cleanup of the orphaned event", f.calProv.lastDeleteEventID)
 	}
 }
 
@@ -1078,6 +1182,24 @@ func TestSchedulingLinksCreate(t *testing.T) {
 		}
 	})
 
+	// Every unloadable, "", and "Local" time zone must be rejected — the
+	// latter two are silently accepted by time.LoadLocation alone (as UTC and
+	// the process's own OS zone respectively) despite not being genuine
+	// portable IANA zone names.
+	for _, tz := range []string{"Not/AZone", "", "Local"} {
+		t.Run("invalid time zone "+tz+" rejected", func(t *testing.T) {
+			f := newSchedFixture(t)
+			calID := f.seedOwnedCalendar(t, "u1", true)
+			in := validLinkInput(calID)
+			in.TimeZone = tz
+
+			_, err := f.svc.CreateLink(ctx, "u1", in)
+			if !errors.Is(err, domain.ErrValidation) {
+				t.Fatalf("err = %v, want ErrValidation for TimeZone %q", err, tz)
+			}
+		})
+	}
+
 	t.Run("calendar owned by someone else 404s", func(t *testing.T) {
 		f := newSchedFixture(t)
 		calID := f.seedOwnedCalendar(t, "owner", true)
@@ -1253,7 +1375,7 @@ func TestSchedulingLinksPublicPage(t *testing.T) {
 		}
 	})
 
-	t.Run("owner without a display name falls back to email", func(t *testing.T) {
+	t.Run("owner without a display name falls back to a neutral label, never the email", func(t *testing.T) {
 		f := newSchedFixture(t)
 		calID := f.seedOwnedCalendar(t, "u1", true)
 		if _, err := f.svc.CreateLink(ctx, "u1", validLinkInput(calID)); err != nil {
@@ -1267,8 +1389,11 @@ func TestSchedulingLinksPublicPage(t *testing.T) {
 		if err != nil {
 			t.Fatalf("PublicPage: %v", err)
 		}
-		if page.OwnerName != "ada@example.com" {
-			t.Fatalf("OwnerName = %q, want fallback email", page.OwnerName)
+		if page.OwnerName == "ada@example.com" {
+			t.Fatalf("OwnerName = %q, must not leak the account email", page.OwnerName)
+		}
+		if page.OwnerName != "The organizer" {
+			t.Fatalf("OwnerName = %q, want the neutral fallback label", page.OwnerName)
 		}
 	})
 

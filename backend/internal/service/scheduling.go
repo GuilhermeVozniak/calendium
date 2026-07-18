@@ -114,7 +114,7 @@ func validateBookingLinkInput(in port.BookingLinkInput) error {
 	if in.DurationMinutes <= 0 {
 		return fmt.Errorf("%w: durationMinutes must be greater than 0", domain.ErrValidation)
 	}
-	if _, err := time.LoadLocation(in.TimeZone); err != nil {
+	if !validIANATimeZone(in.TimeZone) {
 		return fmt.Errorf("%w: invalid timeZone %q", domain.ErrValidation, in.TimeZone)
 	}
 	for _, w := range in.Windows {
@@ -255,13 +255,17 @@ func (s *SchedulingService) DeleteLink(ctx context.Context, userID, linkID strin
 
 // --- public booking page + slots ----------------------------------------------
 
-// ownerDisplayName falls back to the account email when the user has not set
-// a display name (User.Name is nil/blank).
+// ownerDisplayName falls back to a neutral label when the user has not set a
+// display name (User.Name is nil/blank). It never falls back to the account
+// email: this feeds public-facing payloads (the booking page, poll page,
+// confirmation/cancellation emails), and the owner's raw email address is not
+// something a booking-link visitor or poll voter should be handed just
+// because the owner skipped setting a display name.
 func ownerDisplayName(u domain.User) string {
 	if u.Name != nil && strings.TrimSpace(*u.Name) != "" {
 		return *u.Name
 	}
-	return u.Email
+	return "The organizer"
 }
 
 func (s *SchedulingService) PublicPage(ctx context.Context, slug string) (port.PublicBookingPage, error) {
@@ -735,11 +739,7 @@ func (s *SchedulingService) publicPollView(ctx context.Context, p domain.Meeting
 	var organizerName string
 	if s.users != nil {
 		if u, err := s.users.GetByID(ctx, p.UserID); err == nil {
-			if u.Name != nil && *u.Name != "" {
-				organizerName = *u.Name
-			} else {
-				organizerName = u.Email
-			}
+			organizerName = ownerDisplayName(u)
 		}
 	}
 
@@ -784,9 +784,13 @@ func (s *SchedulingService) VotePoll(ctx context.Context, token string, ballot p
 	if email == "" {
 		return port.PublicPoll{}, fmt.Errorf("%w: voterEmail is required", domain.ErrValidation)
 	}
-	if _, err := mail.ParseAddress(email); err != nil {
+	addr, err := mail.ParseAddress(email)
+	if err != nil {
 		return port.PublicPoll{}, fmt.Errorf("%w: invalid voterEmail %q", domain.ErrValidation, email)
 	}
+	// Persist the canonical bare address, never the raw display-name-wrapped
+	// input (e.g. "Bob <bob@x.com>") that ParseAddress happily accepts.
+	email = strings.ToLower(addr.Address)
 	if len(ballot.Choices) == 0 {
 		return port.PublicPoll{}, fmt.Errorf("%w: ballot must include at least one choice", domain.ErrValidation)
 	}
@@ -914,24 +918,31 @@ func (s *SchedulingService) ConfirmPoll(ctx context.Context, userID, pollID, opt
 		created.CalendarID = c.ID
 		ev = created
 	}
-	if _, err := s.events.Upsert(ctx, ev); err != nil {
-		return domain.MeetingPoll{}, err
-	}
-
-	// Flip the poll to confirmed (winner + event ID persisted) before sending
-	// any confirmation email. This must happen first: the provider event and
-	// the local mirror already committed above, so at this point the poll
-	// MUST end up confirmed no matter what happens next. Confirming first
-	// also makes the confirmation email genuinely best-effort (see below) and
-	// puts a subsequent retry on the idempotent short-circuit at the top of
-	// this method (Status == PollConfirmed) instead of re-running provider
-	// event creation and producing a duplicate calendar event.
+	// The local mirror upsert and the poll's confirmed/winner/event flip
+	// commit atomically: a failure between them (e.g. the mirror write
+	// succeeding but the status flip failing) would otherwise leave the poll
+	// open while a duplicate calendar event already exists, and a client
+	// retry — seeing the poll still open — would re-run provider event
+	// creation above and produce a second one. Wrapping both here means a
+	// retry either finds the poll still open with no partial local state (safe
+	// to redo, modulo the already-created provider event cleaned up below), or
+	// finds it already confirmed and short-circuits on the idempotency check
+	// at the top of this method.
 	p.Status = domain.PollConfirmed
 	winnerID := optionID
 	p.WinnerOptionID = &winnerID
 	eventID := ev.ID
 	p.EventID = &eventID
-	if err := s.polls.Update(ctx, p); err != nil {
+	if err := s.tx.RunInTx(ctx, func(ctx context.Context) error {
+		if _, err := s.events.Upsert(ctx, ev); err != nil {
+			return err
+		}
+		return s.polls.Update(ctx, p)
+	}); err != nil {
+		// The provider event was already created above; best-effort delete it
+		// so a stray event doesn't sit on the owner's calendar forever (a retry
+		// will re-run CreateEvent since the poll never flipped to confirmed).
+		s.cleanupOrphanedProviderEvent(ctx, acct, c, ev)
 		return domain.MeetingPoll{}, err
 	}
 

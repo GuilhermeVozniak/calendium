@@ -109,8 +109,15 @@ func (s *SchedulingService) ProposeTime(ctx context.Context, userID, eventID str
 		Status:        domain.ProposalPending,
 		CreatedAt:     s.clock.Now(),
 	}
-	if u, err := s.users.GetByID(ctx, userID); err == nil {
-		p.ProposerName = ownerDisplayName(u)
+	// Deliberately not ownerDisplayName here: that helper's neutral fallback
+	// ("The organizer") is correct for the booking/poll OWNER's public name,
+	// but this proposer is explicitly never the organizer (see the check
+	// above) — falling back to that label would misrepresent who proposed the
+	// new time in the organizer-facing notification. Leaving ProposerName
+	// blank instead degrades buildProposalNotificationEmail's "who" line to
+	// the (already-shown) ProposerEmail alone.
+	if u, err := s.users.GetByID(ctx, userID); err == nil && u.Name != nil && strings.TrimSpace(*u.Name) != "" {
+		p.ProposerName = *u.Name
 	}
 
 	created, err := s.proposals.Create(ctx, p)

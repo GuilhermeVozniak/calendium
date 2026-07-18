@@ -37,10 +37,22 @@ func validateBookingRequest(req port.BookingRequest) error {
 	if _, err := mail.ParseAddress(req.InviteeEmail); err != nil {
 		return fmt.Errorf("%w: invalid inviteeEmail %q", domain.ErrValidation, req.InviteeEmail)
 	}
-	if _, err := time.LoadLocation(req.InviteeTZ); err != nil {
+	if !validIANATimeZone(req.InviteeTZ) {
 		return fmt.Errorf("%w: invalid inviteeTimeZone %q", domain.ErrValidation, req.InviteeTZ)
 	}
 	return nil
+}
+
+// canonicalEmail lowercases addr's bare address, discarding any display name
+// (mail.ParseAddress accepts "Bob <bob@x.com>" as syntactically valid, but
+// only the address itself should ever be persisted or handed to a provider
+// as an attendee/recipient).
+func canonicalEmail(raw string) (string, error) {
+	addr, err := mail.ParseAddress(raw)
+	if err != nil {
+		return "", err
+	}
+	return strings.ToLower(addr.Address), nil
 }
 
 // containsStart reports whether start matches one of the currently offered
@@ -71,6 +83,34 @@ func overlapsAny(busy []domain.BusyInterval, start, end time.Time) bool {
 // caller-supplied userID (the public booking flow has none).
 func (s *SchedulingService) ownedCalendarForLink(ctx context.Context, link domain.BookingLink) (domain.Calendar, domain.ConnectedAccount, error) {
 	return ownedCalendarByID(ctx, s.calendars, s.accounts, link.UserID, link.CalendarID)
+}
+
+// recheckWindow returns the window Book() re-validates the requested slot
+// against just before confirming it: the full calendar day (in
+// link.TimeZone, DST-correct via time.Date in that location, mirroring
+// computeSlots' own day-boundary approach) containing start, expanded on
+// both ends by the link's larger buffer. A window scoped to just the
+// requested slot itself (as opposed to this full padded day) would starve
+// two of computeSlots' rules of the data they need: DailyLimit's
+// confirmed-bookings-per-day count would only see bookings that happen to
+// overlap the slot, and an owner event whose BufferAfterMin/BufferBeforeMin
+// padding reaches into the slot from outside the slot's own window would
+// never be fetched at all.
+func recheckWindow(link domain.BookingLink, start time.Time) (from, to time.Time) {
+	loc, err := time.LoadLocation(link.TimeZone)
+	if err != nil {
+		loc = time.UTC
+	}
+	local := start.In(loc)
+	dayStart := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+	dayEnd := dayStart.AddDate(0, 0, 1)
+
+	pad := link.BufferBeforeMin
+	if link.BufferAfterMin > pad {
+		pad = link.BufferAfterMin
+	}
+	padding := time.Duration(pad) * time.Minute
+	return dayStart.Add(-padding), dayEnd.Add(padding)
 }
 
 // createBookingEvent creates the provider event for a confirmed hold (owner
@@ -105,6 +145,29 @@ func (s *SchedulingService) createBookingEvent(ctx context.Context, link domain.
 	return ev, nil
 }
 
+// cleanupOrphanedProviderEvent best-effort deletes a provider event created
+// during Book's step 3 when the subsequent tx-confirm step (step 4) then
+// fails: without this, that provider event is never removed and sits
+// orphaned on the owner's calendar with no local record of it (the hold was
+// already cancelled by the caller). Mirrors cancelHold's own
+// context.WithoutCancel usage so an already-cancelled/timed-out request
+// context doesn't also abort this cleanup; errors are logged and discarded.
+func (s *SchedulingService) cleanupOrphanedProviderEvent(ctx context.Context, acct domain.ConnectedAccount, cal domain.Calendar, ev domain.Event) {
+	provider, ok := s.cal[acct.Provider]
+	if !ok || ev.ProviderEventID == "" {
+		return
+	}
+	ctx = context.WithoutCancel(ctx)
+	token, err := s.tokens.accessToken(ctx, acct)
+	if err != nil {
+		s.logger.Warn("orphaned provider event cleanup: token fetch failed", "provider_event", ev.ProviderEventID, "error", err)
+		return
+	}
+	if err := provider.DeleteEvent(ctx, token, cal.ProviderCalendarID, ev.ProviderEventID); err != nil {
+		s.logger.Warn("orphaned provider event cleanup failed", "provider_event", ev.ProviderEventID, "error", err)
+	}
+}
+
 // Book implements the double-booking-safe pipeline:
 //  1. hold  — INSERT status="hold"; the DB exclusion constraint serializes
 //     concurrent competitors (loser → domain.ErrConflict).
@@ -133,13 +196,24 @@ func (s *SchedulingService) Book(ctx context.Context, slug string, req port.Book
 
 	// The requested start must be one of the currently offered slots
 	// (window/buffer/limit rules re-evaluated server-side, never trusted
-	// from the client).
-	offered, err := s.PublicSlots(ctx, slug, req.Start, end)
+	// from the client). Re-derive availability over the FULL link-TZ day
+	// containing the slot (padded by the link's largest buffer) rather than
+	// just the slot's own window — see recheckWindow.
+	recheckFrom, recheckTo := recheckWindow(link, req.Start)
+	offered, err := s.PublicSlots(ctx, slug, recheckFrom, recheckTo)
 	if err != nil {
 		return domain.Booking{}, err
 	}
 	if !containsStart(offered, req.Start) {
 		return domain.Booking{}, fmt.Errorf("%w: slot is no longer available", domain.ErrConflict)
+	}
+
+	// validateBookingRequest already confirmed this parses; the canonical
+	// (lowercased, display-name-stripped) address is what gets stored and
+	// handed to the provider/mail as the invitee's identity.
+	inviteeEmail, err := canonicalEmail(req.InviteeEmail)
+	if err != nil {
+		return domain.Booking{}, err
 	}
 
 	now := s.clock.Now()
@@ -152,7 +226,7 @@ func (s *SchedulingService) Book(ctx context.Context, slug string, req port.Book
 		ID: newID(), LinkID: link.ID, Status: domain.BookingHold,
 		Start: req.Start, End: end,
 		InviteeName:   strings.TrimSpace(req.InviteeName),
-		InviteeEmail:  strings.ToLower(req.InviteeEmail),
+		InviteeEmail:  inviteeEmail,
 		InviteeTZ:     req.InviteeTZ,
 		Note:          note,
 		HoldExpiresAt: &expires,
@@ -203,6 +277,11 @@ func (s *SchedulingService) Book(ctx context.Context, slug string, req port.Book
 	})
 	if err != nil {
 		cancelHold()
+		// The provider event was already created (step 3) before this tx-confirm
+		// step failed; without this, it would be orphaned on the provider's
+		// calendar forever with no local record of it. Best-effort, like
+		// cancelHold above.
+		s.cleanupOrphanedProviderEvent(ctx, acct, cal, ev)
 		return domain.Booking{}, err
 	}
 	hold.Status, hold.EventID, hold.HoldExpiresAt = domain.BookingConfirmed, &ev.ID, nil

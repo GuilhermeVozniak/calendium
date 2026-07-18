@@ -775,11 +775,18 @@ type fakeEventRepo struct {
 	searchResult        []domain.Event
 	searchErr           error
 	deleteByProviderErr error
+	// upsertErr, when set, is returned by Upsert instead of storing the
+	// event — simulates a persistence failure between provider event
+	// creation and the local mirror write inside Book/ConfirmPoll's tx.
+	upsertErr error
 }
 
 func newEventRepo() *fakeEventRepo { return &fakeEventRepo{byID: map[string]domain.Event{}} }
 
 func (r *fakeEventRepo) Upsert(_ context.Context, e domain.Event) (domain.Event, error) {
+	if r.upsertErr != nil {
+		return domain.Event{}, r.upsertErr
+	}
 	if _, ok := r.byID[e.ID]; !ok {
 		r.order = append(r.order, e.ID)
 	}
