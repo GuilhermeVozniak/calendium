@@ -75,6 +75,8 @@ export function ComposeHost() {
   // submit() updates that same draft instead of creating a duplicate.
   const [liveDraftId, setLiveDraftId] = useState<string | null>(null);
   const [aiEditBusy, setAiEditBusy] = useState(false);
+  const [toneOpen, setToneOpen] = useState(false);
+  const [tone, setTone] = useState('');
 
   const { data: accounts = [] } = useQuery({
     queryKey: ['accounts'],
@@ -103,6 +105,8 @@ export function ComposeHost() {
     setScheduleOpen(false);
     setScheduleAt('');
     setBusy(null);
+    setToneOpen(false);
+    setTone('');
   }, [intent]);
 
   // Default the sending account: the reply's thread account if known, else first.
@@ -175,15 +179,17 @@ export function ComposeHost() {
     return draft.id;
   }
 
-  async function runAiEdit(action: AiEditAction, tone?: string) {
+  async function runAiEdit(action: AiEditAction, toneValue?: string) {
     setAiEditBusy(true);
     try {
       const draftId = await ensureDraftId();
       const res = await orMock(
-        () => api.aiEditDraft(action, draftId, tone),
+        () => api.aiEditDraft(action, draftId, toneValue),
         () => ({ text: `${body || 'Draft'} (edited — demo mode, no AI configured)`, model: 'demo/local-fallback' })
       );
       setBody(res.text);
+      setToneOpen(false);
+      setTone('');
     } catch (e) {
       toast({ title: 'AI edit failed', description: errorMessage(e), variant: 'destructive' });
     } finally {
@@ -350,6 +356,34 @@ export function ComposeHost() {
               </Button>
             </div>
           )}
+
+          {toneOpen && (
+            <div className="flex items-center gap-2">
+              <span className="w-12 shrink-0 text-xs text-muted-foreground">Tone</span>
+              <Input
+                aria-label="Target tone"
+                value={tone}
+                autoFocus
+                onChange={(e) => setTone(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && tone.trim()) {
+                    e.preventDefault();
+                    void runAiEdit('change_tone', tone.trim());
+                  }
+                }}
+                placeholder="e.g. more formal"
+                disabled={aiEditBusy}
+              />
+              <Button
+                size="sm"
+                disabled={aiEditBusy || !tone.trim()}
+                onClick={() => void runAiEdit('change_tone', tone.trim())}
+              >
+                {aiEditBusy ? <Loader2 className="animate-spin" /> : null}
+                Apply
+              </Button>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -382,9 +416,7 @@ export function ComposeHost() {
                   </DropdownMenuItem>
                 ))}
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => void runAiEdit('change_tone', 'more formal')}>
-                  Change tone: more formal
-                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setToneOpen(true)}>Change tone…</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           )}

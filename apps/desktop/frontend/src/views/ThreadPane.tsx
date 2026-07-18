@@ -18,6 +18,7 @@ import * as React from 'react';
 import { api, orMock } from '@/lib/api';
 import { openCompose } from '@/lib/compose';
 import {
+  createMockEvent,
   mockAiAskCited,
   mockCalendars,
   mockInstantReplies,
@@ -179,18 +180,21 @@ function ProposeEventDialog({
       );
       const calendar = calendars.find((c) => c.isPrimary && c.canWrite) ?? calendars.find((c) => c.canWrite);
       if (!calendar) throw new Error('No writable calendar available');
+      const input = {
+        calendarId: calendar.id,
+        title: proposal.title,
+        start: proposal.start,
+        end: proposal.end,
+        location: proposal.location,
+        description: proposal.notes,
+        attendeeEmails: proposal.attendees,
+      };
+      // Demo branch actually inserts into the mock event store (rather than
+      // just resolving) so the created event shows up in the demo calendar —
+      // the toast below stays gated on this promise resolving either way.
       await orMock(
-        () =>
-          api.createEvent({
-            calendarId: calendar.id,
-            title: proposal.title,
-            start: proposal.start,
-            end: proposal.end,
-            location: proposal.location,
-            description: proposal.notes,
-            attendeeEmails: proposal.attendees,
-          }),
-        () => proposal as never
+        () => api.createEvent(input),
+        () => createMockEvent(input)
       );
       toast({ title: 'Event created' });
       onOpenChange(false);

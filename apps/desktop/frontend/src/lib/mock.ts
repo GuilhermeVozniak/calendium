@@ -6,6 +6,7 @@ import type {
   ClassifierInput,
   ConnectedAccount,
   Event,
+  EventInput,
   InboxSplit,
   Message,
   Subscription,
@@ -180,9 +181,45 @@ function ev(id: string, calendarId: string, title: string, day: Date, startHour:
   };
 }
 
+// Demo-mode events created via the UI (calendar "New event" and ThreadPane's
+// "Create event with AI") — kept in module state so a created event shows up
+// in mockEvents/mockSearch for the rest of the session, the same pattern as
+// mockClassifiers below.
+let mockCreatedEvents: Event[] = [];
+let nextMockEventId = 1;
+
+/** Local fallback for POST /v1/events when no server is configured. */
+export function createMockEvent(input: EventInput): Event {
+  const event: Event = {
+    id: `evt_local_${nextMockEventId++}`,
+    calendarId: input.calendarId,
+    title: input.title,
+    description: input.description ?? null,
+    location: input.location ?? null,
+    start: input.start,
+    end: input.end,
+    allDay: input.allDay ?? false,
+    recurrenceRule: input.recurrenceRule ?? null,
+    attendees: (input.attendeeEmails ?? []).map((email) => ({
+      email,
+      name: null,
+      response: 'needs_action',
+      organizer: false,
+      optional: false,
+    })),
+    conferencing: null,
+    status: 'confirmed',
+    visibility: 'default',
+    reminderMinutes: input.reminderMinutes ?? [10],
+  };
+  mockCreatedEvents = [...mockCreatedEvents, event];
+  return { ...event };
+}
+
 export function mockEvents(fromIso: string, toIso: string): Event[] {
   const today = startOfDay(now);
   const events: Event[] = [
+    ...mockCreatedEvents,
     ev('evt_1', 'cal_work', 'Team standup', subDays(today, 1), 9, 30, 15),
     ev('evt_2', 'cal_work', 'Design review', today, 14, 0, 60, {
       conferencing: { provider: 'meet', url: 'https://meet.google.com/abc-defg-hij' },

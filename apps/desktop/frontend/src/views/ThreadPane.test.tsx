@@ -1,4 +1,4 @@
-import type { Message, Thread } from '@calendium/shared';
+import type { Calendar, Message, Thread } from '@calendium/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const fixtures = vi.hoisted(() => ({
   thread: null as { thread: Thread; messages: Message[] } | null,
   aiEnabled: true,
+  calendars: [] as Calendar[],
 }));
 
 const openComposeMock = vi.fn();
@@ -29,17 +30,31 @@ vi.mock('@/lib/api', () => ({
   orMock: async (_real: () => unknown, mock: () => unknown) => mock(),
 }));
 
-vi.mock('@/lib/mock', () => ({
-  mockThread: () => fixtures.thread!,
-  mockInstantReplies: () => fixtures.thread?.thread.instantReplies ?? [],
-  mockAiAskCited: (question: string) => ({
-    answer: `Based on your mailbox: ${question}`,
-    model: 'demo/local-fallback',
-    sources: [{ threadId: fixtures.thread!.thread.id, subject: fixtures.thread!.thread.subject, snippet: 'snippet' }],
-  }),
-  mockProposeEvent: () => ({ title: 'Follow-up', attendees: [], start: new Date().toISOString(), end: new Date().toISOString() }),
-  mockCalendars: [],
-}));
+// createMockEvent/mockEvents are the real implementations (via importActual) so
+// tests can assert the demo "Create event with AI" path actually lands in the
+// shared mock event store, not just that a promise resolves.
+vi.mock('@/lib/mock', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/mock')>('@/lib/mock');
+  return {
+    ...actual,
+    mockThread: () => fixtures.thread!,
+    mockInstantReplies: () => fixtures.thread?.thread.instantReplies ?? [],
+    mockAiAskCited: (question: string) => ({
+      answer: `Based on your mailbox: ${question}`,
+      model: 'demo/local-fallback',
+      sources: [{ threadId: fixtures.thread!.thread.id, subject: fixtures.thread!.thread.subject, snippet: 'snippet' }],
+    }),
+    mockProposeEvent: () => ({
+      title: 'Follow-up',
+      attendees: [],
+      start: new Date().toISOString(),
+      end: new Date().toISOString(),
+    }),
+    get mockCalendars() {
+      return fixtures.calendars;
+    },
+  };
+});
 
 vi.mock('@/lib/server-config', () => ({
   useServerConfig: () => ({ config: { features: { ai: fixtures.aiEnabled } } }),
@@ -51,7 +66,23 @@ vi.mock('@/lib/toast', () => ({
   errorMessage: (e: unknown) => (e instanceof Error ? e.message : 'error'),
 }));
 
+import { mockEvents } from '@/lib/mock';
+
 import { ThreadPane } from './ThreadPane';
+
+function makeCalendar(overrides: Partial<Calendar> = {}): Calendar {
+  return {
+    id: 'cal_work',
+    accountId: 'acc_google',
+    name: 'Work',
+    color: '#0ea5e9',
+    timeZone: 'UTC',
+    isPrimary: true,
+    isVisible: true,
+    canWrite: true,
+    ...overrides,
+  };
+}
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -109,6 +140,7 @@ describe('ThreadPane — AI suite', () => {
   beforeEach(() => {
     fixtures.aiEnabled = true;
     fixtures.thread = { thread: makeThread(), messages: [makeMessage()] };
+    fixtures.calendars = [makeCalendar()];
     openComposeMock.mockReset();
     aiAskCitedMock.mockReset();
     toastMock.mockReset();
@@ -156,5 +188,22 @@ describe('ThreadPane — AI suite', () => {
     await userEvent.click(screen.getByLabelText('Ask'));
 
     await waitFor(() => expect(screen.getByText('Based on your mailbox: What is the status?')).not.toBeNull());
+  });
+
+  it('demo "Create event with AI" inserts the proposed event into the mock store, not just a resolved promise', async () => {
+    const wideRange = {
+      from: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString(),
+      to: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+    };
+    // Sanity check: nothing named "Follow-up" exists in the store yet.
+    expect(mockEvents(wideRange.from, wideRange.to).some((e) => e.title === 'Follow-up')).toBe(false);
+
+    renderPane();
+    await userEvent.click(await screen.findByLabelText('Create event with AI'));
+    await screen.findByText('Follow-up');
+    await userEvent.click(screen.getByText('Create event'));
+
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ title: 'Event created' })));
+    expect(mockEvents(wideRange.from, wideRange.to).some((e) => e.title === 'Follow-up')).toBe(true);
   });
 });
