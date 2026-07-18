@@ -466,17 +466,29 @@ func TestRunJobErrNotFoundDropsJob(t *testing.T) {
 
 func TestRunJobVoiceProfileHasNoThreadGuard(t *testing.T) {
 	// voice_profile jobs carry a nil ThreadID; confirm dispatch routes them
-	// to the stub without requiring Threads at all (no panic on nil deref).
+	// to runVoiceProfile without requiring Threads at all (no panic on nil
+	// deref). Task 11 fills in real learning (see ai_jobs_voice_test.go for
+	// full coverage); this test only pins the "no thread needed" contract,
+	// using an account with no sent mail yet so the handler completes via
+	// its below-minimum-samples path without touching Threads.
 	ctx := context.Background()
 
+	accounts := newAccountRepo()
+	if _, err := accounts.Create(ctx, domain.ConnectedAccount{ID: "a1", UserID: "u1", Email: "alex@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+
 	jobs := newAiJobRepo()
-	jobs.queue = []domain.AiJob{{ID: "j1", UserID: "u1", Kind: domain.AiJobVoiceProfile, Attempts: 1}}
+	jobs.queue = []domain.AiJob{{ID: "j1", UserID: "u1", AccountID: "a1", Kind: domain.AiJobVoiceProfile, Attempts: 1}}
 
 	svc := NewAIJobService(AIJobServiceDeps{
-		Jobs:  jobs,
-		Usage: newAiUsageRepo(),
-		Clock: newClock(time.Now()),
-		AI:    newAI(),
+		Jobs:          jobs,
+		Usage:         newAiUsageRepo(),
+		Accounts:      accounts,
+		Messages:      newMessageRepo(),
+		VoiceProfiles: newVoiceProfileRepo(),
+		Clock:         newClock(time.Now()),
+		AI:            newAI(),
 	})
 
 	if err := svc.ProcessDueAiJobs(ctx); err != nil {

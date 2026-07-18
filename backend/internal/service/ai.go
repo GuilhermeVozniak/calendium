@@ -22,6 +22,7 @@ type AIServiceDeps struct {
 	Threads       port.ThreadRepo
 	Messages      port.MessageRepo
 	Drafts        port.DraftRepo
+	VoiceProfiles port.VoiceProfileRepo // optional: nil skips voice-style injection
 	AI            port.AI
 	Clock         port.Clock
 	// SelfHosted unlocks the paywall (open-core self-hosted mode).
@@ -31,24 +32,26 @@ type AIServiceDeps struct {
 // AIService implements port.AIService (OpenRouter-backed
 // compose/reply/summarize/ask).
 type AIService struct {
-	ent      entitlement
-	accounts port.AccountRepo
-	threads  port.ThreadRepo
-	messages port.MessageRepo
-	drafts   port.DraftRepo
-	ai       port.AI
+	ent           entitlement
+	accounts      port.AccountRepo
+	threads       port.ThreadRepo
+	messages      port.MessageRepo
+	drafts        port.DraftRepo
+	voiceProfiles port.VoiceProfileRepo
+	ai            port.AI
 }
 
 var _ port.AIService = (*AIService)(nil)
 
 func NewAIService(d AIServiceDeps) *AIService {
 	return &AIService{
-		ent:      entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
-		accounts: d.Accounts,
-		threads:  d.Threads,
-		messages: d.Messages,
-		drafts:   d.Drafts,
-		ai:       d.AI,
+		ent:           entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
+		accounts:      d.Accounts,
+		threads:       d.Threads,
+		messages:      d.Messages,
+		drafts:        d.Drafts,
+		voiceProfiles: d.VoiceProfiles,
+		ai:            d.AI,
 	}
 }
 
@@ -98,7 +101,19 @@ func (s *AIService) Compose(ctx context.Context, userID string, req domain.AiCom
 		fmt.Fprintf(&b, "Instruction: %s", req.Prompt)
 	}
 
-	text, model, err := s.ai.Complete(ctx, systemPromptFor(req.Action), strings.TrimSpace(b.String()))
+	system := systemPromptFor(req.Action)
+	// Personal voice: only for generative actions (compose/reply), never for
+	// summarize/ask/editing actions where matching the user's own style
+	// isn't the point. Missing profile (no VoiceProfiles configured, or
+	// ErrNotFound because none has been learned yet) silently leaves the
+	// prompt unchanged.
+	if s.voiceProfiles != nil && (req.Action == domain.AiCompose || req.Action == domain.AiReply) {
+		if p, err := s.voiceProfiles.Get(ctx, userID); err == nil && p.Profile != "" {
+			system += "\n\nWrite in the user's personal style:\n" + p.Profile
+		}
+	}
+
+	text, model, err := s.ai.Complete(ctx, system, strings.TrimSpace(b.String()))
 	if err != nil {
 		return zero, err
 	}
