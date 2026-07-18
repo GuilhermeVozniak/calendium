@@ -18,8 +18,10 @@ import { AvailabilityDialog } from '@/components/app/availability';
 import { DayTicker } from '@/components/app/calendar/day-ticker';
 import { MiniMonth } from '@/components/app/calendar/mini-month';
 import { MonthView } from '@/components/app/calendar/month-view';
+import { QuarterView } from '@/components/app/calendar/quarter-view';
 import { QuickAddBar } from '@/components/app/calendar/quick-add-bar';
 import { TimeGrid } from '@/components/app/calendar/time-grid';
+import { YearView } from '@/components/app/calendar/year-view';
 import { EventDialog } from '@/components/app/event-dialog';
 import { Button } from '@/components/ui/button';
 import { Kbd } from '@/components/ui/kbd';
@@ -150,7 +152,7 @@ export default function CalendarPage() {
     [view]
   );
 
-  // Keyboard shortcuts: t (today), n/p or arrows (navigate), d/w/a (views), c (create).
+  // Keyboard shortcuts: t (today), n/p or arrows (navigate), d/w/m/q/y/a (views), c (create).
   React.useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       // Respect handlers that already consumed the key (e.g. the app-wide
@@ -181,6 +183,12 @@ export default function CalendarPage() {
           break;
         case 'm':
           setView('month');
+          break;
+        case 'q':
+          setView('quarter');
+          break;
+        case 'y':
+          setView('year');
           break;
         case 'a':
           setView('ticker');
@@ -257,6 +265,12 @@ export default function CalendarPage() {
               </TabsTrigger>
               <TabsTrigger value="month" className="px-2.5 text-xs">
                 Month
+              </TabsTrigger>
+              <TabsTrigger value="quarter" className="px-2.5 text-xs">
+                Quarter
+              </TabsTrigger>
+              <TabsTrigger value="year" className="px-2.5 text-xs">
+                Year
               </TabsTrigger>
               <TabsTrigger value="ticker" className="px-2.5 text-xs">
                 Agenda
@@ -347,6 +361,24 @@ export default function CalendarPage() {
                 setView('day');
               }}
               onEventClick={handleEventClick}
+            />
+          ) : view === 'quarter' ? (
+            <QuarterView
+              anchor={anchor}
+              events={events}
+              onDayClick={(day) => {
+                setAnchor(day);
+                setView('day');
+              }}
+            />
+          ) : view === 'year' ? (
+            <YearView
+              anchor={anchor}
+              events={events}
+              onDayClick={(day) => {
+                setAnchor(day);
+                setView('day');
+              }}
             />
           ) : (
             <TimeGrid
