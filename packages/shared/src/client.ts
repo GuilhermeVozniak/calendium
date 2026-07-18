@@ -6,6 +6,7 @@ import type {
   AiComposeResponse,
   AiEditAction,
   AiEventProposal,
+  AttachmentHit,
   AvailabilitySlot,
   Booking,
   BookingLink,
@@ -19,6 +20,7 @@ import type {
   CalendarSetInput,
   ClassifierInput,
   ConnectedAccount,
+  ContactSummary,
   DevicePlatform,
   Draft,
   DraftInput,
@@ -32,13 +34,16 @@ import type {
   MeetingPoll,
   Message,
   NotificationDevice,
+  OpenEvent,
   Page,
   PollBallot,
   PollInput,
   Provider,
   PublicBookingPage,
   PublicPoll,
+  ReactionResult,
   RsvpStatus,
+  SendSuggestion,
   Snippet,
   Subscription,
   Thread,
@@ -161,6 +166,18 @@ export class ApiClient {
       vipSenders,
     });
   }
+  /** Replaces the account's rich (HTML) signature, appended at send. */
+  setSignature(accountId: string, signatureHtml: string) {
+    return this.request<ConnectedAccount>('PUT', `/v1/accounts/${accountId}/signature`, {
+      signatureHtml,
+    });
+  }
+  /** Replaces the account's auto-BCC list, applied on every send. */
+  setAutoBcc(accountId: string, autoBcc: string[]) {
+    return this.request<ConnectedAccount>('PUT', `/v1/accounts/${accountId}/auto-bcc`, {
+      autoBcc,
+    });
+  }
   disconnectAccount(accountId: string) {
     return this.request<void>('DELETE', `/v1/accounts/${accountId}`);
   }
@@ -275,6 +292,51 @@ export class ApiClient {
   }
   updatePrefs(prefs: UserPrefs) {
     return this.request<UserPrefs>('PUT', '/v1/prefs', prefs);
+  }
+
+  // --- Mail (M2.5) — Recent Opens, Smart Send, attachments, contacts, reactions ---
+  /** Recent Opens feed: sent messages the recipient has opened, newest first. */
+  listOpens(params: { cursor?: string; limit?: number }) {
+    const qs = new URLSearchParams();
+    if (params.cursor) qs.set('cursor', params.cursor);
+    if (params.limit) qs.set('limit', String(params.limit));
+    return this.request<Page<OpenEvent>>('GET', `/v1/mail/opens?${qs}`);
+  }
+  /** Smart Send recommendation for a recipient; throws ApiRequestError(404) when history is too thin. */
+  getSendSuggestion(email: string) {
+    const qs = new URLSearchParams({ email });
+    return this.request<SendSuggestion>('GET', `/v1/mail/send-suggestion?${qs}`);
+  }
+  searchAttachments(params: {
+    q?: string;
+    contact?: string;
+    threadId?: string;
+    cursor?: string;
+    limit?: number;
+  }) {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set('q', params.q);
+    if (params.contact) qs.set('contact', params.contact);
+    if (params.threadId) qs.set('threadId', params.threadId);
+    if (params.cursor) qs.set('cursor', params.cursor);
+    if (params.limit) qs.set('limit', String(params.limit));
+    return this.request<Page<AttachmentHit>>('GET', `/v1/mail/attachments?${qs}`);
+  }
+  /** URL for streaming/iframe use; fetch it yourself with the bearer token. */
+  attachmentContentPath(attachmentId: string): string {
+    return `/v1/mail/attachments/${attachmentId}/content`;
+  }
+  getContact(email: string) {
+    return this.request<ContactSummary>('GET', `/v1/mail/contacts/${email}`);
+  }
+  reactToMessage(messageId: string, emoji: string, sendReply?: boolean) {
+    return this.request<ReactionResult>('POST', `/v1/mail/messages/${messageId}/reactions`, {
+      emoji,
+      sendReply: sendReply ?? false,
+    });
+  }
+  removeReaction(messageId: string, emoji: string) {
+    return this.request<void>('DELETE', `/v1/mail/messages/${messageId}/reactions/${emoji}`);
   }
 
   // --- Calendar ---

@@ -40,6 +40,10 @@ export interface ConnectedAccount {
   scopes: string[];
   /** Sender addresses classified into the 'vip' split at ingest. */
   vipSenders: string[];
+  /** Rich HTML signature appended at send (M2.5). */
+  signatureHtml: string;
+  /** Addresses auto-BCC'd on every send from this account (M2.5). */
+  autoBcc: string[];
   lastSyncedAt: string | null;
   createdAt: string;
 }
@@ -114,6 +118,24 @@ export interface Message {
   isDraft: boolean;
   /** Read-status tracking (Superhuman read receipts). */
   openedAt: string | null;
+  /** Emoji reactions on this message (M2.5). */
+  reactions: Reaction[];
+}
+
+/** A lightweight emoji reaction on a message (M2.5). */
+export interface Reaction {
+  id: string;
+  messageId: string;
+  emoji: string;
+  /** "local" = stored only; "sent" = also delivered as a tiny threaded reply. */
+  delivery: 'local' | 'sent';
+  createdAt: string;
+}
+
+/** A stored reaction plus the tiny-reply draft id when it was also queued for delivery. */
+export interface ReactionResult {
+  reaction: Reaction;
+  draftId: string | null;
 }
 
 export interface Draft {
@@ -612,6 +634,55 @@ export interface UserSettings {
   timeZone: string;
   workingHours: AvailabilityWindow[];
   workingLocation: string;
+}
+
+// ---------------------------------------------------------------------------
+// M2.5 — Recent Opens, Smart Send, attachment quick-access, contact summary
+// (mirrors backend/internal/domain/mail.go field-for-field).
+// ---------------------------------------------------------------------------
+
+/** One row of the Recent Opens feed: a sent message a recipient has opened, newest first. */
+export interface OpenEvent {
+  messageId: string;
+  threadId: string;
+  accountId: string;
+  subject: string;
+  recipients: EmailAddress[];
+  openedAt: string;
+  sentAt: string;
+}
+
+/** An attachment search result with message context. */
+export interface AttachmentHit extends Attachment {
+  messageId: string;
+  threadId: string;
+  threadSubject: string;
+  from: EmailAddress;
+  sentAt: string;
+}
+
+/** The Smart Send recommendation for one recipient, inferred from historical open times. */
+export interface SendSuggestion {
+  email: string;
+  suggestedAt: string;
+  /** Inferred UTC offset in hours, [-12, 13]. */
+  utcOffsetHours: number;
+  /** 0..1 share of opens near the peak. */
+  confidence: number;
+  sampleSize: number;
+}
+
+/** Aggregates everything the local mirror knows about a sender. */
+export interface ContactSummary {
+  email: string;
+  /** From the most recent message. */
+  name: string | null;
+  domain: string;
+  threadCount: number;
+  messageCount: number;
+  lastMessageAt: string | null;
+  /** Newest 5 threads. */
+  recentThreads: Thread[];
 }
 
 // ---------------------------------------------------------------------------

@@ -384,6 +384,127 @@ describe('query-string building', () => {
   });
 });
 
+describe('mail M2.5 endpoints', () => {
+  it('listOpens sets every provided param and nothing else', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { items: [], nextCursor: null } }],
+    });
+    await client.listOpens({ cursor: 'cur1', limit: 25 });
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe('/v1/mail/opens');
+    expect(searchParamsToObject(url.searchParams)).toEqual({ cursor: 'cur1', limit: '25' });
+    expect(calls[0]!.method).toBe('GET');
+  });
+
+  it('listOpens omits params that are not set', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { items: [], nextCursor: null } }],
+    });
+    await client.listOpens({});
+    const url = new URL(calls[0]!.url);
+    expect(searchParamsToObject(url.searchParams)).toEqual({});
+  });
+
+  it('getSendSuggestion GETs /v1/mail/send-suggestion?email=...', async () => {
+    const suggestion = {
+      email: 'ada@example.com',
+      suggestedAt: '2026-07-19T09:00:00Z',
+      utcOffsetHours: -5,
+      confidence: 0.82,
+      sampleSize: 12,
+    };
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: suggestion }] });
+    const result = await client.getSendSuggestion('ada@example.com');
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe('/v1/mail/send-suggestion');
+    expect(searchParamsToObject(url.searchParams)).toEqual({ email: 'ada@example.com' });
+    expect(calls[0]!.method).toBe('GET');
+    expect(result).toEqual(suggestion);
+  });
+
+  it('getSendSuggestion throws ApiRequestError(404) when there is no suggestion yet', async () => {
+    const { client } = makeClient({
+      responses: [
+        { status: 404, body: { error: { code: 'not_found', message: 'not enough history' } } },
+      ],
+    });
+    await expect(client.getSendSuggestion('ada@example.com')).rejects.toBeInstanceOf(ApiRequestError);
+    const { client: client2 } = makeClient({
+      responses: [
+        { status: 404, body: { error: { code: 'not_found', message: 'not enough history' } } },
+      ],
+    });
+    await expect(client2.getSendSuggestion('ada@example.com')).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
+    });
+  });
+
+  it('searchAttachments sets every provided param and nothing else', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { items: [], nextCursor: null } }],
+    });
+    await client.searchAttachments({
+      q: 'invoice',
+      contact: 'ada@example.com',
+      threadId: 't1',
+      cursor: 'cur1',
+      limit: 10,
+    });
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe('/v1/mail/attachments');
+    expect(searchParamsToObject(url.searchParams)).toEqual({
+      q: 'invoice',
+      contact: 'ada@example.com',
+      threadId: 't1',
+      cursor: 'cur1',
+      limit: '10',
+    });
+    expect(calls[0]!.method).toBe('GET');
+  });
+
+  it('searchAttachments omits params that are not set', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { items: [], nextCursor: null } }],
+    });
+    await client.searchAttachments({});
+    const url = new URL(calls[0]!.url);
+    expect(searchParamsToObject(url.searchParams)).toEqual({});
+  });
+
+  it('attachmentContentPath returns the content path without making a request', () => {
+    const { client, calls } = makeClient();
+    expect(client.attachmentContentPath('att1')).toBe('/v1/mail/attachments/att1/content');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('reactToMessage POSTs emoji+sendReply (default false) to the reactions route', async () => {
+    const result = { reaction: { id: 'r1', messageId: 'm1', emoji: '\u{1F44D}' }, draftId: null };
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: result }] });
+    const res = await client.reactToMessage('m1', '\u{1F44D}');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/mail/messages/m1/reactions`);
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.body).toEqual({ emoji: '\u{1F44D}', sendReply: false });
+    expect(res).toEqual(result);
+  });
+
+  it('reactToMessage passes sendReply=true through when requested', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { reaction: {}, draftId: 'd1' } }],
+    });
+    await client.reactToMessage('m1', '\u{1F44D}', true);
+    expect(calls[0]!.body).toEqual({ emoji: '\u{1F44D}', sendReply: true });
+  });
+
+  it('removeReaction DELETEs the emoji-scoped reactions route', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    const result = await client.removeReaction('m1', '\u{1F44D}');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/mail/messages/m1/reactions/\u{1F44D}`);
+    expect(calls[0]!.method).toBe('DELETE');
+    expect(result).toBeUndefined();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Path + verb + body contract for every remaining method, table-driven.
 //
@@ -541,6 +662,20 @@ const methodCases: MethodCase[] = [
     method: 'PUT',
     path: '/v1/accounts/acc1/vip-senders',
     body: { vipSenders: ['vip@example.com'] },
+  },
+  {
+    name: 'setSignature',
+    call: (c) => c.setSignature('acc1', '<p>Best, Ada</p>'),
+    method: 'PUT',
+    path: '/v1/accounts/acc1/signature',
+    body: { signatureHtml: '<p>Best, Ada</p>' },
+  },
+  {
+    name: 'setAutoBcc',
+    call: (c) => c.setAutoBcc('acc1', ['archive@example.com']),
+    method: 'PUT',
+    path: '/v1/accounts/acc1/auto-bcc',
+    body: { autoBcc: ['archive@example.com'] },
   },
   {
     name: 'disconnectAccount',
@@ -736,6 +871,17 @@ const methodCases: MethodCase[] = [
     call: (c) => c.deleteClassifier('c1'),
     method: 'DELETE',
     path: '/v1/classifiers/c1',
+  },
+
+  // --- Mail (M2.5) ---
+  // reactToMessage/removeReaction take a raw emoji, which `new URL(...)`
+  // percent-encodes on parse — exercised directly (no URL parsing) in the
+  // "mail M2.5 endpoints" describe block below instead of this table.
+  {
+    name: 'getContact',
+    call: (c) => c.getContact('ada@example.com'),
+    method: 'GET',
+    path: '/v1/mail/contacts/ada@example.com',
   },
 
   // --- Push devices ---
