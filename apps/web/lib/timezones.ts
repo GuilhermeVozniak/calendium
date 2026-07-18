@@ -73,8 +73,15 @@ export function tzOffsetMinutes(timeZone: string, at: Date): number {
  * `day`/`hour` describe an instant using the *system* (primary-grid) local
  * timezone — i.e. the same wall-clock semantics as `new Date(y, m, d, hour)`.
  * The label/day-shift are then computed for that same instant as observed in
- * `zone`, which is why this stays correct across a DST transition that falls
- * mid-week: each displayed day is resolved independently.
+ * `zone`. Each call is independently DST-correct for whatever `day` it's
+ * given — but that only makes a *caller* correct across a mid-week DST
+ * transition in `zone` if the caller actually invokes this once per displayed
+ * day. A caller that instead shares one result across several displayed days
+ * (as the week view's single pinned-zone gutter does, anchored to the first
+ * day) is not automatically protected: it must separately detect when the
+ * per-day results would disagree and flag that, since a shared gutter can't
+ * show two different labels for the same hour row. See
+ * `zoneLabelsUniformAcrossDays` in time-grid.tsx for that check.
  */
 export function hourLabelInZone(
   day: Date,

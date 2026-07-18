@@ -78,4 +78,33 @@ describe('TimeGrid — multi-timezone gutters', () => {
     expect(within(header).getByText('Kolkata')).toBeInTheDocument();
     expect(within(header).getByText(/GMT\+5:30/)).toBeInTheDocument();
   });
+
+  it('does not flag a pinned zone whose gutter labels are uniform across the displayed week', () => {
+    const days = [
+      new Date(2026, 0, 12),
+      new Date(2026, 0, 13),
+      new Date(2026, 0, 14),
+      new Date(2026, 0, 15),
+      new Date(2026, 0, 16),
+    ];
+    renderGrid({ days, pinnedZones: ['Asia/Kolkata'] });
+    expect(screen.queryByTestId('tz-dst-marker-Asia/Kolkata')).not.toBeInTheDocument();
+  });
+
+  it('flags a pinned zone whose gutter labels are non-uniform across a DST-transition week', () => {
+    // America/New_York falls back from EDT to EST at 2:00 AM local on
+    // 2026-11-01. With the primary/system zone at UTC, the noon-UTC row
+    // reads 8 AM (EDT, UTC-4) on the days before the transition and 7 AM
+    // (EST, UTC-5) on the days at/after it — the shared reference-day
+    // gutter can't express both, so the header caption must flag it.
+    const days = [
+      new Date(2026, 9, 29),
+      new Date(2026, 9, 30),
+      new Date(2026, 9, 31),
+      new Date(2026, 10, 1),
+      new Date(2026, 10, 2),
+    ];
+    renderGrid({ days, pinnedZones: ['America/New_York'] });
+    expect(screen.getByTestId('tz-dst-marker-America/New_York')).toBeInTheDocument();
+  });
 });

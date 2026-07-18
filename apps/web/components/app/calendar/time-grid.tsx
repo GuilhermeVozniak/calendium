@@ -144,11 +144,22 @@ export function TimeGrid({
   const allDay = React.useMemo(() => events.filter((e) => e.allDay), [events]);
   const gridTemplateColumns = `repeat(${days.length}, minmax(0, 1fr))`;
   // Anchor for pinned-zone label math: the first displayed day. In day view
-  // this is the only day, so labels (and DST behavior) are exact. In week
-  // view, a mid-week DST transition in a pinned zone won't retroactively
-  // relabel earlier rows — an accepted simplification for a single shared
-  // gutter spanning multiple day columns.
+  // this is the only day, so labels are exact by construction. In week view
+  // the shared gutter can only show one label per hour, so it's rendered
+  // from this single reference day — but that anchoring is only *silently*
+  // correct when every displayed day agrees with it. `pinnedZoneNonUniform`
+  // below checks that agreement per zone and, when a mid-week DST transition
+  // in that zone breaks it, flags the header caption instead of letting the
+  // gutter show a wall-clock label that's wrong for the later (or earlier)
+  // days it's shared with.
   const tzReferenceDay = days[0] ?? now;
+  const pinnedZoneNonUniform = React.useMemo(() => {
+    const flags = new Map<string, boolean>();
+    for (const zone of pinnedZones) {
+      flags.set(zone, !zoneLabelsUniformAcrossDays(zone, days, tzReferenceDay));
+    }
+    return flags;
+  }, [pinnedZones, days, tzReferenceDay]);
 
   return (
     <div ref={scrollRef} className="relative flex-1 overflow-y-auto">
@@ -156,7 +167,12 @@ export function TimeGrid({
       <div className="sticky top-0 z-30 border-b bg-background">
         <div className="flex">
           {pinnedZones.map((zone) => (
-            <TzHeaderCaption key={zone} zone={zone} at={now} />
+            <TzHeaderCaption
+              key={zone}
+              zone={zone}
+              at={now}
+              nonUniform={pinnedZoneNonUniform.get(zone) ?? false}
+            />
           ))}
           <div className="flex w-16 shrink-0 items-end justify-end pr-2 pb-1.5">
             <span className="text-[10px] font-medium text-muted-foreground tabular-nums">
@@ -248,14 +264,55 @@ export function TimeGrid({
 // Pinned-timezone gutters
 // ---------------------------------------------------------------------------
 
-function TzHeaderCaption({ zone, at }: { zone: string; at: Date }) {
+/**
+ * True when `hourLabelInZone(day, hour, zone)` agrees, for every displayed
+ * `day` and every rendered hour, with what it returns for `referenceDay` —
+ * i.e. the single reference-day gutter is a faithful stand-in for every day
+ * it's shared with. This is false only when a DST transition inside `zone`
+ * falls somewhere in the displayed range, shifting its UTC offset partway
+ * through the week.
+ */
+function zoneLabelsUniformAcrossDays(zone: string, days: Date[], referenceDay: Date): boolean {
+  for (let hour = 1; hour <= 23; hour++) {
+    const reference = hourLabelInZone(referenceDay, hour, zone);
+    for (const day of days) {
+      const candidate = hourLabelInZone(day, hour, zone);
+      if (candidate.label !== reference.label || candidate.dayShift !== reference.dayShift) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function TzHeaderCaption({
+  zone,
+  at,
+  nonUniform,
+}: {
+  zone: string;
+  at: Date;
+  nonUniform: boolean;
+}) {
   const { city, gmt } = zoneCaption(zone, at);
   return (
     <div
       data-testid={`tz-header-${zone}`}
       className="flex w-14 shrink-0 flex-col items-end justify-end pr-2 pb-1.5 text-right"
     >
-      <span className="truncate text-[10px] font-medium text-muted-foreground">{city}</span>
+      <span className="truncate text-[10px] font-medium text-muted-foreground">
+        {city}
+        {nonUniform && (
+          <sup
+            data-testid={`tz-dst-marker-${zone}`}
+            title="This zone's offset changes during the displayed week — hour labels are anchored to the first day and may be off by one hour on later days."
+            className="ml-0.5 font-semibold text-muted-foreground/70"
+          >
+            {' '}
+            ±DST
+          </sup>
+        )}
+      </span>
       <span className="text-[9px] text-muted-foreground/70 tabular-nums">{gmt}</span>
     </div>
   );
