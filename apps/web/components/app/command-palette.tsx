@@ -21,6 +21,7 @@ import {
   Monitor,
   Moon,
   PanelRight,
+  Paperclip,
   PenLine,
   Plus,
   RotateCcw,
@@ -37,6 +38,7 @@ import {
 import { useQuery } from '@tanstack/react-query';
 
 import { useAskSidebar } from '@/components/ai/ask-sidebar';
+import { useAttachmentsPane } from '@/components/app/attachments-pane';
 import { useCompose } from '@/components/app/compose';
 import { useTheme } from '@/components/theme-provider';
 import { dispatchAiEditCommand } from '@/components/compose/ai-edit-menu';
@@ -90,6 +92,7 @@ export function CommandPalette() {
   const { openCompose } = useCompose();
   const { setTheme, resolvedTheme } = useTheme();
   const { openSidebar } = useAskSidebar();
+  const { open: openAttachments } = useAttachmentsPane();
   const aiEnabled = useInstance().data?.features.ai ?? false;
 
   // Reset the query when the palette closes; debounce it for live search.
@@ -227,6 +230,10 @@ export function CommandPalette() {
             <Kbd size="sm" className="ml-auto">
               /
             </Kbd>
+          </CommandItem>
+          <CommandItem onSelect={() => run(() => openAttachments())}>
+            <Paperclip />
+            Search attachments
           </CommandItem>
           <CommandItem onSelect={() => { teachShortcut('archive', 'E', 'Archive'); runMailCommand('archive'); }}>
             <Archive />

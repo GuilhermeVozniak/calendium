@@ -6,6 +6,7 @@ import type {
   AiEditAction,
   AiEventProposal,
   AiSource,
+  AttachmentHit,
   BulkAction,
   ContactSummary,
   Draft,
@@ -24,10 +25,13 @@ import { useInfiniteQuery, useQuery, useQueryClient, type QueryKey } from '@tans
 import { toast } from 'sonner';
 
 import { getApiClient } from '@/lib/api';
+import { getAccessToken } from '@/lib/auth-client';
 import { DEMO_MODE } from '@/lib/demo';
+import { env } from '@/lib/env';
 import {
   applyMockAction,
   applyMockLabel,
+  getMockAttachmentBlob,
   getMockContact,
   getMockLabels,
   getMockOpens,
@@ -45,6 +49,7 @@ import {
   mockSnoozeThread,
   mockUnsnoozeThread,
   mockUnsubscribe,
+  searchMockAttachments,
 } from '@/lib/mail-mock';
 import { fetchSnippets } from '@/lib/settings-data';
 import type { MailboxView } from '@/lib/mail-utils';
@@ -898,6 +903,110 @@ export async function runProposeEvent(
     return { ...res, source: 'api' };
   } catch (err) {
     if (DEMO_MODE) return { ...mockProposeEvent(threadId), source: 'demo' };
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Attachments (M2.5) — quick access + inline preview (Task 16)
+// ---------------------------------------------------------------------------
+
+export interface AttachmentSearchParams {
+  q?: string;
+  contact?: string;
+  threadId?: string;
+}
+
+export interface AttachmentSearchPage {
+  page: Page<AttachmentHit>;
+  source: DataSource;
+}
+
+const ATTACHMENT_PAGE_LIMIT = 30;
+
+/**
+ * Cursor-paginated attachment search (GET /v1/mail/attachments) as an infinite
+ * query — `fetchNextPage` walks the keyset cursor the backend returns. Demo
+ * fallback only kicks in (DEMO_MODE) when the real request fails, same as
+ * every other hook in this module.
+ */
+export function useAttachmentSearch(params: AttachmentSearchParams) {
+  return useInfiniteQuery({
+    queryKey: ['attachments', params.q ?? '', params.contact ?? '', params.threadId ?? ''],
+    queryFn: async ({ pageParam }: { pageParam?: string }): Promise<AttachmentSearchPage> => {
+      try {
+        const page = await getApiClient().searchAttachments({
+          q: params.q || undefined,
+          contact: params.contact || undefined,
+          threadId: params.threadId || undefined,
+          cursor: pageParam || undefined,
+          limit: ATTACHMENT_PAGE_LIMIT,
+        });
+        return { page, source: 'api' };
+      } catch (err) {
+        if (DEMO_MODE) {
+          return {
+            page: searchMockAttachments(params, pageParam, ATTACHMENT_PAGE_LIMIT),
+            source: 'demo',
+          };
+        }
+        throw err;
+      }
+    },
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.page.nextCursor ?? undefined,
+  });
+}
+
+/**
+ * Parses filename="..." out of a Content-Disposition header value (RFC 6266
+ * quoted-string form — matches escapeQuotedString on the backend).
+ */
+function parseContentDispositionFilename(header: string | null): string | null {
+  if (!header) return null;
+  const match = header.match(/filename="((?:[^"\\]|\\.)*)"/);
+  if (!match) return null;
+  return match[1]!.replace(/\\(.)/g, '$1');
+}
+
+export interface AttachmentBlobResult {
+  blobUrl: string;
+  filename: string;
+  mimeType: string;
+}
+
+/**
+ * Fetches an attachment's real bytes (authed GET of attachmentContentPath)
+ * and wraps them as an object URL for inline preview or download. Outside
+ * demo mode this always hits the real API; DEMO_MODE only kicks in as a
+ * fallback when the fetch fails, mirroring every other data-layer function
+ * here. Callers must revoke the returned blobUrl once done with it.
+ */
+export async function fetchAttachmentBlob(attachmentId: string): Promise<AttachmentBlobResult> {
+  try {
+    const token = await getAccessToken();
+    const res = await fetch(`${env.apiUrl}${getApiClient().attachmentContentPath(attachmentId)}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    });
+    if (!res.ok) {
+      throw new ApiRequestError(res.status, 'unknown', `Request failed with status ${res.status}`);
+    }
+    const blob = await res.blob();
+    const filename =
+      parseContentDispositionFilename(res.headers.get('Content-Disposition')) ?? 'attachment';
+    const mimeType = res.headers.get('Content-Type') || blob.type || 'application/octet-stream';
+    return { blobUrl: URL.createObjectURL(blob), filename, mimeType };
+  } catch (err) {
+    if (DEMO_MODE) {
+      const mock = getMockAttachmentBlob(attachmentId);
+      if (mock) {
+        return {
+          blobUrl: URL.createObjectURL(mock.blob),
+          filename: mock.filename,
+          mimeType: mock.mimeType,
+        };
+      }
+    }
     throw err;
   }
 }

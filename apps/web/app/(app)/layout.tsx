@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 
 import { AskSidebarPanel, AskSidebarProvider } from '@/components/ai/ask-sidebar';
+import { AttachmentsPaneProvider } from '@/components/app/attachments-pane';
 import { CommandPalette } from '@/components/app/command-palette';
 import { ComposeProvider, useCompose } from '@/components/app/compose';
 import { useTheme } from '@/components/theme-provider';
@@ -70,24 +71,26 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   if (isPending || !session) return <Splash />;
 
   return (
-    <ComposeProvider>
-      <AskSidebarProvider>
-        <TooltipProvider>
-          <div className="bg-background flex h-svh overflow-hidden">
-            <React.Suspense fallback={<div className="w-60 shrink-0 border-r" />}>
-              <SideRail user={user} />
-            </React.Suspense>
-            <div className="flex min-w-0 flex-1 flex-col">
-              <OfflineBanner />
-              <main className="min-h-0 flex-1">{children}</main>
+    <AttachmentsPaneProvider>
+      <ComposeProvider>
+        <AskSidebarProvider>
+          <TooltipProvider>
+            <div className="bg-background flex h-svh overflow-hidden">
+              <React.Suspense fallback={<div className="w-60 shrink-0 border-r" />}>
+                <SideRail user={user} />
+              </React.Suspense>
+              <div className="flex min-w-0 flex-1 flex-col">
+                <OfflineBanner />
+                <main className="min-h-0 flex-1">{children}</main>
+              </div>
+              <AskSidebarPanel />
             </div>
-            <AskSidebarPanel />
-          </div>
-          <CommandPalette />
-          <GlobalShortcuts />
-        </TooltipProvider>
-      </AskSidebarProvider>
-    </ComposeProvider>
+            <CommandPalette />
+            <GlobalShortcuts />
+          </TooltipProvider>
+        </AskSidebarProvider>
+      </ComposeProvider>
+    </AttachmentsPaneProvider>
   );
 }
 
