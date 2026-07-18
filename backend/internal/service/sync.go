@@ -521,6 +521,25 @@ func (s *SyncService) deliverDraft(ctx context.Context, d domain.Draft) error {
 		}
 	}
 
+	// Auto-BCC: merge the account's configured addresses into the outgoing
+	// BCC, skipping any address already present on the message. This is a
+	// delivery-only concern applied server-side (M2.4/M2.3 convention -- never
+	// trust the client) -- the mirrored domain.Message below keeps the
+	// draft's original Bcc, so auto-BCC never becomes visible thread content.
+	if len(acct.AutoBcc) > 0 {
+		seen := make(map[string]bool, len(d.To)+len(d.Cc)+len(d.Bcc))
+		for _, lists := range [][]domain.EmailAddress{d.To, d.Cc, d.Bcc} {
+			for _, a := range lists {
+				seen[strings.ToLower(a.Email)] = true
+			}
+		}
+		for _, addr := range acct.AutoBcc {
+			if !seen[strings.ToLower(addr)] {
+				out.Bcc = append(out.Bcc, domain.EmailAddress{Email: addr})
+			}
+		}
+	}
+
 	// Claim the draft before sending so a crash/retry between send and delete, a
 	// slow post-send DB write, or a second worker instance cannot deliver it
 	// twice. Clearing scheduled_at is the claim token: ListScheduledDue only

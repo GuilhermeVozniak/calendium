@@ -193,6 +193,22 @@ func TestSetSignature(t *testing.T) {
 			t.Fatalf("SetSignature(ghost) err = %v, want ErrNotFound", err)
 		}
 	})
+
+	t.Run("signature over 100 KB returns ErrValidation, unchanged", func(t *testing.T) {
+		accounts := newAccountRepo()
+		if _, err := accounts.Create(ctx, domain.ConnectedAccount{ID: "a1", UserID: owner}); err != nil {
+			t.Fatal(err)
+		}
+		svc := NewAccountService(accounts, nil, nil, nil, nil, "", newClock(time.Now()))
+
+		oversized := strings.Repeat("a", 100*1024+1)
+		if _, err := svc.SetSignature(ctx, owner, "a1", oversized); !errors.Is(err, domain.ErrValidation) {
+			t.Fatalf("SetSignature(oversized) err = %v, want ErrValidation", err)
+		}
+		if accounts.updated != nil {
+			t.Fatalf("oversized signature was persisted: %+v", accounts.updated)
+		}
+	})
 }
 
 // --- AccountService.SetAutoBcc ------------------------------------------------
@@ -254,6 +270,48 @@ func TestSetAutoBcc(t *testing.T) {
 
 		if _, err := svc.SetAutoBcc(ctx, owner, "ghost", []string{"x@y.com"}); !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("SetAutoBcc(ghost) err = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("display-name-wrapped address is canonicalized to the bare lowercased address", func(t *testing.T) {
+		accounts := newAccountRepo()
+		if _, err := accounts.Create(ctx, domain.ConnectedAccount{ID: "a1", UserID: owner}); err != nil {
+			t.Fatal(err)
+		}
+		svc := NewAccountService(accounts, nil, nil, nil, nil, "", newClock(time.Now()))
+
+		// "Bob <Bob@X.com>" is syntactically valid per mail.ParseAddress but
+		// must never be persisted (or handed to a provider) with the display
+		// name attached -- only the bare, lowercased address is stored.
+		got, err := svc.SetAutoBcc(ctx, owner, "a1", []string{"Bob <Bob@X.com>"})
+		if err != nil {
+			t.Fatalf("SetAutoBcc: %v", err)
+		}
+		want := []string{"bob@x.com"}
+		if !reflect.DeepEqual(got.AutoBcc, want) {
+			t.Fatalf("AutoBcc = %v, want %v (display name must be discarded)", got.AutoBcc, want)
+		}
+	})
+
+	t.Run("invalid address returns ErrValidation, unchanged", func(t *testing.T) {
+		accounts := newAccountRepo()
+		if _, err := accounts.Create(ctx, domain.ConnectedAccount{ID: "a1", UserID: owner}); err != nil {
+			t.Fatal(err)
+		}
+		svc := NewAccountService(accounts, nil, nil, nil, nil, "", newClock(time.Now()))
+
+		if _, err := svc.SetAutoBcc(ctx, owner, "a1", []string{"not-an-email"}); !errors.Is(err, domain.ErrValidation) {
+			t.Fatalf("SetAutoBcc(invalid) err = %v, want ErrValidation", err)
+		}
+		if accounts.updated != nil {
+			t.Fatalf("account was updated despite an invalid entry: %+v", accounts.updated)
+		}
+		stored, err := accounts.GetByID(ctx, "a1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(stored.AutoBcc) != 0 {
+			t.Fatalf("AutoBcc = %v, want unchanged empty", stored.AutoBcc)
 		}
 	})
 }
