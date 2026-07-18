@@ -52,6 +52,7 @@ func (s *Store) Bookings() port.BookingRepo             { return bookingRepo{s} 
 func (s *Store) Polls() port.PollRepo                   { return pollRepo{s} }
 func (s *Store) TimeProposals() port.TimeProposalRepo   { return timeProposalRepo{s} }
 func (s *Store) UserSettings() port.UserSettingsRepo    { return userSettingsRepo{s} }
+func (s *Store) Reactions() port.ReactionRepo           { return reactionRepo{s} }
 
 var (
 	_ port.TxRunner          = (*Store)(nil)
@@ -81,6 +82,7 @@ var (
 	_ port.PollRepo          = pollRepo{}
 	_ port.TimeProposalRepo  = timeProposalRepo{}
 	_ port.UserSettingsRepo  = userSettingsRepo{}
+	_ port.ReactionRepo      = reactionRepo{}
 )
 
 type (
@@ -110,6 +112,7 @@ type (
 	pollRepo          struct{ *Store }
 	timeProposalRepo  struct{ *Store }
 	userSettingsRepo  struct{ *Store }
+	reactionRepo      struct{ *Store }
 )
 
 // --- transactions -----------------------------------------------------------

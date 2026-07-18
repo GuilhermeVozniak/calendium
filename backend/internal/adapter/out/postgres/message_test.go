@@ -388,3 +388,308 @@ func TestMessageRepoListOpensEmpty(t *testing.T) {
 		t.Fatalf("NextCursor = %v, want nil", *page.NextCursor)
 	}
 }
+
+func TestMessageRepoOpenHourHistogram(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	acct := seedAccount(t, st, "u1")
+	th := seedThread(t, st, acct.ID, time.Now())
+
+	opened9a := time.Date(2026, 2, 1, 9, 15, 0, 0, time.UTC)
+	opened9b := time.Date(2026, 2, 2, 9, 45, 0, 0, time.UTC)
+	opened14 := time.Date(2026, 2, 3, 14, 0, 0, 0, time.UTC)
+
+	seed := func(to, from string, opened *time.Time) {
+		if _, err := st.Messages().Upsert(ctx, domain.Message{
+			ThreadID: th.ID, AccountID: acct.ID, ProviderMessageID: newID(),
+			From:     domain.EmailAddress{Email: from},
+			To:       []domain.EmailAddress{{Email: to}},
+			SentAt:   time.Now().UTC(),
+			OpenedAt: opened,
+		}); err != nil {
+			t.Fatalf("seed message: %v", err)
+		}
+	}
+
+	seed("recipient@example.com", acct.Email, &opened9a)
+	seed("recipient@example.com", acct.Email, &opened9b)
+	seed("recipient@example.com", acct.Email, &opened14)
+	seed("recipient@example.com", acct.Email, nil)                   // not opened: excluded
+	seed("someone-else@example.com", acct.Email, &opened9a)          // different recipient: excluded
+	seed("recipient@example.com", "external@example.com", &opened9a) // not this user's own send: excluded
+
+	hist, err := st.Messages().OpenHourHistogram(ctx, "u1", "recipient@example.com")
+	if err != nil {
+		t.Fatalf("OpenHourHistogram: %v", err)
+	}
+	if hist[9] != 2 {
+		t.Fatalf("hist[9] = %d, want 2", hist[9])
+	}
+	if hist[14] != 1 {
+		t.Fatalf("hist[14] = %d, want 1", hist[14])
+	}
+	total := 0
+	for _, c := range hist {
+		total += c
+	}
+	if total != 3 {
+		t.Fatalf("total = %d, want 3 (unwanted rows leaked in)", total)
+	}
+}
+
+func TestMessageRepoContactSummary(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	acct := seedAccount(t, st, "u1")
+
+	const contact = "contact@example.com"
+	nameOld, nameNew := "Old Name", "New Name"
+
+	th1, err := st.Threads().Upsert(ctx, domain.Thread{
+		AccountID: acct.ID, ProviderThreadID: newID(), Subject: "t1", Split: domain.SplitImportant,
+		InInbox: true, MessageCount: 1, LastMessageAt: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+		Participants: []domain.EmailAddress{{Email: contact}},
+	})
+	if err != nil {
+		t.Fatalf("seed th1: %v", err)
+	}
+	th2, err := st.Threads().Upsert(ctx, domain.Thread{
+		AccountID: acct.ID, ProviderThreadID: newID(), Subject: "t2", Split: domain.SplitImportant,
+		InInbox: true, MessageCount: 1, LastMessageAt: time.Date(2026, 2, 3, 0, 0, 0, 0, time.UTC),
+		Participants: []domain.EmailAddress{{Email: contact}},
+	})
+	if err != nil {
+		t.Fatalf("seed th2: %v", err)
+	}
+	// A third thread with no relation to the contact, to prove it's excluded.
+	if _, err := st.Threads().Upsert(ctx, domain.Thread{
+		AccountID: acct.ID, ProviderThreadID: newID(), Subject: "unrelated", Split: domain.SplitImportant,
+		InInbox: true, MessageCount: 1, LastMessageAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed unrelated thread: %v", err)
+	}
+
+	// Older message from the contact.
+	if _, err := st.Messages().Upsert(ctx, domain.Message{
+		ThreadID: th1.ID, AccountID: acct.ID, ProviderMessageID: newID(),
+		From: domain.EmailAddress{Name: &nameOld, Email: contact}, SentAt: time.Date(2026, 2, 1, 9, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("seed older message: %v", err)
+	}
+	// Message the user sent to the contact.
+	if _, err := st.Messages().Upsert(ctx, domain.Message{
+		ThreadID: th1.ID, AccountID: acct.ID, ProviderMessageID: newID(),
+		From: domain.EmailAddress{Email: acct.Email}, To: []domain.EmailAddress{{Email: contact}},
+		SentAt: time.Date(2026, 2, 2, 9, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("seed sent message: %v", err)
+	}
+	// Newest message from the contact, with a different display name.
+	newest := time.Date(2026, 2, 3, 9, 0, 0, 0, time.UTC)
+	if _, err := st.Messages().Upsert(ctx, domain.Message{
+		ThreadID: th2.ID, AccountID: acct.ID, ProviderMessageID: newID(),
+		From: domain.EmailAddress{Name: &nameNew, Email: contact}, SentAt: newest,
+	}); err != nil {
+		t.Fatalf("seed newest message: %v", err)
+	}
+
+	summary, err := st.Messages().ContactSummary(ctx, "u1", strings.ToUpper(contact))
+	if err != nil {
+		t.Fatalf("ContactSummary: %v", err)
+	}
+	if summary.Email != contact {
+		t.Fatalf("Email = %q, want %q", summary.Email, contact)
+	}
+	if summary.Domain != "example.com" {
+		t.Fatalf("Domain = %q, want example.com", summary.Domain)
+	}
+	if summary.MessageCount != 3 {
+		t.Fatalf("MessageCount = %d, want 3", summary.MessageCount)
+	}
+	if summary.Name == nil || *summary.Name != nameNew {
+		t.Fatalf("Name = %v, want %q (newest message's name)", summary.Name, nameNew)
+	}
+	if summary.LastMessageAt == nil || !summary.LastMessageAt.Equal(newest) {
+		t.Fatalf("LastMessageAt = %v, want %v", summary.LastMessageAt, newest)
+	}
+	if summary.ThreadCount != 2 {
+		t.Fatalf("ThreadCount = %d, want 2", summary.ThreadCount)
+	}
+	if len(summary.RecentThreads) != 2 || summary.RecentThreads[0].ID != th2.ID || summary.RecentThreads[1].ID != th1.ID {
+		t.Fatalf("RecentThreads = %+v, want [th2, th1] newest first", summary.RecentThreads)
+	}
+}
+
+func TestMessageRepoContactSummaryEmptyMirror(t *testing.T) {
+	st, _ := newTestStore(t)
+	summary, err := st.Messages().ContactSummary(context.Background(), "no-such-user", "nobody@example.com")
+	if err != nil {
+		t.Fatalf("ContactSummary: %v", err)
+	}
+	if summary.MessageCount != 0 {
+		t.Fatalf("MessageCount = %d, want 0", summary.MessageCount)
+	}
+	if summary.ThreadCount != 0 {
+		t.Fatalf("ThreadCount = %d, want 0", summary.ThreadCount)
+	}
+	if summary.Name != nil {
+		t.Fatalf("Name = %v, want nil", summary.Name)
+	}
+	if summary.LastMessageAt != nil {
+		t.Fatalf("LastMessageAt = %v, want nil", summary.LastMessageAt)
+	}
+	if summary.RecentThreads == nil || len(summary.RecentThreads) != 0 {
+		t.Fatalf("RecentThreads = %+v, want non-nil empty slice", summary.RecentThreads)
+	}
+}
+
+func TestMessageRepoSearchAttachments(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	seedUser(t, st, "u2")
+	acct1 := seedAccount(t, st, "u1")
+	acct2 := seedAccount(t, st, "u2")
+	th1 := seedThread(t, st, acct1.ID, time.Now())
+	th1b := seedThread(t, st, acct1.ID, time.Now())
+	th2 := seedThread(t, st, acct2.ID, time.Now())
+
+	t0 := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
+	t1 := t0.Add(1 * time.Hour)
+	t2 := t0.Add(2 * time.Hour)
+
+	// m1: report from the contact, in th1.
+	m1, err := st.Messages().Upsert(ctx, domain.Message{
+		ThreadID: th1.ID, AccountID: acct1.ID, ProviderMessageID: newID(),
+		From: domain.EmailAddress{Email: "contact@example.com"}, SentAt: t0,
+		Attachments: []domain.Attachment{{Filename: "Report.pdf", MimeType: "application/pdf", SizeBytes: 10, ProviderAttachmentID: "gmail-att-1"}},
+	})
+	if err != nil {
+		t.Fatalf("seed m1: %v", err)
+	}
+	// m2: photo sent by acct1 to the contact, in th1b.
+	m2, err := st.Messages().Upsert(ctx, domain.Message{
+		ThreadID: th1b.ID, AccountID: acct1.ID, ProviderMessageID: newID(),
+		From: domain.EmailAddress{Email: acct1.Email}, To: []domain.EmailAddress{{Email: "contact@example.com"}},
+		SentAt:      t1,
+		Attachments: []domain.Attachment{{Filename: "photo.png", MimeType: "image/png", SizeBytes: 20}},
+	})
+	if err != nil {
+		t.Fatalf("seed m2: %v", err)
+	}
+	// m3: an invoice-report cc'ing the contact, in th1 (newest).
+	m3, err := st.Messages().Upsert(ctx, domain.Message{
+		ThreadID: th1.ID, AccountID: acct1.ID, ProviderMessageID: newID(),
+		From: domain.EmailAddress{Email: "other@example.com"}, Cc: []domain.EmailAddress{{Email: "contact@example.com"}},
+		SentAt:      t2,
+		Attachments: []domain.Attachment{{Filename: "invoice-report.pdf", MimeType: "application/pdf", SizeBytes: 30}},
+	})
+	if err != nil {
+		t.Fatalf("seed m3: %v", err)
+	}
+	// u2's own report attachment: must never leak into u1's search.
+	if _, err := st.Messages().Upsert(ctx, domain.Message{
+		ThreadID: th2.ID, AccountID: acct2.ID, ProviderMessageID: newID(),
+		From: domain.EmailAddress{Email: "contact@example.com"}, SentAt: t2,
+		Attachments: []domain.Attachment{{Filename: "report.pdf", MimeType: "application/pdf", SizeBytes: 5}},
+	}); err != nil {
+		t.Fatalf("seed u2 message: %v", err)
+	}
+
+	// Case-insensitive filename search.
+	byName, err := st.Messages().SearchAttachments(ctx, port.AttachmentQuery{UserID: "u1", Query: "report"})
+	if err != nil {
+		t.Fatalf("SearchAttachments by name: %v", err)
+	}
+	if len(byName.Items) != 2 || byName.Items[0].MessageID != m3.ID || byName.Items[1].MessageID != m1.ID {
+		t.Fatalf("byName = %+v, want [m3, m1] newest first", byName.Items)
+	}
+
+	// Contact filter matches from/to/cc.
+	byContact, err := st.Messages().SearchAttachments(ctx, port.AttachmentQuery{UserID: "u1", Contact: "contact@example.com"})
+	if err != nil {
+		t.Fatalf("SearchAttachments by contact: %v", err)
+	}
+	if len(byContact.Items) != 3 {
+		t.Fatalf("byContact = %+v, want 3 items (from/to/cc)", byContact.Items)
+	}
+
+	// Thread filter.
+	byThread, err := st.Messages().SearchAttachments(ctx, port.AttachmentQuery{UserID: "u1", ThreadID: th1.ID})
+	if err != nil {
+		t.Fatalf("SearchAttachments by thread: %v", err)
+	}
+	if len(byThread.Items) != 2 || byThread.Items[0].MessageID != m3.ID || byThread.Items[1].MessageID != m1.ID {
+		t.Fatalf("byThread = %+v, want [m3, m1]", byThread.Items)
+	}
+
+	// User isolation: u2 only sees its own attachment.
+	u2Hits, err := st.Messages().SearchAttachments(ctx, port.AttachmentQuery{UserID: "u2", Query: "report"})
+	if err != nil {
+		t.Fatalf("SearchAttachments u2: %v", err)
+	}
+	if len(u2Hits.Items) != 1 || u2Hits.Items[0].From.Email != "contact@example.com" {
+		t.Fatalf("u2Hits = %+v, want u2's own report.pdf only", u2Hits.Items)
+	}
+
+	// Pagination: limit 1 -> cursor -> page 2.
+	page1, err := st.Messages().SearchAttachments(ctx, port.AttachmentQuery{UserID: "u1", Limit: 1})
+	if err != nil {
+		t.Fatalf("SearchAttachments page1: %v", err)
+	}
+	if len(page1.Items) != 1 || page1.NextCursor == nil {
+		t.Fatalf("page1 = %+v, want 1 item with a cursor", page1)
+	}
+	if page1.Items[0].MessageID != m3.ID {
+		t.Fatalf("page1 item = %+v, want m3's attachment (newest)", page1.Items[0])
+	}
+	page2, err := st.Messages().SearchAttachments(ctx, port.AttachmentQuery{UserID: "u1", Limit: 1, Cursor: *page1.NextCursor})
+	if err != nil {
+		t.Fatalf("SearchAttachments page2: %v", err)
+	}
+	if len(page2.Items) != 1 || page2.Items[0].ID == page1.Items[0].ID {
+		t.Fatalf("page2 = %+v, want a different single item than page1", page2.Items)
+	}
+	if page2.Items[0].MessageID != m2.ID {
+		t.Fatalf("page2 item = %+v, want m2's attachment", page2.Items[0])
+	}
+}
+
+func TestMessageRepoGetAttachment(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	acct := seedAccount(t, st, "u1")
+	th := seedThread(t, st, acct.ID, time.Now())
+
+	created, err := st.Messages().Upsert(ctx, domain.Message{
+		ThreadID: th.ID, AccountID: acct.ID, ProviderMessageID: newID(),
+		From: domain.EmailAddress{Email: "sender@example.com"}, SentAt: time.Now(),
+		Attachments: []domain.Attachment{{Filename: "x.pdf", MimeType: "application/pdf", SizeBytes: 1, ProviderAttachmentID: "prov-123"}},
+	})
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	msg, err := st.Messages().GetByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	attID := msg.Attachments[0].ID
+
+	att, msgID, err := st.Messages().GetAttachment(ctx, attID)
+	if err != nil {
+		t.Fatalf("GetAttachment: %v", err)
+	}
+	if msgID != created.ID {
+		t.Fatalf("msgID = %q, want %q", msgID, created.ID)
+	}
+	if att.ProviderAttachmentID != "prov-123" {
+		t.Fatalf("ProviderAttachmentID = %q, want prov-123 (replaceAttachments must persist it)", att.ProviderAttachmentID)
+	}
+
+	if _, _, err := st.Messages().GetAttachment(ctx, "missing"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
