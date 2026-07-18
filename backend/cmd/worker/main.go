@@ -129,6 +129,7 @@ func run(logger *slog.Logger) error {
 		OAuth:             oauth,
 		Push:              pushSender,
 		AiJobs:            aiJobsRepo,
+		Classifiers:       store.Classifiers(),
 		Clock:             service.SystemClock{},
 	})
 	calendarSvc := service.NewCalendarService(service.CalendarServiceDeps{

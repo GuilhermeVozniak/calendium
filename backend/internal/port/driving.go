@@ -195,9 +195,28 @@ type SearchService interface {
 	Search(ctx context.Context, userID, query string) (SearchResult, error)
 }
 
-// AIService is the OpenRouter-backed compose/reply/summarize/ask endpoint.
+// ClassifierInput is the create/update payload for a user-defined
+// natural-language classifier (POST/PATCH /v1/classifiers). At least one of
+// TargetSplit/LabelName is required; TargetSplit, when set, is validated via
+// domain.ParseInboxSplit.
+type ClassifierInput struct {
+	Name        string            `json:"name"`
+	Prompt      string            `json:"prompt"`
+	TargetSplit domain.InboxSplit `json:"targetSplit,omitempty"`
+	LabelName   string            `json:"labelName,omitempty"`
+	Enabled     bool              `json:"enabled"`
+}
+
+// AIService is the OpenRouter-backed compose/reply/summarize/ask endpoint,
+// plus CRUD for the user's custom natural-language classifiers (applied at
+// ingest by AIJobService's classify job kind).
 type AIService interface {
 	Compose(ctx context.Context, userID string, req domain.AiComposeRequest) (domain.AiComposeResponse, error)
+
+	ListClassifiers(ctx context.Context, userID string) ([]domain.AiClassifier, error)
+	CreateClassifier(ctx context.Context, userID string, in ClassifierInput) (domain.AiClassifier, error)
+	UpdateClassifier(ctx context.Context, userID, classifierID string, in ClassifierInput) (domain.AiClassifier, error)
+	DeleteClassifier(ctx context.Context, userID, classifierID string) error
 }
 
 // DeviceService manages push-notification device registrations.
