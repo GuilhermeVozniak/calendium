@@ -106,6 +106,7 @@ vi.mock('@/lib/use-mail', () => ({
     markOpened: markOpenedMock,
     unsubscribe: unsubscribeMock,
   }),
+  useReactToMessage: () => ({ react: vi.fn(), removeReaction: vi.fn() }),
   useLabels: () => ({ data: { labels: [{ id: 'lbl1', accountId: 'acc_1', name: 'Updates', kind: 'user', color: null }] }, isLoading: false }),
   useDrafts: () => ({ data: { drafts: [] }, isLoading: false, isError: false }),
   useDraftActions: () => ({ remove: vi.fn() }),

@@ -14,6 +14,7 @@ import type {
   Message,
   OpenEvent,
   Page,
+  Reaction,
   Thread,
   ThreadAction,
   UnsubscribeResult,
@@ -38,7 +39,9 @@ import {
   mockBulkAction,
   mockInstantReplies,
   mockProposeEvent,
+  mockReactToMessage,
   mockRemindThread,
+  mockRemoveReaction,
   mockSnoozeThread,
   mockUnsnoozeThread,
   mockUnsubscribe,
@@ -667,6 +670,118 @@ export function useMailActions() {
     getMeToZero,
     undoLast,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Emoji reactions (M2.5) — honesty policy: chips render from real data +
+// mutation RESPONSES only. The optimistic patch below never claims
+// delivery: "sent" ahead of the server's answer, and a failed request
+// reverts it rather than leaving a fabricated chip behind.
+// ---------------------------------------------------------------------------
+
+function upsertReaction(m: Message, reaction: Reaction): Message {
+  return { ...m, reactions: [...m.reactions.filter((r) => r.emoji !== reaction.emoji), reaction] };
+}
+
+function dropReaction(m: Message, emoji: string): Message {
+  return { ...m, reactions: m.reactions.filter((r) => r.emoji !== emoji) };
+}
+
+async function undoTinyReply(draftId: string): Promise<void> {
+  try {
+    await getApiClient().unsendDraft(draftId);
+    toast.success('Send undone — the message is back in your drafts.');
+  } catch (err) {
+    if (err instanceof ApiRequestError && err.status === 409) {
+      toast.error('Too late — that message already went out.');
+    } else {
+      toast.error('Could not undo the send.');
+    }
+  }
+}
+
+/**
+ * Surfaces the undo-capable toast the moment a reaction's response reports a
+ * real tiny-reply send — draftId is only ever non-null when the backend's
+ * OBSERVED delivery was "sent" (see mail.go ReactToMessage), so this never
+ * fires on a merely-requested-but-undelivered reply.
+ */
+function notifyTinyReply(draftId: string | null): void {
+  if (!draftId) return;
+  toast.success('Sent a tiny reply', {
+    action: { label: 'Undo', onClick: () => void undoTinyReply(draftId) },
+  });
+}
+
+export function useReactToMessage() {
+  const queryClient = useQueryClient();
+
+  function patchMessage(threadId: string, messageId: string, patch: (m: Message) => Message) {
+    queryClient.setQueryData<ThreadDetailResult | null | undefined>(['thread', threadId], (data) =>
+      data ? { ...data, messages: data.messages.map((m) => (m.id === messageId ? patch(m) : m)) } : data
+    );
+  }
+
+  /**
+   * Adds (or replaces) a reaction on a message. Optimistically shows a
+   * `delivery: 'local'` chip immediately — never `'sent'`, since whether a
+   * tiny reply actually went out is the server's call, not a client guess —
+   * then reconciles with the real ReactionResult once it resolves. Only the
+   * resolved response's `draftId` (which the backend only sets when delivery
+   * really is "sent") triggers the undo-capable toast.
+   */
+  async function react(
+    threadId: string,
+    messageId: string,
+    emoji: string,
+    sendReply: boolean
+  ): Promise<void> {
+    const previous = queryClient.getQueryData<ThreadDetailResult | null | undefined>([
+      'thread',
+      threadId,
+    ]);
+    const pending: Reaction = {
+      id: `pending:${messageId}:${emoji}`,
+      messageId,
+      emoji,
+      delivery: 'local',
+      createdAt: new Date().toISOString(),
+    };
+    patchMessage(threadId, messageId, (m) => upsertReaction(m, pending));
+    if (DEMO_MODE) {
+      const result = mockReactToMessage(messageId, emoji, sendReply);
+      patchMessage(threadId, messageId, (m) => upsertReaction(m, result.reaction));
+      notifyTinyReply(result.draftId);
+    }
+    try {
+      const result = await getApiClient().reactToMessage(messageId, emoji, sendReply);
+      patchMessage(threadId, messageId, (m) => upsertReaction(m, result.reaction));
+      notifyTinyReply(result.draftId);
+    } catch {
+      if (DEMO_MODE) return;
+      queryClient.setQueryData(['thread', threadId], previous);
+      toast.error('Could not add the reaction.');
+    }
+  }
+
+  /** Removes a reaction; reverts the optimistic removal on a real failure. */
+  async function removeReaction(threadId: string, messageId: string, emoji: string): Promise<void> {
+    const previous = queryClient.getQueryData<ThreadDetailResult | null | undefined>([
+      'thread',
+      threadId,
+    ]);
+    patchMessage(threadId, messageId, (m) => dropReaction(m, emoji));
+    if (DEMO_MODE) mockRemoveReaction(messageId, emoji);
+    try {
+      await getApiClient().removeReaction(messageId, emoji);
+    } catch {
+      if (DEMO_MODE) return;
+      queryClient.setQueryData(['thread', threadId], previous);
+      toast.error('Could not remove the reaction.');
+    }
+  }
+
+  return { react, removeReaction };
 }
 
 // ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ import { useCompose } from '@/components/app/compose';
 import { ContactPane } from '@/components/app/contact-pane';
 import { TimePickerDialog } from '@/components/app/snooze-menu';
 import { InstantReplies } from '@/components/mail/instant-replies';
+import { MessageReactions } from '@/components/mail/message-reactions';
 import { ThreadSummary } from '@/components/mail/thread-summary';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -49,7 +50,13 @@ import {
 import { useSelfEmails } from '@/lib/use-identity';
 import { useChords, useShortcuts } from '@/lib/shortcuts';
 import { useInstance } from '@/lib/use-instance';
-import { runAiAsk, runAiSummarize, useMailActions, useThreadDetail } from '@/lib/use-mail';
+import {
+  runAiAsk,
+  runAiSummarize,
+  useMailActions,
+  useReactToMessage,
+  useThreadDetail,
+} from '@/lib/use-mail';
 import { teachShortcut } from '@/lib/shortcut-hints';
 import { cn } from '@/lib/utils';
 
@@ -192,6 +199,7 @@ interface ThreadViewProps {
 export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEvent }: ThreadViewProps) {
   const { data, isLoading } = useThreadDetail(threadId);
   const { act, snooze, remind, markOpened, unsubscribe } = useMailActions();
+  const { react: reactToMessage, removeReaction } = useReactToMessage();
   const { openCompose } = useCompose();
   const selfEmails = useSelfEmails();
   const isMe = React.useCallback<IsMe>(
@@ -509,7 +517,7 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
                     </span>
                   </button>
                 ) : (
-                  <div className="px-2 py-4">
+                  <div className="group px-2 py-4">
                     <div className="flex items-start gap-3">
                       <Avatar className="mt-0.5 size-8">
                         <AvatarFallback className="text-xs">
@@ -568,6 +576,12 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
                         Seen {formatListTime(message.openedAt)}
                       </p>
                     )}
+
+                    <MessageReactions
+                      message={message}
+                      onReact={(emoji) => void reactToMessage(thread.id, message.id, emoji, !mine)}
+                      onRemove={(emoji) => void removeReaction(thread.id, message.id, emoji)}
+                    />
                   </div>
                 )}
               </div>

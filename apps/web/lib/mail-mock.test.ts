@@ -7,6 +7,8 @@ import {
   getMockThreads,
   mockArchiveOlderThan,
   mockBulkAction,
+  mockReactToMessage,
+  mockRemoveReaction,
   mockUnsubscribe,
 } from './mail-mock';
 
@@ -56,5 +58,52 @@ describe('mail-mock triage extensions', () => {
     const count = mockArchiveOlderThan(new Date(Date.now() - 365 * 24 * 3_600_000).toISOString());
     expect(count).toBe(0); // nothing in the demo set is a year old
     expect(getMockThreads({}).items.length).toBe(before);
+  });
+});
+
+describe('mail-mock reactions (M2.5)', () => {
+  const otherMessageId = 'thr_01_m1'; // from Priya, not the demo account itself
+  const ownMessageId = 'thr_01_m2'; // from the demo account (me@calendium.app)
+
+  it('adds a local reaction when no tiny reply is requested', () => {
+    const result = mockReactToMessage(otherMessageId, '👍', false);
+    expect(result.reaction.emoji).toBe('👍');
+    expect(result.reaction.delivery).toBe('local');
+    expect(result.draftId).toBeNull();
+    expect(getMockThread('thr_01')!.messages.find((m) => m.id === otherMessageId)!.reactions).toContainEqual(
+      result.reaction
+    );
+    mockRemoveReaction(otherMessageId, '👍'); // restore for other tests
+  });
+
+  it('reports delivery "sent" with a draftId when sendReply is requested for someone else\'s message', () => {
+    const result = mockReactToMessage(otherMessageId, '🎉', true);
+    expect(result.reaction.delivery).toBe('sent');
+    expect(result.draftId).not.toBeNull();
+    mockRemoveReaction(otherMessageId, '🎉'); // restore for other tests
+  });
+
+  it('never tiny-replies to your own message even when sendReply is requested', () => {
+    const result = mockReactToMessage(ownMessageId, '✅', true);
+    expect(result.reaction.delivery).toBe('local');
+    expect(result.draftId).toBeNull();
+    mockRemoveReaction(ownMessageId, '✅'); // restore for other tests
+  });
+
+  it('is idempotent: reacting with an emoji already present returns the existing row and no new draft', () => {
+    const first = mockReactToMessage(otherMessageId, '❤️', true);
+    const second = mockReactToMessage(otherMessageId, '❤️', true);
+    expect(second.reaction).toEqual(first.reaction);
+    expect(second.draftId).toBeNull();
+    mockRemoveReaction(otherMessageId, '❤️'); // restore for other tests
+  });
+
+  it('mockRemoveReaction removes only the given emoji', () => {
+    mockReactToMessage(otherMessageId, '👍', false);
+    mockReactToMessage(otherMessageId, '🎉', false);
+    mockRemoveReaction(otherMessageId, '👍');
+    const reactions = getMockThread('thr_01')!.messages.find((m) => m.id === otherMessageId)!.reactions;
+    expect(reactions.map((r) => r.emoji)).toEqual(['🎉']);
+    mockRemoveReaction(otherMessageId, '🎉'); // restore for other tests
   });
 });
