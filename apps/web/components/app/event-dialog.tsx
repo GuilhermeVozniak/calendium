@@ -1,12 +1,14 @@
 'use client';
 
 import * as React from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { addDays, addMinutes, format, startOfDay } from 'date-fns';
 import {
   AlignLeft,
   Bell,
+  BookmarkPlus,
   ExternalLink,
+  LayoutTemplate,
   MapPin,
   Plus,
   Repeat,
@@ -17,7 +19,14 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 
-import type { Calendar, Event, EventInput, EventPatch, RsvpStatus } from '@calendium/shared';
+import type {
+  Calendar,
+  Event,
+  EventInput,
+  EventPatch,
+  EventTemplateInput,
+  RsvpStatus,
+} from '@calendium/shared';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -46,6 +55,12 @@ import {
   updateEventApi,
 } from '@/lib/calendar-data';
 import { nextHalfHour } from '@/lib/quick-add';
+import {
+  applyTemplate,
+  createEventTemplateApi,
+  fetchEventTemplates,
+  recordTemplateUsage,
+} from '@/lib/template-data';
 import { useSelfEmails } from '@/lib/use-identity';
 import { cn } from '@/lib/utils';
 
@@ -140,6 +155,11 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
 
   const selfEmails = useSelfEmails();
   const writableCalendars = calendars.filter((c) => c.canWrite);
+  const templatesQuery = useQuery({
+    queryKey: ['event-templates'],
+    queryFn: fetchEventTemplates,
+    enabled: open && !event,
+  });
   const organizer = event?.attendees.find((a) => a.organizer);
   const isInvite =
     !!event &&
@@ -280,6 +300,31 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
     };
   };
 
+  /**
+   * Applying a template replaces the create-form's fields wholesale, anchored
+   * at whatever slot the dialog is already pending on (the click/quick-add
+   * time), not "now" - so applying a template never moves the event off the
+   * time the user meant to create it at.
+   */
+  const handleTemplateSelect = (templateId: string) => {
+    const template = templatesQuery.data?.find((t) => t.id === templateId);
+    if (!template) return;
+    const anchor = parseInput(start, allDay) ?? new Date();
+    const applied = applyTemplate(template, anchor);
+    setTitle(applied.title ?? '');
+    setDescription(applied.description ?? '');
+    setLocation(applied.location ?? '');
+    setAllDay(applied.allDay ?? false);
+    if (applied.start) setStart(formatInput(new Date(applied.start), applied.allDay ?? false));
+    if (applied.end) setEnd(formatInput(new Date(applied.end), applied.allDay ?? false));
+    setRecurrenceRule(applied.recurrenceRule ?? null);
+    setAttendees(applied.attendeeEmails ?? []);
+    setMeet(applied.addConferencing ?? false);
+    setReminders(applied.reminderMinutes ?? []);
+    if (applied.calendarId) setCalendarId(applied.calendarId);
+    recordTemplateUsage(template.id);
+  };
+
   const save = useMutation({
     mutationFn: (input: EventInput) => {
       if (!event) return createEventApi(input);
@@ -336,6 +381,37 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
       toast.success('RSVP sent');
     },
     onError: () => toast.error('Could not send the RSVP'),
+  });
+
+  const saveAsTemplate = useMutation({
+    mutationFn: () => {
+      const startDate = parseInput(start, allDay);
+      const endDate = parseInput(end, allDay);
+      const durationMinutes =
+        startDate && endDate
+          ? Math.max(5, Math.round((endDate.getTime() - startDate.getTime()) / 60_000))
+          : 30;
+      const input: EventTemplateInput = {
+        name: title.trim() || '(No title)',
+        title: title.trim() || '(No title)',
+        description: description.trim() || undefined,
+        location: location.trim() || undefined,
+        durationMinutes,
+        allDay,
+        calendarId: calendarId || null,
+        attendeeEmails: attendees.length > 0 ? attendees : undefined,
+        addConferencing: meet || undefined,
+        reminderMinutes:
+          reminders.length > 0 ? [...reminders].sort((a, b) => a - b) : undefined,
+        recurrenceRule: recurrenceRule ?? undefined,
+      };
+      return createEventTemplateApi(input);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['event-templates'] });
+      toast.success('Saved as template');
+    },
+    onError: () => toast.error('Could not save the template'),
   });
 
   const handleSave = () => {
@@ -395,6 +471,27 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
             aria-label="Event title"
             className="h-10 text-base font-medium"
           />
+
+          {!event && (templatesQuery.data?.length ?? 0) > 0 && (
+            <FieldRow icon={LayoutTemplate}>
+              <Select value="" onValueChange={handleTemplateSelect}>
+                <SelectTrigger
+                  size="sm"
+                  className="h-8 w-full"
+                  aria-label="Start from template"
+                >
+                  <SelectValue placeholder="Start from template (optional)" />
+                </SelectTrigger>
+                <SelectContent>
+                  {templatesQuery.data?.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      {t.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FieldRow>
+          )}
 
           <div className="grid grid-cols-2 gap-2">
             <div className="grid gap-1.5">
@@ -587,6 +684,14 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
               Delete
             </Button>
           )}
+          <Button
+            variant="outline"
+            onClick={() => saveAsTemplate.mutate()}
+            disabled={saveAsTemplate.isPending}
+          >
+            <BookmarkPlus />
+            Save as template
+          </Button>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>

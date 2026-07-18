@@ -7,6 +7,8 @@ import type {
   Event,
   EventInput,
   EventPatch,
+  EventTemplate,
+  EventTemplateInput,
   RsvpStatus,
 } from '@calendium/shared';
 
@@ -62,6 +64,7 @@ interface SeedEvent {
 interface MockStore {
   calendars: Calendar[];
   events: Event[];
+  templates: EventTemplate[];
 }
 
 let store: MockStore | null = null;
@@ -321,7 +324,40 @@ function seed(): MockStore {
     };
   });
 
-  return { calendars, events };
+  const templates: EventTemplate[] = [
+    {
+      id: 'tpl-1-1',
+      name: '1:1',
+      title: '1:1 with teammate',
+      description: '',
+      location: '',
+      durationMinutes: 30,
+      allDay: false,
+      calendarId: 'cal-work',
+      attendeeEmails: [],
+      addConferencing: true,
+      reminderMinutes: [10],
+      recurrenceRule: null,
+      usageCount: 12,
+    },
+    {
+      id: 'tpl-focus-block',
+      name: 'Focus block',
+      title: 'Focus block',
+      description: 'Heads-down work - no meetings.',
+      location: '',
+      durationMinutes: 90,
+      allDay: false,
+      calendarId: null,
+      attendeeEmails: [],
+      addConferencing: false,
+      reminderMinutes: [],
+      recurrenceRule: null,
+      usageCount: 5,
+    },
+  ];
+
+  return { calendars, events, templates };
 }
 
 function getStore(): MockStore {
@@ -444,5 +480,56 @@ export const calendarMock = {
       }
     }
     return slots;
+  },
+
+  listEventTemplates(): EventTemplate[] {
+    return getStore().templates.map((t) => ({ ...t }));
+  },
+
+  createEventTemplate(input: EventTemplateInput): EventTemplate {
+    const template: EventTemplate = {
+      id: `tpl-local-${nextId++}`,
+      name: input.name,
+      title: input.title,
+      description: input.description ?? '',
+      location: input.location ?? '',
+      durationMinutes: input.durationMinutes,
+      allDay: input.allDay ?? false,
+      calendarId: input.calendarId ?? null,
+      attendeeEmails: input.attendeeEmails ?? [],
+      addConferencing: input.addConferencing ?? false,
+      reminderMinutes: input.reminderMinutes ?? [],
+      recurrenceRule: input.recurrenceRule ?? null,
+      usageCount: 0,
+    };
+    getStore().templates.push(template);
+    return { ...template };
+  },
+
+  updateEventTemplate(id: string, input: EventTemplateInput): EventTemplate {
+    const t = getStore().templates.find((x) => x.id === id);
+    if (!t) throw new Error(`Unknown template: ${id}`);
+    t.name = input.name;
+    t.title = input.title;
+    t.description = input.description ?? '';
+    t.location = input.location ?? '';
+    t.durationMinutes = input.durationMinutes;
+    t.allDay = input.allDay ?? false;
+    t.calendarId = input.calendarId ?? null;
+    t.attendeeEmails = input.attendeeEmails ?? [];
+    t.addConferencing = input.addConferencing ?? false;
+    t.reminderMinutes = input.reminderMinutes ?? [];
+    t.recurrenceRule = input.recurrenceRule ?? null;
+    return { ...t };
+  },
+
+  deleteEventTemplate(id: string): void {
+    const s = getStore();
+    s.templates = s.templates.filter((t) => t.id !== id);
+  },
+
+  markTemplateUsed(id: string): void {
+    const t = getStore().templates.find((x) => x.id === id);
+    if (t) t.usageCount += 1;
   },
 };

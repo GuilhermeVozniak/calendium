@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { Event, Thread } from '@calendium/shared';
+import type { Event, EventTemplate, Thread } from '@calendium/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CommandPalette } from '@/components/app/command-palette';
@@ -40,6 +40,11 @@ vi.mock('@/lib/search-data', () => ({
   fetchSearch: (q: string) => fetchSearchMock(q),
 }));
 
+const fetchEventTemplatesMock = vi.fn();
+vi.mock('@/lib/template-data', () => ({
+  fetchEventTemplates: () => fetchEventTemplatesMock(),
+}));
+
 const toastMessage = vi.fn();
 vi.mock('sonner', () => ({
   toast: {
@@ -70,6 +75,7 @@ beforeEach(() => {
   currentPathname = '/mail';
   themeState = { resolvedTheme: 'light', setTheme: vi.fn() };
   fetchSearchMock.mockResolvedValue({ threads: [], events: [] });
+  fetchEventTemplatesMock.mockResolvedValue([]);
   resetShortcutHints();
 });
 
@@ -275,6 +281,42 @@ describe('CommandPalette — live search', () => {
     // Debounce window (200 ms) must elapse without a fetch.
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(fetchSearchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('CommandPalette — templates', () => {
+  const TEMPLATE: EventTemplate = {
+    id: 'tpl-1',
+    name: '1:1',
+    title: '1:1 with teammate',
+    description: '',
+    location: '',
+    durationMinutes: 30,
+    allDay: false,
+    calendarId: null,
+    attendeeEmails: [],
+    addConferencing: false,
+    reminderMinutes: [],
+    recurrenceRule: null,
+    usageCount: 1,
+  };
+
+  it('does not show a Templates group when there are no templates', async () => {
+    renderPalette();
+    await openPalette();
+    expect(screen.queryByText(/Use template:/)).not.toBeInTheDocument();
+  });
+
+  it('lists templates and navigates to /calendar?template=<id> on selection', async () => {
+    fetchEventTemplatesMock.mockResolvedValue([TEMPLATE]);
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+
+    const item = await screen.findByText('Use template: 1:1');
+    await user.click(item);
+
+    expect(pushMock).toHaveBeenCalledWith('/calendar?template=tpl-1');
   });
 });
 
