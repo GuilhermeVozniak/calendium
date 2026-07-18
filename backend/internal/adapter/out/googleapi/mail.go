@@ -203,6 +203,14 @@ func (c *Client) ModifyLabels(ctx context.Context, accessToken, providerThreadID
 	return c.doJSON(ctx, http.MethodPost, endpoint, accessToken, body, nil)
 }
 
+// FetchAttachment satisfies the widened port.MailProvider interface so the
+// backend compiles once ports/domain land (this task). The real Gmail
+// body.attachmentId download is implemented in M2.5 Task 6
+// (docs/superpowers/plans/2026-07-17-m2-5-compose-contact.md).
+func (c *Client) FetchAttachment(ctx context.Context, accessToken, providerMessageID, providerAttachmentID string) ([]byte, string, error) {
+	return nil, "", errors.New("not implemented")
+}
+
 // buildRFC2822 assembles a multipart/alternative MIME message.
 func buildRFC2822(msg port.OutgoingMessage) ([]byte, error) {
 	var b bytes.Buffer

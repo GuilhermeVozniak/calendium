@@ -47,4 +47,9 @@ type ConnectedAccount struct {
 	VIPSenders   []string   `json:"vipSenders"`
 	LastSyncedAt *time.Time `json:"lastSyncedAt"`
 	CreatedAt    time.Time  `json:"createdAt"`
+	// SignatureHTML is the account's rich signature, auto-applied to new
+	// compose/reply drafts.
+	SignatureHTML string `json:"signatureHtml"`
+	// AutoBcc is applied to every message sent from this account.
+	AutoBcc []string `json:"autoBcc"`
 }

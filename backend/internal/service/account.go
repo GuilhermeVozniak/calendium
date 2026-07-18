@@ -193,6 +193,33 @@ func (s *AccountService) SetVipSenders(ctx context.Context, userID, accountID st
 	return a, nil
 }
 
+// SetSignature replaces the account's rich signature (sanitization of the
+// HTML happens at the HTTP boundary; the service stores it as given).
+func (s *AccountService) SetSignature(ctx context.Context, userID, accountID, signatureHTML string) (domain.ConnectedAccount, error) {
+	a, err := ownedAccount(ctx, s.accounts, userID, accountID)
+	if err != nil {
+		return domain.ConnectedAccount{}, err
+	}
+	a.SignatureHTML = signatureHTML
+	if err := s.accounts.Update(ctx, a); err != nil {
+		return domain.ConnectedAccount{}, err
+	}
+	return a, nil
+}
+
+// SetAutoBcc replaces the account's auto-BCC list applied at send.
+func (s *AccountService) SetAutoBcc(ctx context.Context, userID, accountID string, autoBcc []string) (domain.ConnectedAccount, error) {
+	a, err := ownedAccount(ctx, s.accounts, userID, accountID)
+	if err != nil {
+		return domain.ConnectedAccount{}, err
+	}
+	a.AutoBcc = normalizeVipSenders(autoBcc)
+	if err := s.accounts.Update(ctx, a); err != nil {
+		return domain.ConnectedAccount{}, err
+	}
+	return a, nil
+}
+
 func normalizeVipSenders(in []string) []string {
 	seen := map[string]struct{}{}
 	out := []string{}

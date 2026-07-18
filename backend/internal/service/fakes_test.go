@@ -457,6 +457,29 @@ func (r *fakeMessageRepo) ListSentByAccount(_ context.Context, accountID, accoun
 	return out, nil
 }
 
+// ListOpens, OpenHourHistogram, SearchAttachments, GetAttachment, and
+// ContactSummary are M2.5 stubs (real Postgres queries land in later
+// tasks); they return zero values so the package compiles.
+func (r *fakeMessageRepo) ListOpens(_ context.Context, q port.OpensQuery) (domain.Page[domain.OpenEvent], error) {
+	return domain.Page[domain.OpenEvent]{Items: []domain.OpenEvent{}}, nil
+}
+
+func (r *fakeMessageRepo) OpenHourHistogram(_ context.Context, userID, recipientEmail string) ([24]int, error) {
+	return [24]int{}, nil
+}
+
+func (r *fakeMessageRepo) SearchAttachments(_ context.Context, q port.AttachmentQuery) (domain.Page[domain.AttachmentHit], error) {
+	return domain.Page[domain.AttachmentHit]{Items: []domain.AttachmentHit{}}, nil
+}
+
+func (r *fakeMessageRepo) GetAttachment(_ context.Context, attachmentID string) (domain.Attachment, string, error) {
+	return domain.Attachment{}, "", domain.ErrNotFound
+}
+
+func (r *fakeMessageRepo) ContactSummary(_ context.Context, userID, email string) (domain.ContactSummary, error) {
+	return domain.ContactSummary{}, domain.ErrNotFound
+}
+
 var _ port.MessageRepo = (*fakeMessageRepo)(nil)
 
 // --- draft repo --------------------------------------------------------------
@@ -1105,6 +1128,12 @@ func (p *fakeMailProvider) ModifyLabels(_ context.Context, accessToken, provider
 	p.lastModifyAdd = add
 	p.lastModifyRemove = remove
 	return p.modifyLabelsErr
+}
+
+// FetchAttachment is an M2.5 stub (real provider fetch lands in a later
+// task); it returns zero values so the package compiles.
+func (p *fakeMailProvider) FetchAttachment(_ context.Context, accessToken, providerMessageID, providerAttachmentID string) ([]byte, string, error) {
+	return nil, "", nil
 }
 
 var _ port.MailProvider = (*fakeMailProvider)(nil)

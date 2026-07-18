@@ -162,6 +162,14 @@ func (c *Client) Send(ctx context.Context, accessToken string, msg port.Outgoing
 	}, nil
 }
 
+// FetchAttachment satisfies the widened port.MailProvider interface so the
+// backend compiles once ports/domain land (this task). The real Graph
+// attachment download is implemented in M2.5 Task 6
+// (docs/superpowers/plans/2026-07-17-m2-5-compose-contact.md).
+func (c *Client) FetchAttachment(ctx context.Context, accessToken, providerMessageID, providerAttachmentID string) ([]byte, string, error) {
+	return nil, "", errors.New("not implemented")
+}
+
 // ModifyLabels applies canonical label keys to every message of the
 // conversation: folder moves for INBOX/TRASH/SPAM, isRead for UNREAD, the
 // follow-up flag for STARRED; anything else becomes an Outlook category.

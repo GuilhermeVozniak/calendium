@@ -776,3 +776,40 @@ func emptyIfNil(addrs []domain.EmailAddress) []domain.EmailAddress {
 	}
 	return addrs
 }
+
+// --- M2.5 Compose & Contact --------------------------------------------------
+//
+// The methods below satisfy the widened port.MailService interface so the
+// backend compiles once ports/domain land (this task). Real behavior —
+// Recent Opens, Smart Send, attachment quick access, contact summary, and
+// emoji reactions — is implemented in later M2.5 tasks (8, 9, 10 in
+// docs/superpowers/plans/2026-07-17-m2-5-compose-contact.md).
+var errNotImplemented = errors.New("not implemented")
+
+func (s *MailService) ListOpens(ctx context.Context, userID, cursor string, limit int) (domain.Page[domain.OpenEvent], error) {
+	return domain.Page[domain.OpenEvent]{}, errNotImplemented
+}
+
+func (s *MailService) SuggestSendTime(ctx context.Context, userID, recipientEmail string) (domain.SendSuggestion, error) {
+	return domain.SendSuggestion{}, errNotImplemented
+}
+
+func (s *MailService) SearchAttachments(ctx context.Context, userID string, q port.AttachmentQuery) (domain.Page[domain.AttachmentHit], error) {
+	return domain.Page[domain.AttachmentHit]{}, errNotImplemented
+}
+
+func (s *MailService) GetAttachmentContent(ctx context.Context, userID, attachmentID string) ([]byte, string, string, error) {
+	return nil, "", "", errNotImplemented
+}
+
+func (s *MailService) GetContact(ctx context.Context, userID, email string) (domain.ContactSummary, error) {
+	return domain.ContactSummary{}, errNotImplemented
+}
+
+func (s *MailService) ReactToMessage(ctx context.Context, userID, messageID, emoji string, sendReply bool) (port.ReactionResult, error) {
+	return port.ReactionResult{}, errNotImplemented
+}
+
+func (s *MailService) RemoveReaction(ctx context.Context, userID, messageID, emoji string) error {
+	return errNotImplemented
+}

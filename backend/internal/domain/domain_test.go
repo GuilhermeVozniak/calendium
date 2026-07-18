@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -270,5 +271,242 @@ func TestAvailabilityWindowValidate(t *testing.T) {
 				t.Fatalf("Validate() unexpected err: %v", err)
 			}
 		})
+	}
+}
+
+// jsonKeys unmarshal-decodes b into a map and reports its top-level keys, for
+// asserting which fields serialize.
+func jsonKeys(t *testing.T, b []byte) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("Unmarshal into map: %v", err)
+	}
+	return m
+}
+
+func TestReactionJSONRoundTrip(t *testing.T) {
+	created := time.Date(2026, time.July, 18, 10, 0, 0, 0, time.UTC)
+	r := Reaction{
+		ID:        "reaction_1",
+		MessageID: "msg_1",
+		UserID:    "user_1",
+		Emoji:     "thumbsup",
+		Delivery:  "local",
+		CreatedAt: created,
+	}
+	b, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	m := jsonKeys(t, b)
+	if _, ok := m["userId"]; ok {
+		t.Fatalf("Reaction JSON = %s, want no userId key (UserID is json:\"-\")", b)
+	}
+	for _, key := range []string{"id", "messageId", "emoji", "delivery", "createdAt"} {
+		if _, ok := m[key]; !ok {
+			t.Fatalf("Reaction JSON = %s, want key %q", b, key)
+		}
+	}
+
+	var got Reaction
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got.UserID != "" {
+		t.Fatalf("round-tripped UserID = %q, want empty (not serialized)", got.UserID)
+	}
+	got.UserID = r.UserID // restore before comparing the rest
+	if got != r {
+		t.Fatalf("round-tripped Reaction = %+v, want %+v", got, r)
+	}
+}
+
+func TestOpenEventJSONRoundTrip(t *testing.T) {
+	name := "Ada Lovelace"
+	e := OpenEvent{
+		MessageID:  "msg_1",
+		ThreadID:   "thread_1",
+		AccountID:  "account_1",
+		Subject:    "Re: Proposal",
+		Recipients: []EmailAddress{{Name: &name, Email: "ada@example.com"}},
+		OpenedAt:   time.Date(2026, time.July, 18, 9, 30, 0, 0, time.UTC),
+		SentAt:     time.Date(2026, time.July, 18, 9, 0, 0, 0, time.UTC),
+	}
+	b, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got OpenEvent
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !got.OpenedAt.Equal(e.OpenedAt) || !got.SentAt.Equal(e.SentAt) {
+		t.Fatalf("round-tripped times = %+v, want %+v", got, e)
+	}
+	got.OpenedAt, got.SentAt = e.OpenedAt, e.SentAt
+	if len(got.Recipients) != 1 || got.Recipients[0].Email != e.Recipients[0].Email {
+		t.Fatalf("round-tripped Recipients = %+v, want %+v", got.Recipients, e.Recipients)
+	}
+	if got.MessageID != e.MessageID || got.ThreadID != e.ThreadID || got.AccountID != e.AccountID || got.Subject != e.Subject {
+		t.Fatalf("round-tripped OpenEvent = %+v, want %+v", got, e)
+	}
+}
+
+func TestAttachmentHitJSONRoundTrip(t *testing.T) {
+	h := AttachmentHit{
+		Attachment: Attachment{
+			ID:                   "att_1",
+			Filename:             "invoice.pdf",
+			MimeType:             "application/pdf",
+			SizeBytes:            1024,
+			ProviderAttachmentID: "provider-secret-id",
+		},
+		MessageID:     "msg_1",
+		ThreadID:      "thread_1",
+		ThreadSubject: "Invoice attached",
+		From:          EmailAddress{Email: "billing@example.com"},
+		SentAt:        time.Date(2026, time.July, 18, 8, 0, 0, 0, time.UTC),
+	}
+	b, err := json.Marshal(h)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	m := jsonKeys(t, b)
+	if _, ok := m["providerAttachmentId"]; ok {
+		t.Fatalf("AttachmentHit JSON = %s, want no providerAttachmentId key", b)
+	}
+	for _, key := range []string{"id", "filename", "mimeType", "sizeBytes", "messageId", "threadId", "threadSubject", "from", "sentAt"} {
+		if _, ok := m[key]; !ok {
+			t.Fatalf("AttachmentHit JSON = %s, want key %q", b, key)
+		}
+	}
+
+	var got AttachmentHit
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got.ProviderAttachmentID != "" {
+		t.Fatalf("round-tripped ProviderAttachmentID = %q, want empty (not serialized)", got.ProviderAttachmentID)
+	}
+	if got.ID != h.ID || got.Filename != h.Filename || got.MessageID != h.MessageID || got.ThreadSubject != h.ThreadSubject || got.From.Email != h.From.Email {
+		t.Fatalf("round-tripped AttachmentHit = %+v, want %+v", got, h)
+	}
+}
+
+func TestSendSuggestionJSONRoundTrip(t *testing.T) {
+	s := SendSuggestion{
+		Email:          "ada@example.com",
+		SuggestedAt:    time.Date(2026, time.July, 19, 9, 0, 0, 0, time.UTC),
+		UTCOffsetHours: -5,
+		Confidence:     0.82,
+		SampleSize:     12,
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got SendSuggestion
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !got.SuggestedAt.Equal(s.SuggestedAt) {
+		t.Fatalf("round-tripped SuggestedAt = %v, want %v", got.SuggestedAt, s.SuggestedAt)
+	}
+	got.SuggestedAt = s.SuggestedAt
+	if got != s {
+		t.Fatalf("round-tripped SendSuggestion = %+v, want %+v", got, s)
+	}
+}
+
+func TestContactSummaryJSONRoundTrip(t *testing.T) {
+	name := "Ada Lovelace"
+	lastMsg := time.Date(2026, time.July, 17, 14, 0, 0, 0, time.UTC)
+	cs := ContactSummary{
+		Email:         "ada@example.com",
+		Name:          &name,
+		Domain:        "example.com",
+		ThreadCount:   4,
+		MessageCount:  10,
+		LastMessageAt: &lastMsg,
+		RecentThreads: []Thread{{ID: "thread_1", Subject: "Hello"}},
+	}
+	b, err := json.Marshal(cs)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got ContactSummary
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got.Email != cs.Email || got.Domain != cs.Domain || got.ThreadCount != cs.ThreadCount || got.MessageCount != cs.MessageCount {
+		t.Fatalf("round-tripped ContactSummary = %+v, want %+v", got, cs)
+	}
+	if got.Name == nil || *got.Name != *cs.Name {
+		t.Fatalf("round-tripped Name = %v, want %v", got.Name, *cs.Name)
+	}
+	if got.LastMessageAt == nil || !got.LastMessageAt.Equal(*cs.LastMessageAt) {
+		t.Fatalf("round-tripped LastMessageAt = %v, want %v", got.LastMessageAt, *cs.LastMessageAt)
+	}
+	if len(got.RecentThreads) != 1 || got.RecentThreads[0].ID != cs.RecentThreads[0].ID {
+		t.Fatalf("round-tripped RecentThreads = %+v, want %+v", got.RecentThreads, cs.RecentThreads)
+	}
+}
+
+func TestConnectedAccountSignatureAutoBccJSON(t *testing.T) {
+	a := ConnectedAccount{
+		ID:            "account_1",
+		UserID:        "user_1",
+		Provider:      ProviderGoogle,
+		Email:         "ada@example.com",
+		Status:        AccountActive,
+		SignatureHTML: "<p>Best, Ada</p>",
+		AutoBcc:       []string{"archive@example.com"},
+	}
+	b, err := json.Marshal(a)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	m := jsonKeys(t, b)
+	if _, ok := m["userId"]; ok {
+		t.Fatalf("ConnectedAccount JSON = %s, want no userId key (UserID is json:\"-\")", b)
+	}
+	sig, ok := m["signatureHtml"]
+	if !ok || sig != a.SignatureHTML {
+		t.Fatalf("ConnectedAccount JSON signatureHtml = %v, want %q", sig, a.SignatureHTML)
+	}
+	bcc, ok := m["autoBcc"].([]any)
+	if !ok || len(bcc) != 1 || bcc[0] != "archive@example.com" {
+		t.Fatalf("ConnectedAccount JSON autoBcc = %v, want [archive@example.com]", m["autoBcc"])
+	}
+
+	var got ConnectedAccount
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got.SignatureHTML != a.SignatureHTML {
+		t.Fatalf("round-tripped SignatureHTML = %q, want %q", got.SignatureHTML, a.SignatureHTML)
+	}
+	if len(got.AutoBcc) != 1 || got.AutoBcc[0] != a.AutoBcc[0] {
+		t.Fatalf("round-tripped AutoBcc = %v, want %v", got.AutoBcc, a.AutoBcc)
+	}
+}
+
+func TestMessageReactionsDefaultEmptySlice(t *testing.T) {
+	m := Message{ID: "msg_1", Reactions: []Reaction{}}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	keys := jsonKeys(t, b)
+	if _, ok := keys["reactions"]; !ok {
+		t.Fatalf("Message JSON = %s, want key \"reactions\"", b)
+	}
+	var got Message
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got.Reactions == nil || len(got.Reactions) != 0 {
+		t.Fatalf("round-tripped Reactions = %v, want empty non-nil slice", got.Reactions)
 	}
 }

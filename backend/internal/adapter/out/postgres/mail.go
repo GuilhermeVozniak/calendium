@@ -656,6 +656,34 @@ func (r messageRepo) ListSentByAccount(ctx context.Context, accountID, accountEm
 	return msgs, nil
 }
 
+// --- M2.5 Compose & Contact --------------------------------------------------
+//
+// The methods below satisfy the widened port.MessageRepo interface so the
+// backend compiles once ports/domain land (this task). Real SQL — Recent
+// Opens keyset scan, open-hour histogram, attachment trigram search, and
+// contact aggregation — is implemented in later M2.5 tasks (3, 4, 5 in
+// docs/superpowers/plans/2026-07-17-m2-5-compose-contact.md).
+
+func (r messageRepo) ListOpens(ctx context.Context, q port.OpensQuery) (domain.Page[domain.OpenEvent], error) {
+	return domain.Page[domain.OpenEvent]{}, fmt.Errorf("not implemented")
+}
+
+func (r messageRepo) OpenHourHistogram(ctx context.Context, userID, recipientEmail string) ([24]int, error) {
+	return [24]int{}, fmt.Errorf("not implemented")
+}
+
+func (r messageRepo) SearchAttachments(ctx context.Context, q port.AttachmentQuery) (domain.Page[domain.AttachmentHit], error) {
+	return domain.Page[domain.AttachmentHit]{}, fmt.Errorf("not implemented")
+}
+
+func (r messageRepo) GetAttachment(ctx context.Context, attachmentID string) (domain.Attachment, string, error) {
+	return domain.Attachment{}, "", fmt.Errorf("not implemented")
+}
+
+func (r messageRepo) ContactSummary(ctx context.Context, userID, email string) (domain.ContactSummary, error) {
+	return domain.ContactSummary{}, fmt.Errorf("not implemented")
+}
+
 func (r messageRepo) attachmentsFor(ctx context.Context, messageIDs []string) (map[string][]domain.Attachment, error) {
 	ids, err := jsonArray(messageIDs)
 	if err != nil {
