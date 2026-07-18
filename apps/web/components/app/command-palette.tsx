@@ -12,6 +12,7 @@ import {
   FileText,
   Inbox,
   LayoutTemplate,
+  Link2,
   ListChecks,
   LogOut,
   MailOpen,
@@ -29,6 +30,7 @@ import {
   Star,
   Sun,
   Tag,
+  Vote,
 } from 'lucide-react';
 
 import { useQuery } from '@tanstack/react-query';
@@ -391,6 +393,23 @@ export function CommandPalette() {
               <span className="truncate">Apply calendar set: {set.name}</span>
             </CommandItem>
           ))}
+        </CommandGroup>
+
+        <CommandSeparator />
+
+        <CommandGroup heading="Scheduling">
+          <CommandItem
+            onSelect={() => run(() => router.push('/settings?tab=scheduling&new=link'))}
+          >
+            <Link2 />
+            Create booking link
+          </CommandItem>
+          <CommandItem
+            onSelect={() => run(() => router.push('/settings?tab=scheduling&new=poll'))}
+          >
+            <Vote />
+            New meeting poll
+          </CommandItem>
         </CommandGroup>
 
         <CommandSeparator />
