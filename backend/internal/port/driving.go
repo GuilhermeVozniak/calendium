@@ -198,6 +198,10 @@ type SearchService interface {
 // AIService is the OpenRouter-backed compose/reply/summarize/ask endpoint.
 type AIService interface {
 	Compose(ctx context.Context, userID string, req domain.AiComposeRequest) (domain.AiComposeResponse, error)
+	// Ask answers a natural-language question over the user's mailbox (or one
+	// thread when req.ThreadID is set) and returns the answer plus the thread/
+	// message ids it drew on. Counts against the daily AI budget.
+	Ask(ctx context.Context, userID string, req domain.AiAskRequest) (domain.AiAskResponse, error)
 }
 
 // DeviceService manages push-notification device registrations.

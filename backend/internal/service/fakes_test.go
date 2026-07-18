@@ -215,6 +215,11 @@ type fakeThreadRepo struct {
 	snoozeDue    []domain.Thread
 	remindersDue []domain.Thread
 
+	// recording (Search)
+	searchGotUserID string
+	searchGotQuery  string
+	searchGotLimit  int
+
 	// recording
 	markOpened           int
 	lastQuery            port.ThreadQuery
@@ -285,6 +290,7 @@ func (r *fakeThreadRepo) SetLabels(_ context.Context, threadID string, labelIDs 
 }
 
 func (r *fakeThreadRepo) Search(_ context.Context, userID, query string, limit int) ([]domain.Thread, error) {
+	r.searchGotUserID, r.searchGotQuery, r.searchGotLimit = userID, query, limit
 	return r.searchResult, r.searchErr
 }
 
