@@ -3,6 +3,7 @@ import type {
   AiComposeResponse,
   AiEventProposal,
   AiSource,
+  AttachmentHit,
   EmailAddress,
   InboxSplit,
   Label,
@@ -797,5 +798,128 @@ export function mockProposeEvent(threadId: string): AiEventProposal {
     start: start.toISOString(),
     end: end.toISOString(),
     notes: 'Proposed from thread context (demo mode).',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Attachment quick access (M2.5, Task 16) — demo fixtures
+// ---------------------------------------------------------------------------
+
+/**
+ * A tiny, real, single-page PDF ("Calendium demo attachment"), base64-encoded.
+ * Decodes to genuine PDF bytes so the inline preview renders something real in
+ * demo mode — never a fabricated placeholder (honesty policy).
+ */
+const DEMO_PDF_BASE64 =
+  'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAyMDAgMjAwXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggNTggPj4Kc3RyZWFtCkJUIC9GMSAxOCBUZiAyMCAxMDAgVGQgKENhbGVuZGl1bSBkZW1vIGF0dGFjaG1lbnQpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjAKJSVFT0YK';
+
+interface MockAttachmentSpec {
+  id: string;
+  threadId: string;
+  messageId: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  base64: string;
+}
+
+const MOCK_ATTACHMENTS: MockAttachmentSpec[] = [
+  {
+    id: 'att_renewal_summary',
+    threadId: 'thr_02',
+    messageId: 'thr_02_m1',
+    filename: 'FY27-Renewal-Summary.pdf',
+    mimeType: 'application/pdf',
+    sizeBytes: 412_600,
+    base64: DEMO_PDF_BASE64,
+  },
+  {
+    id: 'att_board_deck',
+    threadId: 'thr_08',
+    messageId: 'thr_08_m1',
+    filename: 'Board-Deck-v3.pdf',
+    mimeType: 'application/pdf',
+    sizeBytes: 3_215_800,
+    base64: DEMO_PDF_BASE64,
+  },
+  {
+    id: 'att_comp_bands',
+    threadId: 'thr_04',
+    messageId: 'thr_04_m1',
+    filename: 'Comp-Bands-L5.xlsx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    sizeBytes: 28_400,
+    base64: 'Q2FsZW5kaXVtIGRlbW8gc3ByZWFkc2hlZXQgYnl0ZXMuIE5vdCBhIHJlYWwgLnhsc3ggZmlsZS4=',
+  },
+];
+
+/** Builds attachment search hits from the fixture set + current thread/message store. */
+function mockAttachmentHits(): AttachmentHit[] {
+  return MOCK_ATTACHMENTS.map((spec) => {
+    const record = store.get(spec.threadId);
+    const message = record?.messages.find((m) => m.id === spec.messageId) ?? record?.messages[0];
+    return {
+      id: spec.id,
+      filename: spec.filename,
+      mimeType: spec.mimeType,
+      sizeBytes: spec.sizeBytes,
+      messageId: spec.messageId,
+      threadId: spec.threadId,
+      threadSubject: record?.thread.subject ?? spec.filename,
+      from: message?.from ?? MOCK_ME,
+      sentAt: message?.sentAt ?? hoursAgo(24),
+    };
+  });
+}
+
+/**
+ * Local fallback for GET /v1/mail/attachments when the API is unreachable.
+ * Supports q (filename/subject substring), contact (exact from email),
+ * threadId, and id-based cursor pagination over the fixed demo set.
+ */
+export function searchMockAttachments(
+  params: { q?: string; contact?: string; threadId?: string },
+  cursor?: string,
+  limit = 30
+): Page<AttachmentHit> {
+  let hits = mockAttachmentHits();
+  const q = params.q?.trim().toLowerCase();
+  if (q) {
+    hits = hits.filter(
+      (h) => h.filename.toLowerCase().includes(q) || h.threadSubject.toLowerCase().includes(q)
+    );
+  }
+  if (params.contact) {
+    const contact = params.contact.toLowerCase();
+    hits = hits.filter((h) => h.from.email.toLowerCase() === contact);
+  }
+  if (params.threadId) {
+    hits = hits.filter((h) => h.threadId === params.threadId);
+  }
+  hits.sort((a, b) => b.sentAt.localeCompare(a.sentAt));
+
+  const startIndex = cursor ? Math.max(hits.findIndex((h) => h.id === cursor) + 1, 0) : 0;
+  const page = hits.slice(startIndex, startIndex + limit);
+  const nextCursor = startIndex + limit < hits.length ? (page[page.length - 1]?.id ?? null) : null;
+  return { items: page, nextCursor };
+}
+
+/**
+ * Local fallback for GET .../attachments/{id}/content when the API is
+ * unreachable: decodes the fixture's base64 payload into real bytes (never
+ * fabricates success — returns null for an unknown id).
+ */
+export function getMockAttachmentBlob(
+  attachmentId: string
+): { blob: Blob; filename: string; mimeType: string } | null {
+  const spec = MOCK_ATTACHMENTS.find((a) => a.id === attachmentId);
+  if (!spec) return null;
+  const binary = atob(spec.base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return {
+    blob: new Blob([bytes], { type: spec.mimeType }),
+    filename: spec.filename,
+    mimeType: spec.mimeType,
   };
 }

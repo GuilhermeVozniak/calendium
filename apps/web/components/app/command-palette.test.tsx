@@ -26,6 +26,11 @@ vi.mock('@/components/app/compose', () => ({
   useCompose: () => ({ openCompose: openComposeMock }),
 }));
 
+const openAttachmentsMock = vi.fn();
+vi.mock('@/components/app/attachments-pane', () => ({
+  useAttachmentsPane: () => ({ open: openAttachmentsMock }),
+}));
+
 let themeState = { resolvedTheme: 'light' as 'light' | 'dark', setTheme: vi.fn() };
 vi.mock('@/components/theme-provider', () => ({
   useTheme: () => themeState,
