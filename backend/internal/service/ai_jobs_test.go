@@ -72,12 +72,20 @@ func TestProcessDueAiJobsDispatchesClaimedBatch(t *testing.T) {
 		{ID: "j2", UserID: "u1", Kind: domain.AiJobInstantReplies, ThreadID: strPtr("t2"), Attempts: 1},
 	}
 
+	// j1 is a real thread_summary job (Task 6): give it a Messages repo and
+	// an AI fake that returns a valid summary payload so this batch-dispatch
+	// test (which only cares about claim/complete bookkeeping) doesn't trip
+	// over runThreadSummary's now-real behavior.
+	ai := newAI()
+	ai.jsonOut = `{"summary":"ok"}`
+
 	svc := NewAIJobService(AIJobServiceDeps{
-		Jobs:    jobs,
-		Usage:   newAiUsageRepo(),
-		Threads: threads,
-		Clock:   newClock(time.Now()),
-		AI:      newAI(),
+		Jobs:     jobs,
+		Usage:    newAiUsageRepo(),
+		Threads:  threads,
+		Messages: newMessageRepo(),
+		Clock:    newClock(time.Now()),
+		AI:       ai,
 	})
 
 	if err := svc.ProcessDueAiJobs(ctx); err != nil {
