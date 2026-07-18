@@ -559,6 +559,11 @@ type fakeAIService struct {
 	proposeRet       domain.AiEventProposal
 	proposeErr       error
 	gotProposeThread string
+
+	instantRepliesRet         []string
+	instantRepliesErr         error
+	gotInstantRepliesUserID   string
+	gotInstantRepliesThreadID string
 }
 
 func (f *fakeAIService) Compose(ctx context.Context, userID string, req domain.AiComposeRequest) (domain.AiComposeResponse, error) {
@@ -574,6 +579,12 @@ func (f *fakeAIService) Ask(ctx context.Context, userID string, req domain.AiAsk
 func (f *fakeAIService) ProposeEvent(ctx context.Context, userID, threadID string) (domain.AiEventProposal, error) {
 	f.gotProposeThread = threadID
 	return f.proposeRet, f.proposeErr
+}
+
+func (f *fakeAIService) InstantReplies(ctx context.Context, userID, threadID string) ([]string, error) {
+	f.gotInstantRepliesUserID = userID
+	f.gotInstantRepliesThreadID = threadID
+	return f.instantRepliesRet, f.instantRepliesErr
 }
 
 // --- DeviceService -----------------------------------------------------------

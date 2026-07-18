@@ -350,6 +350,8 @@ func (r *fakeThreadRepo) SetInstantReplies(_ context.Context, threadID string, r
 		return domain.ErrNotFound
 	}
 	t.InstantReplies = replies
+	atCopy := at
+	t.InstantRepliesUpdatedAt = &atCopy
 	r.byID[threadID] = t
 	return nil
 }

@@ -206,6 +206,11 @@ type AIService interface {
 	// attendees from participants, start/end aligned to real availability).
 	// The client reviews and creates it via the existing POST /v1/events.
 	ProposeEvent(ctx context.Context, userID, threadID string) (domain.AiEventProposal, error)
+	// InstantReplies returns the 3 cached quick replies for the thread,
+	// generating and caching them on demand when absent (on-open fallback for
+	// splits the worker skips). Counts against the daily AI budget only when
+	// it generates.
+	InstantReplies(ctx context.Context, userID, threadID string) ([]string, error)
 }
 
 // DeviceService manages push-notification device registrations.

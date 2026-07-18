@@ -112,6 +112,11 @@ type Thread struct {
 	Summary string `json:"summary,omitempty"`
 	// InstantReplies is a cache of AI-generated reply suggestions.
 	InstantReplies []string `json:"instantReplies,omitempty"`
+	// InstantRepliesUpdatedAt is when InstantReplies was last (re)generated;
+	// nil until the first generation. Internal freshness bookkeeping for
+	// AIService.InstantReplies's on-open fallback (fresh when this is newer
+	// than LastMessageAt) -- not serialized to clients.
+	InstantRepliesUpdatedAt *time.Time `json:"-"`
 }
 
 // Attachment is file metadata on a message (bodies are fetched on demand).

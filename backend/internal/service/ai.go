@@ -30,14 +30,25 @@ type AIServiceDeps struct {
 	Drafts        port.DraftRepo
 	Calendar      port.CalendarService
 	VoiceProfiles port.VoiceProfileRepo // optional: nil skips voice-style injection
-	AI            port.AI
-	Clock         port.Clock
+	// Usage enforces the daily AI budget for interactive calls that
+	// generate (InstantReplies et al.); it's the same per-user counter
+	// AIJobService's background handlers charge, so interactive and
+	// background AI usage share one cap.
+	Usage port.AiUsageRepo
+	AI    port.AI
+	Clock port.Clock
+	// DailyLimit mirrors AIJobServiceDeps.DailyLimit (AI_DAILY_LIMIT,
+	// default 300 when unset/non-positive).
+	DailyLimit int
 	// SelfHosted unlocks the paywall (open-core self-hosted mode).
 	SelfHosted bool
 }
 
 // AIService implements port.AIService (OpenRouter-backed
-// compose/reply/summarize/ask).
+// compose/reply/summarize/ask/instant-replies).
+// voiceProfiles (AIServiceDeps.VoiceProfiles) is accepted now but not yet
+// stored/used here: it's wired ahead of Task 11 (voice-matched compose) so
+// that task's diff only adds behavior, not deps plumbing.
 type AIService struct {
 	ent           entitlement
 	accounts      port.AccountRepo
@@ -45,14 +56,20 @@ type AIService struct {
 	messages      port.MessageRepo
 	drafts        port.DraftRepo
 	voiceProfiles port.VoiceProfileRepo
+	usage         port.AiUsageRepo
 	ai            port.AI
 	calendar      port.CalendarService
 	clock         port.Clock
+	dailyLimit    int
 }
 
 var _ port.AIService = (*AIService)(nil)
 
 func NewAIService(d AIServiceDeps) *AIService {
+	limit := d.DailyLimit
+	if limit <= 0 {
+		limit = 300
+	}
 	return &AIService{
 		ent:           entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
 		accounts:      d.Accounts,
@@ -60,9 +77,11 @@ func NewAIService(d AIServiceDeps) *AIService {
 		messages:      d.Messages,
 		drafts:        d.Drafts,
 		voiceProfiles: d.VoiceProfiles,
+		usage:         d.Usage,
 		ai:            d.AI,
 		calendar:      d.Calendar,
 		clock:         d.Clock,
+		dailyLimit:    limit,
 	}
 }
 
@@ -388,6 +407,51 @@ func intersectAttendees(proposed []string, participants []domain.EmailAddress, o
 		}
 	}
 	return out
+}
+
+// InstantReplies is the on-open fallback for the instant_replies worker job:
+// threads on splits the sync loop skips enqueueing for (see sync.go) never
+// get a background-generated cache, so the client hits this endpoint when it
+// opens the thread and finds InstantReplies empty. A fresh cache
+// (instant_replies_updated_at newer than the thread's last message) is
+// returned as-is at no budget cost; otherwise this generates, persists via
+// SetInstantReplies (the same targeted write the worker job uses), and
+// returns the fresh suggestions -- charging the shared daily AI budget only
+// on that generate path.
+func (s *AIService) InstantReplies(ctx context.Context, userID, threadID string) ([]string, error) {
+	t, _, err := ownedThread(ctx, s.threads, s.accounts, userID, threadID)
+	if err != nil {
+		return nil, err
+	}
+	if t.InstantRepliesUpdatedAt != nil && t.InstantRepliesUpdatedAt.After(t.LastMessageAt) {
+		return t.InstantReplies, nil
+	}
+	if s.ai == nil {
+		return nil, fmt.Errorf("%w: no AI provider configured", domain.ErrAIUnavailable)
+	}
+	allowed, err := s.usage.IncrementAndCheck(ctx, userID, s.clock.Now(), s.dailyLimit)
+	if err != nil {
+		return nil, err
+	}
+	if !allowed {
+		return nil, fmt.Errorf("%w: daily ai budget exhausted", domain.ErrRateLimited)
+	}
+	msgs, err := s.messages.ListByThread(ctx, t.ID)
+	if err != nil {
+		return nil, err
+	}
+	var out instantRepliesOut
+	if _, err := s.ai.CompleteJSON(ctx, instantRepliesSystem, instantRepliesUserPrompt(t.Subject, msgs), &out); err != nil {
+		return nil, err
+	}
+	replies, err := normalizeInstantReplies(out.Replies)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.threads.SetInstantReplies(ctx, t.ID, replies, s.clock.Now()); err != nil {
+		return nil, err
+	}
+	return replies, nil
 }
 
 func systemPromptFor(req domain.AiComposeRequest) string {

@@ -72,20 +72,21 @@ func TestProcessDueAiJobsDispatchesClaimedBatch(t *testing.T) {
 		{ID: "j2", UserID: "u1", Kind: domain.AiJobInstantReplies, ThreadID: strPtr("t2"), Attempts: 1},
 	}
 
-	// j1 is a real thread_summary job (Task 6): give it a Messages repo and
-	// an AI fake that returns a valid summary payload so this batch-dispatch
-	// test (which only cares about claim/complete bookkeeping) doesn't trip
-	// over runThreadSummary's now-real behavior.
+	// j1 (thread_summary, Task 6) and j2 (instant_replies, Task 7) both
+	// dispatch real handlers now: wire Messages and serve one payload valid
+	// for both decoders so this batch-dispatch test (which only cares about
+	// claim/complete bookkeeping) doesn't trip over their real behavior.
 	ai := newAI()
-	ai.jsonOut = `{"summary":"ok"}`
+	ai.jsonOut = `{"summary":"ok","replies":["ok"]}`
 
 	svc := NewAIJobService(AIJobServiceDeps{
-		Jobs:     jobs,
-		Usage:    newAiUsageRepo(),
-		Threads:  threads,
-		Messages: newMessageRepo(),
-		Clock:    newClock(time.Now()),
-		AI:       ai,
+		Jobs:       jobs,
+		Usage:      newAiUsageRepo(),
+		Threads:    threads,
+		Messages:   newMessageRepo(),
+		Clock:      newClock(time.Now()),
+		AI:         ai,
+		DailyLimit: 10,
 	})
 
 	if err := svc.ProcessDueAiJobs(ctx); err != nil {
