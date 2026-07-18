@@ -16,6 +16,7 @@ import type {
   OpenEvent,
   Page,
   Reaction,
+  SendSuggestion,
   Thread,
   ThreadAction,
   UnsubscribeResult,
@@ -46,6 +47,7 @@ import {
   mockReactToMessage,
   mockRemindThread,
   mockRemoveReaction,
+  mockSendSuggestion,
   mockSnoozeThread,
   mockUnsnoozeThread,
   mockUnsubscribe,
@@ -216,6 +218,31 @@ export function useSnippets() {
     queryKey: ['snippets'],
     queryFn: fetchSnippets,
     staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * Smart Send recommendation for a recipient (M2.5). A 404 means the backend
+ * doesn't have enough open-time history yet — the NORMAL case for most
+ * recipients — so it resolves to `null` rather than surfacing an error;
+ * callers render nothing rather than inventing a send time. Any other
+ * failure is treated the same way (quietly absent), outside DEMO_MODE where
+ * a couple of seeded contacts have a scripted suggestion.
+ */
+export function useSendSuggestion(email: string | null) {
+  return useQuery({
+    queryKey: ['send-suggestion', email],
+    enabled: email !== null && email !== '',
+    staleTime: 5 * 60_000,
+    retry: false,
+    queryFn: async (): Promise<SendSuggestion | null> => {
+      try {
+        return await getApiClient().getSendSuggestion(email!);
+      } catch {
+        if (DEMO_MODE) return mockSendSuggestion(email!);
+        return null;
+      }
+    },
   });
 }
 

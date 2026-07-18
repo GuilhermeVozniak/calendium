@@ -32,7 +32,7 @@ import { formatOptionTime, reminderOptions, sendLaterOptions } from '@/lib/mail-
 import { fetchAccounts } from '@/lib/settings-data';
 import { MOD_KEY } from '@/lib/shortcuts';
 import { useInstance } from '@/lib/use-instance';
-import { aiErrorMessage, runAiCompose, useSnippets } from '@/lib/use-mail';
+import { aiErrorMessage, runAiCompose, useSendSuggestion, useSnippets } from '@/lib/use-mail';
 import { cn } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
@@ -126,6 +126,21 @@ export function textToHtml(text: string): string {
     .join('');
 }
 
+/**
+ * Buckets a Smart Send suggestion's UTC `suggestedAt` into the recipient's
+ * local part-of-day by shifting it with their inferred `utcOffsetHours`.
+ */
+export function localTimeBucket(
+  suggestedAt: string,
+  utcOffsetHours: number
+): 'morning' | 'afternoon' | 'evening' {
+  const raw = (new Date(suggestedAt).getUTCHours() + utcOffsetHours) % 24;
+  const localHour = raw < 0 ? raw + 24 : raw;
+  if (localHour < 12) return 'morning';
+  if (localHour < 17) return 'afternoon';
+  return 'evening';
+}
+
 // ---------------------------------------------------------------------------
 // Compose form
 // ---------------------------------------------------------------------------
@@ -177,6 +192,69 @@ function ComposeForm({
   const [liveDraftId, setLiveDraftId] = React.useState<string | null>(initial?.draftId ?? null);
 
   const bodyRef = React.useRef<HTMLTextAreaElement>(null);
+
+  // --- Signature auto-apply -------------------------------------------------
+  // Tracks the plain-text signature block currently appended to `body` (the
+  // "\n\n--\n" + htmlToText(signatureHtml) placeholder shown in the editor) so
+  // switching accounts replaces it instead of stacking signatures, and so
+  // send-time can strip it back off before appending the rich HTML version.
+  const appliedSignatureRef = React.useRef<string | null>(null);
+
+  React.useEffect(() => {
+    const signatureHtml = fromAccount?.signatureHtml?.trim();
+    const nextBlock = signatureHtml ? `\n\n--\n${htmlToText(signatureHtml)}` : null;
+    if (nextBlock === appliedSignatureRef.current) return;
+    // Capture the outgoing block before mutating the ref: the setBody
+    // updater below may run after this line (e.g. React defers the
+    // functional update), so it must not read the ref for "previous" — it
+    // would see the just-written `nextBlock` instead and never strip.
+    const prevBlock = appliedSignatureRef.current;
+    appliedSignatureRef.current = nextBlock;
+    setBody((prev) => {
+      let base = prev;
+      if (prevBlock && base.endsWith(prevBlock)) {
+        base = base.slice(0, -prevBlock.length);
+      }
+      if (nextBlock && !base.endsWith(nextBlock)) {
+        base = `${base}${nextBlock}`;
+      }
+      return base;
+    });
+  }, [fromAccount?.signatureHtml]);
+
+  /**
+   * Sent HTML body: the plain-text signature placeholder is stripped and
+   * replaced with the account's real rich `signatureHtml` (links, formatting)
+   * rather than the plain-text approximation shown in the editor.
+   */
+  function buildBodyHtml(): string {
+    const signatureHtml = fromAccount?.signatureHtml?.trim();
+    if (!signatureHtml) return textToHtml(body);
+    const mainText =
+      appliedSignatureRef.current && body.endsWith(appliedSignatureRef.current)
+        ? body.slice(0, -appliedSignatureRef.current.length)
+        : body;
+    return `${textToHtml(mainText)}<p>--</p>${signatureHtml}`;
+  }
+
+  // --- Smart Send nudge ------------------------------------------------------
+  // Debounced (500ms) so a suggestion isn't queried on every keystroke while
+  // typing a recipient's address.
+  const firstToEmail = to[0]?.email ?? null;
+  const [debouncedToEmail, setDebouncedToEmail] = React.useState<string | null>(firstToEmail);
+  React.useEffect(() => {
+    const timer = setTimeout(() => setDebouncedToEmail(firstToEmail), 500);
+    return () => clearTimeout(timer);
+  }, [firstToEmail]);
+  const suggestionQuery = useSendSuggestion(debouncedToEmail);
+  const suggestion = suggestionQuery.data ?? null;
+  const [dismissedSuggestionKey, setDismissedSuggestionKey] = React.useState<string | null>(null);
+  const suggestionKey = suggestion ? `${suggestion.email}|${suggestion.suggestedAt}` : null;
+  const showSuggestionChip =
+    suggestion !== null &&
+    suggestion.confidence >= 0.3 &&
+    !scheduledAt &&
+    suggestionKey !== dismissedSuggestionKey;
 
   // --- Snippet picker (";" trigger) ---------------------------------------
   const { data: snippets = [] } = useSnippets();
@@ -282,7 +360,7 @@ function ComposeForm({
       cc,
       bcc,
       subject,
-      bodyHtml: textToHtml(body),
+      bodyHtml: buildBodyHtml(),
       scheduledAt: null,
     };
     try {
@@ -337,7 +415,7 @@ function ComposeForm({
       cc,
       bcc,
       subject,
-      bodyHtml: textToHtml(body),
+      bodyHtml: buildBodyHtml(),
       scheduledAt: scheduledIso,
     };
     try {
@@ -575,6 +653,29 @@ function ComposeForm({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+
+          {showSuggestionChip && suggestion && (
+            <Badge variant="outline" className="gap-1.5 font-normal">
+              <Clock className="size-3" />
+              <button
+                type="button"
+                className="hover:underline"
+                onClick={() => setScheduledAt(new Date(suggestion.suggestedAt))}
+              >
+                Best time: {format(new Date(suggestion.suggestedAt), 'EEE h:mm a')} — their{' '}
+                {localTimeBucket(suggestion.suggestedAt, suggestion.utcOffsetHours)}
+              </button>
+              <button
+                type="button"
+                aria-label="Dismiss suggested send time"
+                onClick={() =>
+                  setDismissedSuggestionKey(`${suggestion.email}|${suggestion.suggestedAt}`)
+                }
+              >
+                <X className="size-3" />
+              </button>
+            </Badge>
+          )}
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

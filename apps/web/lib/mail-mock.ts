@@ -12,6 +12,7 @@ import type {
   OpenEvent,
   Page,
   Reaction,
+  SendSuggestion,
   Thread,
   ThreadAction,
   UnsubscribeResult,
@@ -863,6 +864,35 @@ export function mockAiAskCited(
       : "I couldn't find anything relevant in your mailbox for that question.",
     model: 'demo/local-fallback',
     sources,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Smart Send (M2.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Local fallback for GET /v1/mail/send-suggestion when the API is
+ * unreachable. Mirrors the real 404-when-thin-data behavior: only a couple
+ * of demo contacts have "enough history", everyone else gets `null` so the
+ * nudge stays honestly absent rather than inventing a time.
+ */
+export function mockSendSuggestion(email: string): SendSuggestion | null {
+  const KNOWN: Record<string, { hour: number; offsetHours: number; confidence: number; sampleSize: number }> = {
+    [sofia.email]: { hour: 14, offsetHours: -5, confidence: 0.72, sampleSize: 18 },
+    [daniel.email]: { hour: 9, offsetHours: 9, confidence: 0.45, sampleSize: 9 },
+  };
+  const entry = KNOWN[email.toLowerCase()];
+  if (!entry) return null;
+  const next = new Date(NOW);
+  next.setUTCHours(entry.hour, 0, 0, 0);
+  if (next.getTime() <= NOW + 5 * 60_000) next.setUTCDate(next.getUTCDate() + 1);
+  return {
+    email,
+    suggestedAt: next.toISOString(),
+    utcOffsetHours: entry.offsetHours,
+    confidence: entry.confidence,
+    sampleSize: entry.sampleSize,
   };
 }
 
