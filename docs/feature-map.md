@@ -13,14 +13,14 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | Important vs Other classification | AI classifies mail into Important and Other streams so newsletters and noise never bury human, high-priority conversations; covered by the split model's `important`/`other` splits + heuristic/AI ingest pass | P0 | scaffolded | web, desktop, mobile |
 | Snooze | Snooze any conversation with two keystrokes using natural-language times ("tomorrow morning", "2 days"); `POST /v1/mail/threads/{id}/snooze`, worker wake-ups return it to the inbox | P0 | scaffolded | web, desktop, mobile |
 | Remind Me follow-up reminders | Pick a time when sending and the thread resurfaces if no reply arrives; `remindAt` on threads + reminder endpoint | P0 | scaffolded | web, desktop, mobile |
-| Get Me To Zero | One command bulk-archives all email older than a chosen period for instant inbox zero on day one | P1 | planned | web, desktop, mobile |
-| Bulk triage actions | Select ranges of emails and archive / mark read / label in bulk with keyboard shortcuts | P1 | planned | web, desktop |
-| One-click and bulk unsubscribe | Unsubscribe from senders instantly and bulk-archive their past mail in the same action | P1 | planned | web, desktop, mobile |
-| Inbox zero celebration design | An empty inbox reveals rotating imagery, making inbox zero a rewarding destination | P1 | planned | web, desktop, mobile |
+| Get Me To Zero | One command bulk-archives all email older than a chosen period for instant inbox zero on day one | P1 | scaffolded | web, desktop, mobile |
+| Bulk triage actions | Select ranges of emails and archive / mark read / label in bulk with keyboard shortcuts | P1 | scaffolded | web, desktop |
+| One-click and bulk unsubscribe | Unsubscribe from senders instantly and bulk-archive their past mail in the same action | P1 | scaffolded | web, desktop, mobile |
+| Inbox zero celebration design | An empty inbox reveals rotating imagery, making inbox zero a rewarding destination | P1 | scaffolded | web, desktop, mobile |
 | Contact pane with social insights | Sidebar with sender photo, role, company, location, bio, social links, and recent conversations | P1 | planned | web, desktop |
-| Auto-advance | After acting on an email the next conversation opens automatically, keeping triage in flow | P2 | planned | web, desktop, mobile |
-| Reorderable splits | Reorder all Split Inboxes (incl. Inbox, Important, Other, Reminders) to match your workflow | P2 | planned | web, desktop, mobile |
-| Stars and labels via shortcuts | Star, label, and move conversations entirely from the keyboard (actions API exists; shortcut surface planned) | P2 | planned | web, desktop |
+| Auto-advance | After acting on an email the next conversation opens automatically, keeping triage in flow | P2 | scaffolded | web, desktop, mobile |
+| Reorderable splits | Reorder all Split Inboxes (incl. Inbox, Important, Other, Reminders) to match your workflow | P2 | scaffolded | web, desktop, mobile |
+| Stars and labels via shortcuts | Star, label, and move conversations entirely from the keyboard (actions API exists; shortcut surface planned) | P2 | scaffolded | web, desktop |
 | **Compose** | | | | |
 | Snippets | Reusable templates with variables like `{first_name}`, insertable by shortcut, prefilling subject/recipients/attachments; `Snippet` type + CRUD endpoints | P0 | scaffolded | web, desktop, mobile |
 | Send Later | Schedule any message to send at a chosen future time with natural-language input; `scheduledAt` on drafts + worker scheduled-send loop | P0 | scaffolded | web, desktop, mobile |
@@ -60,14 +60,14 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | Team read statuses and reply indicators | Read/replied state shared across the team on CC'd threads | P1 | planned | web, desktop, mobile |
 | Team Snippets | Snippet templates shared across the team for consistent replies | P2 | planned | web, desktop, mobile |
 | **Speed** | | | | |
-| Sub-100ms interactions | Every interaction responds in under 100ms; served by the local Postgres mirror + optimistic mutations (architecture in place, perf budget enforced from M1) | P0 | planned | web, desktop, mobile |
+| Sub-100ms interactions | Every interaction responds in under 100ms; served by the local Postgres mirror + optimistic mutations (architecture in place, perf budget enforced from M1; p95 measured via Playwright 36-46ms on production build) | P0 | scaffolded | web, desktop, mobile |
 | Command palette (Cmd+K) | Search and execute any action from the keyboard, with each action's shortcut displayed to teach it | P0 | scaffolded | web, desktop |
 | Comprehensive keyboard shortcuts | 100+ vim-inspired shortcuts covering every action (core j/k navigate + e archive set exists today; full coverage lands through M2) | P0 | scaffolded | web, desktop |
 | Instant search | Locally indexed, as-you-type search over the mirror; `GET /v1/search` unified over threads + events | P0 | scaffolded | web, desktop, mobile |
 | Offline mode | Read, search, and compose offline; queued messages send automatically when back online | P1 | planned | web, desktop, mobile |
 | Preloading architecture | Threads, images, and searches prefetched and cached before they're needed for zero perceived latency | P2 | planned | web, desktop, mobile |
-| Undo anything (Z) | Reverse nearly any action (archive, move, label) instantly, encouraging fearless fast triage | P2 | planned | web, desktop, mobile |
-| Shortcut teaching UX | UI surfaces the shortcut for every action taken via palette or mouse | P2 | planned | web, desktop |
+| Undo anything (Z) | Reverse nearly any action (archive, move, label) instantly, encouraging fearless fast triage | P2 | scaffolded | web, desktop, mobile |
+| Shortcut teaching UX | UI surfaces the shortcut for every action taken via palette or mouse | P2 | scaffolded | web, desktop |
 | Global desktop shortcuts | System-wide hotkeys open compose or search even when the app is in the background (Wails host) | P2 | planned | desktop |
 | **Platform** | | | | |
 | Gmail and Outlook support | Full client on Gmail/Google Workspace and Outlook/Microsoft 365 (OAuth connect endpoints + provider ports modeled; live sync is M1) | P0 | planned | web, desktop, mobile |

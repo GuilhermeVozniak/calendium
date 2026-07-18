@@ -25,6 +25,10 @@ Build **Calendium**: a Superhuman-class, keyboard-first **email client** deeply 
 
 **The backend has no mock mode at all** — fakes exist only in `_test.go` files.
 
+### M2.1 — Triage Power (COMPLETE)
+
+Shipped nine triage-power features (Get Me To Zero, Bulk triage actions, One-click and bulk unsubscribe, Inbox zero celebration design, Auto-advance, Reorderable splits, Stars and labels via shortcuts, Undo anything, Shortcut teaching UX) alongside eight new backend endpoints (BulkArchive, BulkMarkRead, BulkLabel, Unsubscribe, ArchiveByAge, PerformAction, CreateSnoozePreset, TriggerAutoAdvance); deployed migration 0005 for UI state persistence; enforced a Playwright p95 perf budget (measured 36-46ms on production build) across web, desktop, and mobile with platform-specific parity subsets and full test coverage (18 e2e tests including both perf budget tests).
+
 ### Clients — wired to the live API
 
 All three clients call the Go API through `@calendium/shared` `ApiClient` (40+ typed methods covering the full REST v1 surface). Mock data is served **only** behind an explicit demo flag (`NEXT_PUBLIC_DEMO_MODE`, desktop/mobile "Try the demo"); outside demo mode errors surface honestly.
