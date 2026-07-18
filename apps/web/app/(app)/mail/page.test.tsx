@@ -150,6 +150,20 @@ vi.mock('@/components/app/calendar-peek', () => ({
     ) : null,
 }));
 
+// OpensFeed owns its own data-fetching (useInfiniteQuery) — covered by
+// opens-feed.test.tsx. Here we only care that the mail page wires
+// open/onOpenChange correctly, same reasoning as the CalendarPeek stub above.
+vi.mock('@/components/app/opens-feed', () => ({
+  OpensFeed: ({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) =>
+    open ? (
+      <div data-testid="opens-feed-stub">
+        <button type="button" onClick={() => onOpenChange(false)}>
+          Close opens feed
+        </button>
+      </div>
+    ) : null,
+}));
+
 // ProposeEventDialog owns its own data-fetching (React Query + EventDialog's
 // internals) — covered by propose-event-dialog.test.tsx. Here we only care
 // that the mail page wires threadId/open/onOpenChange correctly.
