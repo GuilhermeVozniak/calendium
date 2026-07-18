@@ -307,26 +307,6 @@ export function CommandPalette() {
           </CommandItem>
         </CommandGroup>
 
-        {templates && templates.length > 0 && (
-          <>
-            <CommandSeparator />
-            <CommandGroup heading="Templates">
-              {templates.slice(0, 5).map((template) => (
-                <CommandItem
-                  key={template.id}
-                  value={`template ${template.name} ${template.title}`}
-                  onSelect={() =>
-                    run(() => router.push(`/calendar?template=${template.id}`))
-                  }
-                >
-                  <LayoutTemplate />
-                  <span className="truncate">Use template: {template.name}</span>
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </>
-        )}
-
         <CommandSeparator />
 
         <CommandGroup heading="Calendar">
@@ -396,11 +376,11 @@ export function CommandPalette() {
           {calendarSets?.map((set) => (
             <CommandItem
               key={`cal-set-${set.id}`}
-              value={`calendar set ${set.name}`}
+              value={`apply calendar set ${set.name}`}
               onSelect={() => runCalendarCommand({ type: 'toggle-set', setId: set.id })}
             >
               <ListChecks />
-              <span className="truncate">Calendar set: {set.name}</span>
+              <span className="truncate">Apply calendar set: {set.name}</span>
             </CommandItem>
           ))}
         </CommandGroup>

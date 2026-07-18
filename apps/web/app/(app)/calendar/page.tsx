@@ -14,6 +14,7 @@ import {
   Plus,
   X,
 } from 'lucide-react';
+import { toast } from 'sonner';
 
 import type { Calendar as CalendarModel, Event, EventInput } from '@calendium/shared';
 
@@ -50,7 +51,7 @@ import {
   fetchEvents,
   patchCalendar,
 } from '@/lib/calendar-data';
-import { fetchCalendarSets } from '@/lib/set-data';
+import { activateSet, fetchCalendarSets } from '@/lib/set-data';
 import type { CalendarView } from '@/lib/calendar-views';
 import { VIEW_KEYS, rangeLabel, stepAnchor, viewRange } from '@/lib/calendar-views';
 import { nextHalfHour } from '@/lib/quick-add';
@@ -225,7 +226,7 @@ export default function CalendarPage() {
           recordTemplateUsage(template.id);
           openCreate(applyTemplate(template, nextHalfHour()));
         })
-        .catch(() => {});
+        .catch(() => toast.error('Could not load templates'));
     },
     [openCreate]
   );
@@ -266,26 +267,29 @@ export default function CalendarPage() {
     [view]
   );
 
-  // Toggles every calendar in a named set (Task 6's calendar sets) together,
-  // driven only from the command palette's "Calendar set: <name>" entries -
-  // there's no sidebar UI for sets yet. Flips the whole set to visible if any
-  // member is hidden; otherwise hides the whole set.
+  // Applies a named set (Task 6's calendar sets), driven only from the
+  // command palette's "Apply calendar set: <name>" entries - there's no
+  // sidebar UI for sets yet. Funnels through the same activateSet semantics
+  // as SetSwitcher (lib/set-data.ts): exclusive activation (every calendar in
+  // the set turns visible, every other calendar turns hidden) plus
+  // persisting the set as the active-set preference - not the additive
+  // "flip whichever way most calendars aren't" toggle this used to do, which
+  // could never agree with the sidebar switcher about what "applying a set"
+  // means. activateSet itself persists the visibility PATCHes; invalidating
+  // ['calendars'] here just reconciles the query cache with them.
   const toggleCalendarSet = React.useCallback(
     (setId: string) => {
       fetchCalendarSets()
         .then((sets) => {
           const set = sets.find((s) => s.id === setId);
-          if (!set) return;
-          const allVisible = set.calendarIds.every(
-            (id) => calendarById.get(id)?.isVisible !== false
-          );
-          for (const id of set.calendarIds) {
-            toggleCalendar.mutate({ id, isVisible: !allVisible });
-          }
+          if (!set) return undefined;
+          return activateSet(set, calendars).then(() => {
+            void queryClient.invalidateQueries({ queryKey: ['calendars'] });
+          });
         })
-        .catch(() => {});
+        .catch(() => toast.error('Could not apply the set'));
     },
-    [calendarById, toggleCalendar]
+    [calendars, queryClient]
   );
 
   // Every calendar action - whether typed on the keyboard below or picked from
