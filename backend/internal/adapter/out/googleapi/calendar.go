@@ -234,10 +234,27 @@ func (c *Client) RSVP(ctx context.Context, accessToken, providerCalendarID, prov
 	return c.doJSON(ctx, http.MethodPatch, endpoint, accessToken, map[string]any{"attendees": ev.Attendees}, nil)
 }
 
+// freeBusyChunkSize caps how many calendar items go in a single freeBusy
+// request — the Calendar API accepts more, but chunking keeps individual
+// requests small and isolates one bad calendar's error from the rest of the
+// batch.
+const freeBusyChunkSize = 20
+
 // FreeBusy queries busy intervals for a set of attendee emails via the
-// Calendar freeBusy endpoint. Emails the API reports an error for (unknown
-// calendar, no access) are omitted from the result.
+// Calendar freeBusy endpoint, chunking requests at freeBusyChunkSize emails.
+// Emails the API reports an error for (unknown calendar, no access) are
+// omitted from the result. Result keys are lowercased emails.
 func (c *Client) FreeBusy(ctx context.Context, accessToken string, emails []string, from, to time.Time) (map[string][]domain.BusyInterval, error) {
+	out := make(map[string][]domain.BusyInterval, len(emails))
+	for _, chunk := range chunkStrings(emails, freeBusyChunkSize) {
+		if err := c.freeBusyChunk(ctx, accessToken, chunk, from, to, out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (c *Client) freeBusyChunk(ctx context.Context, accessToken string, emails []string, from, to time.Time, out map[string][]domain.BusyInterval) error {
 	items := make([]map[string]string, 0, len(emails))
 	for _, email := range emails {
 		items = append(items, map[string]string{"id": email})
@@ -259,22 +276,45 @@ func (c *Client) FreeBusy(ctx context.Context, accessToken string, emails []stri
 		} `json:"calendars"`
 	}
 	if err := c.doJSON(ctx, http.MethodPost, calendarBase+"/freeBusy", accessToken, body, &res); err != nil {
-		return nil, err
+		return err
 	}
-	out := make(map[string][]domain.BusyInterval, len(res.Calendars))
 	for email, cal := range res.Calendars {
 		if len(cal.Errors) > 0 {
 			continue // unresolvable calendar — leave the email out of the result
 		}
 		intervals := make([]domain.BusyInterval, 0, len(cal.Busy))
 		for _, b := range cal.Busy {
-			start, _ := time.Parse(time.RFC3339, b.Start)
-			end, _ := time.Parse(time.RFC3339, b.End)
+			start, err := time.Parse(time.RFC3339, b.Start)
+			if err != nil {
+				return fmt.Errorf("googleapi: parse freeBusy busy interval start %q: %w", b.Start, err)
+			}
+			end, err := time.Parse(time.RFC3339, b.End)
+			if err != nil {
+				return fmt.Errorf("googleapi: parse freeBusy busy interval end %q: %w", b.End, err)
+			}
 			intervals = append(intervals, domain.BusyInterval{Start: start, End: end})
 		}
-		out[email] = intervals
+		out[strings.ToLower(email)] = intervals
 	}
-	return out, nil
+	return nil
+}
+
+// chunkStrings splits items into consecutive slices of at most size. A nil
+// or empty items yields no chunks (so a zero-email FreeBusy call makes no
+// HTTP requests).
+func chunkStrings(items []string, size int) [][]string {
+	if len(items) == 0 {
+		return nil
+	}
+	chunks := make([][]string, 0, (len(items)+size-1)/size)
+	for i := 0; i < len(items); i += size {
+		end := i + size
+		if end > len(items) {
+			end = len(items)
+		}
+		chunks = append(chunks, items[i:end])
+	}
+	return chunks
 }
 
 // --- wire types + mapping ---
