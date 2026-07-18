@@ -781,21 +781,55 @@ func emptyIfNil(addrs []domain.EmailAddress) []domain.EmailAddress {
 //
 // The methods below satisfy the widened port.MailService interface so the
 // backend compiles once ports/domain land (this task). Real behavior —
-// Recent Opens, Smart Send, attachment quick access, contact summary, and
-// emoji reactions — is implemented in later M2.5 tasks (8, 9, 10 in
-// docs/superpowers/plans/2026-07-17-m2-5-compose-contact.md).
+// attachment quick access, contact summary, and emoji reactions — is
+// implemented in later M2.5 tasks (9, 10 in
+// docs/superpowers/plans/2026-07-17-m2-5-compose-contact.md). Recent Opens
+// and Smart Send (below) are implemented here (task 8); the heuristic itself
+// lives in smartsend.go.
 //
 // errNotImplemented aliases domain.ErrNotImplemented (rather than a bare
 // errors.New) so callers can errors.Is against the shared sentinel and the
 // HTTP adapter maps every stub uniformly to 501.
 var errNotImplemented = domain.ErrNotImplemented
 
+// maxOpensPageSize caps GET /v1/mail/opens page size.
+const maxOpensPageSize = 100
+
+// ListOpens returns the Recent Opens feed: sent messages the recipient has
+// opened, newest open first, keyset-paginated.
 func (s *MailService) ListOpens(ctx context.Context, userID, cursor string, limit int) (domain.Page[domain.OpenEvent], error) {
-	return domain.Page[domain.OpenEvent]{}, errNotImplemented
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.Page[domain.OpenEvent]{}, err
+	}
+	if limit > maxOpensPageSize {
+		limit = maxOpensPageSize
+	}
+	page, err := s.messages.ListOpens(ctx, port.OpensQuery{UserID: userID, Cursor: cursor, Limit: limit})
+	if err != nil {
+		return domain.Page[domain.OpenEvent]{}, err
+	}
+	if page.Items == nil {
+		page.Items = []domain.OpenEvent{}
+	}
+	return page, nil
 }
 
+// SuggestSendTime infers a Smart Send suggestion for recipientEmail from
+// their historical open-hour distribution. domain.ErrNotFound when the
+// recorded history is too thin (see smartSendMinOpens).
 func (s *MailService) SuggestSendTime(ctx context.Context, userID, recipientEmail string) (domain.SendSuggestion, error) {
-	return domain.SendSuggestion{}, errNotImplemented
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.SendSuggestion{}, err
+	}
+	hist, err := s.messages.OpenHourHistogram(ctx, userID, recipientEmail)
+	if err != nil {
+		return domain.SendSuggestion{}, err
+	}
+	suggestion, ok := suggestFromHistogram(hist, recipientEmail, s.clock.Now().UTC())
+	if !ok {
+		return domain.SendSuggestion{}, domain.ErrNotFound
+	}
+	return suggestion, nil
 }
 
 func (s *MailService) SearchAttachments(ctx context.Context, userID string, q port.AttachmentQuery) (domain.Page[domain.AttachmentHit], error) {
