@@ -7,6 +7,7 @@ import type {
   InboxSplit,
   Label,
   Message,
+  OpenEvent,
   Page,
   Thread,
   ThreadAction,
@@ -120,6 +121,7 @@ function build(spec: ThreadSpec): ThreadRecord {
     sentAt: hoursAgo(m.hoursAgo),
     isDraft: false,
     openedAt: m.openedHoursAgo !== undefined ? hoursAgo(m.openedHoursAgo) : null,
+    reactions: [],
   }));
   const last = messages[messages.length - 1]!;
   return {
@@ -621,6 +623,49 @@ export function getMockThread(threadId: string): { thread: Thread; messages: Mes
   const record = store.get(threadId);
   if (!record) return null;
   return { thread: { ...record.thread }, messages: record.messages.map((m) => ({ ...m })) };
+}
+
+// ---------------------------------------------------------------------------
+// Recent Opens (M2.5, task 15)
+// ---------------------------------------------------------------------------
+
+/** Every sent message with a real openedAt (read receipt), newest first. */
+function computeMockOpens(): OpenEvent[] {
+  const events: OpenEvent[] = [];
+  for (const record of store.values()) {
+    for (const message of record.messages) {
+      if (message.from.email === MOCK_ME.email && message.openedAt) {
+        events.push({
+          messageId: message.id,
+          threadId: message.threadId,
+          accountId: message.accountId,
+          subject: record.thread.subject,
+          recipients: message.to,
+          openedAt: message.openedAt,
+          sentAt: message.sentAt,
+        });
+      }
+    }
+  }
+  return events.sort((a, b) => b.openedAt.localeCompare(a.openedAt));
+}
+
+/**
+ * Local fallback for GET /v1/mail/opens when the API is unreachable. Honors
+ * the same cursor contract as the real endpoint: `cursor` is the last
+ * messageId the caller already has, and the response's `nextCursor` is null
+ * once there is nothing left to page through.
+ */
+export function getMockOpens(params: { cursor?: string; limit?: number }): Page<OpenEvent> {
+  const all = computeMockOpens();
+  const limit = params.limit ?? 25;
+  const startIndex = params.cursor
+    ? Math.max(0, all.findIndex((e) => e.messageId === params.cursor) + 1)
+    : 0;
+  const items = all.slice(startIndex, startIndex + limit);
+  const hasMore = startIndex + items.length < all.length;
+  const nextCursor = hasMore ? (items[items.length - 1]?.messageId ?? null) : null;
+  return { items, nextCursor };
 }
 
 export function applyMockAction(threadId: string, action: ThreadAction): void {

@@ -11,13 +11,14 @@ import type {
   InboxSplit,
   Label,
   Message,
+  OpenEvent,
   Page,
   Thread,
   ThreadAction,
   UnsubscribeResult,
 } from '@calendium/shared';
 import { ApiRequestError, UndoStack } from '@calendium/shared';
-import { useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { toast } from 'sonner';
 
 import { getApiClient } from '@/lib/api';
@@ -26,6 +27,7 @@ import {
   applyMockAction,
   applyMockLabel,
   getMockLabels,
+  getMockOpens,
   getMockThread,
   getMockThreads,
   mockAiAskCited,
@@ -188,6 +190,31 @@ export function useLabels() {
         throw err;
       }
     },
+  });
+}
+
+/**
+ * Recent Opens feed (M2.5, task 15): sent messages the recipient has opened,
+ * newest first, paged via the server's keyset cursor. `fetchNextPage` fetches
+ * the next real page and appends it — it never refetches from the top and
+ * pretends to append, so a load-more failure just leaves the already-loaded
+ * pages in place. Outside DEMO_MODE, a 402 (no active subscription) propagates
+ * as an ApiRequestError so the panel can show the upgrade prompt instead of a
+ * generic error.
+ */
+export function useOpensFeed() {
+  return useInfiniteQuery({
+    queryKey: ['opens'],
+    initialPageParam: undefined as string | undefined,
+    queryFn: async ({ pageParam }): Promise<Page<OpenEvent>> => {
+      try {
+        return await getApiClient().listOpens({ cursor: pageParam, limit: 25 });
+      } catch (err) {
+        if (DEMO_MODE) return getMockOpens({ cursor: pageParam, limit: 25 });
+        throw err;
+      }
+    },
+    getNextPageParam: (lastPage) => lastPage.nextCursor || undefined,
   });
 }
 
