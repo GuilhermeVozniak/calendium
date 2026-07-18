@@ -30,7 +30,8 @@ type SyncServiceDeps struct {
 	MailProviders     map[domain.Provider]port.MailProvider
 	CalendarProviders map[domain.Provider]port.CalendarProvider
 	OAuth             map[domain.Provider]port.OAuthGateway
-	Push              port.PushSender // optional; nil disables notifications
+	Push              port.PushSender      // optional; nil disables notifications
+	AiJobs            port.AiJobRepo       // optional; nil disables AI enqueueing
 	Clock             port.Clock
 }
 
@@ -51,6 +52,7 @@ type SyncService struct {
 	cal       map[domain.Provider]port.CalendarProvider
 	tokens    tokenSource
 	push      port.PushSender
+	aiJobs    port.AiJobRepo
 	clock     port.Clock
 }
 
@@ -71,6 +73,7 @@ func NewSyncService(d SyncServiceDeps) *SyncService {
 		cal:       d.CalendarProviders,
 		tokens:    tokenSource{accounts: d.Accounts, oauth: d.OAuth, clock: d.Clock},
 		push:      d.Push,
+		aiJobs:    d.AiJobs,
 		clock:     d.Clock,
 	}
 }
@@ -80,6 +83,18 @@ func (s *SyncService) SyncAccount(ctx context.Context, accountID string) error {
 	acct, err := s.accounts.GetByID(ctx, accountID)
 	if err != nil {
 		return err
+	}
+	// Enqueue voice_profile on first sync of the account.
+	if s.aiJobs != nil && acct.LastSyncedAt == nil {
+		_ = s.aiJobs.Enqueue(ctx, domain.AiJob{
+			ID:        newID(),
+			UserID:    acct.UserID,
+			AccountID: acct.ID,
+			Kind:      domain.AiJobVoiceProfile,
+			ThreadID:  nil,
+			Payload:   map[string]string{},
+			RunAfter:  s.clock.Now(),
+		})
 	}
 	token, err := s.tokens.accessToken(ctx, acct)
 	if err != nil {
@@ -232,6 +247,10 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 			return err
 		}
 		localThreadByProvider[t.ProviderThreadID] = saved
+		// Enqueue AI jobs for new inbound replies.
+		if hasNewInboundReply(page.Messages, t.ProviderThreadID, acct.Email, since) {
+			s.enqueueIngestAiJobs(ctx, acct, saved)
+		}
 		// Push on newly-synced important/vip mail (a genuinely new inbound
 		// message the owner has not sent). Only worth collecting when push is
 		// wired.
@@ -276,6 +295,58 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 		s.notifyThread(ctx, t, title, firstNonEmpty(t.Subject, "You have a new message"))
 	}
 	return nil
+}
+
+// enqueueIngestAiJobs queues background AI work for a thread that just
+// received a genuinely new inbound message. Enqueue failures are logged,
+// never fatal to sync.
+func (s *SyncService) enqueueIngestAiJobs(ctx context.Context, acct domain.ConnectedAccount, t domain.Thread) {
+	if s.aiJobs == nil {
+		return
+	}
+	// thread_summary + instant_replies: important|vip|team|calendar splits only
+	if t.Split == domain.SplitImportant || t.Split == domain.SplitVIP || t.Split == domain.SplitTeam || t.Split == domain.SplitCalendar {
+		_ = s.aiJobs.Enqueue(ctx, domain.AiJob{
+			ID:        newID(),
+			UserID:    acct.UserID,
+			AccountID: acct.ID,
+			Kind:      domain.AiJobThreadSummary,
+			ThreadID:  &t.ID,
+			Payload:   map[string]string{},
+			RunAfter:  s.clock.Now(),
+		})
+		_ = s.aiJobs.Enqueue(ctx, domain.AiJob{
+			ID:        newID(),
+			UserID:    acct.UserID,
+			AccountID: acct.ID,
+			Kind:      domain.AiJobInstantReplies,
+			ThreadID:  &t.ID,
+			Payload:   map[string]string{},
+			RunAfter:  s.clock.Now(),
+		})
+	}
+	// auto_draft: important|vip splits only (direct human mail)
+	if t.Split == domain.SplitImportant || t.Split == domain.SplitVIP {
+		_ = s.aiJobs.Enqueue(ctx, domain.AiJob{
+			ID:        newID(),
+			UserID:    acct.UserID,
+			AccountID: acct.ID,
+			Kind:      domain.AiJobAutoDraft,
+			ThreadID:  &t.ID,
+			Payload:   map[string]string{},
+			RunAfter:  s.clock.Now(),
+		})
+	}
+	// classify: enqueued for every new-inbound thread regardless of split
+	_ = s.aiJobs.Enqueue(ctx, domain.AiJob{
+		ID:        newID(),
+		UserID:    acct.UserID,
+		AccountID: acct.ID,
+		Kind:      domain.AiJobClassify,
+		ThreadID:  &t.ID,
+		Payload:   map[string]string{},
+		RunAfter:  s.clock.Now(),
+	})
 }
 
 // vipSet builds the lowercased VIP-sender lookup passed to ClassifySplit;
@@ -473,6 +544,18 @@ func (s *SyncService) deliverDraft(ctx context.Context, d domain.Draft) error {
 		if err := s.threads.AppendSentMessage(ctx, msg.ThreadID, sentAt); err != nil &&
 			!errors.Is(err, domain.ErrNotFound) {
 			return err
+		}
+		// Enqueue reminder_detect for threaded replies: give recipient 24h before judging "awaiting reply".
+		if s.aiJobs != nil && d.ThreadID != nil {
+			_ = s.aiJobs.Enqueue(ctx, domain.AiJob{
+				ID:        newID(),
+				UserID:    acct.UserID,
+				AccountID: acct.ID,
+				Kind:      domain.AiJobReminderDetect,
+				ThreadID:  d.ThreadID,
+				Payload:   map[string]string{"sentAt": sentAt.Format(time.RFC3339)},
+				RunAfter:  s.clock.Now().Add(24 * time.Hour),
+			})
 		}
 	}
 	// New standalone threads are picked up by the next provider sync.

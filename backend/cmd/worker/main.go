@@ -105,6 +105,15 @@ func run(logger *slog.Logger) error {
 		pushSender = push.NewDispatcher(cfg.Push, hc)
 	}
 
+	// --- AI job queue: gated on OPENROUTER_API_KEY, degrades to a
+	// no-op loop-that-never-starts when unset. Pass AiJobs repo only when enabled. ---
+	var aiGateway port.AI
+	var aiJobsRepo port.AiJobRepo
+	if cfg.OpenRouter.APIKey != "" {
+		aiGateway = openrouter.NewClient(cfg.OpenRouter.APIKey, cfg.OpenRouter.Model, hc)
+		aiJobsRepo = store.AiJobs()
+	}
+
 	syncSvc := service.NewSyncService(service.SyncServiceDeps{
 		Accounts:          store.Accounts(),
 		Labels:            store.Labels(),
@@ -119,15 +128,9 @@ func run(logger *slog.Logger) error {
 		CalendarProviders: calendarProviders,
 		OAuth:             oauth,
 		Push:              pushSender,
+		AiJobs:            aiJobsRepo,
 		Clock:             service.SystemClock{},
 	})
-
-	// --- AI job queue (Task 4): gated on OPENROUTER_API_KEY, degrades to a
-	// no-op loop-that-never-starts when unset. ---
-	var aiGateway port.AI
-	if cfg.OpenRouter.APIKey != "" {
-		aiGateway = openrouter.NewClient(cfg.OpenRouter.APIKey, cfg.OpenRouter.Model, hc)
-	}
 	calendarSvc := service.NewCalendarService(service.CalendarServiceDeps{
 		Subscriptions:     store.Subscriptions(),
 		Accounts:          store.Accounts(),

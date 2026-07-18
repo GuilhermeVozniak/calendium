@@ -1420,3 +1420,475 @@ func TestProcessDueWorkNothingDue(t *testing.T) {
 		t.Fatalf("push sends = %d, want 0", len(push.sent))
 	}
 }
+
+// =============================================================================
+// AI Job Enqueueing (Task 5)
+// =============================================================================
+
+// Table-driven tests for AI job enqueue at ingest.
+func TestSyncAccountEnqueueAiJobsAtIngest(t *testing.T) {
+	tests := []struct {
+		name          string
+		split         domain.InboxSplit
+		hasNewInbound bool
+		expectedKinds map[domain.AiJobKind]bool
+	}{
+		{
+			name:          "important split with new inbound",
+			split:         domain.SplitImportant,
+			hasNewInbound: true,
+			expectedKinds: map[domain.AiJobKind]bool{
+				domain.AiJobThreadSummary:  true,
+				domain.AiJobInstantReplies: true,
+				domain.AiJobAutoDraft:       true,
+				domain.AiJobClassify:        true,
+			},
+		},
+		{
+			name:          "vip split with new inbound",
+			split:         domain.SplitVIP,
+			hasNewInbound: true,
+			expectedKinds: map[domain.AiJobKind]bool{
+				domain.AiJobThreadSummary:  true,
+				domain.AiJobInstantReplies: true,
+				domain.AiJobAutoDraft:       true,
+				domain.AiJobClassify:        true,
+			},
+		},
+		{
+			name:          "team split with new inbound",
+			split:         domain.SplitTeam,
+			hasNewInbound: true,
+			expectedKinds: map[domain.AiJobKind]bool{
+				domain.AiJobThreadSummary:  true,
+				domain.AiJobInstantReplies: true,
+				domain.AiJobClassify:        true,
+			},
+		},
+		{
+			name:          "calendar split with new inbound",
+			split:         domain.SplitCalendar,
+			hasNewInbound: true,
+			expectedKinds: map[domain.AiJobKind]bool{
+				domain.AiJobThreadSummary:  true,
+				domain.AiJobInstantReplies: true,
+				domain.AiJobClassify:        true,
+			},
+		},
+		{
+			name:          "other split with new inbound",
+			split:         domain.SplitOther,
+			hasNewInbound: true,
+			expectedKinds: map[domain.AiJobKind]bool{
+				domain.AiJobClassify: true,
+			},
+		},
+		{
+			name:          "important split without new inbound",
+			split:         domain.SplitImportant,
+			hasNewInbound: false,
+			expectedKinds: map[domain.AiJobKind]bool{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Date(2026, 7, 7, 9, 0, 0, 0, time.UTC)
+			accounts := newAccountRepo()
+			pastSync := now.Add(-time.Hour) // Not a first sync
+			if _, err := accounts.Create(ctx, domain.ConnectedAccount{
+				ID: "a1", UserID: "u1", Provider: domain.ProviderGoogle,
+				Email: "me@acme.com",
+				LastSyncedAt: &pastSync,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := accounts.SaveTokens(ctx, "a1", port.TokenSet{AccessToken: "valid", ExpiresAt: now.Add(time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+
+			// Setup mail page with a thread and optionally a new inbound message.
+			mail := newMailProvider()
+			threads := newThreadRepo()
+			messages := newMessageRepo()
+			labels := newLabelRepo()
+			syncState := newSyncStateRepo()
+			aiJobs := newAiJobRepo()
+
+			page := port.MailSyncPage{
+				Threads: []domain.Thread{{ProviderThreadID: "pt1", InInbox: true, LastMessageAt: now}},
+				NextCursor: "cursor-1",
+				HasMore:    false,
+			}
+			if tt.hasNewInbound {
+				// Add a new inbound message from someone else, with sender domain matching the split.
+				senderEmail := "sender@example.org"
+				headers := map[string]string{}
+				switch tt.split {
+				case domain.SplitTeam:
+					senderEmail = "teammate@acme.com" // same domain => team
+				case domain.SplitCalendar:
+					headers["Content-Type"] = "text/calendar" // calendar invite
+				case domain.SplitOther:
+					headers["Precedence"] = "bulk" // bulk mail => other
+				}
+				page.Messages = []port.IncomingMessage{{
+					Headers: headers,
+					Message: domain.Message{
+						ProviderMessageID: "pm1", ThreadID: "pt1",
+						From:   domain.EmailAddress{Email: senderEmail},
+						To:     []domain.EmailAddress{{Email: "me@acme.com"}},
+						SentAt: now,
+					},
+				}}
+			}
+			mail.syncPage = page
+
+			// Pre-seed thread if it's an update to an existing thread.
+			if !tt.hasNewInbound {
+				if _, err := threads.Upsert(ctx, domain.Thread{
+					ID: "t1", AccountID: "a1", ProviderThreadID: "pt1",
+					Split: tt.split, LastMessageAt: now, InInbox: true,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			svc := NewSyncService(SyncServiceDeps{
+				Accounts: accounts, Labels: labels, Threads: threads, Messages: messages,
+				SyncState: syncState, AiJobs: aiJobs,
+				MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
+				OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+				Clock:         newClock(now),
+			})
+
+			if err := svc.SyncAccount(ctx, "a1"); err != nil {
+				t.Fatalf("SyncAccount: %v", err)
+			}
+
+			// Verify enqueued jobs match expectations.
+			if len(aiJobs.queue) != len(tt.expectedKinds) {
+				t.Fatalf("enqueued %d jobs, want %d", len(aiJobs.queue), len(tt.expectedKinds))
+			}
+			actualKinds := make(map[domain.AiJobKind]bool)
+			for _, job := range aiJobs.queue {
+				if job.UserID != "u1" {
+					t.Fatalf("job.UserID = %q, want u1", job.UserID)
+				}
+				if job.AccountID != "a1" {
+					t.Fatalf("job.AccountID = %q, want a1", job.AccountID)
+				}
+				if job.ThreadID == nil {
+					t.Fatal("job.ThreadID is nil, want non-nil for ingest jobs")
+				}
+				actualKinds[job.Kind] = true
+			}
+			for kind := range tt.expectedKinds {
+				if !actualKinds[kind] {
+					t.Fatalf("kind %q not enqueued", kind)
+				}
+			}
+		})
+	}
+}
+
+// TestSyncAccountNoAiJobsWhenNilRepo: when AiJobs is nil, no jobs are enqueued.
+func TestSyncAccountNoAiJobsWhenNilRepo(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 7, 9, 0, 0, 0, time.UTC)
+	accounts := newAccountRepo()
+	pastSync := now.Add(-time.Hour) // Not a first sync
+	if _, err := accounts.Create(ctx, domain.ConnectedAccount{
+		ID: "a1", UserID: "u1", Provider: domain.ProviderGoogle, Email: "me@acme.com",
+		LastSyncedAt: &pastSync,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.SaveTokens(ctx, "a1", port.TokenSet{AccessToken: "valid", ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	mail := newMailProvider()
+	mail.syncPage = port.MailSyncPage{
+		Threads: []domain.Thread{{ProviderThreadID: "pt1", InInbox: true, LastMessageAt: now}},
+		Messages: []port.IncomingMessage{{
+			Message: domain.Message{
+				ProviderMessageID: "pm1", ThreadID: "pt1",
+				From:   domain.EmailAddress{Email: "friend@example.org"},
+				To:     []domain.EmailAddress{{Email: "me@acme.com"}},
+				SentAt: now,
+			},
+		}},
+		NextCursor: "cursor-1",
+		HasMore:    false,
+	}
+
+	svc := NewSyncService(SyncServiceDeps{
+		Accounts:          accounts,
+		Labels:            newLabelRepo(),
+		Threads:           newThreadRepo(),
+		Messages:          newMessageRepo(),
+		SyncState:         newSyncStateRepo(),
+		AiJobs:            nil, // Explicitly nil
+		MailProviders:     map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
+		OAuth:             map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+		Clock:             newClock(now),
+	})
+
+	if err := svc.SyncAccount(ctx, "a1"); err != nil {
+		t.Fatalf("SyncAccount: %v", err)
+	}
+	// No assertion needed; if it doesn't panic, it passed.
+}
+
+// TestSyncAccountEnqueueVoiceProfileOnFirstSync: voice_profile is enqueued once per account on first sync.
+func TestSyncAccountEnqueueVoiceProfileOnFirstSync(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 7, 9, 0, 0, 0, time.UTC)
+	accounts := newAccountRepo()
+	if _, err := accounts.Create(ctx, domain.ConnectedAccount{
+		ID: "a1", UserID: "u1", Provider: domain.ProviderGoogle, Email: "me@acme.com",
+		LastSyncedAt: nil, // First sync
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.SaveTokens(ctx, "a1", port.TokenSet{AccessToken: "valid", ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	mail := newMailProvider()
+	mail.syncPage = port.MailSyncPage{
+		NextCursor: "cursor-1",
+		HasMore:    false,
+	}
+	aiJobs := newAiJobRepo()
+
+	svc := NewSyncService(SyncServiceDeps{
+		Accounts:          accounts,
+		Labels:            newLabelRepo(),
+		Threads:           newThreadRepo(),
+		Messages:          newMessageRepo(),
+		SyncState:         newSyncStateRepo(),
+		AiJobs:            aiJobs,
+		MailProviders:     map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
+		OAuth:             map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+		Clock:             newClock(now),
+	})
+
+	if err := svc.SyncAccount(ctx, "a1"); err != nil {
+		t.Fatalf("SyncAccount: %v", err)
+	}
+
+	// Verify voice_profile was enqueued.
+	voiceProfileJobs := []domain.AiJob{}
+	for _, job := range aiJobs.queue {
+		if job.Kind == domain.AiJobVoiceProfile {
+			voiceProfileJobs = append(voiceProfileJobs, job)
+		}
+	}
+	if len(voiceProfileJobs) != 1 {
+		t.Fatalf("voice_profile jobs = %d, want 1", len(voiceProfileJobs))
+	}
+	job := voiceProfileJobs[0]
+	if job.UserID != "u1" {
+		t.Fatalf("job.UserID = %q, want u1", job.UserID)
+	}
+	if job.AccountID != "a1" {
+		t.Fatalf("job.AccountID = %q, want a1", job.AccountID)
+	}
+	if job.ThreadID != nil {
+		t.Fatalf("job.ThreadID = %v, want nil for voice_profile", job.ThreadID)
+	}
+}
+
+// TestSyncAccountNoVoiceProfileOnSubsequentSync: voice_profile is not enqueued if the account was already synced.
+func TestSyncAccountNoVoiceProfileOnSubsequentSync(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 7, 9, 0, 0, 0, time.UTC)
+	pastSync := now.Add(-24 * time.Hour)
+	accounts := newAccountRepo()
+	if _, err := accounts.Create(ctx, domain.ConnectedAccount{
+		ID: "a1", UserID: "u1", Provider: domain.ProviderGoogle, Email: "me@acme.com",
+		LastSyncedAt: &pastSync, // Already synced
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.SaveTokens(ctx, "a1", port.TokenSet{AccessToken: "valid", ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	mail := newMailProvider()
+	mail.syncPage = port.MailSyncPage{
+		NextCursor: "cursor-1",
+		HasMore:    false,
+	}
+	aiJobs := newAiJobRepo()
+
+	svc := NewSyncService(SyncServiceDeps{
+		Accounts:          accounts,
+		Labels:            newLabelRepo(),
+		Threads:           newThreadRepo(),
+		Messages:          newMessageRepo(),
+		SyncState:         newSyncStateRepo(),
+		AiJobs:            aiJobs,
+		MailProviders:     map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
+		OAuth:             map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+		Clock:             newClock(now),
+	})
+
+	if err := svc.SyncAccount(ctx, "a1"); err != nil {
+		t.Fatalf("SyncAccount: %v", err)
+	}
+
+	// Verify no voice_profile was enqueued.
+	for _, job := range aiJobs.queue {
+		if job.Kind == domain.AiJobVoiceProfile {
+			t.Fatal("voice_profile should not be enqueued on subsequent sync")
+		}
+	}
+}
+
+// TestDeliverDraftEnqueueReminderDetect: delivering a threaded draft enqueues reminder_detect with RunAfter = now+24h.
+func TestDeliverDraftEnqueueReminderDetect(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 7, 9, 0, 0, 0, time.UTC)
+	clock := newClock(now)
+	expectedRunAfter := now.Add(24 * time.Hour)
+
+	accounts := newAccountRepo()
+	pastSync := now.Add(-time.Hour) // Not a first sync
+	if _, err := accounts.Create(ctx, domain.ConnectedAccount{
+		ID: "a1", UserID: "u1", Provider: domain.ProviderGoogle, Email: "me@acme.com",
+		LastSyncedAt: &pastSync,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.SaveTokens(ctx, "a1", port.TokenSet{AccessToken: "valid", ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	threads := newThreadRepo()
+	if _, err := threads.Upsert(ctx, domain.Thread{
+		ID: "t1", AccountID: "a1", ProviderThreadID: "pt1", InInbox: true, LastMessageAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	drafts := newDraftRepo(accounts)
+	threadID := "t1"
+	if _, err := drafts.Create(ctx, domain.Draft{
+		ID: "d1", AccountID: "a1", ThreadID: &threadID,
+		To: []domain.EmailAddress{{Email: "friend@example.org"}},
+		ScheduledAt: &now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	drafts.claimOutcome["d1"] = true
+	drafts.scheduledDue = []domain.Draft{{ID: "d1", AccountID: "a1", ThreadID: &threadID, To: []domain.EmailAddress{{Email: "friend@example.org"}}, ScheduledAt: &now}}
+
+	mail := newMailProvider()
+	mail.sentResult = port.SentMessage{ProviderMessageID: "sent123", SentAt: now, ProviderThreadID: "pt1"}
+
+	aiJobs := newAiJobRepo()
+
+	svc := NewSyncService(SyncServiceDeps{
+		Accounts:          accounts,
+		Threads:           threads,
+		Drafts:            drafts,
+		Messages:          newMessageRepo(),
+		AiJobs:            aiJobs,
+		MailProviders:     map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
+		OAuth:             map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+		Clock:             clock,
+	})
+
+	if err := svc.ProcessDueWork(ctx); err != nil {
+		t.Fatalf("ProcessDueWork: %v", err)
+	}
+
+	// Find the reminder_detect job.
+	var reminderJob *domain.AiJob
+	for i := range aiJobs.queue {
+		if aiJobs.queue[i].Kind == domain.AiJobReminderDetect {
+			reminderJob = &aiJobs.queue[i]
+			break
+		}
+	}
+	if reminderJob == nil {
+		t.Fatal("reminder_detect job not enqueued")
+	}
+
+	if reminderJob.UserID != "u1" {
+		t.Fatalf("job.UserID = %q, want u1", reminderJob.UserID)
+	}
+	if reminderJob.AccountID != "a1" {
+		t.Fatalf("job.AccountID = %q, want a1", reminderJob.AccountID)
+	}
+	if reminderJob.ThreadID == nil || *reminderJob.ThreadID != "t1" {
+		t.Fatalf("job.ThreadID = %v, want t1", reminderJob.ThreadID)
+	}
+	if reminderJob.RunAfter != expectedRunAfter {
+		t.Fatalf("job.RunAfter = %v, want %v", reminderJob.RunAfter, expectedRunAfter)
+	}
+	if reminderJob.Payload["sentAt"] != now.Format(time.RFC3339) {
+		t.Fatalf("payload sentAt = %q, want %q", reminderJob.Payload["sentAt"], now.Format(time.RFC3339))
+	}
+}
+
+// TestDeliverDraftNoReminderDetectForStandalone: delivering a standalone (non-threaded) draft does not enqueue reminder_detect.
+func TestDeliverDraftNoReminderDetectForStandalone(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 7, 9, 0, 0, 0, time.UTC)
+	clock := newClock(now)
+
+	accounts := newAccountRepo()
+	pastSync := now.Add(-time.Hour) // Not a first sync
+	if _, err := accounts.Create(ctx, domain.ConnectedAccount{
+		ID: "a1", UserID: "u1", Provider: domain.ProviderGoogle, Email: "me@acme.com",
+		LastSyncedAt: &pastSync,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.SaveTokens(ctx, "a1", port.TokenSet{AccessToken: "valid", ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	drafts := newDraftRepo(accounts)
+	if _, err := drafts.Create(ctx, domain.Draft{
+		ID: "d1", AccountID: "a1", ThreadID: nil, // Standalone draft
+		To: []domain.EmailAddress{{Email: "friend@example.org"}},
+		ScheduledAt: &now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	drafts.claimOutcome["d1"] = true
+	drafts.scheduledDue = []domain.Draft{{ID: "d1", AccountID: "a1", ThreadID: nil, To: []domain.EmailAddress{{Email: "friend@example.org"}}, ScheduledAt: &now}}
+
+	mail := newMailProvider()
+	mail.sentResult = port.SentMessage{ProviderMessageID: "sent123", SentAt: now}
+
+	aiJobs := newAiJobRepo()
+
+	svc := NewSyncService(SyncServiceDeps{
+		Accounts:          accounts,
+		Threads:           newThreadRepo(),
+		Drafts:            drafts,
+		Messages:          newMessageRepo(),
+		AiJobs:            aiJobs,
+		MailProviders:     map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
+		OAuth:             map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+		Clock:             clock,
+	})
+
+	if err := svc.ProcessDueWork(ctx); err != nil {
+		t.Fatalf("ProcessDueWork: %v", err)
+	}
+
+	// Verify no reminder_detect jobs.
+	for _, job := range aiJobs.queue {
+		if job.Kind == domain.AiJobReminderDetect {
+			t.Fatal("reminder_detect should not be enqueued for standalone drafts")
+		}
+	}
+}
