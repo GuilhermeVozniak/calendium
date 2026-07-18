@@ -4,6 +4,8 @@ import type {
   Attendee,
   AvailabilitySlot,
   Calendar,
+  CalendarSet,
+  CalendarSetInput,
   Event,
   EventInput,
   EventPatch,
@@ -65,6 +67,7 @@ interface MockStore {
   calendars: Calendar[];
   events: Event[];
   templates: EventTemplate[];
+  sets: CalendarSet[];
 }
 
 let store: MockStore | null = null;
@@ -357,7 +360,22 @@ function seed(): MockStore {
     },
   ];
 
-  return { calendars, events, templates };
+  const sets: CalendarSet[] = [
+    {
+      id: 'set-work',
+      name: 'Work',
+      calendarIds: ['cal-work'],
+      position: 0,
+    },
+    {
+      id: 'set-personal',
+      name: 'Personal',
+      calendarIds: ['cal-personal'],
+      position: 1,
+    },
+  ];
+
+  return { calendars, events, templates, sets };
 }
 
 function getStore(): MockStore {
@@ -531,5 +549,36 @@ export const calendarMock = {
   markTemplateUsed(id: string): void {
     const t = getStore().templates.find((x) => x.id === id);
     if (t) t.usageCount += 1;
+  },
+
+  listCalendarSets(): CalendarSet[] {
+    return getStore()
+      .sets.map((s) => ({ ...s }))
+      .sort((a, b) => a.position - b.position);
+  },
+
+  createCalendarSet(input: CalendarSetInput): CalendarSet {
+    const set: CalendarSet = {
+      id: `set-local-${nextId++}`,
+      name: input.name,
+      calendarIds: [...input.calendarIds],
+      position: input.position,
+    };
+    getStore().sets.push(set);
+    return { ...set };
+  },
+
+  updateCalendarSet(id: string, input: CalendarSetInput): CalendarSet {
+    const s = getStore().sets.find((x) => x.id === id);
+    if (!s) throw new Error(`Unknown calendar set: ${id}`);
+    s.name = input.name;
+    s.calendarIds = [...input.calendarIds];
+    s.position = input.position;
+    return { ...s };
+  },
+
+  deleteCalendarSet(id: string): void {
+    const s = getStore();
+    s.sets = s.sets.filter((x) => x.id !== id);
   },
 };

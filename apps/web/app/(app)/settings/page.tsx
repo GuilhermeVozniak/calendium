@@ -10,6 +10,7 @@ import {
   CreditCard,
   Crown,
   ExternalLink,
+  Layers,
   LayoutTemplate,
   Loader2,
   Monitor,
@@ -30,6 +31,7 @@ import type {
   Subscription,
 } from '@calendium/shared';
 
+import { SetSwitcher } from '@/components/app/calendar/set-switcher';
 import { TemplateManager } from '@/components/app/calendar/template-manager';
 import {
   PaywallBanner,
@@ -89,6 +91,7 @@ type SettingsTab =
   | 'accounts'
   | 'snippets'
   | 'templates'
+  | 'sets'
   | 'appearance'
   | 'mailbox'
   | 'notifications'
@@ -98,6 +101,7 @@ const KNOWN_TABS: SettingsTab[] = [
   'accounts',
   'snippets',
   'templates',
+  'sets',
   'appearance',
   'mailbox',
   'notifications',
@@ -115,6 +119,7 @@ export default function SettingsPage() {
       'accounts',
       'snippets',
       'templates',
+      'sets',
       'appearance',
       'mailbox',
       ...(pushEnabled ? (['notifications'] as SettingsTab[]) : []),
@@ -161,7 +166,7 @@ export default function SettingsPage() {
       <div className="mx-auto max-w-3xl px-6 py-8">
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Accounts, snippets, templates, appearance, mailbox
+          Accounts, snippets, templates, sets, appearance, mailbox
           {pushEnabled ? ', notifications' : ''}
           {billingEnabled ? ', and billing' : ''}.
         </p>
@@ -175,6 +180,7 @@ export default function SettingsPage() {
             <TabsTrigger value="accounts">Accounts</TabsTrigger>
             <TabsTrigger value="snippets">Snippets</TabsTrigger>
             <TabsTrigger value="templates">Templates</TabsTrigger>
+            <TabsTrigger value="sets">Sets</TabsTrigger>
             <TabsTrigger value="appearance">Appearance</TabsTrigger>
             <TabsTrigger value="mailbox">Mailbox</TabsTrigger>
             {pushEnabled && <TabsTrigger value="notifications">Notifications</TabsTrigger>}
@@ -188,6 +194,9 @@ export default function SettingsPage() {
           </TabsContent>
           <TabsContent value="templates" className="mt-4">
             <TemplatesSection />
+          </TabsContent>
+          <TabsContent value="sets" className="mt-4">
+            <SetsSection />
           </TabsContent>
           <TabsContent value="appearance" className="mt-4">
             <AppearanceSection />
@@ -637,6 +646,33 @@ function TemplatesSection() {
         </CardHeader>
       </Card>
       <TemplateManager open={managerOpen} onOpenChange={setManagerOpen} />
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Calendar sets
+// ---------------------------------------------------------------------------
+
+function SetsSection() {
+  const [switcherOpen, setSwitcherOpen] = React.useState(false);
+  return (
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle>Calendar sets</CardTitle>
+          <CardDescription>
+            Named groups of calendars ("Work", "Home") you can switch on together.
+          </CardDescription>
+          <CardAction>
+            <Button size="sm" onClick={() => setSwitcherOpen(true)}>
+              <Layers />
+              Manage sets
+            </Button>
+          </CardAction>
+        </CardHeader>
+      </Card>
+      <SetSwitcher open={switcherOpen} onOpenChange={setSwitcherOpen} />
     </>
   );
 }
