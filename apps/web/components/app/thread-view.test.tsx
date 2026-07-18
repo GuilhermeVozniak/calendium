@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Message, Thread } from '@calendium/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -51,6 +51,17 @@ vi.mock('@/lib/use-instance', () => ({
 const openComposeMock = vi.fn();
 vi.mock('@/components/app/compose', () => ({
   useCompose: () => ({ openCompose: openComposeMock }),
+}));
+
+vi.mock('@/components/app/contact-pane', () => ({
+  ContactPane: ({ email, onClose }: { email: string; onClose: () => void }) => (
+    <div data-testid="contact-pane-stub">
+      <span>{email}</span>
+      <button type="button" onClick={onClose}>
+        Close contact stub
+      </button>
+    </div>
+  ),
 }));
 
 // ---------------------------------------------------------------------------
@@ -224,6 +235,33 @@ describe('ThreadView — single unsubscribe (handleUnsubscribe)', () => {
     expect(toastSuccess).not.toHaveBeenCalledWith('Unsubscribed — the sender has been asked to stop');
 
     windowOpenMock.mockRestore();
+  });
+});
+
+describe('ThreadView — contact pane toggle', () => {
+  it('toggles the contact pane via the header button, scoped to the thread counterpart', async () => {
+    const user = userEvent.setup();
+    renderThreadView();
+
+    expect(screen.queryByTestId('contact-pane-stub')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Toggle contact pane' }));
+    const pane = screen.getByTestId('contact-pane-stub');
+    expect(pane).toBeInTheDocument();
+    expect(within(pane).getByText('daniel@northwind.com')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Toggle contact pane' }));
+    expect(screen.queryByTestId('contact-pane-stub')).not.toBeInTheDocument();
+  });
+
+  it('closes via the pane\'s own onClose callback', async () => {
+    const user = userEvent.setup();
+    renderThreadView();
+
+    await user.click(screen.getByRole('button', { name: 'Toggle contact pane' }));
+    await user.click(screen.getByText('Close contact stub'));
+
+    expect(screen.queryByTestId('contact-pane-stub')).not.toBeInTheDocument();
   });
 });
 
