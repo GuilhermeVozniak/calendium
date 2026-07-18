@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Clock,
   Globe,
+  Layers,
   LayoutTemplate,
   Plus,
   X,
@@ -22,6 +23,7 @@ import { MiniMonth } from '@/components/app/calendar/mini-month';
 import { MonthView } from '@/components/app/calendar/month-view';
 import { QuarterView } from '@/components/app/calendar/quarter-view';
 import { QuickAddBar } from '@/components/app/calendar/quick-add-bar';
+import { SetSwitcher } from '@/components/app/calendar/set-switcher';
 import { TemplateManager } from '@/components/app/calendar/template-manager';
 import { TimeGrid } from '@/components/app/calendar/time-grid';
 import { YearView } from '@/components/app/calendar/year-view';
@@ -68,6 +70,7 @@ export default function CalendarPage() {
   });
   const [availabilityOpen, setAvailabilityOpen] = React.useState(false);
   const [templateManagerOpen, setTemplateManagerOpen] = React.useState(false);
+  const [setSwitcherOpen, setSetSwitcherOpen] = React.useState(false);
 
   // Pinned world-clock timezones for the day/week grid gutters. Persisted to
   // localStorage (lib/timezones.ts) rather than /v1/prefs, which today only
@@ -441,9 +444,20 @@ export default function CalendarPage() {
         <aside className="hidden w-60 shrink-0 flex-col gap-5 overflow-y-auto border-r p-4 lg:flex">
           <MiniMonth selected={anchor} onSelect={setAnchor} />
           <div className="flex flex-col gap-0.5">
-            <h2 className="px-2 pb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-              Calendars
-            </h2>
+            <div className="flex items-center justify-between px-2 pb-1">
+              <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                Calendars
+              </h2>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 gap-1 px-1.5 text-xs text-muted-foreground"
+                onClick={() => setSetSwitcherOpen(true)}
+              >
+                <Layers className="size-3.5" />
+                Sets
+              </Button>
+            </div>
             {calendarsQuery.isLoading && (
               <div className="space-y-2 px-2">
                 <Skeleton className="h-5 w-full" />
@@ -578,6 +592,7 @@ export default function CalendarPage() {
       />
       <AvailabilityDialog open={availabilityOpen} onOpenChange={setAvailabilityOpen} />
       <TemplateManager open={templateManagerOpen} onOpenChange={setTemplateManagerOpen} />
+      <SetSwitcher open={setSwitcherOpen} onOpenChange={setSetSwitcherOpen} />
     </div>
   );
 }
