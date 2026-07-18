@@ -400,9 +400,22 @@ var _ port.ThreadRepo = (*fakeThreadRepo)(nil)
 type fakeMessageRepo struct {
 	byID  map[string]domain.Message
 	order []string
+
+	// opensPage/opensErr configure ListOpens; opensCalls captures every
+	// query for assertions (entitlement/clamping/passthrough).
+	opensPage  domain.Page[domain.OpenEvent]
+	opensErr   error
+	opensCalls []port.OpensQuery
+
+	// histograms configures OpenHourHistogram keyed by recipient email;
+	// histogramErr forces an error return.
+	histograms   map[string][24]int
+	histogramErr error
 }
 
-func newMessageRepo() *fakeMessageRepo { return &fakeMessageRepo{byID: map[string]domain.Message{}} }
+func newMessageRepo() *fakeMessageRepo {
+	return &fakeMessageRepo{byID: map[string]domain.Message{}, histograms: map[string][24]int{}}
+}
 
 func (r *fakeMessageRepo) Upsert(_ context.Context, m domain.Message) (domain.Message, error) {
 	if _, ok := r.byID[m.ID]; !ok {
@@ -457,15 +470,26 @@ func (r *fakeMessageRepo) ListSentByAccount(_ context.Context, accountID, accoun
 	return out, nil
 }
 
-// ListOpens, OpenHourHistogram, SearchAttachments, GetAttachment, and
-// ContactSummary are M2.5 stubs (real Postgres queries land in later
+// ListOpens and OpenHourHistogram are configurable via opensPage/opensErr
+// and histograms/histogramErr (task 8). SearchAttachments, GetAttachment,
+// and ContactSummary remain M2.5 stubs (real Postgres queries land in later
 // tasks); they return zero values so the package compiles.
 func (r *fakeMessageRepo) ListOpens(_ context.Context, q port.OpensQuery) (domain.Page[domain.OpenEvent], error) {
-	return domain.Page[domain.OpenEvent]{Items: []domain.OpenEvent{}}, nil
+	r.opensCalls = append(r.opensCalls, q)
+	if r.opensErr != nil {
+		return domain.Page[domain.OpenEvent]{}, r.opensErr
+	}
+	if r.opensPage.Items == nil {
+		return domain.Page[domain.OpenEvent]{Items: []domain.OpenEvent{}}, nil
+	}
+	return r.opensPage, nil
 }
 
-func (r *fakeMessageRepo) OpenHourHistogram(_ context.Context, userID, recipientEmail string) ([24]int, error) {
-	return [24]int{}, nil
+func (r *fakeMessageRepo) OpenHourHistogram(_ context.Context, _, recipientEmail string) ([24]int, error) {
+	if r.histogramErr != nil {
+		return [24]int{}, r.histogramErr
+	}
+	return r.histograms[recipientEmail], nil
 }
 
 func (r *fakeMessageRepo) SearchAttachments(_ context.Context, q port.AttachmentQuery) (domain.Page[domain.AttachmentHit], error) {

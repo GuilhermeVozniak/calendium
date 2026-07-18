@@ -1741,3 +1741,92 @@ func TestUnsubscribeThreadMailtoEmptyRecipientIsValidationError(t *testing.T) {
 		t.Fatal("empty recipient must not reach provider.Send")
 	}
 }
+
+// --- ListOpens / SuggestSendTime (Smart Send, task 8) -----------------------
+
+func TestListOpensAndSuggestSendTimeRequireEntitlement(t *testing.T) {
+	svc := NewMailService(MailServiceDeps{
+		Subscriptions: newSubscriptionRepo(), // empty -> GetByUserID ErrNotFound -> ErrPaymentRequired
+		Messages:      newMessageRepo(),
+		Clock:         newClock(time.Now()),
+	})
+	ctx := context.Background()
+	if _, err := svc.ListOpens(ctx, "u1", "", 10); !errors.Is(err, domain.ErrPaymentRequired) {
+		t.Fatalf("ListOpens err = %v, want ErrPaymentRequired", err)
+	}
+	if _, err := svc.SuggestSendTime(ctx, "u1", "a@b.com"); !errors.Is(err, domain.ErrPaymentRequired) {
+		t.Fatalf("SuggestSendTime err = %v, want ErrPaymentRequired", err)
+	}
+}
+
+func TestListOpensClampsLimitAndPassesThrough(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	cursor := "next-cursor"
+	want := domain.Page[domain.OpenEvent]{
+		Items:      []domain.OpenEvent{{MessageID: "m1", ThreadID: "t1"}},
+		NextCursor: &cursor,
+	}
+	f.messages.opensPage = want
+
+	got, err := f.svc.ListOpens(ctx, "u1", "cur0", 500)
+	if err != nil {
+		t.Fatalf("ListOpens: %v", err)
+	}
+	if len(got.Items) != 1 || got.Items[0].MessageID != "m1" {
+		t.Fatalf("Items = %+v, want passthrough of the repo page", got.Items)
+	}
+	if len(f.messages.opensCalls) != 1 {
+		t.Fatalf("ListOpens calls = %d, want 1", len(f.messages.opensCalls))
+	}
+	call := f.messages.opensCalls[0]
+	if call.UserID != "u1" || call.Cursor != "cur0" {
+		t.Fatalf("query = %+v, want UserID=u1 Cursor=cur0", call)
+	}
+	if call.Limit != maxOpensPageSize {
+		t.Fatalf("Limit = %d, want clamped to %d", call.Limit, maxOpensPageSize)
+	}
+
+	// A limit already under the cap passes through unchanged.
+	if _, err := f.svc.ListOpens(ctx, "u1", "", 10); err != nil {
+		t.Fatalf("ListOpens: %v", err)
+	}
+	if got := f.messages.opensCalls[1].Limit; got != 10 {
+		t.Fatalf("Limit = %d, want 10 (unclamped)", got)
+	}
+}
+
+func TestSuggestSendTimeMapsThinHistoryToNotFound(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	// histograms defaults to the zero value (no opens) for any email not seeded.
+
+	if _, err := f.svc.SuggestSendTime(ctx, "u1", "a@b.com"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSuggestSendTimeReturnsSuggestionFromHistogram(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	var hist [24]int
+	hist[14] = 10 // >= smartSendMinOpens, all at UTC 14
+	f.messages.histograms["a@b.com"] = hist
+
+	got, err := f.svc.SuggestSendTime(ctx, "u1", "a@b.com")
+	if err != nil {
+		t.Fatalf("SuggestSendTime: %v", err)
+	}
+	if got.Email != "a@b.com" {
+		t.Errorf("Email = %q, want a@b.com", got.Email)
+	}
+	if got.UTCOffsetHours != 4 {
+		t.Errorf("UTCOffsetHours = %d, want 4", got.UTCOffsetHours)
+	}
+	// f.clock is frozen at 2026-07-07 12:00 UTC, so the next 14:00 UTC is
+	// later the same day.
+	want := time.Date(2026, 7, 7, 14, 0, 0, 0, time.UTC)
+	if !got.SuggestedAt.Equal(want) {
+		t.Errorf("SuggestedAt = %v, want %v", got.SuggestedAt, want)
+	}
+}
