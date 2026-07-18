@@ -2,9 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   PINNED_KEY,
+  formatInTZ,
   getPinnedTimeZones,
+  groupSlotsByDayInZone,
   hourLabelInZone,
+  listTimeZones,
   setPinnedTimeZones,
+  tzAbbrev,
+  tzLongLabel,
   tzOffsetMinutes,
   zoneCaption,
 } from '@/lib/timezones';
@@ -149,5 +154,75 @@ describe('getPinnedTimeZones / setPinnedTimeZones', () => {
   it('ignores a non-array value already in storage', () => {
     window.localStorage.setItem(PINNED_KEY, JSON.stringify({ foo: 'bar' }));
     expect(getPinnedTimeZones()).toEqual([]);
+  });
+});
+
+describe('listTimeZones', () => {
+  it('returns a non-empty list of IANA zone ids including well-known zones', () => {
+    const zones = listTimeZones();
+    expect(zones.length).toBeGreaterThan(0);
+    expect(zones).toContain('America/New_York');
+    expect(zones).toContain('Europe/London');
+  });
+});
+
+describe('tzAbbrev / tzLongLabel', () => {
+  it('resolves EDT (summer, DST active) for America/New_York', () => {
+    expect(tzAbbrev('America/New_York', new Date('2026-07-01T12:00:00Z'))).toBe('EDT');
+  });
+
+  it('resolves EST (winter, DST inactive) for America/New_York', () => {
+    expect(tzAbbrev('America/New_York', new Date('2026-01-01T12:00:00Z'))).toBe('EST');
+  });
+
+  it('pairs a human-readable name with the DST-correct abbreviation', () => {
+    expect(tzLongLabel('America/New_York', new Date('2026-07-01T12:00:00Z'))).toEqual({
+      name: 'Eastern Time',
+      abbrev: 'EDT',
+    });
+  });
+});
+
+describe('formatInTZ', () => {
+  it('formats an instant as a wall-clock time in the given zone, independent of machine TZ', () => {
+    // 18:05 UTC on a July day is 2:05 PM in New York (EDT, UTC-4) regardless
+    // of what timezone the test runner's machine is set to.
+    expect(formatInTZ('2026-07-01T18:05:00Z', 'America/New_York', 'time')).toBe('2:05 PM');
+    // The same instant is 11:35 PM in Kolkata (UTC+5:30).
+    expect(formatInTZ('2026-07-01T18:05:00Z', 'Asia/Kolkata', 'time')).toBe('11:35 PM');
+  });
+
+  it('formats an instant as a day heading in the given zone', () => {
+    expect(formatInTZ('2026-07-01T18:05:00Z', 'America/New_York', 'day')).toBe('Wednesday, Jul 1');
+  });
+
+  it('rolls the calendar date forward across a UTC-day boundary for a zone ahead of UTC', () => {
+    // 23:30 UTC on Jan 15 is already 5:00 AM Jan 16 in Kolkata.
+    expect(formatInTZ('2026-01-15T23:30:00Z', 'Asia/Kolkata', 'day')).toBe('Friday, Jan 16');
+  });
+});
+
+describe('groupSlotsByDayInZone', () => {
+  it('groups by the calendar date as observed in the target zone, not UTC', () => {
+    // 23:30 UTC on Jan 15 is still Jan 15 in New York (EST, UTC-5) but
+    // already Jan 16 in Kolkata (UTC+5:30) — the same pair of instants must
+    // land in a single same-day group under one zone and still a single
+    // (different) same-day group under the other, never split by UTC date.
+    const slots = [{ start: '2026-01-15T23:30:00Z' }, { start: '2026-01-16T01:00:00Z' }];
+    const inNewYork = groupSlotsByDayInZone(slots, 'America/New_York');
+    expect(inNewYork).toHaveLength(1);
+    expect(inNewYork[0].day).toBe('2026-01-15');
+    expect(inNewYork[0].slots).toHaveLength(2);
+
+    const inKolkata = groupSlotsByDayInZone(slots, 'Asia/Kolkata');
+    expect(inKolkata).toHaveLength(1);
+    expect(inKolkata[0].day).toBe('2026-01-16');
+    expect(inKolkata[0].slots).toHaveLength(2);
+  });
+
+  it('splits into separate groups when slots land on different calendar days in the zone', () => {
+    const slots = [{ start: '2026-01-15T10:00:00Z' }, { start: '2026-01-16T10:00:00Z' }];
+    const groups = groupSlotsByDayInZone(slots, 'UTC');
+    expect(groups.map((g) => g.day)).toEqual(['2026-01-15', '2026-01-16']);
   });
 });

@@ -479,6 +479,18 @@ describe('CommandPalette — calendar actions', () => {
     expect(received).toEqual([{ type: 'share-availability' }]);
     unsubscribe();
   });
+
+  it('dispatches "Time Travel: overlay a city\'s time zone" via the time-travel calendar command', async () => {
+    currentPathname = '/calendar';
+    const received: CalendarCommand[] = [];
+    const unsubscribe = onCalendarCommand((command) => received.push(command));
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText("Time Travel: overlay a city's time zone"));
+    expect(received).toEqual([{ type: 'time-travel' }]);
+    unsubscribe();
+  });
 });
 
 describe('CommandPalette — calendar templates & sets', () => {
@@ -619,5 +631,14 @@ describe('CommandPalette — shortcut teaching', () => {
     await openPalette();
     await user.click(screen.getByText('Share availability'));
     expect(toastMessage).toHaveBeenCalledWith('Tip: press S to share availability');
+  });
+
+  it('teaches the Time Travel shortcut when its palette entry is clicked', async () => {
+    currentPathname = '/calendar';
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText("Time Travel: overlay a city's time zone"));
+    expect(toastMessage).toHaveBeenCalledWith("Tip: press ⇧Z to overlay a city's time zone");
   });
 });
