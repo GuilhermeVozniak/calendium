@@ -532,6 +532,16 @@ describe('EventDialog — conferencing', () => {
     expect(await screen.findByText(/Google Meet link will be added/i)).toBeInTheDocument();
   });
 
+  it('does not show helper text when accounts are still loading (undefined provider)', async () => {
+    const user = userEvent.setup();
+    fetchAccountsMock.mockImplementation(() => new Promise(() => {})); // Never resolves
+    renderDialog();
+    const toggle = await screen.findByLabelText('Add video conferencing');
+    await user.click(toggle);
+    expect(screen.queryByText(/Google Meet link will be added/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Teams meeting will be added/i)).not.toBeInTheDocument();
+  });
+
   it('shows Teams helper text when the selected calendar belongs to a Microsoft account', async () => {
     const user = userEvent.setup();
     renderDialog({ calendars: [CAL_WORK, CAL_PERSONAL, CAL_MS], defaults: { calendarId: 'cal-ms' } });

@@ -200,6 +200,21 @@ describe('DayTicker', () => {
       expect(onEventClick).not.toHaveBeenCalled();
       openSpy.mockRestore();
     });
+
+    it('keydown on the nested Join button does not propagate to fire onEventClick', () => {
+      const anchor = new Date(2026, 0, 15);
+      const event = makeEvent({
+        title: 'Standup',
+        location: 'https://meet.google.com/abc-defg-hij',
+        start: new Date(2026, 0, 15, 9, 0, 0).toISOString(),
+        end: new Date(2026, 0, 15, 9, 15, 0).toISOString(),
+      });
+      const { onEventClick } = renderTicker({ anchor, events: [event] });
+      const joinButton = screen.getByRole('button', { name: /join meet/i });
+      // Dispatch keydown on the nested button; it should NOT bubble to fire onEventClick
+      joinButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      expect(onEventClick).not.toHaveBeenCalled();
+    });
   });
 
   it('re-scrolls when events arrive after initial empty render', () => {

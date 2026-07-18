@@ -193,5 +193,24 @@ describe('MonthView', () => {
       expect(onEventClick).not.toHaveBeenCalled();
       openSpy.mockRestore();
     });
+
+    it('keydown on the nested overflow Join button does not propagate to fire onEventClick', async () => {
+      const user = userEvent.setup();
+      const events = Array.from({ length: 5 }, (_, i) =>
+        makeEvent({
+          id: `evt-${i}`,
+          title: `Meeting ${i}`,
+          start: new Date(2026, 0, 14, i, 0, 0).toISOString(),
+          end: new Date(2026, 0, 14, i, 30, 0).toISOString(),
+          location: i === 4 ? 'https://meet.google.com/abc-defg-hij' : null,
+        })
+      );
+      const { onEventClick } = renderMonth({ events });
+      await user.click(screen.getByText('+2 more'));
+      const joinButton = screen.getByRole('button', { name: /join meet/i });
+      // Dispatch keydown on the nested button; it should NOT bubble to fire onEventClick
+      joinButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      expect(onEventClick).not.toHaveBeenCalled();
+    });
   });
 });

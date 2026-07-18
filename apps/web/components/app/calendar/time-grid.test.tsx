@@ -187,4 +187,28 @@ describe('TimeGrid — conference join affordance', () => {
     expect(onEventClick).not.toHaveBeenCalled();
     openSpy.mockRestore();
   });
+
+  it('keydown on the nested Join button does not propagate to open the event dialog', () => {
+    const onEventClick = vi.fn();
+    const event = makeEvent({
+      location: 'https://meet.google.com/abc-defg-hij',
+      start: new Date(2026, 0, 15, 9, 0, 0).toISOString(),
+      end: new Date(2026, 0, 15, 10, 0, 0).toISOString(),
+    });
+    render(
+      <TimeGrid
+        days={[new Date(2026, 0, 15)]}
+        events={[event]}
+        calendarById={calendarById}
+        now={new Date(2026, 0, 15, 9, 10)}
+        gmtLabel="GMT+0"
+        onSlotClick={vi.fn()}
+        onEventClick={onEventClick}
+      />
+    );
+    const joinButton = screen.getByRole('button', { name: /join meet/i });
+    // Dispatch keydown on the nested button; it should NOT bubble to fire onEventClick
+    joinButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(onEventClick).not.toHaveBeenCalled();
+  });
 });

@@ -68,6 +68,7 @@ export function DayGroupList({ groups, calendarById, onEventClick, sectionRef, c
                     aria-label={event.title}
                     onClick={() => onEventClick(event)}
                     onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
                         onEventClick(event);

@@ -629,7 +629,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
                   </Label>
                   <Switch id="event-meet" checked={meet} onCheckedChange={setMeet} />
                 </div>
-                {meet && (
+                {meet && accountsQuery.data && (
                   <span className="text-xs text-muted-foreground">
                     {selectedProvider === 'microsoft'
                       ? 'Teams meeting will be added'
