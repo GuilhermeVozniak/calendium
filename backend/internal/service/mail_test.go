@@ -18,17 +18,18 @@ import (
 // Google mail provider + oauth gateway registered and a frozen clock. It is
 // SelfHosted so the paywall is bypassed (paywall is exercised elsewhere).
 type mailFixture struct {
-	svc      *MailService
-	accounts *fakeAccountRepo
-	threads  *fakeThreadRepo
-	messages *fakeMessageRepo
-	drafts   *fakeDraftRepo
-	snippets *fakeSnippetRepo
-	labels   *fakeLabelRepo
-	provider *fakeMailProvider
-	oauth    *fakeOAuthGateway
-	unsub    *fakeUnsubscriber
-	clock    *fakeClock
+	svc       *MailService
+	accounts  *fakeAccountRepo
+	threads   *fakeThreadRepo
+	messages  *fakeMessageRepo
+	drafts    *fakeDraftRepo
+	snippets  *fakeSnippetRepo
+	labels    *fakeLabelRepo
+	reactions *fakeReactionRepo
+	provider  *fakeMailProvider
+	oauth     *fakeOAuthGateway
+	unsub     *fakeUnsubscriber
+	clock     *fakeClock
 }
 
 func newMailFixture(t *testing.T) *mailFixture {
@@ -38,16 +39,17 @@ func newMailFixture(t *testing.T) *mailFixture {
 	labels := newLabelRepo()
 	labels.accounts = accounts
 	f := &mailFixture{
-		accounts: accounts,
-		threads:  newThreadRepo(),
-		messages: newMessageRepo(),
-		drafts:   newDraftRepo(accounts),
-		snippets: newSnippetRepo(),
-		labels:   labels,
-		provider: newMailProvider(),
-		oauth:    newOAuthGateway(),
-		unsub:    &fakeUnsubscriber{},
-		clock:    clk,
+		accounts:  accounts,
+		threads:   newThreadRepo(),
+		messages:  newMessageRepo(),
+		drafts:    newDraftRepo(accounts),
+		snippets:  newSnippetRepo(),
+		labels:    labels,
+		reactions: newReactionRepo(),
+		provider:  newMailProvider(),
+		oauth:     newOAuthGateway(),
+		unsub:     &fakeUnsubscriber{},
+		clock:     clk,
 	}
 	f.svc = NewMailService(MailServiceDeps{
 		Accounts:      f.accounts,
@@ -56,6 +58,7 @@ func newMailFixture(t *testing.T) *mailFixture {
 		Drafts:        f.drafts,
 		Snippets:      f.snippets,
 		Labels:        f.labels,
+		Reactions:     f.reactions,
 		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: f.provider},
 		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: f.oauth},
 		Unsubscriber:  f.unsub,
@@ -2055,4 +2058,21 @@ func TestRemoveReactionForeignMessageIsNotFound(t *testing.T) {
 	if err := f.svc.RemoveReaction(ctx, "intruder", "m1", "👍"); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
+}
+
+func (f *mailFixture) seedMessage(t *testing.T, id, threadID, accountID, fromEmail, subject string) domain.Message {
+	t.Helper()
+	m := domain.Message{
+		ID:        id,
+		ThreadID:  threadID,
+		AccountID: accountID,
+		From:      domain.EmailAddress{Email: fromEmail},
+		Subject:   subject,
+		SentAt:    f.clock.Now(),
+	}
+	got, err := f.messages.Upsert(context.Background(), m)
+	if err != nil {
+		t.Fatalf("seed message %s: %v", id, err)
+	}
+	return got
 }
