@@ -135,3 +135,52 @@ type AvailabilitySlot struct {
 	Start time.Time `json:"start"`
 	End   time.Time `json:"end"`
 }
+
+// EventTemplate is a saved event default set ("1:1", "Focus block") applied
+// at creation time. CalendarID may be empty (= user's default calendar) and
+// is nulled when the referenced calendar is deleted.
+type EventTemplate struct {
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Title           string   `json:"title"`
+	Description     string   `json:"description"`
+	Location        string   `json:"location"`
+	DurationMinutes int      `json:"durationMinutes"`
+	AllDay          bool     `json:"allDay"`
+	CalendarID      *string  `json:"calendarId"`
+	AttendeeEmails  []string `json:"attendeeEmails"`
+	AddConferencing bool     `json:"addConferencing"`
+	ReminderMinutes []int    `json:"reminderMinutes"`
+	RecurrenceRule  *string  `json:"recurrenceRule"`
+	UsageCount      int      `json:"usageCount"`
+}
+
+// EventTemplateInput is the create/update payload (full replace on update).
+type EventTemplateInput struct {
+	Name            string   `json:"name"`
+	Title           string   `json:"title"`
+	Description     string   `json:"description,omitempty"`
+	Location        string   `json:"location,omitempty"`
+	DurationMinutes int      `json:"durationMinutes"`
+	AllDay          bool     `json:"allDay,omitempty"`
+	CalendarID      *string  `json:"calendarId,omitempty"`
+	AttendeeEmails  []string `json:"attendeeEmails,omitempty"`
+	AddConferencing bool     `json:"addConferencing,omitempty"`
+	ReminderMinutes []int    `json:"reminderMinutes,omitempty"`
+	RecurrenceRule  *string  `json:"recurrenceRule,omitempty"`
+}
+
+// CalendarSet is a named group of calendars toggled together ("Work", "Home").
+type CalendarSet struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	CalendarIDs []string `json:"calendarIds"`
+	Position    int      `json:"position"`
+}
+
+// CalendarSetInput is the create/update payload (full replace on update).
+type CalendarSetInput struct {
+	Name        string   `json:"name"`
+	CalendarIDs []string `json:"calendarIds"`
+	Position    int      `json:"position"`
+}
