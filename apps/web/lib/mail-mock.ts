@@ -8,6 +8,7 @@ import type {
   Label,
   Message,
   Page,
+  Reaction,
   Thread,
   ThreadAction,
   UnsubscribeResult,
@@ -120,6 +121,7 @@ function build(spec: ThreadSpec): ThreadRecord {
     sentAt: hoursAgo(m.hoursAgo),
     isDraft: false,
     openedAt: m.openedHoursAgo !== undefined ? hoursAgo(m.openedHoursAgo) : null,
+    reactions: [],
   }));
   const last = messages[messages.length - 1]!;
   return {
@@ -661,6 +663,47 @@ export function mockSnoozeThread(threadId: string, until: string | null): void {
 export function mockRemindThread(threadId: string, remindAt: string | null): void {
   const record = store.get(threadId);
   if (record) record.thread.remindAt = remindAt;
+}
+
+/**
+ * Reacts to a message in the demo store. Mirrors the backend's honesty
+ * contract (backend/internal/service/mail.go ReactToMessage): duplicate
+ * react on an emoji already present is idempotent (returns the existing row,
+ * no new draft); a tiny-reply draft is only "created" — and Delivery only
+ * ever reported "sent" — when sendReply is true AND the message isn't from
+ * the demo account itself (no replying to your own message).
+ */
+export function mockReactToMessage(
+  messageId: string,
+  emoji: string,
+  sendReply: boolean
+): { reaction: Reaction; draftId: string | null } {
+  for (const record of store.values()) {
+    const msg = record.messages.find((m) => m.id === messageId);
+    if (!msg) continue;
+    const existing = msg.reactions.find((r) => r.emoji === emoji);
+    if (existing) return { reaction: existing, draftId: null };
+    const willReply = sendReply && msg.from.email !== MOCK_ME.email;
+    const reaction: Reaction = {
+      id: `rx_${messageId}_${msg.reactions.length}`,
+      messageId,
+      emoji,
+      delivery: willReply ? 'sent' : 'local',
+      createdAt: new Date().toISOString(),
+    };
+    msg.reactions = [...msg.reactions, reaction];
+    return { reaction, draftId: willReply ? `draft_demo_${messageId}_${msg.reactions.length}` : null };
+  }
+  throw new Error(`Message not found: ${messageId}`);
+}
+
+export function mockRemoveReaction(messageId: string, emoji: string): void {
+  for (const record of store.values()) {
+    const msg = record.messages.find((m) => m.id === messageId);
+    if (!msg) continue;
+    msg.reactions = msg.reactions.filter((r) => r.emoji !== emoji);
+    return;
+  }
 }
 
 // ---------------------------------------------------------------------------
