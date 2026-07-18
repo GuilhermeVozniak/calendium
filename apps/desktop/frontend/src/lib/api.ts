@@ -30,3 +30,19 @@ export async function orMock<T>(real: () => Promise<T>, mock: () => T | Promise<
   if (isDemoMode()) return mock();
   return real();
 }
+
+/**
+ * Fetches an attachment's raw bytes for preview (the PDF blob-iframe dialog,
+ * M2.5). Not part of ApiClient because it returns a Blob rather than JSON —
+ * mirrors ApiClient's private request() auth handling for this one binary
+ * endpoint (see ApiClient#attachmentContentPath).
+ */
+export async function fetchAttachmentBlob(attachmentId: string): Promise<Blob> {
+  const token = await getAccessToken();
+  const baseUrl = getActiveServerConfig()?.serverUrl ?? '';
+  const res = await fetch(`${baseUrl}${api.attachmentContentPath(attachmentId)}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new Error(`Could not load the attachment (${res.status}).`);
+  return res.blob();
+}

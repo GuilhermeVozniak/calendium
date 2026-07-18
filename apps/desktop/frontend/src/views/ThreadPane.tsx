@@ -1,5 +1,5 @@
-import type { AiEventProposal } from '@calendium/shared';
-import { useQuery } from '@tanstack/react-query';
+import type { AiEventProposal, AttachmentHit, Message, Thread } from '@calendium/shared';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import {
   Archive,
@@ -8,32 +8,310 @@ import {
   Loader2,
   MailOpen,
   MessageSquareText,
+  Paperclip,
   Reply,
   Send,
+  Smile,
   Sparkles,
   Star,
+  UserRound,
 } from 'lucide-react';
 import * as React from 'react';
 
-import { api, orMock } from '@/lib/api';
+import { api, fetchAttachmentBlob, orMock } from '@/lib/api';
 import { openCompose } from '@/lib/compose';
 import {
   createMockEvent,
   mockAiAskCited,
+  mockAttachmentBlob,
+  mockAttachmentsForThread,
   mockCalendars,
+  mockContactSummary,
   mockInstantReplies,
   mockProposeEvent,
+  mockReactToMessage,
+  mockRemoveReaction,
   mockThread,
 } from '@/lib/mock';
 import { useServerConfig } from '@/lib/server-config';
 import { errorMessage, toast } from '@/lib/toast';
+import { cn } from '@/lib/utils';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/ui/dropdown';
 import { Input } from '@/ui/input';
 import { Kbd } from '@/ui/kbd';
 import { Tooltip } from '@/ui/tooltip';
 import type { MailAction } from '@/views/InboxView';
+
+const REACTION_EMOJIS = ['👍', '❤️', '😂', '🎉', '👀'];
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(0)} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
+}
+
+// ---------------------------------------------------------------------------
+// Reaction bar (M2.5) — a small emoji palette per message. The delivery badge
+// on each chip reflects the *actual* ReactionResult the server (or its mock
+// stand-in) returned, not just what "send as reply" was requested — an
+// honestly-sourced delivery indicator rather than an assumed one.
+// ---------------------------------------------------------------------------
+
+function ReactionBar({ threadId, message }: { threadId: string; message: Message }) {
+  const queryClient = useQueryClient();
+  const [busyEmoji, setBusyEmoji] = React.useState<string | null>(null);
+
+  function updateReactions(reactions: Message['reactions']) {
+    queryClient.setQueryData<{ thread: Thread; messages: Message[] } | undefined>(
+      ['thread', threadId],
+      (prev) =>
+        prev && {
+          ...prev,
+          messages: prev.messages.map((m) => (m.id === message.id ? { ...m, reactions } : m)),
+        }
+    );
+  }
+
+  async function toggle(emoji: string, sendReply: boolean) {
+    const existing = message.reactions.find((r) => r.emoji === emoji);
+    setBusyEmoji(emoji);
+    try {
+      if (existing) {
+        await orMock(
+          () => api.removeReaction(message.id, emoji),
+          () => mockRemoveReaction(message.id, emoji)
+        );
+        updateReactions(message.reactions.filter((r) => r.emoji !== emoji));
+      } else {
+        const result = await orMock(
+          () => api.reactToMessage(message.id, emoji, sendReply),
+          () => mockReactToMessage(message.id, emoji, sendReply)
+        );
+        updateReactions([...message.reactions.filter((r) => r.emoji !== emoji), result.reaction]);
+      }
+    } catch (e) {
+      toast({ title: 'Could not update the reaction', description: errorMessage(e), variant: 'destructive' });
+    } finally {
+      setBusyEmoji(null);
+    }
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1">
+      {message.reactions.map((r) => (
+        <Tooltip key={r.id} label={r.delivery === 'sent' ? 'Delivered as a reply' : 'Saved locally only'}>
+          <button
+            type="button"
+            aria-label={r.delivery === 'sent' ? 'Delivered as a reply' : 'Saved locally only'}
+            onClick={() => void toggle(r.emoji, false)}
+            className="inline-flex items-center gap-1 rounded-full border bg-accent/50 px-2 py-0.5 text-xs"
+          >
+            <span>{r.emoji}</span>
+            {r.delivery === 'sent' && <Send className="size-2.5" />}
+          </button>
+        </Tooltip>
+      ))}
+      <DropdownMenu>
+        <DropdownMenuTrigger>
+          <button
+            type="button"
+            aria-label={`React to message from ${message.from.name ?? message.from.email}`}
+            className="inline-flex items-center justify-center rounded-full border px-1.5 py-0.5 text-muted-foreground hover:bg-accent"
+          >
+            <Smile className="size-3.5" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent>
+          <DropdownMenuLabel>React</DropdownMenuLabel>
+          {REACTION_EMOJIS.map((emoji) => (
+            <DropdownMenuItem
+              key={emoji}
+              disabled={busyEmoji !== null}
+              aria-label={
+                message.reactions.some((r) => r.emoji === emoji)
+                  ? `Remove ${emoji} reaction`
+                  : `React with ${emoji}`
+              }
+              onSelect={() => void toggle(emoji, false)}
+            >
+              <span className="text-base">{emoji}</span>
+              {message.reactions.some((r) => r.emoji === emoji) ? 'Remove' : 'React'}
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuLabel>React &amp; reply</DropdownMenuLabel>
+          {REACTION_EMOJIS.map((emoji) => (
+            <DropdownMenuItem
+              key={`send-${emoji}`}
+              disabled={busyEmoji !== null}
+              aria-label={`React with ${emoji} and send as reply`}
+              onSelect={() => void toggle(emoji, true)}
+            >
+              <span className="text-base">{emoji}</span> Send as reply
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Attachments (M2.5) — a compact chip list scoped to the thread; PDFs open a
+// preview dialog that streams the real attachment bytes into a blob iframe.
+// ---------------------------------------------------------------------------
+
+function AttachmentPreviewDialog({
+  attachment,
+  open,
+  onOpenChange,
+}: {
+  attachment: AttachmentHit;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [url, setUrl] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    setLoading(true);
+    setError(null);
+    orMock(
+      () => fetchAttachmentBlob(attachment.id),
+      () => mockAttachmentBlob(attachment.id)
+    )
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(errorMessage(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [attachment.id]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle className="truncate">{attachment.filename}</DialogTitle>
+        </DialogHeader>
+        <div className="h-[70vh] w-full overflow-hidden rounded-md border bg-muted/30">
+          {loading ? (
+            <div className="flex h-full items-center justify-center">
+              <Loader2 className="size-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : error ? (
+            <div className="flex h-full items-center justify-center p-4 text-center text-sm text-muted-foreground">
+              {error}
+            </div>
+          ) : (
+            url && <iframe title={attachment.filename} src={url} className="h-full w-full" />
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function AttachmentsSection({ threadId }: { threadId: string }) {
+  const { data: attachments = [] } = useQuery({
+    queryKey: ['attachments', threadId],
+    queryFn: () =>
+      orMock(
+        () => api.searchAttachments({ threadId }).then((r) => r.items),
+        () => mockAttachmentsForThread(threadId)
+      ),
+  });
+  const [preview, setPreview] = React.useState<AttachmentHit | null>(null);
+
+  if (attachments.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
+      <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
+      {attachments.map((a) => {
+        const isPdf = a.mimeType === 'application/pdf';
+        return (
+          <button
+            key={a.id}
+            type="button"
+            onClick={() => isPdf && setPreview(a)}
+            className={cn(
+              'rounded-full border px-2.5 py-1 text-xs',
+              isPdf ? 'hover:bg-accent' : 'cursor-default opacity-80'
+            )}
+          >
+            {a.filename} · {formatBytes(a.sizeBytes)}
+          </button>
+        );
+      })}
+      {preview && (
+        <AttachmentPreviewDialog
+          attachment={preview}
+          open
+          onOpenChange={(open) => !open && setPreview(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Contact summary header (M2.5) — what the local mirror knows about the
+// thread's correspondent. Resolution-gated: hidden entirely (rather than
+// shown empty) when the server/mock has no history for this address.
+// ---------------------------------------------------------------------------
+
+function ContactSummaryHeader({ email }: { email: string }) {
+  const { data: contact } = useQuery({
+    queryKey: ['contact', email],
+    retry: false,
+    queryFn: () =>
+      orMock(
+        () => api.getContact(email),
+        () => mockContactSummary(email)
+      ),
+  });
+
+  if (!contact) return null;
+
+  return (
+    <div className="flex items-center gap-1.5 border-b px-4 py-1.5 text-xs text-muted-foreground">
+      <UserRound className="size-3.5 shrink-0" />
+      <span className="font-medium text-foreground">{contact.name ?? contact.email}</span>
+      <span>· {contact.domain}</span>
+      <span>
+        · {contact.threadCount} thread{contact.threadCount === 1 ? '' : 's'}
+      </span>
+      <span>
+        · {contact.messageCount} message{contact.messageCount === 1 ? '' : 's'}
+      </span>
+      {contact.lastMessageAt && <span>· last {format(new Date(contact.lastMessageAt), 'MMM d')}</span>}
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Ask AI — a compact, thread-scoped Q&A dialog (the web app's persistent
@@ -323,7 +601,7 @@ export function ThreadPane({
             className="mr-1"
             disabled={messages.length === 0}
             onClick={() =>
-              openCompose({ kind: 'reply', thread, message: messages[messages.length - 1]! })
+              openCompose({ kind: 'reply', thread, message: messages[messages.length - 1]!, messages })
             }
           >
             <Reply /> Reply
@@ -387,6 +665,8 @@ export function ThreadPane({
           )}
         </div>
       </header>
+      {thread.participants[0] && <ContactSummaryHeader email={thread.participants[0].email} />}
+      <AttachmentsSection threadId={thread.id} />
       {aiEnabled && (
         <div className="flex items-start gap-2 border-b px-4 py-2 text-xs text-muted-foreground">
           <Sparkles className="mt-0.5 size-3.5 shrink-0 opacity-70" />
@@ -409,6 +689,7 @@ export function ThreadPane({
                   thread,
                   message: messages[messages.length - 1]!,
                   body: reply,
+                  messages,
                 })
               }
               className="max-w-64 truncate rounded-full border px-2.5 py-1 text-xs hover:bg-accent"
@@ -432,6 +713,7 @@ export function ThreadPane({
                 </span>
               </div>
               <div className="whitespace-pre-wrap text-sm leading-relaxed">{message.bodyText}</div>
+              <ReactionBar threadId={thread.id} message={message} />
             </article>
           ))}
         </div>

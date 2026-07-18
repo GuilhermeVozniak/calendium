@@ -1,12 +1,13 @@
 import type { AiEditAction, Draft, EmailAddress } from '@calendium/shared';
-import { ApiRequestError } from '@calendium/shared';
+import { ApiRequestError, buildInstantIntro } from '@calendium/shared';
 import { useQuery } from '@tanstack/react-query';
-import { ChevronDown, Clock, Loader2, Send, Sparkles } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { format } from 'date-fns';
+import { ChevronDown, Clock, Loader2, Send, Sparkles, UserRoundPlus, Zap } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { api, orMock } from '@/lib/api';
-import { type ComposeIntent, onOpenCompose } from '@/lib/compose';
-import { mockAccounts } from '@/lib/mock';
+import { applySignature, type ComposeIntent, onOpenCompose, toHtml } from '@/lib/compose';
+import { mockAccounts, mockSendSuggestion, mockUser } from '@/lib/mock';
 import { getActiveServerConfig, isDemoMode } from '@/lib/server-config';
 import { errorMessage, toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -37,20 +38,13 @@ function parseAddresses(value: string): EmailAddress[] {
     .map((email) => ({ name: null, email }));
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-/** Plain-text body -> minimal HTML the backend/providers accept. */
-function toHtml(text: string): string {
-  return `<p>${escapeHtml(text).replace(/\n/g, '<br>')}</p>`;
-}
-
 function ensureRe(subject: string): string {
   return /^re:/i.test(subject.trim()) ? subject : `Re: ${subject}`;
+}
+
+/** yyyy-MM-ddTHH:mm, the value shape <input type="datetime-local"> expects. */
+function toDatetimeLocalValue(isoDate: string): string {
+  return format(new Date(isoDate), "yyyy-MM-dd'T'HH:mm");
 }
 
 /**
@@ -65,6 +59,8 @@ export function ComposeHost() {
   const [to, setTo] = useState('');
   const [cc, setCc] = useState('');
   const [showCc, setShowCc] = useState(false);
+  const [bcc, setBcc] = useState('');
+  const [showBcc, setShowBcc] = useState(false);
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
   const [scheduleOpen, setScheduleOpen] = useState(false);
@@ -83,6 +79,11 @@ export function ComposeHost() {
     enabled: intent !== null,
     queryFn: () => orMock(() => api.listAccounts(), () => mockAccounts),
   });
+  const { data: me } = useQuery({
+    queryKey: ['me'],
+    enabled: intent !== null,
+    queryFn: () => orMock(() => api.getMe(), () => mockUser),
+  });
 
   useEffect(() => onOpenCompose(setIntent), []);
 
@@ -94,11 +95,15 @@ export function ComposeHost() {
       setTo(intent.message.from.email);
       setCc('');
       setShowCc(false);
+      setBcc('');
+      setShowBcc(false);
       setSubject(ensureRe(intent.thread.subject));
     } else {
       setTo('');
       setCc('');
       setShowCc(false);
+      setBcc('');
+      setShowBcc(false);
       setSubject('');
     }
     setBody(intent.kind === 'reply' ? (intent.body ?? '') : '');
@@ -119,6 +124,59 @@ export function ComposeHost() {
     setAccountId(preferred);
   }, [intent, accounts]);
 
+  // Auto-applies (and swaps) the selected account's signature onto the body:
+  // fires on open and whenever the From account changes, so switching
+  // accounts mid-compose replaces the signature without disturbing anything
+  // typed above it (lib/compose.ts's applySignature is swap-based).
+  useEffect(() => {
+    if (!intent || !accountId) return;
+    const account = accounts.find((a) => a.id === accountId);
+    if (!account) return;
+    setBody((prev) => applySignature(prev, account.signatureHtml));
+  }, [intent, accountId, accounts]);
+
+  // Smart Send (M2.5): debounce the first "to" recipient and look up a
+  // suggested send time. Resolution-gated — a thin-history 404 (real or mock)
+  // simply means no suggestion, so the chip stays hidden rather than guessing.
+  const [debouncedToEmail, setDebouncedToEmail] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedToEmail(parseAddresses(to)[0]?.email ?? ''), 300);
+    return () => clearTimeout(t);
+  }, [to]);
+  const { data: sendSuggestion } = useQuery({
+    queryKey: ['send-suggestion', debouncedToEmail],
+    enabled: intent !== null && debouncedToEmail.length > 0,
+    retry: false,
+    queryFn: () =>
+      orMock(
+        () => api.getSendSuggestion(debouncedToEmail),
+        () => {
+          const suggestion = mockSendSuggestion(debouncedToEmail);
+          if (!suggestion) throw new ApiRequestError(404, 'not_found', 'No send suggestion available.');
+          return suggestion;
+        }
+      ),
+  });
+
+  // Instant Intro (M2.5): only meaningful for a reply carrying the full
+  // thread (ThreadPane's Reply button passes `messages`), and only when it
+  // actually resolves to a third participant to move the introducer's BCC to.
+  const introDraft = useMemo(() => {
+    if (intent?.kind !== 'reply' || !intent.messages || !me?.email) return null;
+    return buildInstantIntro(intent.thread, intent.messages, me.email);
+  }, [intent, me?.email]);
+
+  function applyInstantIntro() {
+    if (!introDraft) return;
+    setTo(introDraft.to.map((a) => a.email).join(', '));
+    if (introDraft.bcc.length > 0) {
+      setBcc(introDraft.bcc.map((a) => a.email).join(', '));
+      setShowBcc(true);
+    }
+    setSubject(introDraft.subject);
+    setBody(introDraft.body);
+  }
+
   function close() {
     setIntent(null);
   }
@@ -129,7 +187,7 @@ export function ComposeHost() {
       threadId: intent?.kind === 'reply' ? intent.thread.id : null,
       to: parseAddresses(to),
       cc: showCc ? parseAddresses(cc) : [],
-      bcc: [] as EmailAddress[],
+      bcc: showBcc ? parseAddresses(bcc) : ([] as EmailAddress[]),
       subject,
       bodyHtml: toHtml(body),
       scheduledAt,
@@ -319,6 +377,32 @@ export function ComposeHost() {
             </div>
           )}
 
+          {showBcc && (
+            <div className="flex items-center gap-2">
+              <span className="w-12 shrink-0 text-xs text-muted-foreground">Bcc</span>
+              <Input
+                aria-label="Bcc"
+                value={bcc}
+                onChange={(e) => setBcc(e.target.value)}
+                placeholder="name@example.com"
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
+              />
+            </div>
+          )}
+
+          {introDraft && (
+            <button
+              type="button"
+              onClick={applyInstantIntro}
+              className="inline-flex w-fit items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+            >
+              <UserRoundPlus className="size-3" />
+              Instant Intro — reply-all, move {introDraft.bcc[0]?.name ?? introDraft.bcc[0]?.email} to BCC
+            </button>
+          )}
+
           <div className="flex items-center gap-2">
             <span className="w-12 shrink-0 text-xs text-muted-foreground">Subject</span>
             <Input
@@ -399,6 +483,19 @@ export function ComposeHost() {
           >
             <Clock /> Send later
           </Button>
+          {sendSuggestion && (
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label="Smart Send"
+              onClick={() => {
+                setScheduleOpen(true);
+                setScheduleAt(toDatetimeLocalValue(sendSuggestion.suggestedAt));
+              }}
+            >
+              <Zap /> Smart Send · {format(new Date(sendSuggestion.suggestedAt), 'MMM d, HH:mm')}
+            </Button>
+          )}
           {getActiveServerConfig()?.features.ai && (
             <DropdownMenu>
               <DropdownMenuTrigger>
