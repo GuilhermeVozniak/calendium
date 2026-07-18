@@ -1,7 +1,6 @@
 import type {
   AvailabilitySlot,
   Calendar,
-  CalendarSet,
   Event,
   EventInput,
   EventPatch,
@@ -106,20 +105,7 @@ export async function sendRsvpApi(id: string, response: RsvpStatus): Promise<Eve
   }
 }
 
-/**
- * Named calendar sets ("Work", "Home") toggled together from the command
- * palette's "Calendar set: <name>" entries (Task 15). No demo-mode fallback
- * exists yet for this resource, so demo mode simply reports no sets rather
- * than throwing - the palette then lists none, which is a safe default.
- */
-export async function fetchCalendarSets(): Promise<CalendarSet[]> {
-  try {
-    return await getApiClient().listCalendarSets();
-  } catch (err) {
-    if (DEMO_MODE) return [];
-    throw err;
-  }
-}
+
 
 export async function fetchAvailability(
   from: Date,

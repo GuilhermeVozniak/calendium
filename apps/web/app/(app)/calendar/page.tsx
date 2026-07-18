@@ -47,10 +47,10 @@ import { groupCalendarsByAccount } from '@/lib/calendar-accounts';
 import {
   fetchBusyEvents,
   fetchCalendars,
-  fetchCalendarSets,
   fetchEvents,
   patchCalendar,
 } from '@/lib/calendar-data';
+import { fetchCalendarSets } from '@/lib/set-data';
 import type { CalendarView } from '@/lib/calendar-views';
 import { VIEW_KEYS, rangeLabel, stepAnchor, viewRange } from '@/lib/calendar-views';
 import { nextHalfHour } from '@/lib/quick-add';

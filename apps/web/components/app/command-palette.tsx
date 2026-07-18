@@ -43,7 +43,7 @@ import {
 } from '@/components/ui/command';
 import { Kbd, KbdGroup } from '@/components/ui/kbd';
 import { dispatchCalendarCommand, queueCalendarCommand, type CalendarCommand } from '@/lib/calendar-commands';
-import { fetchCalendarSets } from '@/lib/calendar-data';
+import { fetchCalendarSets } from '@/lib/set-data';
 import type { CalendarView } from '@/lib/calendar-views';
 import { VIEW_KEYS } from '@/lib/calendar-views';
 import { dispatchMailCommand, queueMailCommand, type MailCommand } from '@/lib/mail-utils';

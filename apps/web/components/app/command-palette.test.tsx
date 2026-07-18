@@ -47,7 +47,7 @@ vi.mock('@/lib/template-data', () => ({
 }));
 
 const fetchCalendarSetsMock = vi.fn();
-vi.mock('@/lib/calendar-data', () => ({
+vi.mock('@/lib/set-data', () => ({
   fetchCalendarSets: () => fetchCalendarSetsMock(),
 }));
 

@@ -2,6 +2,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { Calendar } from '@calendium/shared';
+
 import { dispatchCalendarCommand } from '@/lib/calendar-commands';
 import { rangeLabel, stepAnchor } from '@/lib/calendar-views';
 
@@ -59,13 +61,26 @@ const fetchCalendarsMock = vi.fn();
 const patchCalendarMock = vi.fn();
 const fetchEventsMock = vi.fn();
 const fetchBusyEventsMock = vi.fn();
-const fetchCalendarSetsMock = vi.fn();
 vi.mock('@/lib/calendar-data', () => ({
   fetchCalendars: (...args: unknown[]) => fetchCalendarsMock(...args),
   patchCalendar: (...args: unknown[]) => patchCalendarMock(...args),
   fetchEvents: (...args: unknown[]) => fetchEventsMock(...args),
   fetchBusyEvents: (...args: unknown[]) => fetchBusyEventsMock(...args),
+}));
+
+const fetchCalendarSetsMock = vi.fn();
+const activateSetMock = vi.fn();
+const getActiveSetIdMock = vi.fn();
+const setActiveSetIdMock = vi.fn();
+vi.mock('@/lib/set-data', () => ({
   fetchCalendarSets: (...args: unknown[]) => fetchCalendarSetsMock(...args),
+  activateSet: (...args: unknown[]) => activateSetMock(...args),
+  getActiveSetId: (...args: unknown[]) => getActiveSetIdMock(...args),
+  setActiveSetId: (...args: unknown[]) => setActiveSetIdMock(...args),
+  allCalendarsSet: (calendars: Calendar[]) => ({ id: '__all__', name: 'All calendars', calendarIds: calendars.map((c) => c.id), position: -1 }),
+  calendarsMatchSet: () => false,
+  ACTIVE_SET_STORAGE_KEY: 'test-key',
+  ALL_CALENDARS_SET_ID: '__all__',
 }));
 
 const fetchAccountsMock = vi.fn();
@@ -126,6 +141,9 @@ beforeEach(() => {
   fetchEventsMock.mockResolvedValue([]);
   fetchBusyEventsMock.mockResolvedValue([]);
   fetchCalendarSetsMock.mockResolvedValue([]);
+  activateSetMock.mockResolvedValue(undefined);
+  getActiveSetIdMock.mockReturnValue(null);
+  setActiveSetIdMock.mockReturnValue(undefined);
   fetchEventTemplatesMock.mockResolvedValue([]);
 });
 
