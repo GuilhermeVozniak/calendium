@@ -12,12 +12,14 @@ import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import {
+  ChevronRightIcon,
   ExternalLinkIcon,
   LogOutIcon,
   MoonStarIcon,
   PlusIcon,
   RefreshCwIcon,
   ServerIcon,
+  SparklesIcon,
   SunIcon,
 } from 'lucide-react-native';
 import { useColorScheme } from 'nativewind';
@@ -46,6 +48,7 @@ export default function SettingsScreen() {
   const [connecting, setConnecting] = React.useState<Provider | null>(null);
 
   const isSelfHost = config?.mode === 'self_host';
+  const aiEnabled = config?.features?.ai ?? false;
   // Only offer mail providers the server can actually connect (features flags).
   const connectProviders = (['google', 'microsoft'] as const).filter(
     (provider) => config?.features?.[provider]
@@ -230,6 +233,22 @@ export default function SettingsScreen() {
               <SubscriptionCard subscription={subscriptionQuery.data ?? null} />
             )}
           </View>
+        </Section>
+      )}
+
+      {/* AI — full classifier CRUD lives on its own screen (Task 17), not a
+          read-only link out to the web app. */}
+      {aiEnabled && (
+        <Section title="AI">
+          <Pressable
+            onPress={() => router.push('/classifiers')}
+            className="flex-row items-center justify-between p-4 active:bg-accent">
+            <View className="flex-row items-center gap-3">
+              <Icon as={SparklesIcon} className="size-5 text-muted-foreground" />
+              <Text className="text-sm font-medium">AI classifiers</Text>
+            </View>
+            <Icon as={ChevronRightIcon} className="size-4 text-muted-foreground" />
+          </Pressable>
         </Section>
       )}
 
