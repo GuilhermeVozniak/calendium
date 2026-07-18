@@ -276,11 +276,37 @@ function MailClient() {
     }
     const ids = targets.map((t) => t.id);
     setSelection(clearSelection());
-    await Promise.allSettled(ids.map((id) => unsubscribe(id)));
-    void bulkAct(ids, 'archive');
-    toast.success(`Unsubscribed from ${ids.length} sender${ids.length === 1 ? '' : 's'}`, {
-      action: { label: 'Undo', onClick: () => void undoLast() },
-    });
+
+    // Partition settled results into succeeded and failed
+    const results = await Promise.allSettled(ids.map((id) => unsubscribe(id)));
+    const succeededIds: string[] = [];
+    const failedCount = results.filter((result, index) => {
+      if (result.status === 'fulfilled') {
+        succeededIds.push(ids[index]!);
+        return false;
+      }
+      return true;
+    }).length;
+
+    // Archive only the succeeded ids
+    if (succeededIds.length > 0) {
+      void bulkAct(succeededIds, 'archive');
+    }
+
+    // Toast based on outcomes
+    if (failedCount === 0) {
+      // All succeeded
+      toast.success(`Unsubscribed from ${succeededIds.length} sender${succeededIds.length === 1 ? '' : 's'}`, {
+        action: { label: 'Undo', onClick: () => void undoLast() },
+      });
+    } else if (succeededIds.length > 0) {
+      // Mixed: some succeeded, some failed
+      toast.success(`Unsubscribed from ${succeededIds.length} sender${succeededIds.length === 1 ? '' : 's'}`);
+      toast.error(`Couldn't unsubscribe from ${failedCount} sender${failedCount === 1 ? '' : 's'}`);
+    } else {
+      // All failed
+      toast.error(`Couldn't unsubscribe from ${failedCount} sender${failedCount === 1 ? '' : 's'}`);
+    }
   }, [threads, selection, unsubscribe, bulkAct, undoLast]);
 
   const focusSearch = React.useCallback(() => searchRef.current?.focus(), []);

@@ -391,7 +391,7 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze }: ThreadVie
               Star <Kbd size="sm">S</Kbd>
             </TooltipContent>
           </Tooltip>
-          {(thread.unsubscribeMailto || thread.unsubscribeUrl) && (
+          {(thread.unsubscribeMailto || thread.unsubscribeUrl || thread.unsubscribeOneClick) && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
