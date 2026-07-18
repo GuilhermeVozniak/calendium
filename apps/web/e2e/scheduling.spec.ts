@@ -84,10 +84,6 @@ test.describe('Public booking page', () => {
   // afterward — it does not exist yet in this branch. This spec is wired up
   // so it can be un-skipped the moment that route lands, without needing to
   // guess at its shape ahead of time.
-  test.skip(
-    true,
-    'Public booking page route (/book/[slug]) ships from a sibling task not yet merged into this branch.'
-  );
 
   test('renders the public booking page shell in demo mode', async ({ page }) => {
     await page.goto('/book/demo');

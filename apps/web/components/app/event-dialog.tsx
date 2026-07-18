@@ -452,7 +452,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{event ? 'Edit event' : 'New event'}</DialogTitle>
         </DialogHeader>
