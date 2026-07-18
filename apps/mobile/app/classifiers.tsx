@@ -11,6 +11,7 @@ import {
   mockUpdateClassifier,
   withMockFallback,
 } from '@/lib/mock';
+import { useServerConfig } from '@/lib/server-config';
 import type { AiClassifier, ClassifierInput, InboxSplit } from '@calendium/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
@@ -66,6 +67,8 @@ export default function ClassifiersScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
+  const { config } = useServerConfig();
+  const aiEnabled = config?.features?.ai ?? false;
   const [form, setForm] = React.useState<FormState | null>(null);
 
   const listQuery = useQuery({
@@ -75,6 +78,9 @@ export default function ClassifiersScreen() {
         () => api.listClassifiers(),
         () => mockListClassifiers()
       ),
+    // Deep-linking straight to this screen while the server disables AI
+    // should not fetch or show classifier CRUD (mirrors ask-ai.tsx's gate).
+    enabled: aiEnabled,
   });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['classifiers'] });
@@ -179,16 +185,27 @@ export default function ClassifiersScreen() {
           <Icon as={ChevronLeftIcon} className="size-6" />
         </Button>
         <Text className="flex-1 font-semibold">AI classifiers</Text>
-        <Button
-          size="icon"
-          variant="ghost"
-          className="rounded-full"
-          onPress={() => setForm(EMPTY_FORM)}
-          testID="add-classifier">
-          <Icon as={PlusIcon} className="size-5" />
-        </Button>
+        {aiEnabled ? (
+          <Button
+            size="icon"
+            variant="ghost"
+            className="rounded-full"
+            onPress={() => setForm(EMPTY_FORM)}
+            testID="add-classifier">
+            <Icon as={PlusIcon} className="size-5" />
+          </Button>
+        ) : (
+          <View className="size-10" />
+        )}
       </View>
 
+      {!aiEnabled ? (
+        <View className="flex-1 items-center justify-center px-8">
+          <Text className="text-center text-sm text-muted-foreground">
+            AI features are disabled on this server.
+          </Text>
+        </View>
+      ) : (
       <ScrollView contentContainerClassName="gap-4 p-4" style={{ paddingBottom: insets.bottom }}>
         <Text className="text-xs text-muted-foreground">
           Natural-language rules applied to incoming mail: when a message matches, it can be routed
@@ -327,6 +344,7 @@ export default function ClassifiersScreen() {
           </View>
         )}
       </ScrollView>
+      )}
     </View>
   );
 }

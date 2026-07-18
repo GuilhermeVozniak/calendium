@@ -132,6 +132,46 @@ describe('ComposeScreen — AI edit action sheet', () => {
     expect(mockSendDraft).toHaveBeenCalledWith('draft_1');
   });
 
+  it('syncs the locally edited body to the server before a chained AI edit', async () => {
+    mockSaveDraft.mockResolvedValue({ id: 'draft_1' });
+    mockUpdateDraft.mockResolvedValue({ id: 'draft_1' });
+    mockAiEditDraft
+      .mockResolvedValueOnce({ text: 'Thanks for the update — sounds great!', model: 'gpt-mock' })
+      .mockResolvedValueOnce({ text: 'Thanks — sounds great!', model: 'gpt-mock' });
+
+    await renderScreen();
+    await flush();
+
+    await fireEvent.changeText(screen.getByPlaceholderText('Write your message…'), 'Thanks for the update.');
+    await fireEvent.press(screen.getByText('Edit with AI'));
+    await pressAlertOption('Improve');
+    await flush();
+
+    expect(mockAiEditDraft).toHaveBeenNthCalledWith(1, 'improve', 'draft_1', undefined);
+    expect(screen.getByDisplayValue('Thanks for the update — sounds great!')).toBeTruthy();
+    // First edit created the draft — no sync needed yet.
+    expect(mockUpdateDraft).not.toHaveBeenCalled();
+
+    await fireEvent.press(screen.getByText('Edit with AI'));
+    await pressAlertOption('Shorten');
+    await flush();
+
+    // The chained edit must see the first edit's result server-side: the
+    // draft is synced with the locally edited body before the second
+    // aiEditDraft call, and that sync happens before that call fires.
+    expect(mockUpdateDraft).toHaveBeenCalledWith(
+      'draft_1',
+      expect.objectContaining({
+        bodyHtml: expect.stringContaining('Thanks for the update — sounds great!'),
+      })
+    );
+    expect(mockUpdateDraft.mock.invocationCallOrder[0]).toBeLessThan(
+      mockAiEditDraft.mock.invocationCallOrder[1]
+    );
+    expect(mockAiEditDraft).toHaveBeenNthCalledWith(2, 'shorten', 'draft_1', undefined);
+    expect(screen.getByDisplayValue('Thanks — sounds great!')).toBeTruthy();
+  });
+
   it('shows the daily AI limit message on a 429 and leaves the draft body untouched', async () => {
     mockSaveDraft.mockResolvedValue({ id: 'draft_1' });
     mockAiEditDraft.mockRejectedValue(new ApiRequestError(429, 'rate_limited', 'too many requests'));

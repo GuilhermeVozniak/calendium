@@ -121,6 +121,19 @@ export default function ComposeScreen() {
     }
   };
 
+  // Full DraftInput for the composer's current fields — used both to lazily
+  // create the AI-backed draft and to sync it before a chained AI edit.
+  const currentDraftInput = () => ({
+    accountId: resolveAccountId(),
+    threadId: null,
+    to: recipientList(),
+    cc: [],
+    bcc: [],
+    subject,
+    bodyHtml: bodyToHtml(),
+    scheduledAt: null,
+  });
+
   // Runs one of the composer's AI edit actions against the draft body.
   // aiEditDraft always edits an existing draft server-side, so the first edit
   // lazily saves one (reused by later edits and by Send).
@@ -129,19 +142,15 @@ export default function ComposeScreen() {
     try {
       let id = draftId;
       if (!id) {
-        const accountId = resolveAccountId();
-        const draft = await api.saveDraft({
-          accountId,
-          threadId: null,
-          to: recipientList(),
-          cc: [],
-          bcc: [],
-          subject,
-          bodyHtml: bodyToHtml(),
-          scheduledAt: null,
-        });
+        const draft = await api.saveDraft(currentDraftInput());
         id = draft.id;
         setDraftId(id);
+      } else {
+        // aiEditDraft reads the draft's STORED body server-side, not the local
+        // `body` state. Without this, chaining two edits (e.g. Improve then
+        // Shorten) would silently re-run the second action against the
+        // pre-Improve text instead of the first edit's result.
+        await api.updateDraft(id, currentDraftInput());
       }
       const res = await withMockFallback(
         () => api.aiEditDraft(action, id!, tone),

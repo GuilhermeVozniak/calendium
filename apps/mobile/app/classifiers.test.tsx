@@ -1,3 +1,8 @@
+const mockUseServerConfig = jest.fn();
+jest.mock('@/lib/server-config', () => ({
+  useServerConfig: (...args: unknown[]) => mockUseServerConfig(...args),
+}));
+
 const mockListClassifiers = jest.fn();
 const mockCreateClassifier = jest.fn();
 const mockUpdateClassifier = jest.fn();
@@ -25,6 +30,9 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Alert } from 'react-native';
 import ClassifiersScreen from './classifiers';
+
+const AI_ENABLED_CONFIG = { features: { billing: false, google: false, microsoft: false, ai: true, push: false } };
+const AI_DISABLED_CONFIG = { features: { billing: false, google: false, microsoft: false, ai: false, push: false } };
 
 // Confirmation alerts in this screen are always [Cancel, Delete] — pressing
 // the destructive (last) button simulates the user confirming.
@@ -66,6 +74,7 @@ function renderScreen() {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockUseServerConfig.mockReturnValue({ config: AI_ENABLED_CONFIG });
   mockCanGoBack.mockReturnValue(true);
   alertSpy = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
     buttons?.[buttons.length - 1]?.onPress?.();
@@ -77,6 +86,16 @@ afterEach(() => {
 });
 
 describe('ClassifiersScreen', () => {
+  it('hides classifier CRUD and does not fetch when the server disables AI', async () => {
+    mockUseServerConfig.mockReturnValue({ config: AI_DISABLED_CONFIG });
+    await renderScreen();
+    await flush();
+
+    expect(screen.getByText('AI features are disabled on this server.')).toBeTruthy();
+    expect(screen.queryByTestId('add-classifier')).toBeNull();
+    expect(mockListClassifiers).not.toHaveBeenCalled();
+  });
+
   it('lists existing classifiers with their split/label badges', async () => {
     mockListClassifiers.mockResolvedValue([CLASSIFIER]);
     await renderScreen();
