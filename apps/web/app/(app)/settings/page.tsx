@@ -26,15 +26,20 @@ import { toast } from 'sonner';
 
 import type {
   AccountStatus,
+  AvailabilityWindow,
   ConnectedAccount,
   InboxSplit,
   Provider,
   Snippet,
   Subscription,
+  UserSettings,
 } from '@calendium/shared';
+import { ApiRequestError } from '@calendium/shared';
 
+import { BookingLinks, localTimeZone, WindowsEditor } from '@/components/app/booking-links';
 import { SetSwitcher } from '@/components/app/calendar/set-switcher';
 import { TemplateManager } from '@/components/app/calendar/template-manager';
+import { MeetingPolls } from '@/components/app/meeting-polls';
 import {
   PaywallBanner,
   useBillingPortalMutation,
@@ -76,6 +81,7 @@ import {
   setVipSendersApi,
   startConnect,
 } from '@/lib/settings-data';
+import { fetchSettings, updateSettingsApi } from '@/lib/scheduling-data';
 import { DEFAULT_SPLITS, orderSplits } from '@/lib/mail-utils';
 import { usePrefs, useUpdatePrefs } from '@/lib/prefs-data';
 import { useInstance } from '@/lib/use-instance';
@@ -94,6 +100,7 @@ type SettingsTab =
   | 'snippets'
   | 'templates'
   | 'sets'
+  | 'scheduling'
   | 'appearance'
   | 'mailbox'
   | 'ai'
@@ -105,6 +112,7 @@ const KNOWN_TABS: SettingsTab[] = [
   'snippets',
   'templates',
   'sets',
+  'scheduling',
   'appearance',
   'mailbox',
   'ai',
@@ -125,6 +133,7 @@ export default function SettingsPage() {
       'snippets',
       'templates',
       'sets',
+      'scheduling',
       'appearance',
       'mailbox',
       ...(aiEnabled ? (['ai'] as SettingsTab[]) : []),
@@ -172,7 +181,7 @@ export default function SettingsPage() {
       <div className="mx-auto max-w-3xl px-6 py-8">
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Accounts, snippets, templates, sets, appearance, mailbox
+          Accounts, snippets, templates, sets, scheduling, appearance, mailbox
           {pushEnabled ? ', notifications' : ''}
           {billingEnabled ? ', and billing' : ''}.
         </p>
@@ -187,6 +196,7 @@ export default function SettingsPage() {
             <TabsTrigger value="snippets">Snippets</TabsTrigger>
             <TabsTrigger value="templates">Templates</TabsTrigger>
             <TabsTrigger value="sets">Sets</TabsTrigger>
+            <TabsTrigger value="scheduling">Scheduling</TabsTrigger>
             <TabsTrigger value="appearance">Appearance</TabsTrigger>
             <TabsTrigger value="mailbox">Mailbox</TabsTrigger>
             {aiEnabled && <TabsTrigger value="ai">AI</TabsTrigger>}
@@ -204,6 +214,9 @@ export default function SettingsPage() {
           </TabsContent>
           <TabsContent value="sets" className="mt-4">
             <SetsSection />
+          </TabsContent>
+          <TabsContent value="scheduling" className="mt-4">
+            <SchedulingSection />
           </TabsContent>
           <TabsContent value="appearance" className="mt-4">
             <AppearanceSection />
@@ -686,6 +699,136 @@ function SetsSection() {
       </Card>
       <SetSwitcher open={switcherOpen} onOpenChange={setSwitcherOpen} />
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Scheduling (working hours, time zone, working location, booking links,
+// meeting polls)
+// ---------------------------------------------------------------------------
+
+function tzOptions(): string[] {
+  try {
+    return Intl.supportedValuesOf('timeZone');
+  } catch {
+    return [];
+  }
+}
+
+function SchedulingSection() {
+  const queryClient = useQueryClient();
+  const settingsQuery = useQuery({ queryKey: ['scheduling-settings'], queryFn: fetchSettings });
+  const zones = React.useMemo(tzOptions, []);
+
+  const [timeZone, setTimeZone] = React.useState('');
+  const [workingHours, setWorkingHours] = React.useState<AvailabilityWindow[]>([]);
+  const [workingLocation, setWorkingLocation] = React.useState('');
+  const [tzError, setTzError] = React.useState<string | null>(null);
+  const hydrated = React.useRef(false);
+
+  React.useEffect(() => {
+    if (settingsQuery.data && !hydrated.current) {
+      setTimeZone(settingsQuery.data.timeZone || localTimeZone());
+      setWorkingHours(settingsQuery.data.workingHours);
+      setWorkingLocation(settingsQuery.data.workingLocation);
+      hydrated.current = true;
+    }
+  }, [settingsQuery.data]);
+
+  const save = useMutation({
+    mutationFn: () => {
+      const next: UserSettings = { timeZone, workingHours, workingLocation };
+      return updateSettingsApi(next);
+    },
+    onSuccess: (s) => {
+      queryClient.setQueryData<UserSettings>(['scheduling-settings'], s);
+      toast.success('Scheduling settings saved');
+      setTzError(null);
+    },
+    onError: (err) => {
+      if (err instanceof ApiRequestError && err.status === 400) {
+        setTzError('That does not look like a valid time zone.');
+        return;
+      }
+      toast.error('Could not save scheduling settings');
+    },
+  });
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Working hours</CardTitle>
+          <CardDescription>
+            Your time zone and weekly availability - used by booking links and polls that
+            respect working hours.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          {settingsQuery.isLoading ? (
+            <>
+              <Skeleton className="h-9 w-48" />
+              <Skeleton className="h-24 w-full" />
+            </>
+          ) : (
+            <>
+              <div className="grid gap-1.5 sm:max-w-xs">
+                <Label htmlFor="scheduling-tz">Time zone</Label>
+                <Input
+                  id="scheduling-tz"
+                  value={timeZone}
+                  onChange={(e) => {
+                    setTimeZone(e.target.value);
+                    setTzError(null);
+                  }}
+                  list="scheduling-tz-options"
+                  placeholder="America/New_York"
+                />
+                <datalist id="scheduling-tz-options">
+                  {zones.map((z) => (
+                    <option key={z} value={z} />
+                  ))}
+                </datalist>
+                {tzError && <p className="text-xs text-destructive">{tzError}</p>}
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Weekly availability</Label>
+                <WindowsEditor
+                  windows={workingHours}
+                  onChange={setWorkingHours}
+                  addLabel="Add working hours"
+                  minRows={0}
+                />
+                {workingHours.length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    No constraint set - booking links and polls that respect working hours will
+                    treat every day as open.
+                  </p>
+                )}
+              </div>
+              <div className="grid gap-1.5 sm:max-w-xs">
+                <Label htmlFor="scheduling-location">Working location</Label>
+                <Input
+                  id="scheduling-location"
+                  value={workingLocation}
+                  onChange={(e) => setWorkingLocation(e.target.value)}
+                  placeholder="Office, home, ..."
+                />
+              </div>
+            </>
+          )}
+        </CardContent>
+        <CardFooter className="border-t pt-6">
+          <Button onClick={() => save.mutate()} disabled={settingsQuery.isLoading || save.isPending}>
+            {save.isPending && <Loader2 className="animate-spin" />}
+            Save
+          </Button>
+        </CardFooter>
+      </Card>
+
+      <BookingLinks />
+      <MeetingPolls />
+    </div>
   );
 }
 
