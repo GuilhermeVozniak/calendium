@@ -5,6 +5,8 @@ import type {
   BulkAction,
   BulkActionResult,
   Calendar,
+  CalendarSet,
+  CalendarSetInput,
   ConnectedAccount,
   DevicePlatform,
   Draft,
@@ -12,6 +14,8 @@ import type {
   Event,
   EventInput,
   EventPatch,
+  EventTemplate,
+  EventTemplateInput,
   InstanceInfo,
   Label,
   Message,
@@ -69,6 +73,10 @@ export class ApiRequestError extends Error {
   }
 }
 
+/**
+ * Typed client for the Calendium REST API (see docs/architecture.md).
+ * Used by web, desktop, and mobile apps.
+ */
 /**
  * Typed client for the Calendium REST API (see docs/architecture.md).
  * Used by web, desktop, and mobile apps.
@@ -282,6 +290,33 @@ export class ApiClient {
   getAvailability(from: string, to: string, durationMinutes: number) {
     const qs = new URLSearchParams({ from, to, duration: String(durationMinutes) });
     return this.request<AvailabilitySlot[]>('GET', `/v1/availability?${qs}`);
+  }
+  listEventTemplates() {
+    return this.request<EventTemplate[]>('GET', '/v1/event-templates');
+  }
+  createEventTemplate(input: EventTemplateInput) {
+    return this.request<EventTemplate>('POST', '/v1/event-templates', input);
+  }
+  updateEventTemplate(id: string, input: EventTemplateInput) {
+    return this.request<EventTemplate>('PUT', `/v1/event-templates/${id}`, input);
+  }
+  deleteEventTemplate(id: string) {
+    return this.request<void>('DELETE', `/v1/event-templates/${id}`);
+  }
+  useEventTemplate(id: string) {
+    return this.request<void>('POST', `/v1/event-templates/${id}/use`);
+  }
+  listCalendarSets() {
+    return this.request<CalendarSet[]>('GET', '/v1/calendar-sets');
+  }
+  createCalendarSet(input: CalendarSetInput) {
+    return this.request<CalendarSet>('POST', '/v1/calendar-sets', input);
+  }
+  updateCalendarSet(id: string, input: CalendarSetInput) {
+    return this.request<CalendarSet>('PUT', `/v1/calendar-sets/${id}`, input);
+  }
+  deleteCalendarSet(id: string) {
+    return this.request<void>('DELETE', `/v1/calendar-sets/${id}`);
   }
 
   // --- Search ---

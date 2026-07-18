@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ApiClient, ApiRequestError, fetchInstance } from './client';
-import type { AiComposeRequest, DraftInput, EventInput, EventPatch } from './types';
+import type { AiComposeRequest, CalendarSetInput, DraftInput, EventInput, EventPatch, EventTemplateInput } from './types';
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -391,6 +391,26 @@ const EVENT_PATCH: EventPatch = {
   start: '2026-08-01T09:15:00Z',
 };
 
+const EVENT_TEMPLATE_INPUT: EventTemplateInput = {
+  name: '1:1',
+  title: 'One-on-one',
+  description: 'Weekly sync',
+  location: 'Video call',
+  durationMinutes: 30,
+  allDay: false,
+  calendarId: 'cal1',
+  attendeeEmails: ['alice@example.com'],
+  addConferencing: true,
+  reminderMinutes: [15],
+  recurrenceRule: 'FREQ=WEEKLY',
+};
+
+const CALENDAR_SET_INPUT: CalendarSetInput = {
+  name: 'Work',
+  calendarIds: ['cal1', 'cal2'],
+  position: 0,
+};
+
 const AI_REQUEST: AiComposeRequest = {
   action: 'compose',
   prompt: 'Draft a reply',
@@ -638,6 +658,68 @@ const methodCases: MethodCase[] = [
     method: 'PUT',
     path: '/v1/prefs',
     body: { splitOrder: ['vip', 'important'] },
+  },
+
+  // --- Event templates ---
+  {
+    name: 'listEventTemplates',
+    call: (c) => c.listEventTemplates(),
+    method: 'GET',
+    path: '/v1/event-templates',
+  },
+  {
+    name: 'createEventTemplate',
+    call: (c) => c.createEventTemplate(EVENT_TEMPLATE_INPUT),
+    method: 'POST',
+    path: '/v1/event-templates',
+    body: EVENT_TEMPLATE_INPUT,
+  },
+  {
+    name: 'updateEventTemplate',
+    call: (c) => c.updateEventTemplate('et1', EVENT_TEMPLATE_INPUT),
+    method: 'PUT',
+    path: '/v1/event-templates/et1',
+    body: EVENT_TEMPLATE_INPUT,
+  },
+  {
+    name: 'deleteEventTemplate',
+    call: (c) => c.deleteEventTemplate('et1'),
+    method: 'DELETE',
+    path: '/v1/event-templates/et1',
+  },
+  {
+    name: 'useEventTemplate',
+    call: (c) => c.useEventTemplate('et1'),
+    method: 'POST',
+    path: '/v1/event-templates/et1/use',
+  },
+
+  // --- Calendar sets ---
+  {
+    name: 'listCalendarSets',
+    call: (c) => c.listCalendarSets(),
+    method: 'GET',
+    path: '/v1/calendar-sets',
+  },
+  {
+    name: 'createCalendarSet',
+    call: (c) => c.createCalendarSet(CALENDAR_SET_INPUT),
+    method: 'POST',
+    path: '/v1/calendar-sets',
+    body: CALENDAR_SET_INPUT,
+  },
+  {
+    name: 'updateCalendarSet',
+    call: (c) => c.updateCalendarSet('cs1', CALENDAR_SET_INPUT),
+    method: 'PUT',
+    path: '/v1/calendar-sets/cs1',
+    body: CALENDAR_SET_INPUT,
+  },
+  {
+    name: 'deleteCalendarSet',
+    call: (c) => c.deleteCalendarSet('cs1'),
+    method: 'DELETE',
+    path: '/v1/calendar-sets/cs1',
   },
 ];
 

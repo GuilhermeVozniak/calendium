@@ -272,6 +272,53 @@ export interface AvailabilitySlot {
   end: string;
 }
 
+/** Saved event default set ("1:1", "Focus block") applied at creation time. */
+export interface EventTemplate {
+  id: string;
+  name: string;
+  title: string;
+  description: string;
+  location: string;
+  durationMinutes: number;
+  allDay: boolean;
+  calendarId: string | null;
+  attendeeEmails: string[];
+  addConferencing: boolean;
+  reminderMinutes: number[];
+  recurrenceRule: string | null;
+  usageCount: number;
+}
+
+/** Create/update event template payload (full replace on update). */
+export interface EventTemplateInput {
+  name: string;
+  title: string;
+  description?: string;
+  location?: string;
+  durationMinutes: number;
+  allDay?: boolean;
+  calendarId?: string | null;
+  attendeeEmails?: string[];
+  addConferencing?: boolean;
+  reminderMinutes?: number[];
+  recurrenceRule?: string | null;
+}
+
+/** Named group of calendars toggled together ("Work", "Home"). */
+export interface CalendarSet {
+  id: string;
+  name: string;
+  calendarIds: string[];
+  position: number;
+}
+
+/** Create/update calendar set payload (full replace on update). */
+export interface CalendarSetInput {
+  name: string;
+  calendarIds: string[];
+  position: number;
+}
+
 // ---------------------------------------------------------------------------
 // Notifications & devices
 // ---------------------------------------------------------------------------
