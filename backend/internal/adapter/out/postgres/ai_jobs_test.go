@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -56,6 +57,90 @@ func TestAiJobRepoEnqueueDedupCollapse(t *testing.T) {
 	}
 	if claimed[0].Payload["reason"] != "burst" {
 		t.Fatalf("claimed payload = %+v, want the refreshed payload from the collapse", claimed[0].Payload)
+	}
+}
+
+// TestAiJobRepoEnqueueLeavesInFlightJobUntouched covers the ai_jobs Enqueue
+// dedup guard: a burst re-enqueue for a (kind, thread) whose existing row is
+// currently locked (a worker mid-run) must be a no-op against that row --
+// run_after, locked_at, and attempts all stay exactly as ClaimDue left them.
+// Without the `WHERE ai_jobs.locked_at IS NULL` guard on the DO UPDATE, this
+// would instead unlock the in-flight row (locked_at reset to NULL),
+// re-opening it to a second ClaimDue and letting the worker's eventual
+// Complete delete the freshly re-armed row.
+func TestAiJobRepoEnqueueLeavesInFlightJobUntouched(t *testing.T) {
+	st, db := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	acct := seedAccount(t, st, "u1")
+	th := seedThread(t, st, acct.ID, time.Now())
+	threadID := th.ID
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	if err := st.AiJobs().Enqueue(ctx, domain.AiJob{
+		ID: "jobL", UserID: "u1", AccountID: acct.ID, Kind: domain.AiJobThreadSummary,
+		ThreadID: &threadID, RunAfter: now.Add(-time.Minute), Payload: map[string]string{"reason": "original"},
+	}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	claimed, err := st.AiJobs().ClaimDue(ctx, now, 10)
+	if err != nil {
+		t.Fatalf("ClaimDue: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].ID != "jobL" {
+		t.Fatalf("ClaimDue = %+v, want [jobL] claimed", claimed)
+	}
+
+	var wantRunAfter time.Time
+	var wantLockedAt time.Time
+	var wantAttempts int
+	if err := db.QueryRowContext(ctx, `SELECT run_after, locked_at, attempts FROM ai_jobs WHERE id = 'jobL'`).
+		Scan(&wantRunAfter, &wantLockedAt, &wantAttempts); err != nil {
+		t.Fatalf("select after claim: %v", err)
+	}
+	if wantLockedAt.IsZero() {
+		t.Fatalf("locked_at is zero after ClaimDue, want it set")
+	}
+
+	// A burst re-enqueue for the same (kind, thread) while the row is locked
+	// must be a no-op: run_after/locked_at/attempts stay exactly as ClaimDue
+	// left them, and the payload is NOT refreshed.
+	if err := st.AiJobs().Enqueue(ctx, domain.AiJob{
+		ID: "jobL2", UserID: "u1", AccountID: acct.ID, Kind: domain.AiJobThreadSummary,
+		ThreadID: &threadID, RunAfter: now.Add(2 * time.Hour), Payload: map[string]string{"reason": "burst-while-locked"},
+	}); err != nil {
+		t.Fatalf("Enqueue (while locked): %v", err)
+	}
+
+	var gotRunAfter time.Time
+	var gotLockedAt time.Time
+	var gotAttempts int
+	var gotPayload []byte
+	if err := db.QueryRowContext(ctx, `SELECT run_after, locked_at, attempts, payload FROM ai_jobs WHERE id = 'jobL'`).
+		Scan(&gotRunAfter, &gotLockedAt, &gotAttempts, &gotPayload); err != nil {
+		t.Fatalf("select after re-enqueue: %v", err)
+	}
+	if !gotRunAfter.Equal(wantRunAfter) {
+		t.Fatalf("run_after = %v, want unchanged %v (in-flight job must be left untouched)", gotRunAfter, wantRunAfter)
+	}
+	if !gotLockedAt.Equal(wantLockedAt) {
+		t.Fatalf("locked_at = %v, want unchanged %v (must stay locked)", gotLockedAt, wantLockedAt)
+	}
+	if gotAttempts != wantAttempts {
+		t.Fatalf("attempts = %d, want unchanged %d", gotAttempts, wantAttempts)
+	}
+	if strings.Contains(string(gotPayload), "burst-while-locked") {
+		t.Fatalf("payload = %s, want the original payload (untouched while locked)", gotPayload)
+	}
+
+	// Sanity: no second row was created either (still the dedup index).
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM ai_jobs WHERE thread_id = $1`, threadID).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("ai_jobs rows for thread = %d, want 1", count)
 	}
 }
 

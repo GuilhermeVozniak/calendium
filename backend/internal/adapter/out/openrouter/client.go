@@ -172,6 +172,13 @@ func (c *Client) complete(ctx context.Context, system, user string, jsonMode boo
 
 	res, err := c.hc.Do(req)
 	if err != nil {
+		// A transport-level failure (dial refused, DNS, client-side timeout)
+		// that isn't the caller cancelling ctx is the provider being
+		// unreachable, not a caller error: wrap it the same as a 5xx so the
+		// job queue's ErrAIUnavailable 15m-rearm branch applies here too.
+		if ctx.Err() == nil {
+			return "", "", fmt.Errorf("%w: openrouter: request: %w", domain.ErrAIUnavailable, err)
+		}
 		return "", "", fmt.Errorf("openrouter: request: %w", err)
 	}
 	defer func() { _ = res.Body.Close() }()
@@ -188,10 +195,16 @@ func (c *Client) complete(ctx context.Context, system, user string, jsonMode boo
 		}
 		_ = json.Unmarshal(raw, &oe)
 		err := fmt.Errorf("openrouter: http %d: %s", res.StatusCode, oe.Error.Message)
-		if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
+		switch {
+		case res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden:
 			return "", "", fmt.Errorf("%w: %w", domain.ErrUnauthorized, err)
+		case res.StatusCode == http.StatusTooManyRequests:
+			return "", "", fmt.Errorf("%w: %w", domain.ErrRateLimited, err)
+		case res.StatusCode >= 500:
+			return "", "", fmt.Errorf("%w: %w", domain.ErrAIUnavailable, err)
+		default:
+			return "", "", err
 		}
-		return "", "", err
 	}
 
 	var out struct {

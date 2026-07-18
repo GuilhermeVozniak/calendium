@@ -109,6 +109,54 @@ func TestAIJobAutoDraftAwaitingReplyCreatesDraft(t *testing.T) {
 	}
 }
 
+// TestAIJobAutoDraftSubjectAvoidsDoublePrefix covers MINOR 4 (final-review
+// fix wave): when the thread subject already carries a "Re:" prefix
+// (case-insensitively, with surrounding whitespace), the auto-drafted reply
+// must reuse it as-is rather than stacking a second "Re: Re: " prefix.
+func TestAIJobAutoDraftSubjectAvoidsDoublePrefix(t *testing.T) {
+	tests := []struct {
+		name          string
+		threadSubject string
+		wantSubject   string
+	}{
+		{"already prefixed, standard case", "Re: Budget approval", "Re: Budget approval"},
+		{"already prefixed, different case", "re: Budget approval", "re: Budget approval"},
+		{"already prefixed, upper case with leading space", "  RE: Budget approval", "RE: Budget approval"},
+		{"not yet prefixed gets one Re:", "Budget approval", "Re: Budget approval"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+			deps, _, threads, messages, drafts, ai, _ := newAutoDraftDeps(t, now)
+			threads.byID["t1"] = domain.Thread{ID: "t1", AccountID: "a1", Subject: tt.threadSubject}
+			if _, err := messages.Upsert(ctx, domain.Message{
+				ID: "m1", ThreadID: "t1", AccountID: "a1",
+				From: domain.EmailAddress{Email: "sender@example.com"}, SentAt: now.Add(-time.Minute),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			ai.jsonOut = `{"shouldDraft":true,"isMeetingRequest":false,"subject":"model subject","bodyHtml":"<p>reply</p>"}`
+
+			svc := NewAIJobService(deps)
+			if err := svc.runAutoDraft(ctx, autoDraftJob(nil)); err != nil {
+				t.Fatalf("runAutoDraft() error = %v, want nil", err)
+			}
+
+			all, err := drafts.ListByUser(ctx, "u1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(all) != 1 {
+				t.Fatalf("drafts = %d, want 1", len(all))
+			}
+			if all[0].Subject != tt.wantSubject {
+				t.Fatalf("draft.Subject = %q, want %q", all[0].Subject, tt.wantSubject)
+			}
+		})
+	}
+}
+
 func TestAIJobAutoDraftShouldDraftFalseCreatesNoDraft(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)

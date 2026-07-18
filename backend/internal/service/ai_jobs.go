@@ -349,7 +349,10 @@ func (s *AIJobService) runAutoDraft(ctx context.Context, j domain.AiJob) error {
 
 	subject := out.Subject
 	if th.Subject != "" {
-		subject = "Re: " + th.Subject
+		subject = strings.TrimSpace(th.Subject)
+		if !strings.HasPrefix(strings.ToLower(subject), "re:") {
+			subject = "Re: " + subject
+		}
 	}
 
 	existing, err := s.d.Drafts.GetAiGeneratedByThread(ctx, th.ID)
@@ -672,8 +675,16 @@ func reminderHasInboundReplyAfter(msgs []domain.Message, ownerEmail string, sent
 	return false
 }
 
-// runVoiceProfile is a stub in this task; Task 11 fills in real learning.
-// Unlike the other kinds it carries no ThreadID (voice_profile jobs are
+// runVoiceProfile learns the account owner's writing style from their own
+// sent mail: it loads up to voiceSampleCount of the account's sent messages,
+// and when there are at least voiceMinSamples of them, asks the model for a
+// style profile via completeJSONBudgeted and upserts it as the user's single
+// domain.VoiceProfile row (consumed by AIService.Compose's compose/reply
+// voice injection). Too few samples is a no-op, not an error: there is
+// nothing yet to learn a style from, and the job never spends budget on it.
+// On success it self-re-enqueues a fresh voice_profile job 30 days out, so
+// the profile keeps refreshing as more sent mail accumulates. Unlike the
+// other kinds it carries no ThreadID (voice_profile jobs are
 // account/user-scoped), so there is no existence guard to run here.
 //
 // KNOWN GAP (carried from Task 3): the ai_jobs dedup unique index only

@@ -31,7 +31,7 @@ import { formatOptionTime, reminderOptions, sendLaterOptions } from '@/lib/mail-
 import { fetchAccounts } from '@/lib/settings-data';
 import { MOD_KEY } from '@/lib/shortcuts';
 import { useInstance } from '@/lib/use-instance';
-import { runAiCompose, useSnippets } from '@/lib/use-mail';
+import { aiErrorMessage, runAiCompose, useSnippets } from '@/lib/use-mail';
 import { cn } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
@@ -344,8 +344,8 @@ function ComposeForm({
         toast.info('AI is offline — drafted locally.');
       }
       bodyRef.current?.focus();
-    } catch {
-      toast.error('AI is unavailable right now. Please try again.');
+    } catch (err) {
+      toast.error(aiErrorMessage(err));
     } finally {
       setAiBusy(false);
     }

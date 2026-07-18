@@ -122,15 +122,18 @@ func TestComplete(t *testing.T) {
 
 	t.Run("error mapping", func(t *testing.T) {
 		tests := []struct {
-			name       string
-			status     int
-			body       string
-			wantUnauth bool
+			name    string
+			status  int
+			body    string
+			wantErr error // nil = just "some error", no specific sentinel asserted
 		}{
-			{"server error", http.StatusInternalServerError, `{"error":{"message":"boom"}}`, false},
-			{"unauthorized", http.StatusUnauthorized, `{"error":{"message":"bad key"}}`, true},
-			{"forbidden", http.StatusForbidden, `{"error":{"message":"forbidden"}}`, true},
-			{"no choices", http.StatusOK, `{"model":"m","choices":[]}`, false},
+			{"server error", http.StatusInternalServerError, `{"error":{"message":"boom"}}`, domain.ErrAIUnavailable},
+			{"bad gateway", http.StatusBadGateway, `{"error":{"message":"upstream down"}}`, domain.ErrAIUnavailable},
+			{"service unavailable", http.StatusServiceUnavailable, `{"error":{"message":"down for maintenance"}}`, domain.ErrAIUnavailable},
+			{"too many requests", http.StatusTooManyRequests, `{"error":{"message":"slow down"}}`, domain.ErrRateLimited},
+			{"unauthorized", http.StatusUnauthorized, `{"error":{"message":"bad key"}}`, domain.ErrUnauthorized},
+			{"forbidden", http.StatusForbidden, `{"error":{"message":"forbidden"}}`, domain.ErrUnauthorized},
+			{"no choices", http.StatusOK, `{"model":"m","choices":[]}`, nil},
 		}
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
@@ -144,10 +147,27 @@ func TestComplete(t *testing.T) {
 				if err == nil {
 					t.Fatal("want error")
 				}
-				if tc.wantUnauth && !errors.Is(err, domain.ErrUnauthorized) {
-					t.Fatalf("err = %v, want wrap of domain.ErrUnauthorized", err)
+				if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+					t.Fatalf("err = %v, want wrap of %v", err, tc.wantErr)
 				}
 			})
+		}
+	})
+
+	t.Run("transport-level failure maps to domain.ErrAIUnavailable", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		client := rewriteClient(t, srv.URL)
+		srv.Close() // connection refused: a transport error, not a caller-cancelled ctx
+
+		c := NewClient("k", "m", client)
+		_, _, err := c.Complete(context.Background(), "", "hi")
+		if err == nil {
+			t.Fatal("want error")
+		}
+		if !errors.Is(err, domain.ErrAIUnavailable) {
+			t.Fatalf("err = %v, want wrap of domain.ErrAIUnavailable", err)
 		}
 	})
 }
@@ -236,6 +256,60 @@ func TestCompleteJSON(t *testing.T) {
 		}
 		if !errors.Is(err, domain.ErrUnauthorized) {
 			t.Fatalf("err = %v, want wrap of domain.ErrUnauthorized", err)
+		}
+	})
+
+	t.Run("429 maps to domain.ErrRateLimited (parity with Complete)", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"slow down"}}`))
+		}))
+		defer srv.Close()
+
+		c := NewClient("k", "m", rewriteClient(t, srv.URL))
+		var out map[string]any
+		_, err := c.CompleteJSON(context.Background(), "", "hi", &out)
+		if err == nil {
+			t.Fatal("want error")
+		}
+		if !errors.Is(err, domain.ErrRateLimited) {
+			t.Fatalf("err = %v, want wrap of domain.ErrRateLimited", err)
+		}
+	})
+
+	t.Run("5xx maps to domain.ErrAIUnavailable (parity with Complete)", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"down"}}`))
+		}))
+		defer srv.Close()
+
+		c := NewClient("k", "m", rewriteClient(t, srv.URL))
+		var out map[string]any
+		_, err := c.CompleteJSON(context.Background(), "", "hi", &out)
+		if err == nil {
+			t.Fatal("want error")
+		}
+		if !errors.Is(err, domain.ErrAIUnavailable) {
+			t.Fatalf("err = %v, want wrap of domain.ErrAIUnavailable", err)
+		}
+	})
+
+	t.Run("transport-level failure maps to domain.ErrAIUnavailable (parity with Complete)", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		client := rewriteClient(t, srv.URL)
+		srv.Close()
+
+		c := NewClient("k", "m", client)
+		var out map[string]any
+		_, err := c.CompleteJSON(context.Background(), "", "hi", &out)
+		if err == nil {
+			t.Fatal("want error")
+		}
+		if !errors.Is(err, domain.ErrAIUnavailable) {
+			t.Fatalf("err = %v, want wrap of domain.ErrAIUnavailable", err)
 		}
 	})
 }

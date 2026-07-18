@@ -55,6 +55,7 @@ func TestAIServiceComposeAssemblesPrompt(t *testing.T) {
 		Threads:       threads,
 		Messages:      messages,
 		Drafts:        drafts,
+		Usage:         newAiUsageRepo(),
 		AI:            ai,
 		Clock:         newClock(base),
 		SelfHosted:    true, // bypass the paywall; entitlement tested separately
@@ -113,6 +114,7 @@ func TestAIServiceComposeValidation(t *testing.T) {
 			Threads:       threads,
 			Messages:      newMessageRepo(),
 			Drafts:        newDraftRepo(accounts),
+			Usage:         newAiUsageRepo(),
 			AI:            ai,
 			Clock:         newClock(base),
 			SelfHosted:    selfHosted,
@@ -157,6 +159,45 @@ func TestAIServiceComposeValidation(t *testing.T) {
 				t.Fatalf("AI invoked = %v, want %v", got, tt.wantCalled)
 			}
 		})
+	}
+}
+
+// TestAIServiceComposeBudgetExhausted covers FIX 3 (final-review fix wave):
+// Compose shares the same daily AI budget as Ask/InstantReplies, so an
+// exhausted counter must block Compose with domain.ErrRateLimited and never
+// reach port.AI.Complete -- no wasted prompt assembly work turns into a
+// wasted model call.
+func TestAIServiceComposeBudgetExhausted(t *testing.T) {
+	const owner = "u1"
+	accounts := newAccountRepo()
+	usage := newAiUsageRepo()
+	usage.calls[owner] = 1 // already at the limit
+
+	ai := newAI()
+	ai.text, ai.model = "should not be reached", "m"
+
+	svc := NewAIService(AIServiceDeps{
+		Subscriptions: newSubscriptionRepo(),
+		Accounts:      accounts,
+		Threads:       newThreadRepo(),
+		Messages:      newMessageRepo(),
+		Drafts:        newDraftRepo(accounts),
+		Usage:         usage,
+		AI:            ai,
+		Clock:         newClock(time.Now()),
+		DailyLimit:    1,
+		SelfHosted:    true,
+	})
+
+	_, err := svc.Compose(context.Background(), owner, domain.AiComposeRequest{
+		Action: domain.AiCompose,
+		Prompt: "draft a follow-up",
+	})
+	if !errors.Is(err, domain.ErrRateLimited) {
+		t.Fatalf("err = %v, want domain.ErrRateLimited", err)
+	}
+	if ai.lastSystem != "" || ai.lastUser != "" {
+		t.Fatalf("AI was called (lastSystem=%q, lastUser=%q), want budget exhaustion to skip generation entirely", ai.lastSystem, ai.lastUser)
 	}
 }
 
@@ -210,6 +251,7 @@ func TestAIServiceComposeEditingActions(t *testing.T) {
 			Threads:       newThreadRepo(),
 			Messages:      newMessageRepo(),
 			Drafts:        drafts,
+			Usage:         newAiUsageRepo(),
 			AI:            ai,
 			Clock:         newClock(base),
 		})

@@ -14,6 +14,14 @@ import (
 // unique index ai_jobs_dedup_idx — it resets run_after/locked_at so a
 // message burst collapses into one fresh job. Jobs with a nil ThreadID
 // (e.g. voice_profile) fall outside that index and always insert fresh.
+//
+// The DO UPDATE carries a `WHERE ai_jobs.locked_at IS NULL` guard so a job
+// currently claimed by a worker (locked_at set) is left untouched: without
+// it, a burst re-enqueue mid-run would unlock the claimed row underneath the
+// worker, opening a window for a second worker to double-claim it (double
+// budget charge, duplicate AI drafts) and for the original worker's Complete
+// to then delete the re-armed row (losing the refresh). Against a locked
+// row the insert becomes a no-op, same as ON CONFLICT DO NOTHING.
 func (r aiJobRepo) Enqueue(ctx context.Context, j domain.AiJob) error {
 	if j.ID == "" {
 		j.ID = newID()
@@ -29,7 +37,8 @@ func (r aiJobRepo) Enqueue(ctx context.Context, j domain.AiJob) error {
 		INSERT INTO ai_jobs (id, user_id, account_id, kind, thread_id, payload, run_after)
 		VALUES ($1,$2,$3,$4,$5,$6,$7)
 		ON CONFLICT (kind, thread_id) WHERE thread_id IS NOT NULL
-		DO UPDATE SET run_after = EXCLUDED.run_after, locked_at = NULL, payload = EXCLUDED.payload`,
+		DO UPDATE SET run_after = EXCLUDED.run_after, locked_at = NULL, payload = EXCLUDED.payload
+		WHERE ai_jobs.locked_at IS NULL`,
 		j.ID, j.UserID, j.AccountID, string(j.Kind), nullStrPtr(j.ThreadID), payload, j.RunAfter)
 	return err
 }

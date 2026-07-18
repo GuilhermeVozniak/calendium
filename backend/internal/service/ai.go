@@ -90,6 +90,11 @@ func NewAIService(d AIServiceDeps) *AIService {
 	}
 }
 
+// Compose generates (or edits) email text for one of the AiAction kinds
+// (compose/reply/summarize/ask/editing). It charges the shared daily AI
+// budget (the same per-user counter Ask/InstantReplies/AIJobService's
+// background handlers charge) immediately before the model call, failing
+// with domain.ErrRateLimited when exhausted.
 func (s *AIService) Compose(ctx context.Context, userID string, req domain.AiComposeRequest) (domain.AiComposeResponse, error) {
 	var zero domain.AiComposeResponse
 	if err := s.ent.require(ctx, userID); err != nil {
@@ -162,6 +167,14 @@ func (s *AIService) Compose(ctx context.Context, userID string, req domain.AiCom
 		}
 	}
 
+	allowed, err := s.usage.IncrementAndCheck(ctx, userID, s.clock.Now(), s.dailyLimit)
+	if err != nil {
+		return zero, err
+	}
+	if !allowed {
+		return zero, fmt.Errorf("%w: daily ai budget exhausted", domain.ErrRateLimited)
+	}
+
 	text, model, err := s.ai.Complete(ctx, system, strings.TrimSpace(b.String()))
 	if err != nil {
 		return zero, err
@@ -185,7 +198,9 @@ type askCandidate struct {
 // retrieved, it charges the shared daily AI budget (the same per-user
 // counter InstantReplies and AIJobService's background handlers charge)
 // before calling the model, failing with domain.ErrRateLimited when
-// exhausted.
+// exhausted. When retrieval finds no candidates at all, it skips both the
+// charge and the model call and returns an honest "no sources" answer
+// instead of spending budget on an empty-context prompt.
 func (s *AIService) Ask(ctx context.Context, userID string, req domain.AiAskRequest) (domain.AiAskResponse, error) {
 	var zero domain.AiAskResponse
 	question := strings.TrimSpace(req.Question)
@@ -199,6 +214,14 @@ func (s *AIService) Ask(ctx context.Context, userID string, req domain.AiAskRequ
 	candidates, err := s.askCandidates(ctx, userID, req)
 	if err != nil {
 		return zero, err
+	}
+	if len(candidates) == 0 {
+		// Nothing to answer from: an honest "no sources" reply costs no
+		// budget and never reaches the model with an empty context.
+		return domain.AiAskResponse{
+			Answer:  "I couldn't find anything in your mail about that.",
+			Sources: []domain.AiSource{},
+		}, nil
 	}
 
 	allowed, err := s.usage.IncrementAndCheck(ctx, userID, s.clock.Now(), s.dailyLimit)
@@ -315,7 +338,9 @@ const (
 // unparseable/unoffered preferredSlot falls back to the first offered slot,
 // duration is clamped to [15, 480] minutes (default 30 when unset), and
 // attendees are intersected with the thread's actual participants (plus the
-// owning account, always included).
+// owning account, always included). It charges the shared daily AI budget
+// immediately before the model call (once real availability is confirmed),
+// failing with domain.ErrRateLimited when exhausted.
 func (s *AIService) ProposeEvent(ctx context.Context, userID, threadID string) (domain.AiEventProposal, error) {
 	var zero domain.AiEventProposal
 	if err := s.ent.require(ctx, userID); err != nil {
@@ -340,6 +365,14 @@ func (s *AIService) ProposeEvent(ctx context.Context, userID, threadID string) (
 	}
 	if len(slots) > eventProposalSlotLimit {
 		slots = slots[:eventProposalSlotLimit]
+	}
+
+	allowed, err := s.usage.IncrementAndCheck(ctx, userID, s.clock.Now(), s.dailyLimit)
+	if err != nil {
+		return zero, err
+	}
+	if !allowed {
+		return zero, fmt.Errorf("%w: daily ai budget exhausted", domain.ErrRateLimited)
 	}
 
 	var out eventProposalOut

@@ -25,6 +25,7 @@ func newTestAIService(ai *fakeAI, voice *fakeVoiceProfileRepo) *AIService {
 		Messages:      newMessageRepo(),
 		Drafts:        newDraftRepo(newAccountRepo()),
 		VoiceProfiles: voice,
+		Usage:         newAiUsageRepo(),
 		AI:            ai,
 		Clock:         newClock(time.Now()),
 		SelfHosted:    true, // bypass the subscription gate; not what this file tests
@@ -117,6 +118,7 @@ func TestAIServiceComposeNilVoiceProfilesRepoSkipsInjection(t *testing.T) {
 		Threads:    newThreadRepo(),
 		Messages:   newMessageRepo(),
 		Drafts:     newDraftRepo(newAccountRepo()),
+		Usage:      newAiUsageRepo(),
 		AI:         ai,
 		Clock:      newClock(time.Now()),
 		SelfHosted: true,
@@ -296,6 +298,50 @@ func TestAIAskSourcesCarrySubjectAndSnippet(t *testing.T) {
 	}
 }
 
+// TestAIAskNoCandidatesSkipsChargeAndAI covers MINOR 5 (final-review fix
+// wave): a mailbox-wide question with no matching threads/messages must not
+// charge the daily budget or call the model with an empty context -- it
+// returns an honest "no sources" answer instead.
+func TestAIAskNoCandidatesSkipsChargeAndAI(t *testing.T) {
+	const owner = "u1"
+	accounts := newAccountRepo()
+	threads := newThreadRepo() // Threads.Search returns no hits
+	messages := newMessageRepo()
+	ai := newAI()
+	ai.jsonOut = `{"answer":"should not be reached","sourceMessageIds":[]}`
+	usage := newAiUsageRepo()
+
+	svc := NewAIService(AIServiceDeps{
+		Subscriptions: newSubscriptionRepo(),
+		Accounts:      accounts,
+		Threads:       threads,
+		Messages:      messages,
+		Drafts:        newDraftRepo(accounts),
+		Usage:         usage,
+		AI:            ai,
+		Clock:         newClock(time.Now()),
+		DailyLimit:    10,
+		SelfHosted:    true,
+	})
+
+	resp, err := svc.Ask(context.Background(), owner, domain.AiAskRequest{Question: "anything about the moon landing?"})
+	if err != nil {
+		t.Fatalf("Ask() error = %v, want nil", err)
+	}
+	if resp.Answer != "I couldn't find anything in your mail about that." {
+		t.Fatalf("Answer = %q, want the honest no-sources message", resp.Answer)
+	}
+	if len(resp.Sources) != 0 {
+		t.Fatalf("Sources = %+v, want empty", resp.Sources)
+	}
+	if usage.calls[owner] != 0 {
+		t.Fatalf("usage.calls[owner] = %d, want 0 (no charge with no candidates)", usage.calls[owner])
+	}
+	if ai.lastSystem != "" || ai.lastUser != "" {
+		t.Fatalf("AI was called (lastSystem=%q, lastUser=%q), want it skipped with no candidates", ai.lastSystem, ai.lastUser)
+	}
+}
+
 func TestAIAskEmptyQuestionIsValidationError(t *testing.T) {
 	accounts := newAccountRepo()
 	threads := newThreadRepo()
@@ -452,6 +498,7 @@ func newAIProposeFixture(t *testing.T) *aiProposeFixture {
 		Messages:      messages,
 		Drafts:        newDraftRepo(accounts),
 		Calendar:      cal,
+		Usage:         newAiUsageRepo(),
 		AI:            ai,
 		Clock:         clock,
 		SelfHosted:    true, // bypass the paywall; entitlement tested elsewhere
@@ -578,6 +625,60 @@ func TestAIProposeEventDropsAttendeeNotInThread(t *testing.T) {
 	wantAttendees := []string{"owner@example.com", "guest@example.com"}
 	if !reflect.DeepEqual(got.Attendees, wantAttendees) {
 		t.Fatalf("Attendees = %v, want %v (stranger@example.com dropped)", got.Attendees, wantAttendees)
+	}
+}
+
+// TestAIProposeEventBudgetExhausted covers FIX 3 (final-review fix wave):
+// ProposeEvent shares the same daily AI budget as Ask/InstantReplies/Compose,
+// so an exhausted counter must block it with domain.ErrRateLimited once real
+// availability is confirmed, never reaching port.AI.CompleteJSON.
+func TestAIProposeEventBudgetExhausted(t *testing.T) {
+	const owner = "u1"
+	base := time.Date(2026, 7, 18, 9, 0, 0, 0, time.UTC)
+	clock := newClock(base)
+	accounts := newAccountRepo()
+	accounts.byID["a1"] = domain.ConnectedAccount{ID: "a1", UserID: owner, Email: "owner@example.com"}
+	threads := newThreadRepo()
+	threads.byID["t1"] = domain.Thread{
+		ID: "t1", AccountID: "a1", Subject: "Sync next week",
+		Participants: []domain.EmailAddress{{Email: "owner@example.com"}, {Email: "guest@example.com"}},
+	}
+	messages := newMessageRepo()
+	if _, err := messages.Upsert(context.Background(), domain.Message{
+		ID: "m1", ThreadID: "t1", From: domain.EmailAddress{Email: "guest@example.com"},
+		BodyText: "Can we meet?", SentAt: clock.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cal := newCalendarService()
+	slot1 := clock.Now().Add(24 * time.Hour)
+	cal.slots = []domain.AvailabilitySlot{{Start: slot1, End: slot1.Add(30 * time.Minute)}}
+
+	ai := newAI()
+	ai.jsonOut = `{"title":"should not be reached","attendeeEmails":[],"durationMinutes":30,"preferredSlot":""}`
+	usage := newAiUsageRepo()
+	usage.calls[owner] = 1 // already at the limit
+
+	svc := NewAIService(AIServiceDeps{
+		Subscriptions: newSubscriptionRepo(),
+		Accounts:      accounts,
+		Threads:       threads,
+		Messages:      messages,
+		Drafts:        newDraftRepo(accounts),
+		Calendar:      cal,
+		Usage:         usage,
+		AI:            ai,
+		Clock:         clock,
+		DailyLimit:    1,
+		SelfHosted:    true,
+	})
+
+	_, err := svc.ProposeEvent(context.Background(), owner, "t1")
+	if !errors.Is(err, domain.ErrRateLimited) {
+		t.Fatalf("err = %v, want domain.ErrRateLimited", err)
+	}
+	if ai.lastSystem != "" || ai.lastUser != "" {
+		t.Fatalf("AI was called (lastSystem=%q, lastUser=%q), want budget exhaustion to skip generation entirely", ai.lastSystem, ai.lastUser)
 	}
 }
 
