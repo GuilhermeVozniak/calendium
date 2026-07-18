@@ -10,6 +10,7 @@ import {
   Clock,
   Globe,
   Plus,
+  X,
 } from 'lucide-react';
 
 import type { Calendar as CalendarModel, Event, EventInput } from '@calendium/shared';
@@ -24,7 +25,16 @@ import { TimeGrid } from '@/components/app/calendar/time-grid';
 import { YearView } from '@/components/app/calendar/year-view';
 import { EventDialog } from '@/components/app/event-dialog';
 import { Button } from '@/components/ui/button';
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
 import { Kbd } from '@/components/ui/kbd';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -33,6 +43,7 @@ import { fetchBusyEvents, fetchCalendars, fetchEvents, patchCalendar } from '@/l
 import type { CalendarView } from '@/lib/calendar-views';
 import { rangeLabel, stepAnchor, viewRange } from '@/lib/calendar-views';
 import { fetchAccounts } from '@/lib/settings-data';
+import { getPinnedTimeZones, setPinnedTimeZones, zoneCaption } from '@/lib/timezones';
 
 interface EventDialogState {
   open: boolean;
@@ -53,7 +64,50 @@ export default function CalendarPage() {
   });
   const [availabilityOpen, setAvailabilityOpen] = React.useState(false);
 
+  // Pinned world-clock timezones for the day/week grid gutters. Persisted to
+  // localStorage (lib/timezones.ts) rather than /v1/prefs, which today only
+  // carries splitOrder — see that module's header comment.
+  const [pinnedZones, setPinnedZones] = React.useState<string[]>([]);
+  const [tzQuery, setTzQuery] = React.useState('');
+
   React.useEffect(() => setMounted(true), []);
+
+  React.useEffect(() => {
+    setPinnedZones(getPinnedTimeZones());
+  }, []);
+
+  const allTimeZones = React.useMemo<string[]>(() => {
+    try {
+      return Intl.supportedValuesOf('timeZone');
+    } catch {
+      return [];
+    }
+  }, []);
+
+  const addPinnedZone = React.useCallback((zone: string) => {
+    setPinnedZones((prev) => {
+      if (prev.includes(zone) || prev.length >= 3) return prev;
+      const next = [...prev, zone];
+      setPinnedTimeZones(next);
+      return next;
+    });
+    setTzQuery('');
+  }, []);
+
+  const removePinnedZone = React.useCallback((zone: string) => {
+    setPinnedZones((prev) => {
+      const next = prev.filter((z) => z !== zone);
+      setPinnedTimeZones(next);
+      return next;
+    });
+  }, []);
+
+  const tzResults = React.useMemo(() => {
+    const query = tzQuery.trim().toLowerCase();
+    const candidates = allTimeZones.filter((z) => !pinnedZones.includes(z));
+    const matched = query ? candidates.filter((z) => z.toLowerCase().includes(query)) : candidates;
+    return matched.slice(0, 50);
+  }, [allTimeZones, pinnedZones, tzQuery]);
 
   // ⌘K search results deep-link to a day via /calendar?d=<ISO>. Read it once
   // on mount from window.location — this page is client-only, and skipping
@@ -273,6 +327,56 @@ export default function CalendarPage() {
           onCreate={openCreate}
         />
         <div className="ml-auto flex items-center gap-2">
+          {(view === 'day' || view === 'week') && (
+            <div className="flex items-center gap-1.5">
+              {pinnedZones.map((zone) => {
+                const { city, gmt } = zoneCaption(zone, now);
+                return (
+                  <span
+                    key={zone}
+                    className="inline-flex items-center gap-1 rounded-full border bg-muted/40 py-0.5 pr-1 pl-2 text-xs"
+                  >
+                    <span className="font-medium">{city}</span>
+                    <span className="text-muted-foreground">{gmt}</span>
+                    <button
+                      type="button"
+                      onClick={() => removePinnedZone(zone)}
+                      aria-label={`Unpin ${zone}`}
+                      className="rounded-full p-0.5 hover:bg-accent"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </span>
+                );
+              })}
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm" disabled={pinnedZones.length >= 3}>
+                    <Globe />+ TZ
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-64 p-0" align="end">
+                  <Command shouldFilter={false}>
+                    <CommandInput
+                      placeholder="Search timezone…"
+                      value={tzQuery}
+                      onValueChange={setTzQuery}
+                    />
+                    <CommandList>
+                      <CommandEmpty>No matching timezone.</CommandEmpty>
+                      <CommandGroup>
+                        {tzResults.map((zone) => (
+                          <CommandItem key={zone} value={zone} onSelect={() => addPinnedZone(zone)}>
+                            {zone.replace(/_/g, ' ')}
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            </div>
+          )}
           <Tabs value={view} onValueChange={(v) => setView(v as CalendarView)}>
             <TabsList className="h-8">
               <TabsTrigger value="day" className="px-2.5 text-xs">
@@ -422,6 +526,7 @@ export default function CalendarPage() {
               calendarById={calendarById}
               now={now}
               gmtLabel={gmtLabel}
+              pinnedZones={pinnedZones}
               onSlotClick={handleSlotClick}
               onEventClick={handleEventClick}
             />

@@ -5,6 +5,7 @@ import { addDays, addMinutes, endOfDay, format, isSameDay, isToday, startOfDay }
 
 import type { Calendar as CalendarModel, Event } from '@calendium/shared';
 
+import { hourLabelInZone, zoneCaption } from '@/lib/timezones';
 import { cn } from '@/lib/utils';
 
 import { FALLBACK_COLOR, withAlpha } from './event-render';
@@ -116,6 +117,8 @@ export interface TimeGridProps {
   calendarById: Map<string, CalendarModel>;
   now: Date;
   gmtLabel: string;
+  /** Extra pinned IANA zones rendered as hour-label gutters left of the primary one. */
+  pinnedZones?: string[];
   onSlotClick: (start: Date) => void;
   onEventClick: (event: Event) => void;
 }
@@ -126,6 +129,7 @@ export function TimeGrid({
   calendarById,
   now,
   gmtLabel,
+  pinnedZones = [],
   onSlotClick,
   onEventClick,
 }: TimeGridProps) {
@@ -139,12 +143,21 @@ export function TimeGrid({
   const timed = React.useMemo(() => events.filter((e) => !e.allDay), [events]);
   const allDay = React.useMemo(() => events.filter((e) => e.allDay), [events]);
   const gridTemplateColumns = `repeat(${days.length}, minmax(0, 1fr))`;
+  // Anchor for pinned-zone label math: the first displayed day. In day view
+  // this is the only day, so labels (and DST behavior) are exact. In week
+  // view, a mid-week DST transition in a pinned zone won't retroactively
+  // relabel earlier rows — an accepted simplification for a single shared
+  // gutter spanning multiple day columns.
+  const tzReferenceDay = days[0] ?? now;
 
   return (
     <div ref={scrollRef} className="relative flex-1 overflow-y-auto">
       {/* Sticky day header */}
       <div className="sticky top-0 z-30 border-b bg-background">
         <div className="flex">
+          {pinnedZones.map((zone) => (
+            <TzHeaderCaption key={zone} zone={zone} at={now} />
+          ))}
           <div className="flex w-16 shrink-0 items-end justify-end pr-2 pb-1.5">
             <span className="text-[10px] font-medium text-muted-foreground tabular-nums">
               {gmtLabel}
@@ -194,8 +207,15 @@ export function TimeGrid({
 
       {/* Grid body */}
       <div className="flex">
-        {/* 24h time gutter */}
-        <div className="relative w-16 shrink-0 select-none" style={{ height: 24 * HOUR_HEIGHT }}>
+        {pinnedZones.map((zone) => (
+          <TzGutter key={zone} zone={zone} referenceDay={tzReferenceDay} />
+        ))}
+        {/* 24h time gutter (primary/local zone) */}
+        <div
+          data-testid="time-gutter-primary"
+          className="relative w-16 shrink-0 select-none"
+          style={{ height: 24 * HOUR_HEIGHT }}
+        >
           {Array.from({ length: 23 }, (_, i) => i + 1).map((hour) => (
             <span
               key={hour}
@@ -220,6 +240,54 @@ export function TimeGrid({
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pinned-timezone gutters
+// ---------------------------------------------------------------------------
+
+function TzHeaderCaption({ zone, at }: { zone: string; at: Date }) {
+  const { city, gmt } = zoneCaption(zone, at);
+  return (
+    <div
+      data-testid={`tz-header-${zone}`}
+      className="flex w-14 shrink-0 flex-col items-end justify-end pr-2 pb-1.5 text-right"
+    >
+      <span className="truncate text-[10px] font-medium text-muted-foreground">{city}</span>
+      <span className="text-[9px] text-muted-foreground/70 tabular-nums">{gmt}</span>
+    </div>
+  );
+}
+
+function TzGutter({ zone, referenceDay }: { zone: string; referenceDay: Date }) {
+  return (
+    <div
+      data-testid={`tz-gutter-${zone}`}
+      className="relative w-14 shrink-0 select-none border-r border-border/60"
+      style={{ height: 24 * HOUR_HEIGHT }}
+    >
+      {Array.from({ length: 23 }, (_, i) => i + 1).map((hour) => {
+        const { label, dayShift } = hourLabelInZone(referenceDay, hour, zone);
+        return (
+          <span
+            key={hour}
+            className="absolute right-2 -translate-y-1/2 text-[10px] text-muted-foreground tabular-nums"
+            style={{ top: hour * HOUR_HEIGHT }}
+          >
+            {label}
+            {dayShift !== 0 && (
+              <sup
+                data-testid={`tz-dayshift-${hour}`}
+                className="ml-0.5 text-[8px] font-semibold text-muted-foreground/70"
+              >
+                {dayShift > 0 ? '+1' : '-1'}
+              </sup>
+            )}
+          </span>
+        );
+      })}
     </div>
   );
 }
