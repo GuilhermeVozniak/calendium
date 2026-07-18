@@ -1301,6 +1301,48 @@ func TestEventTemplateUpdate(t *testing.T) {
 	}
 }
 
+func TestEventTemplateCreateEmptyCalendarIDNormalizesToNil(t *testing.T) {
+	ctx := context.Background()
+	f := newCalFixture(t)
+
+	// A pointer to "" (rather than a nil pointer) can arrive from JSON bodies
+	// that send `"calendarId": ""` instead of omitting the field. It must be
+	// treated as "no calendar override": normalized to nil before validation
+	// and persistence, not passed to ownedCalendar (which would error) or
+	// stored as a non-nil empty-string pointer.
+	result, err := f.svc.CreateEventTemplate(ctx, "u1", domain.EventTemplateInput{
+		Name: "Test", Title: "Test", CalendarID: ptr(""),
+	})
+	if err != nil {
+		t.Fatalf("CreateEventTemplate with empty CalendarID failed: %v", err)
+	}
+	if result.CalendarID != nil {
+		t.Fatalf("CalendarID = %v, want nil", result.CalendarID)
+	}
+}
+
+func TestEventTemplateUpdateEmptyCalendarIDNormalizesToNil(t *testing.T) {
+	ctx := context.Background()
+	f := newCalFixture(t)
+
+	created, err := f.svc.CreateEventTemplate(ctx, "u1", domain.EventTemplateInput{
+		Name: "Original", Title: "Original Title", DurationMinutes: 30, CalendarID: ptr("cal1"),
+	})
+	if err != nil {
+		t.Fatalf("CreateEventTemplate failed: %v", err)
+	}
+
+	updated, err := f.svc.UpdateEventTemplate(ctx, "u1", created.ID, domain.EventTemplateInput{
+		Name: "Updated", Title: "Updated Title", DurationMinutes: 30, CalendarID: ptr(""),
+	})
+	if err != nil {
+		t.Fatalf("UpdateEventTemplate with empty CalendarID failed: %v", err)
+	}
+	if updated.CalendarID != nil {
+		t.Fatalf("CalendarID = %v, want nil", updated.CalendarID)
+	}
+}
+
 func TestEventTemplateDelete(t *testing.T) {
 	ctx := context.Background()
 	f := newCalFixture(t)

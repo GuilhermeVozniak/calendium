@@ -326,8 +326,15 @@ func (s *CalendarService) CreateEventTemplate(ctx context.Context, userID string
 		return domain.EventTemplate{}, fmt.Errorf("%w: durationMinutes must be greater than 0", domain.ErrValidation)
 	}
 
-	// Validate CalendarID if set (must resolve through ownedCalendar)
-	if in.CalendarID != nil && *in.CalendarID != "" {
+	// A pointer to "" (rather than a nil pointer) can arrive when the JSON
+	// body sends `"calendarId": ""` instead of omitting the field - treat it
+	// the same as "no calendar override" by normalizing to nil BEFORE
+	// validation/persist, so it never reaches ownedCalendar (unknown-id error)
+	// or gets stored as a non-nil empty-string pointer.
+	if in.CalendarID != nil && *in.CalendarID == "" {
+		in.CalendarID = nil
+	}
+	if in.CalendarID != nil {
 		_, _, err := s.ownedCalendar(ctx, userID, *in.CalendarID)
 		if err != nil {
 			return domain.EventTemplate{}, err
@@ -383,8 +390,11 @@ func (s *CalendarService) UpdateEventTemplate(ctx context.Context, userID, templ
 		return domain.EventTemplate{}, fmt.Errorf("%w: durationMinutes must be greater than 0", domain.ErrValidation)
 	}
 
-	// Validate CalendarID if set (must resolve through ownedCalendar)
-	if in.CalendarID != nil && *in.CalendarID != "" {
+	// Same empty-string-pointer normalization as CreateEventTemplate above.
+	if in.CalendarID != nil && *in.CalendarID == "" {
+		in.CalendarID = nil
+	}
+	if in.CalendarID != nil {
 		_, _, err := s.ownedCalendar(ctx, userID, *in.CalendarID)
 		if err != nil {
 			return domain.EventTemplate{}, err
