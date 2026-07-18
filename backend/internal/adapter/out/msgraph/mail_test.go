@@ -1,6 +1,7 @@
 package msgraph
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -251,6 +252,105 @@ func TestClient_SyncMail_ExpiredDeltaTokenRestarts(t *testing.T) {
 	}
 	if len(page.Labels) == 0 {
 		t.Errorf("Labels = %+v, want non-empty (folders re-fetched after restart)", page.Labels)
+	}
+}
+
+func TestClient_SyncMail_AttachmentProviderID(t *testing.T) {
+	const messages = `{"value":[
+		{"id":"g1","conversationId":"c1","subject":"Hi","hasAttachments":true,
+		 "from":{"emailAddress":{"address":"alice@example.com"}},
+		 "receivedDateTime":"2024-01-01T00:00:00Z"}
+	]`
+
+	_, c := newGraphServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch p := r.URL.Path; {
+		case strings.HasSuffix(p, "/messages/delta"):
+			fmt.Fprintf(w, `%s,"@odata.deltaLink":"https://graph.microsoft.com/v1.0/fresh"}`, messages)
+		case strings.HasSuffix(p, "/mailFolders"):
+			io.WriteString(w, `{"value":[]}`)
+		case strings.HasSuffix(p, "/messages/g1/attachments"):
+			if got := r.URL.Query().Get("$select"); got != attachmentMetaSelect {
+				t.Errorf("$select = %q, want %q", got, attachmentMetaSelect)
+			}
+			io.WriteString(w, `{"value":[
+				{"id":"att-1","name":"report.pdf","contentType":"application/pdf","size":2048}
+			]}`)
+		default:
+			t.Errorf("unexpected path %q", p)
+			http.NotFound(w, r)
+		}
+	})
+
+	page, err := c.SyncMail(context.Background(), "tok", "")
+	if err != nil {
+		t.Fatalf("SyncMail: %v", err)
+	}
+	if len(page.Messages) != 1 {
+		t.Fatalf("Messages len = %d, want 1", len(page.Messages))
+	}
+	atts := page.Messages[0].Message.Attachments
+	if len(atts) != 1 {
+		t.Fatalf("Attachments = %+v, want 1", atts)
+	}
+	att := atts[0]
+	if att.Filename != "report.pdf" || att.MimeType != "application/pdf" || att.SizeBytes != 2048 {
+		t.Errorf("attachment metadata wrong: %+v", att)
+	}
+	if att.ProviderAttachmentID != "att-1" {
+		t.Errorf("ProviderAttachmentID = %q, want att-1", att.ProviderAttachmentID)
+	}
+}
+
+func TestClient_FetchAttachment_RawBodyAndContentType(t *testing.T) {
+	const wantToken = "tok-attach"
+	original := []byte("raw pdf bytes \x00\x01done")
+
+	var gotPath string
+	_, c := newGraphServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+wantToken {
+			t.Errorf("Authorization = %q, want Bearer %s", got, wantToken)
+		}
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write(original)
+	})
+
+	data, mimeType, err := c.FetchAttachment(context.Background(), wantToken, "m1", "att1")
+	if err != nil {
+		t.Fatalf("FetchAttachment: %v", err)
+	}
+	if !strings.HasSuffix(gotPath, "/messages/m1/attachments/att1/$value") {
+		t.Errorf("path = %q, want suffix .../messages/m1/attachments/att1/$value", gotPath)
+	}
+	if !bytes.Equal(data, original) {
+		t.Errorf("data = %q, want %q", data, original)
+	}
+	if mimeType != "application/pdf" {
+		t.Errorf("mimeType = %q, want application/pdf", mimeType)
+	}
+}
+
+func TestClient_FetchAttachment_NotFound(t *testing.T) {
+	_, c := newGraphServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, `{"error":{"code":"ItemNotFound","message":"not found"}}`)
+	})
+
+	_, _, err := c.FetchAttachment(context.Background(), "tok", "m1", "att1")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestClient_FetchAttachment_Unauthorized(t *testing.T) {
+	_, c := newGraphServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, `{"error":{"code":"InvalidAuthenticationToken","message":"bad token"}}`)
+	})
+
+	_, _, err := c.FetchAttachment(context.Background(), "tok", "m1", "att1")
+	if !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("err = %v, want ErrUnauthorized", err)
 	}
 }
 
