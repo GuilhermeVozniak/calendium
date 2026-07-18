@@ -664,8 +664,69 @@ func (r messageRepo) ListSentByAccount(ctx context.Context, accountID, accountEm
 // contact aggregation — is implemented in later M2.5 tasks (3, 4, 5 in
 // docs/superpowers/plans/2026-07-17-m2-5-compose-contact.md).
 
+// ListOpens returns opened sent messages (from the account's own address),
+// newest open first, keyset-paginated on (opened_at, id) to stay stable
+// under exact-timestamp ties.
 func (r messageRepo) ListOpens(ctx context.Context, q port.OpensQuery) (domain.Page[domain.OpenEvent], error) {
-	return domain.Page[domain.OpenEvent]{}, fmt.Errorf("not implemented")
+	var page domain.Page[domain.OpenEvent]
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	args := []any{q.UserID}
+	cursorPred := ""
+	if q.Cursor != "" {
+		at, id, err := decodeOpensCursor(q.Cursor)
+		if err != nil {
+			return page, err
+		}
+		args = append(args, at, id)
+		cursorPred = "AND (m.opened_at, m.id) < ($2, $3)"
+	}
+	args = append(args, limit+1)
+	rows, err := r.q(ctx).QueryContext(ctx, fmt.Sprintf(`
+		SELECT m.id, m.thread_id, m.account_id, m.subject, m.to_addrs,
+		       m.opened_at, m.sent_at
+		FROM messages m
+		JOIN connected_accounts ca ON ca.id = m.account_id
+		WHERE ca.user_id = $1
+		  AND m.opened_at IS NOT NULL
+		  AND lower(m.from_addr->>'email') = lower(ca.email)
+		  %s
+		ORDER BY m.opened_at DESC, m.id DESC
+		LIMIT $%d`, cursorPred, len(args)), args...)
+	if err != nil {
+		return page, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	items := []domain.OpenEvent{}
+	for rows.Next() {
+		var e domain.OpenEvent
+		var recipients []byte
+		if err := rows.Scan(&e.MessageID, &e.ThreadID, &e.AccountID,
+			&e.Subject, &recipients, &e.OpenedAt, &e.SentAt); err != nil {
+			return page, err
+		}
+		if err := unmarshalInto(recipients, &e.Recipients); err != nil {
+			return page, err
+		}
+		if e.Recipients == nil {
+			e.Recipients = []domain.EmailAddress{}
+		}
+		items = append(items, e)
+	}
+	if err := rows.Err(); err != nil {
+		return page, err
+	}
+	if len(items) > limit {
+		items = items[:limit]
+		last := items[limit-1]
+		cursor := encodeOpensCursor(last.OpenedAt, last.MessageID)
+		page.NextCursor = &cursor
+	}
+	page.Items = items
+	return page, nil
 }
 
 func (r messageRepo) OpenHourHistogram(ctx context.Context, userID, recipientEmail string) ([24]int, error) {
