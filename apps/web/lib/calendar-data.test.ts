@@ -16,9 +16,11 @@ vi.mock('@/lib/demo', () => ({
 }));
 
 const listEventsMock = vi.fn();
+const listCalendarSetsMock = vi.fn();
 vi.mock('@/lib/api', () => ({
   getApiClient: () => ({
     listEvents: (...args: unknown[]) => listEventsMock(...args),
+    listCalendarSets: (...args: unknown[]) => listCalendarSetsMock(...args),
   }),
 }));
 
@@ -29,7 +31,8 @@ vi.mock('@/lib/calendar-mock', () => ({
   },
 }));
 
-import { fetchBusyEvents } from '@/lib/calendar-data';
+import { fetchBusyEvents, fetchCalendarSets } from '@/lib/calendar-data';
+import type { CalendarSet } from '@calendium/shared';
 
 const FROM = new Date('2026-07-20T00:00:00.000Z');
 const TO = new Date('2026-07-21T00:00:00.000Z');
@@ -87,5 +90,32 @@ describe('fetchBusyEvents', () => {
 
     await expect(fetchBusyEvents(FROM, TO)).rejects.toThrow('offline');
     expect(mockListEventsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('fetchCalendarSets', () => {
+  const SET: CalendarSet = { id: 'set-1', name: 'Work', calendarIds: ['cal-1'], position: 0 };
+
+  it('returns the sets from the API', async () => {
+    listCalendarSetsMock.mockResolvedValue([SET]);
+
+    const result = await fetchCalendarSets();
+
+    expect(result).toEqual([SET]);
+  });
+
+  it('returns an empty list in demo mode when the API fails (no mock backing yet)', async () => {
+    demoState.value = true;
+    listCalendarSetsMock.mockRejectedValue(new Error('offline'));
+
+    const result = await fetchCalendarSets();
+
+    expect(result).toEqual([]);
+  });
+
+  it('propagates the API failure outside demo mode', async () => {
+    listCalendarSetsMock.mockRejectedValue(new Error('offline'));
+
+    await expect(fetchCalendarSets()).rejects.toThrow('offline');
   });
 });

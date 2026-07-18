@@ -5,16 +5,20 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   Archive,
   BellRing,
+  CalendarCheck2,
   CalendarDays,
   Clock,
   FileText,
   Inbox,
   LayoutTemplate,
+  ListChecks,
   LogOut,
   MailOpen,
   Monitor,
   Moon,
+  PanelRight,
   PenLine,
+  Plus,
   RotateCcw,
   Search,
   Send,
@@ -38,12 +42,34 @@ import {
   CommandSeparator,
 } from '@/components/ui/command';
 import { Kbd, KbdGroup } from '@/components/ui/kbd';
+import { dispatchCalendarCommand, queueCalendarCommand, type CalendarCommand } from '@/lib/calendar-commands';
+import { fetchCalendarSets } from '@/lib/calendar-data';
+import type { CalendarView } from '@/lib/calendar-views';
+import { VIEW_KEYS } from '@/lib/calendar-views';
 import { dispatchMailCommand, queueMailCommand, type MailCommand } from '@/lib/mail-utils';
 import { signOut } from '@/lib/auth-client';
 import { fetchSearch } from '@/lib/search-data';
 import { MOD_KEY, useShortcuts } from '@/lib/shortcuts';
 import { teachShortcut } from '@/lib/shortcut-hints';
 import { fetchEventTemplates } from '@/lib/template-data';
+
+/** Palette label per view, keyed off the same VIEW_KEYS map the calendar page
+ * binds its d/w/m/q/y/a shortcuts from - deriving both here keeps the two
+ * from drifting apart. */
+const VIEW_LABELS: Record<CalendarView, string> = {
+  day: 'Day view',
+  week: 'Week view',
+  month: 'Month view',
+  quarter: 'Quarter view',
+  year: 'Year view',
+  ticker: 'Ticker view',
+};
+
+const VIEW_ITEMS = (Object.entries(VIEW_KEYS) as [string, CalendarView][]).map(([key, view]) => ({
+  key: key.toUpperCase(),
+  view,
+  label: VIEW_LABELS[view],
+}));
 
 /** ⌘K command palette — every Calendium action, one keystroke away. */
 export function CommandPalette() {
@@ -79,6 +105,12 @@ export function CommandPalette() {
     queryFn: fetchEventTemplates,
   });
 
+  const { data: calendarSets } = useQuery({
+    queryKey: ['calendar-sets'],
+    enabled: open,
+    queryFn: fetchCalendarSets,
+  });
+
   useShortcuts([
     {
       keys: 'mod+k',
@@ -103,6 +135,21 @@ export function CommandPalette() {
         router.push('/mail');
       } else {
         dispatchMailCommand(command);
+      }
+    });
+  }
+
+  /** Calendar-scoped commands need the calendar page mounted to act on. */
+  function runCalendarCommand(command: CalendarCommand) {
+    run(() => {
+      if (pathname !== '/calendar') {
+        // Queue the command so the calendar page runs it once mounted — a
+        // fixed timeout would drop it if the page's listener isn't attached
+        // yet.
+        queueCalendarCommand(command);
+        router.push('/calendar');
+      } else {
+        dispatchCalendarCommand(command);
       }
     });
   }
@@ -193,6 +240,10 @@ export function CommandPalette() {
             <Inbox />
             Get Me To Zero
           </CommandItem>
+          <CommandItem onSelect={() => runMailCommand('toggle-calendar-peek')}>
+            <PanelRight />
+            Toggle calendar peek
+          </CommandItem>
           <CommandItem onSelect={() => { teachShortcut('undo', 'Z', 'Undo'); runMailCommand('undo'); }}>
             <RotateCcw />
             Undo last action
@@ -275,6 +326,84 @@ export function CommandPalette() {
             </CommandGroup>
           </>
         )}
+
+        <CommandSeparator />
+
+        <CommandGroup heading="Calendar">
+          <CommandItem
+            onSelect={() => {
+              teachShortcut('cal-today', 'T', 'jump to today');
+              runCalendarCommand({ type: 'today' });
+            }}
+          >
+            <CalendarCheck2 />
+            Go to today
+            <Kbd size="sm" className="ml-auto">
+              T
+            </Kbd>
+          </CommandItem>
+          {VIEW_ITEMS.map(({ key, view, label }) => (
+            <CommandItem
+              key={view}
+              onSelect={() => {
+                teachShortcut(`cal-view-${view}`, key, `switch to ${label}`);
+                runCalendarCommand({ type: 'view', view });
+              }}
+            >
+              <CalendarDays />
+              {label}
+              <Kbd size="sm" className="ml-auto">
+                {key}
+              </Kbd>
+            </CommandItem>
+          ))}
+          <CommandItem
+            onSelect={() => {
+              teachShortcut('cal-new-event', 'C', 'create a new event');
+              runCalendarCommand({ type: 'new-event' });
+            }}
+          >
+            <Plus />
+            New event
+            <Kbd size="sm" className="ml-auto">
+              C
+            </Kbd>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              teachShortcut('cal-share-availability', 'S', 'share availability');
+              runCalendarCommand({ type: 'share-availability' });
+            }}
+          >
+            <Clock />
+            Share availability
+            <Kbd size="sm" className="ml-auto">
+              S
+            </Kbd>
+          </CommandItem>
+          {templates?.slice(0, 5).map((template) => (
+            <CommandItem
+              key={`cal-tpl-${template.id}`}
+              value={`new event from template ${template.name} ${template.title}`}
+              onSelect={() =>
+                runCalendarCommand({ type: 'new-from-template', templateId: template.id })
+              }
+            >
+              <LayoutTemplate />
+              <span className="truncate">New event from template: {template.name}</span>
+            </CommandItem>
+          ))}
+          {calendarSets?.map((set) => (
+            <CommandItem
+              key={`cal-set-${set.id}`}
+              value={`calendar set ${set.name}`}
+              onSelect={() => runCalendarCommand({ type: 'toggle-set', setId: set.id })}
+            >
+              <ListChecks />
+              <span className="truncate">Calendar set: {set.name}</span>
+            </CommandItem>
+          ))}
+        </CommandGroup>
 
         <CommandSeparator />
 

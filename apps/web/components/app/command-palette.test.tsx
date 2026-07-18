@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { Event, EventTemplate, Thread } from '@calendium/shared';
+import type { CalendarSet, Event, EventTemplate, Thread } from '@calendium/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CommandPalette } from '@/components/app/command-palette';
+import { onCalendarCommand, takePendingCalendarCommand, type CalendarCommand } from '@/lib/calendar-commands';
 import { onMailCommand, takePendingMailCommand, type MailCommand } from '@/lib/mail-utils';
 import { resetShortcutHints } from '@/lib/shortcut-hints';
 
@@ -45,6 +46,11 @@ vi.mock('@/lib/template-data', () => ({
   fetchEventTemplates: () => fetchEventTemplatesMock(),
 }));
 
+const fetchCalendarSetsMock = vi.fn();
+vi.mock('@/lib/calendar-data', () => ({
+  fetchCalendarSets: () => fetchCalendarSetsMock(),
+}));
+
 const toastMessage = vi.fn();
 vi.mock('sonner', () => ({
   toast: {
@@ -76,6 +82,7 @@ beforeEach(() => {
   themeState = { resolvedTheme: 'light', setTheme: vi.fn() };
   fetchSearchMock.mockResolvedValue({ threads: [], events: [] });
   fetchEventTemplatesMock.mockResolvedValue([]);
+  fetchCalendarSetsMock.mockResolvedValue([]);
   resetShortcutHints();
 });
 
@@ -179,6 +186,29 @@ describe('CommandPalette — mail commands', () => {
     expect(received).toEqual(['label']);
     expect(pushMock).not.toHaveBeenCalled();
     unsubscribe();
+  });
+
+  it('dispatches "Toggle calendar peek" via the toggle-calendar-peek mail command', async () => {
+    currentPathname = '/mail';
+    const received: MailCommand[] = [];
+    const unsubscribe = onMailCommand((command) => received.push(command));
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText('Toggle calendar peek'));
+    expect(received).toEqual(['toggle-calendar-peek']);
+    expect(pushMock).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it('queues "Toggle calendar peek" and navigates to /mail when on another route', async () => {
+    currentPathname = '/calendar';
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText('Toggle calendar peek'));
+    expect(pushMock).toHaveBeenCalledWith('/mail');
+    expect(takePendingMailCommand()).toBe('toggle-calendar-peek');
   });
 });
 
@@ -320,6 +350,139 @@ describe('CommandPalette — templates', () => {
   });
 });
 
+describe('CommandPalette — calendar actions', () => {
+  it('renders the calendar group with shortcut hints', async () => {
+    renderPalette();
+    await openPalette();
+
+    const today = screen.getByText('Go to today').closest('[cmdk-item]');
+    expect(today?.textContent).toContain('T');
+
+    const day = screen.getByText('Day view').closest('[cmdk-item]');
+    expect(day?.textContent).toContain('D');
+    const week = screen.getByText('Week view').closest('[cmdk-item]');
+    expect(week?.textContent).toContain('W');
+    const month = screen.getByText('Month view').closest('[cmdk-item]');
+    expect(month?.textContent).toContain('M');
+    const quarter = screen.getByText('Quarter view').closest('[cmdk-item]');
+    expect(quarter?.textContent).toContain('Q');
+    const year = screen.getByText('Year view').closest('[cmdk-item]');
+    expect(year?.textContent).toContain('Y');
+    const ticker = screen.getByText('Ticker view').closest('[cmdk-item]');
+    expect(ticker?.textContent).toContain('A');
+
+    const newEvent = screen.getByText('New event').closest('[cmdk-item]');
+    expect(newEvent?.textContent).toContain('C');
+    const share = screen.getByText('Share availability').closest('[cmdk-item]');
+    expect(share?.textContent).toContain('S');
+  });
+
+  it('dispatches a calendar command directly (as a DOM event) when already on /calendar', async () => {
+    currentPathname = '/calendar';
+    const received: CalendarCommand[] = [];
+    const unsubscribe = onCalendarCommand((command) => received.push(command));
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText('Go to today'));
+    expect(received).toEqual([{ type: 'today' }]);
+    expect(pushMock).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it('queues the "Week view" command and navigates to /calendar when on another route', async () => {
+    currentPathname = '/mail';
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText('Week view'));
+    expect(pushMock).toHaveBeenCalledWith('/calendar');
+    expect(takePendingCalendarCommand()).toEqual({ type: 'view', view: 'week' });
+  });
+
+  it('dispatches "New event" via the new-event calendar command', async () => {
+    currentPathname = '/calendar';
+    const received: CalendarCommand[] = [];
+    const unsubscribe = onCalendarCommand((command) => received.push(command));
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText('New event'));
+    expect(received).toEqual([{ type: 'new-event' }]);
+    unsubscribe();
+  });
+
+  it('dispatches "Share availability" via the share-availability calendar command', async () => {
+    currentPathname = '/calendar';
+    const received: CalendarCommand[] = [];
+    const unsubscribe = onCalendarCommand((command) => received.push(command));
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText('Share availability'));
+    expect(received).toEqual([{ type: 'share-availability' }]);
+    unsubscribe();
+  });
+});
+
+describe('CommandPalette — calendar templates & sets', () => {
+  const TEMPLATE: EventTemplate = {
+    id: 'tpl-1',
+    name: '1:1',
+    title: '1:1 with teammate',
+    description: '',
+    location: '',
+    durationMinutes: 30,
+    allDay: false,
+    calendarId: null,
+    attendeeEmails: [],
+    addConferencing: false,
+    reminderMinutes: [],
+    recurrenceRule: null,
+    usageCount: 1,
+  };
+  const SET: CalendarSet = { id: 'set-1', name: 'Work', calendarIds: ['cal-1'], position: 0 };
+
+  it('does not show template/set rows when there are none', async () => {
+    renderPalette();
+    await openPalette();
+    expect(screen.queryByText(/New event from template:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Calendar set:/)).not.toBeInTheDocument();
+  });
+
+  it('lists a "New event from template" row per template and dispatches new-from-template', async () => {
+    fetchEventTemplatesMock.mockResolvedValue([TEMPLATE]);
+    currentPathname = '/calendar';
+    const received: CalendarCommand[] = [];
+    const unsubscribe = onCalendarCommand((command) => received.push(command));
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+
+    const item = await screen.findByText('New event from template: 1:1');
+    await user.click(item);
+
+    expect(received).toEqual([{ type: 'new-from-template', templateId: 'tpl-1' }]);
+    unsubscribe();
+  });
+
+  it('lists a "Calendar set" row per set and dispatches toggle-set', async () => {
+    fetchCalendarSetsMock.mockResolvedValue([SET]);
+    currentPathname = '/calendar';
+    const received: CalendarCommand[] = [];
+    const unsubscribe = onCalendarCommand((command) => received.push(command));
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+
+    const item = await screen.findByText('Calendar set: Work');
+    await user.click(item);
+
+    expect(received).toEqual([{ type: 'toggle-set', setId: 'set-1' }]);
+    unsubscribe();
+  });
+});
+
 describe('CommandPalette — account', () => {
   it('signs out and redirects to /signin', async () => {
     const user = userEvent.setup();
@@ -364,5 +527,41 @@ describe('CommandPalette — shortcut teaching', () => {
     expect(received).toEqual(['undo']);
 
     unsubscribe();
+  });
+
+  it('teaches the today shortcut when "Go to today" is clicked', async () => {
+    currentPathname = '/calendar';
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText('Go to today'));
+    expect(toastMessage).toHaveBeenCalledWith('Tip: press T to jump to today');
+  });
+
+  it('teaches the view shortcut when "Week view" is clicked', async () => {
+    currentPathname = '/calendar';
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText('Week view'));
+    expect(toastMessage).toHaveBeenCalledWith('Tip: press W to switch to Week view');
+  });
+
+  it('teaches the new-event shortcut when "New event" is clicked', async () => {
+    currentPathname = '/calendar';
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText('New event'));
+    expect(toastMessage).toHaveBeenCalledWith('Tip: press C to create a new event');
+  });
+
+  it('teaches the share-availability shortcut when "Share availability" is clicked', async () => {
+    currentPathname = '/calendar';
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText('Share availability'));
+    expect(toastMessage).toHaveBeenCalledWith('Tip: press S to share availability');
   });
 });

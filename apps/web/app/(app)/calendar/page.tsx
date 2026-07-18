@@ -40,12 +40,20 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useCalendarCommands, type CalendarCommand } from '@/lib/calendar-commands';
 import { groupCalendarsByAccount } from '@/lib/calendar-accounts';
-import { fetchBusyEvents, fetchCalendars, fetchEvents, patchCalendar } from '@/lib/calendar-data';
+import {
+  fetchBusyEvents,
+  fetchCalendars,
+  fetchCalendarSets,
+  fetchEvents,
+  patchCalendar,
+} from '@/lib/calendar-data';
 import type { CalendarView } from '@/lib/calendar-views';
-import { rangeLabel, stepAnchor, viewRange } from '@/lib/calendar-views';
+import { VIEW_KEYS, rangeLabel, stepAnchor, viewRange } from '@/lib/calendar-views';
 import { nextHalfHour } from '@/lib/quick-add';
 import { fetchAccounts } from '@/lib/settings-data';
+import { useShortcuts } from '@/lib/shortcuts';
 import { applyTemplate, fetchEventTemplates, recordTemplateUsage } from '@/lib/template-data';
 import { getPinnedTimeZones, setPinnedTimeZones, zoneCaption } from '@/lib/timezones';
 
@@ -202,23 +210,32 @@ export default function CalendarPage() {
   // Command palette "Templates" entries deep-link here via
   // /calendar?template=<id> (mirrors the existing ?d= day deep-link). Wait for
   // calendars to load first so openCreate's "primary writable calendar"
-  // fallback is resolved by the time it fires.
+  // fallback is resolved by the time it fires. Shared with the
+  // 'new-from-template' calendar command below so both entry points apply a
+  // template identically.
+  const applyTemplateById = React.useCallback(
+    (templateId: string) => {
+      fetchEventTemplates()
+        .then((templates) => {
+          const template = templates.find((t) => t.id === templateId);
+          if (!template) return;
+          recordTemplateUsage(template.id);
+          openCreate(applyTemplate(template, nextHalfHour()));
+        })
+        .catch(() => {});
+    },
+    [openCreate]
+  );
+
   const processedTemplateRef = React.useRef(false);
   React.useEffect(() => {
     if (processedTemplateRef.current || calendars.length === 0) return;
     const templateId = new URLSearchParams(window.location.search).get('template');
     if (!templateId) return;
     processedTemplateRef.current = true;
-    fetchEventTemplates()
-      .then((templates) => {
-        const template = templates.find((t) => t.id === templateId);
-        if (!template) return;
-        recordTemplateUsage(template.id);
-        openCreate(applyTemplate(template, nextHalfHour()));
-      })
-      .catch(() => {});
+    applyTemplateById(templateId);
     window.history.replaceState(null, '', window.location.pathname + window.location.hash);
-  }, [calendars, openCreate]);
+  }, [calendars, applyTemplateById]);
 
   const handleSlotClick = React.useCallback(
     (slotStart: Date) => {
@@ -246,58 +263,107 @@ export default function CalendarPage() {
     [view]
   );
 
-  // Keyboard shortcuts: t (today), n/p or arrows (navigate), d/w/m/q/y/a (views), c (create).
-  React.useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      // Respect handlers that already consumed the key (e.g. the app-wide
-      // compose shortcut) so a single keystroke never triggers two actions.
-      if (e.defaultPrevented) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const target = e.target as HTMLElement | null;
-      if (target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')) {
-        return;
-      }
-      switch (e.key) {
-        case 't':
+  // Toggles every calendar in a named set (Task 6's calendar sets) together,
+  // driven only from the command palette's "Calendar set: <name>" entries -
+  // there's no sidebar UI for sets yet. Flips the whole set to visible if any
+  // member is hidden; otherwise hides the whole set.
+  const toggleCalendarSet = React.useCallback(
+    (setId: string) => {
+      fetchCalendarSets()
+        .then((sets) => {
+          const set = sets.find((s) => s.id === setId);
+          if (!set) return;
+          const allVisible = set.calendarIds.every(
+            (id) => calendarById.get(id)?.isVisible !== false
+          );
+          for (const id of set.calendarIds) {
+            toggleCalendar.mutate({ id, isVisible: !allVisible });
+          }
+        })
+        .catch(() => {});
+    },
+    [calendarById, toggleCalendar]
+  );
+
+  // Every calendar action - whether typed on the keyboard below or picked from
+  // the command palette (possibly from another route, via calendar-commands.ts's
+  // queue+dispatch bus) - funnels through here, so the two can never drift
+  // apart the way the old hardcoded keydown switch drifted from VIEW_KEYS.
+  const runCalendarCommand = React.useCallback(
+    (command: CalendarCommand) => {
+      switch (command.type) {
+        case 'today':
           goToday();
           break;
-        case 'n':
-        case 'ArrowRight':
-          goNext();
+        case 'step':
+          if (command.dir === 1) goNext();
+          else goPrev();
           break;
-        case 'p':
-        case 'ArrowLeft':
-          goPrev();
+        case 'view':
+          setView(command.view);
           break;
-        case 'd':
-          setView('day');
+        case 'new-event':
+          openCreate(command.defaults);
           break;
-        case 'w':
-          setView('week');
+        case 'new-from-template':
+          applyTemplateById(command.templateId);
           break;
-        case 'm':
-          setView('month');
+        case 'share-availability':
+          setAvailabilityOpen(true);
           break;
-        case 'q':
-          setView('quarter');
+        case 'toggle-set':
+          toggleCalendarSet(command.setId);
           break;
-        case 'y':
-          setView('year');
-          break;
-        case 'a':
-          setView('ticker');
-          break;
-        case 'c':
-          openCreate();
-          break;
-        default:
-          return;
       }
-      e.preventDefault();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [goToday, goNext, goPrev, openCreate]);
+    },
+    [goToday, goNext, goPrev, openCreate, applyTemplateById, toggleCalendarSet]
+  );
+
+  useCalendarCommands(runCalendarCommand);
+
+  // Keyboard shortcuts: t (today), j/k (step by the view's unit), VIEW_KEYS
+  // (d/w/m/q/y/a - the same map the palette's view rows read their hints from,
+  // so the two can't drift), c (create), s (share availability), / (focus
+  // quick-add). Suppressed while an input/dialog has focus (useShortcuts'
+  // default) and routed through runCalendarCommand so a keystroke and its
+  // matching palette entry always do exactly the same thing.
+  useShortcuts([
+    { keys: 't', description: 'Go to today', handler: () => runCalendarCommand({ type: 'today' }) },
+    {
+      keys: 'j',
+      description: 'Next period',
+      handler: () => runCalendarCommand({ type: 'step', dir: 1 }),
+    },
+    {
+      keys: 'k',
+      description: 'Previous period',
+      handler: () => runCalendarCommand({ type: 'step', dir: -1 }),
+    },
+    ...(Object.entries(VIEW_KEYS) as [string, CalendarView][]).map(([key, targetView]) => ({
+      keys: key,
+      description: `Switch to ${targetView} view`,
+      handler: () => runCalendarCommand({ type: 'view', view: targetView }),
+    })),
+    {
+      keys: 'c',
+      description: 'New event',
+      handler: () => runCalendarCommand({ type: 'new-event' }),
+    },
+    {
+      keys: 's',
+      description: 'Share availability',
+      handler: () => runCalendarCommand({ type: 'share-availability' }),
+    },
+    {
+      keys: '/',
+      description: 'Focus quick add',
+      handler: () => {
+        document
+          .querySelector<HTMLInputElement>('input[aria-label="Quick add event"]')
+          ?.focus();
+      },
+    },
+  ]);
 
   const timeZone = React.useMemo(() => {
     if (!mounted) return '';
