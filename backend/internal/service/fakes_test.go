@@ -1785,6 +1785,11 @@ var _ port.BookingLinkRepo = (*fakeBookingLinkRepo)(nil)
 type fakeBookingRepo struct {
 	byID  map[string]domain.Booking
 	links *fakeBookingLinkRepo
+	// forceCreateHoldErr, when set, is returned by CreateHold instead of the
+	// usual overlap check — simulates the DB exclusion constraint firing on
+	// a concurrent competitor the in-memory overlap scan wouldn't otherwise
+	// catch.
+	forceCreateHoldErr error
 }
 
 func newBookingRepo(links *fakeBookingLinkRepo) *fakeBookingRepo {
@@ -1796,6 +1801,9 @@ func bookingsOverlap(a, b domain.Booking) bool {
 }
 
 func (r *fakeBookingRepo) CreateHold(_ context.Context, b domain.Booking) (domain.Booking, error) {
+	if r.forceCreateHoldErr != nil {
+		return domain.Booking{}, r.forceCreateHoldErr
+	}
 	for _, existing := range r.byID {
 		if existing.LinkID != b.LinkID {
 			continue
