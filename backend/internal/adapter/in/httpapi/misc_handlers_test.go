@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"calendium/backend/internal/domain"
 	"calendium/backend/internal/port"
@@ -72,6 +73,178 @@ func TestHandleAiCompose(t *testing.T) {
 	t.Run("malformed JSON rejected", func(t *testing.T) {
 		h := newHarness(t)
 		rec := h.authed(http.MethodPost, "/v1/ai/compose", strings.NewReader("{"))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+
+	t.Run("editing action forwards draftId", func(t *testing.T) {
+		h := newHarness(t)
+		h.ai.ret = domain.AiComposeResponse{Text: "shortened", Model: "m1"}
+		rec := h.authed(http.MethodPost, "/v1/ai/compose", jsonBody(t, map[string]string{"action": "shorten", "draftId": "d1"}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.ai.gotReq.Action != domain.AiShorten {
+			t.Fatalf("gotReq.Action = %q, want shorten", h.ai.gotReq.Action)
+		}
+		if h.ai.gotReq.DraftID != "d1" {
+			t.Fatalf("gotReq.DraftID = %q, want d1", h.ai.gotReq.DraftID)
+		}
+	})
+
+	t.Run("change_tone forwards tone", func(t *testing.T) {
+		h := newHarness(t)
+		h.ai.ret = domain.AiComposeResponse{Text: "retoned", Model: "m1"}
+		rec := h.authed(http.MethodPost, "/v1/ai/compose", jsonBody(t, map[string]string{"action": "change_tone", "draftId": "d1", "tone": "more formal"}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.ai.gotReq.Action != domain.AiChangeTone {
+			t.Fatalf("gotReq.Action = %q, want change_tone", h.ai.gotReq.Action)
+		}
+		if h.ai.gotReq.Tone != "more formal" {
+			t.Fatalf("gotReq.Tone = %q, want %q", h.ai.gotReq.Tone, "more formal")
+		}
+	})
+
+	t.Run("editing action validation error mapped to 400", func(t *testing.T) {
+		h := newHarness(t)
+		h.ai.err = domain.ErrValidation
+		rec := h.authed(http.MethodPost, "/v1/ai/compose", jsonBody(t, map[string]string{"action": "shorten"}))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if got := decodeErr(t, rec); got.Code != "validation_failed" {
+			t.Fatalf("code = %q, want validation_failed", got.Code)
+		}
+	})
+}
+
+func TestHandleAiAsk(t *testing.T) {
+	t.Run("success shape", func(t *testing.T) {
+		h := newHarness(t)
+		h.ai.askRet = domain.AiAskResponse{
+			Answer: "yes, Friday at 9am",
+			Model:  "openrouter/auto",
+			Sources: []domain.AiSource{
+				{ThreadID: "t1", MessageID: "m1", Subject: "Travel plans", Snippet: "Flight leaves at 9am on Friday."},
+			},
+		}
+		rec := h.authed(http.MethodPost, "/v1/ai/ask", jsonBody(t, map[string]string{"question": "when's the flight?", "threadId": "t1"}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.ai.gotAskReq.Question != "when's the flight?" || h.ai.gotAskReq.ThreadID != "t1" {
+			t.Fatalf("gotAskReq = %+v, want question+threadId forwarded", h.ai.gotAskReq)
+		}
+		var got domain.AiAskResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.Answer != "yes, Friday at 9am" || got.Model != "openrouter/auto" {
+			t.Fatalf("response = %+v, want answer/model echoed", got)
+		}
+		if len(got.Sources) != 1 || got.Sources[0].ThreadID != "t1" || got.Sources[0].MessageID != "m1" ||
+			got.Sources[0].Subject != "Travel plans" || got.Sources[0].Snippet != "Flight leaves at 9am on Friday." {
+			t.Fatalf("sources = %+v, want {threadId,messageId,subject,snippet}", got.Sources)
+		}
+	})
+
+	t.Run("empty question is a 400", func(t *testing.T) {
+		h := newHarness(t)
+		h.ai.askErr = domain.ErrValidation
+		rec := h.authed(http.MethodPost, "/v1/ai/ask", jsonBody(t, map[string]string{"question": ""}))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if got := decodeErr(t, rec); got.Code != "validation_failed" {
+			t.Fatalf("code = %q, want validation_failed", got.Code)
+		}
+	})
+
+	t.Run("AI unavailable (no key) is a 503", func(t *testing.T) {
+		h := newHarness(t)
+		h.ai.askErr = domain.ErrAIUnavailable
+		rec := h.authed(http.MethodPost, "/v1/ai/ask", jsonBody(t, map[string]string{"question": "anything?"}))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503 (body=%s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("daily AI budget exhausted is a 429", func(t *testing.T) {
+		h := newHarness(t)
+		h.ai.askErr = domain.ErrRateLimited
+		rec := h.authed(http.MethodPost, "/v1/ai/ask", jsonBody(t, map[string]string{"question": "anything?"}))
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want 429 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if got := decodeErr(t, rec); got.Code != "rate_limited" {
+			t.Fatalf("code = %q, want rate_limited", got.Code)
+		}
+	})
+
+	t.Run("malformed JSON rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPost, "/v1/ai/ask", strings.NewReader("{"))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+}
+
+func TestHandleAiEventProposal(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		h := newHarness(t)
+		start := time.Date(2026, 7, 20, 14, 0, 0, 0, time.UTC)
+		h.ai.proposeRet = domain.AiEventProposal{
+			Title:     "Sync call",
+			Attendees: []string{"owner@example.com", "guest@example.com"},
+			Start:     start,
+			End:       start.Add(30 * time.Minute),
+			Location:  "Zoom",
+			Notes:     "agenda",
+		}
+		rec := h.authed(http.MethodPost, "/v1/ai/event-proposal", jsonBody(t, map[string]string{"threadId": "t1"}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.ai.gotProposeThread != "t1" {
+			t.Fatalf("gotProposeThread = %q, want t1", h.ai.gotProposeThread)
+		}
+		var got domain.AiEventProposal
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.Title != "Sync call" || len(got.Attendees) != 2 {
+			t.Fatalf("got = %+v", got)
+		}
+		if !got.Start.Equal(start) {
+			t.Fatalf("Start = %v, want %v", got.Start, start)
+		}
+	})
+
+	t.Run("foreign thread is 404", func(t *testing.T) {
+		h := newHarness(t)
+		h.ai.proposeErr = domain.ErrNotFound
+		rec := h.authed(http.MethodPost, "/v1/ai/event-proposal", jsonBody(t, map[string]string{"threadId": "someone-elses-thread"}))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("keyless AI is 503", func(t *testing.T) {
+		h := newHarness(t)
+		h.ai.proposeErr = domain.ErrAIUnavailable
+		rec := h.authed(http.MethodPost, "/v1/ai/event-proposal", jsonBody(t, map[string]string{"threadId": "t1"}))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503 (body=%s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("malformed JSON rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPost, "/v1/ai/event-proposal", strings.NewReader("{"))
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400", rec.Code)
 		}

@@ -51,6 +51,24 @@ vi.mock('@/lib/set-data', () => ({
   fetchCalendarSets: () => fetchCalendarSetsMock(),
 }));
 
+// The palette's "Ask AI" item only needs the toggle callback — the sidebar's
+// own open/close and Q&A behavior has its own dedicated tests
+// (components/ai/ask-sidebar.test.tsx).
+const openAskSidebarMock = vi.fn();
+vi.mock('@/components/ai/ask-sidebar', () => ({
+  useAskSidebar: () => ({ openSidebar: openAskSidebarMock, toggle: vi.fn(), close: vi.fn(), open: false }),
+}));
+
+const dispatchAiEditCommandMock = vi.fn();
+vi.mock('@/components/compose/ai-edit-menu', () => ({
+  dispatchAiEditCommand: (...args: unknown[]) => dispatchAiEditCommandMock(...args),
+}));
+
+let aiEnabled = false;
+vi.mock('@/lib/use-instance', () => ({
+  useInstance: () => ({ data: { features: { ai: aiEnabled } } }),
+}));
+
 const toastMessage = vi.fn();
 vi.mock('sonner', () => ({
   toast: {
@@ -80,10 +98,50 @@ beforeEach(() => {
   vi.clearAllMocks();
   currentPathname = '/mail';
   themeState = { resolvedTheme: 'light', setTheme: vi.fn() };
+  aiEnabled = false;
   fetchSearchMock.mockResolvedValue({ threads: [], events: [] });
   fetchEventTemplatesMock.mockResolvedValue([]);
   fetchCalendarSetsMock.mockResolvedValue([]);
   resetShortcutHints();
+});
+
+describe('CommandPalette — AI commands', () => {
+  it('does not show the AI group when the server has no AI', async () => {
+    aiEnabled = false;
+    renderPalette();
+    await openPalette();
+    expect(screen.queryByText('Ask AI')).not.toBeInTheDocument();
+  });
+
+  it('opens the Ask AI sidebar and closes the palette', async () => {
+    aiEnabled = true;
+    renderPalette();
+    await openPalette();
+    await userEvent.click(screen.getByText('Ask AI'));
+    expect(openAskSidebarMock).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(screen.queryByPlaceholderText('Type a command or search…')).not.toBeInTheDocument()
+    );
+  });
+
+  it('dispatches the propose-event mail command for "Create event with AI"', async () => {
+    aiEnabled = true;
+    renderPalette();
+    await openPalette();
+    const events: MailCommand[] = [];
+    const off = onMailCommand((c) => events.push(c));
+    await userEvent.click(screen.getByText('Create event with AI'));
+    off();
+    expect(events).toEqual(['propose-event']);
+  });
+
+  it('dispatches an AI edit command for "AI: Improve draft"', async () => {
+    aiEnabled = true;
+    renderPalette();
+    await openPalette();
+    await userEvent.click(screen.getByText('AI: Improve draft'));
+    expect(dispatchAiEditCommandMock).toHaveBeenCalledWith('improve');
+  });
 });
 
 describe('CommandPalette — opening', () => {

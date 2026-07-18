@@ -164,7 +164,8 @@ export type MailCommand =
   | 'undo'
   | 'label'
   | 'get-me-to-zero'
-  | 'toggle-calendar-peek';
+  | 'toggle-calendar-peek'
+  | 'propose-event';
 
 export const MAIL_COMMAND_EVENT = 'calendium:mail-command';
 

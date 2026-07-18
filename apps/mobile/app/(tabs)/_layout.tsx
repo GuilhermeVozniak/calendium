@@ -1,15 +1,19 @@
 import useAuth from '@/context/auth';
 import { usePushRegistration } from '@/hooks/use-push-registration';
+import { useServerConfig } from '@/lib/server-config';
 import { THEME } from '@/lib/theme';
-import { Redirect, Tabs } from 'expo-router';
-import { CalendarDaysIcon, InboxIcon, Settings2Icon } from 'lucide-react-native';
+import { Redirect, Tabs, useRouter } from 'expo-router';
+import { CalendarDaysIcon, InboxIcon, Settings2Icon, SparklesIcon } from 'lucide-react-native';
 import { useColorScheme } from 'nativewind';
 import { ActivityIndicator, View } from 'react-native';
 
 export default function TabsLayout() {
   const { user, loading } = useAuth();
+  const { config } = useServerConfig();
+  const router = useRouter();
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme ?? 'light'];
+  const aiEnabled = config?.features?.ai ?? false;
 
   usePushRegistration();
 
@@ -57,6 +61,23 @@ export default function TabsLayout() {
           tabBarIcon: ({ color, size }) => <Settings2Icon color={color} size={size ?? 22} />,
         }}
       />
+      {/* Mobile has no persistent AI sidebar; Ask AI is a modal reached from
+          this tab bar button instead (hidden when the server disables AI). */}
+      {aiEnabled && (
+        <Tabs.Screen
+          name="ask-ai"
+          options={{
+            title: 'Ask AI',
+            tabBarIcon: ({ color, size }) => <SparklesIcon color={color} size={size ?? 22} />,
+          }}
+          listeners={{
+            tabPress: (e) => {
+              e.preventDefault();
+              router.push('/ask-ai');
+            },
+          }}
+        />
+      )}
     </Tabs>
   );
 }

@@ -34,18 +34,18 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | Per-account signatures | Rich-text signatures configured per connected account and applied automatically | P2 | planned | web, desktop, mobile |
 | Attachment quick access | Search and browse all attachments from a conversation or contact via a command | P2 | planned | web, desktop, mobile |
 | **AI** | | | | |
-| Ask AI | Natural-language questions over inbox, calendar, and the web with cited source emails; the `ask` action is now wired into the clients (`ApiClient.aiAsk`) with a basic ask UI, and the full cited-source answer experience is planned | P0 | scaffolded | web, desktop, mobile |
+| Ask AI | Natural-language questions over inbox and calendar with cited source emails, budget-gated; `POST /v1/ai/ask` (`ApiClient.aiAskCited`) is surfaced by a persistent sidebar (web), a thread-scoped dialog (desktop), and a modal (mobile) | P0 | scaffolded | web, desktop, mobile |
 | Write with AI | Jot a few phrases and AI expands them into a full email in your voice; `POST /v1/ai/compose` via OpenRouter | P0 | scaffolded | web, desktop, mobile |
-| Auto Drafts | AI proactively drafts replies, follow-ups, and scheduling responses before you open the email | P0 | planned | web, desktop, mobile |
-| Instant Reply | Three precomputed, ready-to-send reply drafts under every conversation | P0 | planned | web, desktop, mobile |
-| Auto Summarize | Automatic one-line summary above every conversation, updating live as messages arrive; `summarize` action on the AI endpoint | P0 | scaffolded | web, desktop, mobile |
-| Auto Labels | AI auto-categorizes incoming mail (marketing, pitches, social, news) for splitting and bulk processing | P1 | planned | web, desktop, mobile |
-| Custom Auto Labels | User-defined AI classifiers from short natural-language prompts, routed into dedicated splits | P1 | planned | web, desktop, mobile |
-| Personal voice learning | AI learns tone, length, and structure from sent mail and adapts per recipient | P1 | planned | web, desktop, mobile |
-| AI editing commands | Improve, shorten, simplify, fix grammar, or change the tone of a draft with single AI commands | P1 | planned | web, desktop, mobile |
-| Auto Reminders | AI detects sent emails awaiting replies and sets follow-up reminders automatically | P1 | planned | web, desktop, mobile |
-| AI scheduling drafts | When someone asks to meet, AI drafts a reply pre-filled with real availability from your calendar | P1 | planned | web, desktop, mobile |
-| Ask AI sidebar | Persistent sidebar keeping Ask AI available for drafting, questions, and scheduling anywhere in the app | P2 | planned | web, desktop |
+| Auto Drafts | AI proactively drafts replies, follow-ups, and scheduling responses before you open the email; background `auto_draft` AI job writes a provisional draft (`drafts.ai_generated`), surfaced with an AI-draft badge (Discard / Edit & send) | P0 | scaffolded | web, desktop, mobile |
+| Instant Reply | Three precomputed, ready-to-send reply drafts under every conversation; `GET /v1/mail/threads/{id}/instant-replies` backed by the `instant_replies` AI job, cached on the thread row | P0 | scaffolded | web, desktop, mobile |
+| Auto Summarize | Automatic one-line summary above every conversation, updating live as messages arrive; background `thread_summary` AI job writes `threads.summary`, refreshed on new inbound messages | P0 | scaffolded | web, desktop, mobile |
+| Auto Labels | AI auto-categorizes incoming mail (marketing, pitches, social, news) for splitting and bulk processing; background `classify` AI job applies labels via user-defined classifiers | P1 | scaffolded | web, desktop, mobile |
+| Custom Auto Labels | User-defined AI classifiers from short natural-language prompts, routed into dedicated splits; `ai_classifiers` CRUD (`/v1/classifiers`) feeds the `classify` AI job | P1 | scaffolded | web, desktop, mobile |
+| Personal voice learning | AI learns tone, length, and structure from sent mail and adapts per recipient; background `voice_profile` AI job derives a per-user style profile from sent mail (30-day self-refresh) that feeds Auto Drafts and AI editing | P1 | scaffolded | web, desktop, mobile |
+| AI editing commands | Improve, shorten, simplify, fix grammar, or change the tone of a draft with single AI commands; `POST /v1/ai/compose` (`improve\|shorten\|simplify\|fix_grammar\|change_tone`) via `ApiClient.aiEditDraft` | P1 | scaffolded | web, desktop, mobile |
+| Auto Reminders | AI detects sent emails awaiting replies and sets follow-up reminders automatically; background `reminder_detect` AI job arms `remindAt` when unset | P1 | scaffolded | web, desktop, mobile |
+| AI scheduling drafts | When someone asks to meet, AI drafts a reply pre-filled with real availability from your calendar; the `auto_draft` AI job checks calendar availability before drafting a scheduling reply | P1 | scaffolded | web, desktop, mobile |
+| Ask AI sidebar | Persistent sidebar keeping Ask AI available for drafting, questions, and scheduling anywhere in the app; `AskSidebarProvider`/`AskSidebarPanel` toggled by `⌘J` and the command palette (web); desktop uses a thread-scoped Ask AI dialog instead | P2 | scaffolded | web, desktop |
 | AI agent integrations | External agents (Claude, ChatGPT, EA workflows) drive Calendium and prepare drafts you review and send | P2 | planned | web, desktop |
 | **Calendar-in-inbox** | | | | |
 | Share Availability | Select free slots and insert them into an email as text plus a booking link; `GET /v1/availability` + compose flow | P0 | scaffolded | web, desktop, mobile |
@@ -89,7 +89,7 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | Natural-language event parsing (Fantastical) | Typing "Lunch with Sarah at 1pm tomorrow" parses title, time, date, location, alerts, and recurrence live into a structured event | P0 | scaffolded | web, desktop, mobile |
 | Event and task templates (Fantastical) | Reusable event/task templates (title, invitees, conferencing, alerts) to create recurring meeting types in one tap | P1 | scaffolded | web, desktop, mobile |
 | NLP command bar for events (Vimcal) | A GPT-backed command bar turning free-form phrases into fully formed meetings with guests and conferencing | P1 | planned | web, desktop |
-| Instant Event AI (Superhuman) | AI reads the email thread and proposes a ready-to-send event with title, attendees, and suggested time | P1 | planned | web, desktop, mobile |
+| Instant Event AI (Superhuman) | AI reads the email thread and proposes a ready-to-send event with title, attendees, and suggested time; `POST /v1/ai/event-proposal` feeds a review dialog before the real event-creation call | P1 | scaffolded | web, desktop, mobile |
 | Auto events from Gmail (Google Calendar) | Flights, hotels, reservations detected in mail added to the calendar automatically with full details | P1 | planned | web, desktop, mobile |
 | Siri / Apple Intelligence event creation (Apple Calendar) | Speak or type a natural phrase; people, dates, places extracted into an event | P2 | planned | mobile |
 | Auto-detected events from Mail and Messages (Apple Calendar) | Flights, reservations, appointments found in messages suggested as events automatically | P2 | planned | mobile |

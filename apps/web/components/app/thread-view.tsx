@@ -6,6 +6,7 @@ import {
   Archive,
   ArrowLeft,
   BellRing,
+  CalendarPlus,
   CheckCheck,
   Clock,
   Forward,
@@ -22,6 +23,8 @@ import { toast } from 'sonner';
 
 import { useCompose } from '@/components/app/compose';
 import { TimePickerDialog } from '@/components/app/snooze-menu';
+import { InstantReplies } from '@/components/mail/instant-replies';
+import { ThreadSummary } from '@/components/mail/thread-summary';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -175,6 +178,8 @@ interface ThreadViewProps {
    * falls back to its own internal dialog — same contract as `onArchive`.
    */
   onSnooze?: () => void;
+  /** "Create event with AI" — opens the caller's ProposeEventDialog for this thread. */
+  onProposeEvent?: () => void;
 }
 
 /**
@@ -182,7 +187,7 @@ interface ThreadViewProps {
  * quoted history behind a toggle, read-status line on your sent messages,
  * reply / reply-all / forward with r / a / f.
  */
-export function ThreadView({ threadId, onClose, onArchive, onSnooze }: ThreadViewProps) {
+export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEvent }: ThreadViewProps) {
   const { data, isLoading } = useThreadDetail(threadId);
   const { act, snooze, remind, markOpened, unsubscribe } = useMailActions();
   const { openCompose } = useCompose();
@@ -397,6 +402,22 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze }: ThreadVie
               Star <Kbd size="sm">S</Kbd>
             </TooltipContent>
           </Tooltip>
+          {aiEnabled && onProposeEvent && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  aria-label="Create event with AI"
+                  onClick={onProposeEvent}
+                >
+                  <CalendarPlus className="size-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Create event with AI</TooltipContent>
+            </Tooltip>
+          )}
           {(thread.unsubscribeMailto || thread.unsubscribeUrl || thread.unsubscribeOneClick) && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -418,6 +439,9 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze }: ThreadVie
 
       {/* AI (summarize / ask) */}
       {aiEnabled && <ThreadAiPanel threadId={thread.id} />}
+
+      {/* AI thread summary (pre-computed by the backend's AI job queue) */}
+      {aiEnabled && <ThreadSummary thread={thread} />}
 
       {/* Message stack */}
       <ScrollArea className="min-h-0 flex-1">
@@ -518,6 +542,23 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze }: ThreadVie
           })}
         </div>
       </ScrollArea>
+
+      {/* AI instant reply chips */}
+      {aiEnabled && (
+        <InstantReplies
+          thread={thread}
+          onPick={(text) => {
+            const base = replyRecipients();
+            openCompose({
+              to: base.to,
+              cc: base.cc,
+              subject: thread.subject.startsWith('Re:') ? thread.subject : `Re: ${thread.subject}`,
+              threadId: thread.id,
+              body: text,
+            });
+          }}
+        />
+      )}
 
       {/* Reply bar */}
       <div className="flex shrink-0 items-center gap-2 border-t px-4 py-2.5">

@@ -552,11 +552,74 @@ type fakeAIService struct {
 	ret    domain.AiComposeResponse
 	err    error
 	gotReq domain.AiComposeRequest
+
+	askRet           domain.AiAskResponse
+	askErr           error
+	gotAskReq        domain.AiAskRequest
+	proposeRet       domain.AiEventProposal
+	proposeErr       error
+	gotProposeThread string
+
+	instantRepliesRet         []string
+	instantRepliesErr         error
+	gotInstantRepliesUserID   string
+	gotInstantRepliesThreadID string
+
+	listClassifiersRet []domain.AiClassifier
+	listClassifiersErr error
+
+	createClassifierRet    domain.AiClassifier
+	createClassifierErr    error
+	gotCreateClassifier    port.ClassifierInput
+	gotCreateClassifierUID string
+
+	updateClassifierRet   domain.AiClassifier
+	updateClassifierErr   error
+	gotUpdateClassifier   port.ClassifierInput
+	gotUpdateClassifierID string
+
+	deleteClassifierErr   error
+	gotDeleteClassifierID string
 }
 
 func (f *fakeAIService) Compose(ctx context.Context, userID string, req domain.AiComposeRequest) (domain.AiComposeResponse, error) {
 	f.gotReq = req
 	return f.ret, f.err
+}
+
+func (f *fakeAIService) Ask(ctx context.Context, userID string, req domain.AiAskRequest) (domain.AiAskResponse, error) {
+	f.gotAskReq = req
+	return f.askRet, f.askErr
+}
+
+func (f *fakeAIService) ProposeEvent(ctx context.Context, userID, threadID string) (domain.AiEventProposal, error) {
+	f.gotProposeThread = threadID
+	return f.proposeRet, f.proposeErr
+}
+
+func (f *fakeAIService) InstantReplies(ctx context.Context, userID, threadID string) ([]string, error) {
+	f.gotInstantRepliesUserID = userID
+	f.gotInstantRepliesThreadID = threadID
+	return f.instantRepliesRet, f.instantRepliesErr
+}
+
+func (f *fakeAIService) ListClassifiers(ctx context.Context, userID string) ([]domain.AiClassifier, error) {
+	return f.listClassifiersRet, f.listClassifiersErr
+}
+
+func (f *fakeAIService) CreateClassifier(ctx context.Context, userID string, in port.ClassifierInput) (domain.AiClassifier, error) {
+	f.gotCreateClassifier, f.gotCreateClassifierUID = in, userID
+	return f.createClassifierRet, f.createClassifierErr
+}
+
+func (f *fakeAIService) UpdateClassifier(ctx context.Context, userID, classifierID string, in port.ClassifierInput) (domain.AiClassifier, error) {
+	f.gotUpdateClassifier, f.gotUpdateClassifierID = in, classifierID
+	return f.updateClassifierRet, f.updateClassifierErr
+}
+
+func (f *fakeAIService) DeleteClassifier(ctx context.Context, userID, classifierID string) error {
+	f.gotDeleteClassifierID = classifierID
+	return f.deleteClassifierErr
 }
 
 // --- DeviceService -----------------------------------------------------------

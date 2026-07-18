@@ -11,7 +11,7 @@ import (
 // --- port.DraftRepo ----------------------------------------------------------
 
 const draftCols = `d.id, d.account_id, d.thread_id, d.to_addrs, d.cc_addrs, d.bcc_addrs,
-	d.subject, d.body_html, d.scheduled_at, d.send_attempts, d.last_error, d.updated_at`
+	d.subject, d.body_html, d.scheduled_at, d.send_attempts, d.last_error, d.updated_at, d.ai_generated`
 
 func scanDraft(r rowScanner) (domain.Draft, error) {
 	var d domain.Draft
@@ -20,7 +20,7 @@ func scanDraft(r rowScanner) (domain.Draft, error) {
 	var scheduled sql.NullTime
 	var lastErr sql.NullString
 	if err := r.Scan(&d.ID, &d.AccountID, &threadID, &to, &cc, &bcc,
-		&d.Subject, &d.BodyHTML, &scheduled, &d.SendAttempts, &lastErr, &d.UpdatedAt); err != nil {
+		&d.Subject, &d.BodyHTML, &scheduled, &d.SendAttempts, &lastErr, &d.UpdatedAt, &d.AiGenerated); err != nil {
 		return domain.Draft{}, notFound(err)
 	}
 	d.ThreadID = strPtr(threadID)
@@ -53,10 +53,10 @@ func (r draftRepo) Create(ctx context.Context, d domain.Draft) (domain.Draft, er
 	}
 	_, err = r.q(ctx).ExecContext(ctx, `
 		INSERT INTO drafts (id, account_id, thread_id, to_addrs, cc_addrs, bcc_addrs,
-			subject, body_html, scheduled_at, updated_at)
-		VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, $9, $10)`,
+			subject, body_html, scheduled_at, updated_at, ai_generated)
+		VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11)`,
 		d.ID, d.AccountID, nullStrPtr(d.ThreadID), to, cc, bcc,
-		d.Subject, d.BodyHTML, nullTimePtr(d.ScheduledAt), d.UpdatedAt)
+		d.Subject, d.BodyHTML, nullTimePtr(d.ScheduledAt), d.UpdatedAt, d.AiGenerated)
 	if err != nil {
 		return domain.Draft{}, err
 	}
@@ -101,10 +101,11 @@ func (r draftRepo) Update(ctx context.Context, d domain.Draft) error {
 			scheduled_at  = $8,
 			send_attempts = 0,
 			last_error    = NULL,
-			updated_at    = $9
+			updated_at    = $9,
+			ai_generated  = $10
 		WHERE id = $1`,
 		d.ID, nullStrPtr(d.ThreadID), to, cc, bcc, d.Subject, d.BodyHTML,
-		nullTimePtr(d.ScheduledAt), d.UpdatedAt))
+		nullTimePtr(d.ScheduledAt), d.UpdatedAt, d.AiGenerated))
 }
 
 func (r draftRepo) Delete(ctx context.Context, id string) error {
@@ -146,6 +147,16 @@ func (r draftRepo) RecordSendFailure(ctx context.Context, id string, nextAttempt
 			updated_at    = now()
 		WHERE id = $1`,
 		id, errMsg, nullTimePtr(nextAttemptAt)))
+}
+
+// GetAiGeneratedByThread returns the provisional AI draft for the thread
+// (ErrNotFound when none, or when the newest draft is not AI-generated).
+func (r draftRepo) GetAiGeneratedByThread(ctx context.Context, threadID string) (domain.Draft, error) {
+	row := r.q(ctx).QueryRowContext(ctx, `
+		SELECT `+draftCols+` FROM drafts d
+		WHERE d.thread_id = $1 AND d.ai_generated
+		ORDER BY d.updated_at DESC LIMIT 1`, threadID)
+	return scanDraft(row)
 }
 
 func collectDrafts(rows *sql.Rows) ([]domain.Draft, error) {

@@ -98,6 +98,19 @@ func jsonArray(v any) (string, error) {
 	return string(b), nil
 }
 
+// jsonObject marshals v, coercing a nil map to "{}" so jsonb columns never
+// carry JSON null where an object is expected.
+func jsonObject(v any) (string, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("postgres: marshal json: %w", err)
+	}
+	if string(b) == "null" {
+		return "{}", nil
+	}
+	return string(b), nil
+}
+
 // unmarshalInto decodes jsonb bytes; empty input leaves dst untouched.
 func unmarshalInto(data []byte, dst any) error {
 	if len(data) == 0 {

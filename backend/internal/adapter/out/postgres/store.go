@@ -43,6 +43,10 @@ func (s *Store) Events() port.EventRepo                 { return eventRepo{s} }
 func (s *Store) EventTemplates() port.EventTemplateRepo { return eventTemplateRepo{s} }
 func (s *Store) CalendarSets() port.CalendarSetRepo     { return calendarSetRepo{s} }
 func (s *Store) Prefs() port.PrefsRepo                  { return prefsRepo{s} }
+func (s *Store) AiJobs() port.AiJobRepo                 { return aiJobRepo{s} }
+func (s *Store) Classifiers() port.ClassifierRepo       { return classifierRepo{s} }
+func (s *Store) VoiceProfiles() port.VoiceProfileRepo   { return voiceProfileRepo{s} }
+func (s *Store) AiUsage() port.AiUsageRepo              { return aiUsageRepo{s} }
 
 var (
 	_ port.TxRunner          = (*Store)(nil)
@@ -63,6 +67,10 @@ var (
 	_ port.EventTemplateRepo = eventTemplateRepo{}
 	_ port.CalendarSetRepo   = calendarSetRepo{}
 	_ port.PrefsRepo         = prefsRepo{}
+	_ port.AiJobRepo         = aiJobRepo{}
+	_ port.ClassifierRepo    = classifierRepo{}
+	_ port.VoiceProfileRepo  = voiceProfileRepo{}
+	_ port.AiUsageRepo       = aiUsageRepo{}
 )
 
 type (
@@ -83,6 +91,10 @@ type (
 	eventTemplateRepo struct{ *Store }
 	calendarSetRepo   struct{ *Store }
 	prefsRepo         struct{ *Store }
+	aiJobRepo         struct{ *Store }
+	classifierRepo    struct{ *Store }
+	voiceProfileRepo  struct{ *Store }
+	aiUsageRepo       struct{ *Store }
 )
 
 // --- transactions -----------------------------------------------------------

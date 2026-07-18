@@ -84,6 +84,7 @@ func New(deps Deps) http.Handler {
 	authed("DELETE /v1/mail/threads/{id}/snooze", s.handleUnsnoozeThread)
 	authed("POST /v1/mail/threads/{id}/reminder", s.handleThreadReminder)
 	authed("POST /v1/mail/threads/{id}/unsubscribe", s.handleUnsubscribeThread)
+	authed("GET /v1/mail/threads/{id}/instant-replies", s.handleInstantReplies)
 	authed("POST /v1/mail/threads/zero", s.handleGetMeToZero)
 
 	authed("GET /v1/mail/labels", s.handleListLabels)
@@ -125,6 +126,13 @@ func New(deps Deps) http.Handler {
 
 	authed("GET /v1/search", s.handleSearch)
 	authed("POST /v1/ai/compose", s.handleAiCompose)
+	authed("POST /v1/ai/ask", s.handleAiAsk)
+	authed("POST /v1/ai/event-proposal", s.handleAiEventProposal)
+
+	authed("GET /v1/classifiers", s.handleListClassifiers)
+	authed("POST /v1/classifiers", s.handleCreateClassifier)
+	authed("PATCH /v1/classifiers/{id}", s.handleUpdateClassifier)
+	authed("DELETE /v1/classifiers/{id}", s.handleDeleteClassifier)
 
 	authed("POST /v1/devices", s.handleRegisterDevice)
 	authed("DELETE /v1/devices/{id}", s.handleUnregisterDevice)

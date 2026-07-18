@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -144,5 +145,57 @@ func TestMessageRepoGetByIDMissing(t *testing.T) {
 	st, _ := newTestStore(t)
 	if _, err := st.Messages().GetByID(context.Background(), "nope"); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestMessageRepoListSentByAccount(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	acct := seedAccount(t, st, "u1") // email is "u1+google@example.com"
+	th := seedThread(t, st, acct.ID, time.Now())
+
+	t0 := time.Date(2026, 2, 1, 8, 0, 0, 0, time.UTC)
+	t1 := t0.Add(1 * time.Hour)
+	t2 := t0.Add(2 * time.Hour)
+
+	// Older sent message from the account's own address.
+	older, err := st.Messages().Upsert(ctx, domain.Message{
+		ThreadID: th.ID, AccountID: acct.ID, ProviderMessageID: newID(),
+		From: domain.EmailAddress{Email: acct.Email}, Subject: "older sent", SentAt: t0,
+	})
+	if err != nil {
+		t.Fatalf("Upsert older: %v", err)
+	}
+	// Newer sent message, mixed case to prove the match is case-insensitive.
+	newer, err := st.Messages().Upsert(ctx, domain.Message{
+		ThreadID: th.ID, AccountID: acct.ID, ProviderMessageID: newID(),
+		From: domain.EmailAddress{Email: strings.ToUpper(acct.Email)}, Subject: "newer sent", SentAt: t2,
+	})
+	if err != nil {
+		t.Fatalf("Upsert newer: %v", err)
+	}
+	// Inbound message from someone else on the same account/thread: excluded.
+	if _, err := st.Messages().Upsert(ctx, domain.Message{
+		ThreadID: th.ID, AccountID: acct.ID, ProviderMessageID: newID(),
+		From: domain.EmailAddress{Email: "someone-else@example.com"}, Subject: "inbound", SentAt: t1,
+	}); err != nil {
+		t.Fatalf("Upsert inbound: %v", err)
+	}
+
+	list, err := st.Messages().ListSentByAccount(ctx, acct.ID, acct.Email, 10)
+	if err != nil {
+		t.Fatalf("ListSentByAccount: %v", err)
+	}
+	if len(list) != 2 || list[0].ID != newer.ID || list[1].ID != older.ID {
+		t.Fatalf("ListSentByAccount = %+v, want [newer, older]", list)
+	}
+
+	limited, err := st.Messages().ListSentByAccount(ctx, acct.ID, acct.Email, 1)
+	if err != nil {
+		t.Fatalf("ListSentByAccount limit: %v", err)
+	}
+	if len(limited) != 1 || limited[0].ID != newer.ID {
+		t.Fatalf("ListSentByAccount limit=1 = %+v, want [newer]", limited)
 	}
 }

@@ -556,3 +556,122 @@ func timePtr2(t time.Time) *time.Time {
 	tt := t.UTC().Truncate(time.Microsecond)
 	return &tt
 }
+
+func TestThreadRepoSetSummaryAndInstantReplies(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	acct := seedAccount(t, st, "u1")
+	th := seedThread(t, st, acct.ID, time.Now())
+
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	if err := st.Threads().SetSummary(ctx, th.ID, "quick recap", at); err != nil {
+		t.Fatalf("SetSummary: %v", err)
+	}
+	if err := st.Threads().SetInstantReplies(ctx, th.ID, []string{"Sounds good", "Will do"}, at); err != nil {
+		t.Fatalf("SetInstantReplies: %v", err)
+	}
+
+	got, err := st.Threads().GetByID(ctx, th.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.Summary != "quick recap" {
+		t.Fatalf("Summary = %q, want %q", got.Summary, "quick recap")
+	}
+	if len(got.InstantReplies) != 2 || got.InstantReplies[0] != "Sounds good" || got.InstantReplies[1] != "Will do" {
+		t.Fatalf("InstantReplies = %+v", got.InstantReplies)
+	}
+	if got.InstantRepliesUpdatedAt == nil || !got.InstantRepliesUpdatedAt.Equal(at) {
+		t.Fatalf("InstantRepliesUpdatedAt = %v, want %v", got.InstantRepliesUpdatedAt, at)
+	}
+
+	if err := st.Threads().SetSummary(ctx, "nope", "x", at); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("SetSummary unknown: err = %v, want ErrNotFound", err)
+	}
+	if err := st.Threads().SetInstantReplies(ctx, "nope", nil, at); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("SetInstantReplies unknown: err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestThreadRepoUpsertPreservesSummaryAndInstantReplies(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	acct := seedAccount(t, st, "u1")
+
+	pid := newID()
+	th, err := st.Threads().Upsert(ctx, domain.Thread{
+		AccountID: acct.ID, ProviderThreadID: pid, Subject: "s", Split: domain.SplitOther,
+		InInbox: true, LastMessageAt: time.Now().UTC().Truncate(time.Microsecond),
+	})
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	if err := st.Threads().SetSummary(ctx, th.ID, "ai summary", at); err != nil {
+		t.Fatalf("SetSummary: %v", err)
+	}
+	if err := st.Threads().SetInstantReplies(ctx, th.ID, []string{"yes"}, at); err != nil {
+		t.Fatalf("SetInstantReplies: %v", err)
+	}
+
+	// A provider re-sync (new Upsert with a fresh, zero-valued Thread) must
+	// not clobber the AI-generated fields, same as opened_at.
+	if _, err := st.Threads().Upsert(ctx, domain.Thread{
+		AccountID: acct.ID, ProviderThreadID: pid, Subject: "s2", Split: domain.SplitOther,
+		InInbox: true, LastMessageAt: time.Now().UTC().Truncate(time.Microsecond),
+	}); err != nil {
+		t.Fatalf("Upsert resync: %v", err)
+	}
+
+	got, err := st.Threads().GetByID(ctx, th.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.Summary != "ai summary" {
+		t.Fatalf("Summary after resync = %q, want %q", got.Summary, "ai summary")
+	}
+	if len(got.InstantReplies) != 1 || got.InstantReplies[0] != "yes" {
+		t.Fatalf("InstantReplies after resync = %+v", got.InstantReplies)
+	}
+}
+
+func TestThreadRepoSetReminderIfUnset(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	acct := seedAccount(t, st, "u1")
+	th := seedThread(t, st, acct.ID, time.Now())
+
+	first := timePtr2(time.Now().Add(2 * time.Hour))
+	if err := st.Threads().SetReminderIfUnset(ctx, th.ID, *first); err != nil {
+		t.Fatalf("SetReminderIfUnset 1: %v", err)
+	}
+	got, err := st.Threads().GetByID(ctx, th.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.RemindAt == nil || !got.RemindAt.Equal(*first) {
+		t.Fatalf("RemindAt = %v, want %v", got.RemindAt, first)
+	}
+
+	// Already set: a second call must be a silent no-op, not overwrite the
+	// user-chosen reminder and not error.
+	second := timePtr2(time.Now().Add(5 * time.Hour))
+	if err := st.Threads().SetReminderIfUnset(ctx, th.ID, *second); err != nil {
+		t.Fatalf("SetReminderIfUnset 2 (no-op): %v", err)
+	}
+	got2, err := st.Threads().GetByID(ctx, th.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if !got2.RemindAt.Equal(*first) {
+		t.Fatalf("RemindAt after no-op = %v, want unchanged %v", got2.RemindAt, first)
+	}
+
+	// A missing thread is also a silent no-op.
+	if err := st.Threads().SetReminderIfUnset(ctx, "nope", *first); err != nil {
+		t.Fatalf("SetReminderIfUnset missing thread: %v", err)
+	}
+}

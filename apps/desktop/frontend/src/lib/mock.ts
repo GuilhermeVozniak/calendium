@@ -1,7 +1,12 @@
 import type {
+  AiClassifier,
+  AiEventProposal,
+  AiSource,
   Calendar,
+  ClassifierInput,
   ConnectedAccount,
   Event,
+  EventInput,
   InboxSplit,
   Message,
   Subscription,
@@ -59,10 +64,30 @@ interface ThreadSeed {
   unread?: boolean;
   starred?: boolean;
   messageCount?: number;
+  /** Scripted AI thread summary (see components/mail/thread-summary equivalent below). */
+  summary?: string;
+  /** Scripted AI instant-reply suggestions. */
+  instantReplies?: string[];
 }
 
 const threadSeeds: ThreadSeed[] = [
-  { id: 'thr_1', split: 'important', subject: 'Q3 roadmap review — final pass', snippet: 'I folded in the feedback from Tuesday; the calendar integration slice is now scoped to…', from: { name: 'Grace Hopper', email: 'grace@compilers.io' }, agoMinutes: 18, unread: true, messageCount: 4 },
+  {
+    id: 'thr_1',
+    split: 'important',
+    subject: 'Q3 roadmap review — final pass',
+    snippet: 'I folded in the feedback from Tuesday; the calendar integration slice is now scoped to…',
+    from: { name: 'Grace Hopper', email: 'grace@compilers.io' },
+    agoMinutes: 18,
+    unread: true,
+    messageCount: 4,
+    summary:
+      'Grace incorporated Tuesday’s feedback into the Q3 roadmap: the calendar-integration slice is now scoped down, with the classifier work and desktop beta unchanged.',
+    instantReplies: [
+      'Looks great, thanks for the update.',
+      'Can we discuss the calendar scope on our next call?',
+      'Approved — let’s move forward.',
+    ],
+  },
   { id: 'thr_2', split: 'important', subject: 'Contract renewal — signature needed', snippet: 'The updated MSA is attached. One change to §4.2 (net-30 → net-45), everything else…', from: { name: 'Margaret Hamilton', email: 'margaret@apollo.dev' }, agoMinutes: 95, unread: true, starred: true, messageCount: 2 },
   { id: 'thr_3', split: 'vip', subject: 'Intro: Katherine ↔ Ada', snippet: 'Ada, meet Katherine — she led the trajectory work I mentioned. I think a 30-min…', from: { name: 'Dorothy Vaughan', email: 'dorothy@nasa.gov' }, agoMinutes: 240, messageCount: 3 },
   { id: 'thr_4', split: 'team', subject: 'Standup notes — Wednesday', snippet: 'Shipped: split-inbox classifier v2. Blocked: Graph delta tokens expiring early, needs…', from: { name: 'Alan Turing', email: 'alan@team.calendium.app' }, agoMinutes: 300, unread: true, messageCount: 1 },
@@ -93,6 +118,8 @@ function seedToThread(seed: ThreadSeed): Thread {
     unsubscribeMailto: null,
     unsubscribeUrl: null,
     unsubscribeOneClick: false,
+    summary: seed.summary,
+    instantReplies: seed.instantReplies,
   };
 }
 
@@ -154,9 +181,45 @@ function ev(id: string, calendarId: string, title: string, day: Date, startHour:
   };
 }
 
+// Demo-mode events created via the UI (calendar "New event" and ThreadPane's
+// "Create event with AI") — kept in module state so a created event shows up
+// in mockEvents/mockSearch for the rest of the session, the same pattern as
+// mockClassifiers below.
+let mockCreatedEvents: Event[] = [];
+let nextMockEventId = 1;
+
+/** Local fallback for POST /v1/events when no server is configured. */
+export function createMockEvent(input: EventInput): Event {
+  const event: Event = {
+    id: `evt_local_${nextMockEventId++}`,
+    calendarId: input.calendarId,
+    title: input.title,
+    description: input.description ?? null,
+    location: input.location ?? null,
+    start: input.start,
+    end: input.end,
+    allDay: input.allDay ?? false,
+    recurrenceRule: input.recurrenceRule ?? null,
+    attendees: (input.attendeeEmails ?? []).map((email) => ({
+      email,
+      name: null,
+      response: 'needs_action',
+      organizer: false,
+      optional: false,
+    })),
+    conferencing: null,
+    status: 'confirmed',
+    visibility: 'default',
+    reminderMinutes: input.reminderMinutes ?? [10],
+  };
+  mockCreatedEvents = [...mockCreatedEvents, event];
+  return { ...event };
+}
+
 export function mockEvents(fromIso: string, toIso: string): Event[] {
   const today = startOfDay(now);
   const events: Event[] = [
+    ...mockCreatedEvents,
     ev('evt_1', 'cal_work', 'Team standup', subDays(today, 1), 9, 30, 15),
     ev('evt_2', 'cal_work', 'Design review', today, 14, 0, 60, {
       conferencing: { provider: 'meet', url: 'https://meet.google.com/abc-defg-hij' },
@@ -231,4 +294,84 @@ export function mockSubscription(): Subscription {
     cancelAtPeriodEnd: false,
     trialEndsAt: null,
   };
+}
+
+// --- AI suite (M2.3) --------------------------------------------------------
+
+/** Local fallback for GET .../instant-replies when no server is configured. */
+export function mockInstantReplies(threadId: string): string[] {
+  const seed = threadSeeds.find((s) => s.id === threadId);
+  return (
+    seed?.instantReplies ?? [
+      'Sounds good, thanks!',
+      'Let me look into this and follow up shortly.',
+      'Can we push this to next week?',
+    ]
+  );
+}
+
+/** Local fallback for POST /v1/ai/ask (cited Q&A) when no server is configured. */
+export function mockAiAskCited(
+  question: string,
+  threadId?: string
+): { answer: string; model: string; sources: AiSource[] } {
+  const seeds = threadId ? threadSeeds.filter((s) => s.id === threadId) : threadSeeds.slice(0, 2);
+  const sources: AiSource[] = seeds.map((seed) => ({
+    threadId: seed.id,
+    subject: seed.subject,
+    snippet: seed.snippet,
+  }));
+  const trimmed = question.trim().replace(/\?+$/, '');
+  return {
+    answer: trimmed
+      ? `Based on your mailbox: ${trimmed} — it looks like it's on track. See the linked conversation${sources.length === 1 ? '' : 's'} below.`
+      : "I couldn't find anything relevant in your mailbox for that question.",
+    model: 'demo/local-fallback',
+    sources,
+  };
+}
+
+/** Local fallback for POST /v1/ai/event-proposal when no server is configured. */
+export function mockProposeEvent(threadId: string): AiEventProposal {
+  const seed = threadSeeds.find((s) => s.id === threadId);
+  const start = addMinutes(startOfDay(addDays(now, 1)), 10 * 60);
+  return {
+    title: seed ? seed.subject.replace(/^(Re|Fwd):\s*/i, '') : 'Follow-up meeting',
+    attendees: seed ? [seed.from.email] : [],
+    start: iso(start),
+    end: iso(addMinutes(start, 30)),
+    notes: 'Proposed from thread context (demo mode).',
+  };
+}
+
+let mockClassifiers: AiClassifier[] = [
+  {
+    id: 'clf_recruiter',
+    name: 'Recruiter outreach',
+    prompt: 'Cold outreach from a recruiter or staffing agency about a job opportunity.',
+    targetSplit: 'other',
+    labelName: 'Recruiting',
+    enabled: true,
+  },
+];
+let nextMockClassifierId = 1;
+
+export function listMockClassifiers(): AiClassifier[] {
+  return mockClassifiers.map((c) => ({ ...c }));
+}
+
+export function createMockClassifier(input: ClassifierInput): AiClassifier {
+  const classifier: AiClassifier = { id: `clf_local_${nextMockClassifierId++}`, ...input };
+  mockClassifiers = [classifier, ...mockClassifiers];
+  return { ...classifier };
+}
+
+export function updateMockClassifier(id: string, input: ClassifierInput): AiClassifier {
+  const updated: AiClassifier = { id, ...input };
+  mockClassifiers = mockClassifiers.map((c) => (c.id === id ? updated : c));
+  return { ...updated };
+}
+
+export function deleteMockClassifier(id: string): void {
+  mockClassifiers = mockClassifiers.filter((c) => c.id !== id);
 }

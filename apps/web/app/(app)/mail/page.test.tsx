@@ -150,6 +150,14 @@ vi.mock('@/components/app/calendar-peek', () => ({
     ) : null,
 }));
 
+// ProposeEventDialog owns its own data-fetching (React Query + EventDialog's
+// internals) — covered by propose-event-dialog.test.tsx. Here we only care
+// that the mail page wires threadId/open/onOpenChange correctly.
+vi.mock('@/components/mail/propose-event-dialog', () => ({
+  ProposeEventDialog: ({ open }: { open: boolean }) =>
+    open ? <div data-testid="propose-event-dialog-stub" /> : null,
+}));
+
 const toastSuccess = vi.fn();
 const toastError = vi.fn();
 const toastWarning = vi.fn();

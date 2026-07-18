@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +55,7 @@ func TestAIServiceComposeAssemblesPrompt(t *testing.T) {
 		Threads:       threads,
 		Messages:      messages,
 		Drafts:        drafts,
+		Usage:         newAiUsageRepo(),
 		AI:            ai,
 		Clock:         newClock(base),
 		SelfHosted:    true, // bypass the paywall; entitlement tested separately
@@ -71,8 +73,9 @@ func TestAIServiceComposeAssemblesPrompt(t *testing.T) {
 	if resp.Text != "Generated reply" || resp.Model != "openrouter/auto" {
 		t.Fatalf("response = %+v, want Text/Model from the AI gateway", resp)
 	}
-	if ai.lastSystem != systemPromptFor(domain.AiCompose) {
-		t.Fatalf("system prompt = %q, want %q", ai.lastSystem, systemPromptFor(domain.AiCompose))
+	wantPrompt := domain.AiComposeRequest{Action: domain.AiCompose}
+	if ai.lastSystem != systemPromptFor(wantPrompt) {
+		t.Fatalf("system prompt = %q, want %q", ai.lastSystem, systemPromptFor(wantPrompt))
 	}
 	wantUser := "Conversation subject: Q3 planning\n\n" +
 		"From boss@acme.com at 2026-01-02T03:04:05Z:\nLet's sync Thursday.\n\n" +
@@ -111,6 +114,7 @@ func TestAIServiceComposeValidation(t *testing.T) {
 			Threads:       threads,
 			Messages:      newMessageRepo(),
 			Drafts:        newDraftRepo(accounts),
+			Usage:         newAiUsageRepo(),
 			AI:            ai,
 			Clock:         newClock(base),
 			SelfHosted:    selfHosted,
@@ -156,6 +160,167 @@ func TestAIServiceComposeValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAIServiceComposeBudgetExhausted covers FIX 3 (final-review fix wave):
+// Compose shares the same daily AI budget as Ask/InstantReplies, so an
+// exhausted counter must block Compose with domain.ErrRateLimited and never
+// reach port.AI.Complete -- no wasted prompt assembly work turns into a
+// wasted model call.
+func TestAIServiceComposeBudgetExhausted(t *testing.T) {
+	const owner = "u1"
+	accounts := newAccountRepo()
+	usage := newAiUsageRepo()
+	usage.calls[owner] = 1 // already at the limit
+
+	ai := newAI()
+	ai.text, ai.model = "should not be reached", "m"
+
+	svc := NewAIService(AIServiceDeps{
+		Subscriptions: newSubscriptionRepo(),
+		Accounts:      accounts,
+		Threads:       newThreadRepo(),
+		Messages:      newMessageRepo(),
+		Drafts:        newDraftRepo(accounts),
+		Usage:         usage,
+		AI:            ai,
+		Clock:         newClock(time.Now()),
+		DailyLimit:    1,
+		SelfHosted:    true,
+	})
+
+	_, err := svc.Compose(context.Background(), owner, domain.AiComposeRequest{
+		Action: domain.AiCompose,
+		Prompt: "draft a follow-up",
+	})
+	if !errors.Is(err, domain.ErrRateLimited) {
+		t.Fatalf("err = %v, want domain.ErrRateLimited", err)
+	}
+	if ai.lastSystem != "" || ai.lastUser != "" {
+		t.Fatalf("AI was called (lastSystem=%q, lastUser=%q), want budget exhaustion to skip generation entirely", ai.lastSystem, ai.lastUser)
+	}
+}
+
+// TestSystemPromptForEditingActions pins the exact system prompt suffix for
+// each of the five text-editing actions (Task 12), including change_tone's
+// interpolation of req.Tone.
+func TestSystemPromptForEditingActions(t *testing.T) {
+	const base = "You are Calendium's email assistant. Be concise, warm, and professional. Return only the requested text with no preamble."
+	tests := []struct {
+		req  domain.AiComposeRequest
+		want string
+	}{
+		{domain.AiComposeRequest{Action: domain.AiImprove}, base + " Rewrite the draft to be clearer and more compelling. Preserve meaning, links, and facts. Return only the rewritten body."},
+		{domain.AiComposeRequest{Action: domain.AiShorten}, base + " Rewrite the draft in at most half the words. Preserve every commitment and question. Return only the rewritten body."},
+		{domain.AiComposeRequest{Action: domain.AiSimplify}, base + " Rewrite the draft in plain, simple language. Return only the rewritten body."},
+		{domain.AiComposeRequest{Action: domain.AiFixGrammar}, base + " Fix spelling, grammar, and punctuation only; change nothing else. Return only the corrected body."},
+		{domain.AiComposeRequest{Action: domain.AiChangeTone, Tone: "warmer"}, base + " Rewrite the draft with this tone: warmer. Preserve meaning. Return only the rewritten body."},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.req.Action), func(t *testing.T) {
+			if got := systemPromptFor(tt.req); got != tt.want {
+				t.Fatalf("systemPromptFor(%+v) = %q, want %q", tt.req, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAIServiceComposeEditingActions covers the five text-editing actions
+// (improve/shorten/simplify/fix_grammar/change_tone): DraftID-or-Prompt
+// validation, change_tone's additional Tone requirement, and that each
+// action reaches port.AI.Complete with the system prompt systemPromptFor
+// documents for it.
+func TestAIServiceComposeEditingActions(t *testing.T) {
+	const owner = "u1"
+	base := time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC)
+
+	newSvc := func() (*AIService, *fakeAI) {
+		accounts := newAccountRepo()
+		accounts.byID["a1"] = domain.ConnectedAccount{ID: "a1", UserID: owner}
+		drafts := newDraftRepo(accounts)
+		drafts.byID["d1"] = domain.Draft{ID: "d1", AccountID: "a1", Subject: "Re: hi", BodyHTML: "<p>hey there</p>"}
+		subs := newSubscriptionRepo()
+		if err := subs.Upsert(context.Background(), domain.Subscription{UserID: owner, Status: domain.SubscriptionActive}); err != nil {
+			t.Fatal(err)
+		}
+		ai := newAI()
+		ai.text, ai.model = "edited", "m"
+		svc := NewAIService(AIServiceDeps{
+			Subscriptions: subs,
+			Accounts:      accounts,
+			Threads:       newThreadRepo(),
+			Messages:      newMessageRepo(),
+			Drafts:        drafts,
+			Usage:         newAiUsageRepo(),
+			AI:            ai,
+			Clock:         newClock(base),
+		})
+		return svc, ai
+	}
+
+	editingActions := []domain.AiAction{domain.AiImprove, domain.AiShorten, domain.AiSimplify, domain.AiFixGrammar, domain.AiChangeTone}
+
+	t.Run("draftId alone satisfies non-tone editing actions", func(t *testing.T) {
+		for _, action := range editingActions {
+			if action == domain.AiChangeTone {
+				continue // change_tone additionally needs Tone; covered below
+			}
+			svc, ai := newSvc()
+			_, err := svc.Compose(context.Background(), owner, domain.AiComposeRequest{Action: action, DraftID: "d1"})
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", action, err)
+			}
+			want := systemPromptFor(domain.AiComposeRequest{Action: action})
+			if ai.lastSystem != want {
+				t.Fatalf("%s: system prompt = %q, want %q", action, ai.lastSystem, want)
+			}
+		}
+	})
+
+	t.Run("prompt alone (no draftId) satisfies non-tone editing actions", func(t *testing.T) {
+		svc, _ := newSvc()
+		_, err := svc.Compose(context.Background(), owner, domain.AiComposeRequest{Action: domain.AiShorten, Prompt: "the text to shorten"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("editing action without draftId or prompt is rejected", func(t *testing.T) {
+		for _, action := range editingActions {
+			svc, _ := newSvc()
+			req := domain.AiComposeRequest{Action: action}
+			if action == domain.AiChangeTone {
+				req.Tone = "warmer" // Tone alone must not satisfy the missing-text requirement
+			}
+			_, err := svc.Compose(context.Background(), owner, req)
+			if !errors.Is(err, domain.ErrValidation) {
+				t.Fatalf("%s: err = %v, want ErrValidation", action, err)
+			}
+		}
+	})
+
+	t.Run("change_tone requires Tone even with a draftId", func(t *testing.T) {
+		svc, _ := newSvc()
+		_, err := svc.Compose(context.Background(), owner, domain.AiComposeRequest{Action: domain.AiChangeTone, DraftID: "d1"})
+		if !errors.Is(err, domain.ErrValidation) {
+			t.Fatalf("err = %v, want ErrValidation", err)
+		}
+	})
+
+	t.Run("change_tone succeeds with draftId and tone", func(t *testing.T) {
+		svc, ai := newSvc()
+		_, err := svc.Compose(context.Background(), owner, domain.AiComposeRequest{Action: domain.AiChangeTone, DraftID: "d1", Tone: "more formal"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := systemPromptFor(domain.AiComposeRequest{Action: domain.AiChangeTone, Tone: "more formal"})
+		if ai.lastSystem != want {
+			t.Fatalf("system prompt = %q, want %q", ai.lastSystem, want)
+		}
+		if !strings.Contains(ai.lastSystem, "more formal") {
+			t.Fatalf("system prompt %q does not mention the requested tone", ai.lastSystem)
+		}
+	})
 }
 
 // --- DeviceService.Register --------------------------------------------------

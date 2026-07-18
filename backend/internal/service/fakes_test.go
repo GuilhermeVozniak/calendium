@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"calendium/backend/internal/domain"
@@ -212,6 +215,11 @@ type fakeThreadRepo struct {
 	snoozeDue    []domain.Thread
 	remindersDue []domain.Thread
 
+	// recording (Search)
+	searchGotUserID string
+	searchGotQuery  string
+	searchGotLimit  int
+
 	// recording
 	markOpened           int
 	lastQuery            port.ThreadQuery
@@ -282,6 +290,7 @@ func (r *fakeThreadRepo) SetLabels(_ context.Context, threadID string, labelIDs 
 }
 
 func (r *fakeThreadRepo) Search(_ context.Context, userID, query string, limit int) ([]domain.Thread, error) {
+	r.searchGotUserID, r.searchGotQuery, r.searchGotLimit = userID, query, limit
 	return r.searchResult, r.searchErr
 }
 
@@ -322,6 +331,38 @@ func (r *fakeThreadRepo) AppendSentMessage(_ context.Context, id string, sentAt 
 		t.LastMessageAt = sentAt
 		r.byID[id] = t
 	}
+	return nil
+}
+
+func (r *fakeThreadRepo) SetSummary(_ context.Context, threadID, summary string, at time.Time) error {
+	t, ok := r.byID[threadID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	t.Summary = summary
+	r.byID[threadID] = t
+	return nil
+}
+
+func (r *fakeThreadRepo) SetInstantReplies(_ context.Context, threadID string, replies []string, at time.Time) error {
+	t, ok := r.byID[threadID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	t.InstantReplies = replies
+	atCopy := at
+	t.InstantRepliesUpdatedAt = &atCopy
+	r.byID[threadID] = t
+	return nil
+}
+
+func (r *fakeThreadRepo) SetReminderIfUnset(_ context.Context, threadID string, remindAt time.Time) error {
+	t, ok := r.byID[threadID]
+	if !ok || t.RemindAt != nil {
+		return nil
+	}
+	t.RemindAt = &remindAt
+	r.byID[threadID] = t
 	return nil
 }
 
@@ -398,6 +439,24 @@ func (r *fakeMessageRepo) ListByThread(_ context.Context, threadID string) ([]do
 	return out, nil
 }
 
+// ListSentByAccount returns messages from accountID whose From address
+// matches accountEmail (case-insensitive), newest-first, capped at limit.
+func (r *fakeMessageRepo) ListSentByAccount(_ context.Context, accountID, accountEmail string, limit int) ([]domain.Message, error) {
+	out := []domain.Message{}
+	for i := len(r.order) - 1; i >= 0; i-- {
+		m, ok := r.byID[r.order[i]]
+		if !ok || m.AccountID != accountID || !strings.EqualFold(m.From.Email, accountEmail) {
+			continue
+		}
+		out = append(out, m)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].SentAt.After(out[j].SentAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 var _ port.MessageRepo = (*fakeMessageRepo)(nil)
 
 // --- draft repo --------------------------------------------------------------
@@ -444,6 +503,19 @@ func (r *fakeDraftRepo) GetByID(_ context.Context, id string) (domain.Draft, err
 		return domain.Draft{}, domain.ErrNotFound
 	}
 	return d, nil
+}
+
+// GetAiGeneratedByThread returns the newest AI-generated draft on threadID
+// (insertion order, last wins), mirroring the postgres adapter's "newest
+// wins" semantics.
+func (r *fakeDraftRepo) GetAiGeneratedByThread(_ context.Context, threadID string) (domain.Draft, error) {
+	for i := len(r.order) - 1; i >= 0; i-- {
+		d, ok := r.byID[r.order[i]]
+		if ok && d.AiGenerated && d.ThreadID != nil && *d.ThreadID == threadID {
+			return d, nil
+		}
+	}
+	return domain.Draft{}, domain.ErrNotFound
 }
 
 func (r *fakeDraftRepo) ListByUser(_ context.Context, userID string) ([]domain.Draft, error) {
@@ -1142,10 +1214,16 @@ var _ port.Payments = (*fakePayments)(nil)
 // --- ai ----------------------------------------------------------------------
 
 // fakeAI serves programmable text/model/err and records the last prompts.
+// CompleteJSON unmarshals the scripted jsonOut string into the caller's out;
+// jsonErr, when set, short-circuits before decoding (parity with a gateway
+// error from the real adapter).
 type fakeAI struct {
 	text       string
 	model      string
 	err        error
+	jsonOut    string
+	jsonModel  string
+	jsonErr    error
 	lastSystem string
 	lastUser   string
 }
@@ -1157,7 +1235,102 @@ func (a *fakeAI) Complete(_ context.Context, system, user string) (string, strin
 	return a.text, a.model, a.err
 }
 
+func (a *fakeAI) CompleteJSON(_ context.Context, system, user string, out any) (string, error) {
+	a.lastSystem, a.lastUser = system, user
+	if a.jsonErr != nil {
+		return "", a.jsonErr
+	}
+	if err := json.Unmarshal([]byte(a.jsonOut), out); err != nil {
+		return "", fmt.Errorf("%w: fakeAI: decode structured output: %w", domain.ErrAIOutput, err)
+	}
+	return a.jsonModel, nil
+}
+
 var _ port.AI = (*fakeAI)(nil)
+
+// --- calendar service (driving) ----------------------------------------------
+
+// fakeCalendarService is a minimal port.CalendarService double for
+// AIJobService tests exercising runAutoDraft's scheduling path: only
+// ListCalendars and Availability carry meaningful behavior (programmable via
+// calendars/slots/availErr); every other method is unused by this task's
+// handlers and returns a zero value.
+type fakeCalendarService struct {
+	calendars []domain.Calendar
+	slots     []domain.AvailabilitySlot
+	availErr  error
+
+	lastAvailFrom time.Time
+	lastAvailTo   time.Time
+	lastAvailDur  time.Duration
+	availCalls    int
+}
+
+func newCalendarService() *fakeCalendarService { return &fakeCalendarService{} }
+
+func (c *fakeCalendarService) ListCalendars(_ context.Context, _ string) ([]domain.Calendar, error) {
+	return c.calendars, nil
+}
+
+func (c *fakeCalendarService) UpdateCalendar(_ context.Context, _, _ string, _ port.CalendarPatch) (domain.Calendar, error) {
+	return domain.Calendar{}, nil
+}
+
+func (c *fakeCalendarService) ListEvents(_ context.Context, _ string, _, _ time.Time, _ []string) ([]domain.Event, error) {
+	return nil, nil
+}
+
+func (c *fakeCalendarService) CreateEvent(_ context.Context, _ string, _ domain.EventInput) (domain.Event, error) {
+	return domain.Event{}, nil
+}
+
+func (c *fakeCalendarService) UpdateEvent(_ context.Context, _, _ string, _ domain.EventPatch) (domain.Event, error) {
+	return domain.Event{}, nil
+}
+
+func (c *fakeCalendarService) DeleteEvent(_ context.Context, _, _ string) error { return nil }
+
+func (c *fakeCalendarService) RSVP(_ context.Context, _, _ string, _ domain.RsvpStatus) (domain.Event, error) {
+	return domain.Event{}, nil
+}
+
+func (c *fakeCalendarService) Availability(_ context.Context, _ string, from, to time.Time, dur time.Duration) ([]domain.AvailabilitySlot, error) {
+	c.availCalls++
+	c.lastAvailFrom, c.lastAvailTo, c.lastAvailDur = from, to, dur
+	return c.slots, c.availErr
+}
+
+func (c *fakeCalendarService) ListEventTemplates(_ context.Context, _ string) ([]domain.EventTemplate, error) {
+	return nil, nil
+}
+
+func (c *fakeCalendarService) CreateEventTemplate(_ context.Context, _ string, _ domain.EventTemplateInput) (domain.EventTemplate, error) {
+	return domain.EventTemplate{}, nil
+}
+
+func (c *fakeCalendarService) UpdateEventTemplate(_ context.Context, _, _ string, _ domain.EventTemplateInput) (domain.EventTemplate, error) {
+	return domain.EventTemplate{}, nil
+}
+
+func (c *fakeCalendarService) DeleteEventTemplate(_ context.Context, _, _ string) error { return nil }
+
+func (c *fakeCalendarService) UseEventTemplate(_ context.Context, _, _ string) error { return nil }
+
+func (c *fakeCalendarService) ListCalendarSets(_ context.Context, _ string) ([]domain.CalendarSet, error) {
+	return nil, nil
+}
+
+func (c *fakeCalendarService) CreateCalendarSet(_ context.Context, _ string, _ domain.CalendarSetInput) (domain.CalendarSet, error) {
+	return domain.CalendarSet{}, nil
+}
+
+func (c *fakeCalendarService) UpdateCalendarSet(_ context.Context, _, _ string, _ domain.CalendarSetInput) (domain.CalendarSet, error) {
+	return domain.CalendarSet{}, nil
+}
+
+func (c *fakeCalendarService) DeleteCalendarSet(_ context.Context, _, _ string) error { return nil }
+
+var _ port.CalendarService = (*fakeCalendarService)(nil)
 
 // --- push --------------------------------------------------------------------
 
@@ -1340,3 +1513,174 @@ func (r *fakeCalendarSetRepo) Delete(_ context.Context, id string) error {
 }
 
 var _ port.CalendarSetRepo = (*fakeCalendarSetRepo)(nil)
+
+// --- ai job repo ---------------------------------------------------------
+
+// fakeAiJobRepo serves a scripted queue from ClaimDue and records every
+// Complete/Fail call so AIJobService tests can assert dispatch, budget, and
+// backoff/dead-letter outcomes. Enqueue is a bare append (no dedup — the
+// real dedup-on-conflict semantics are covered by Task 3's postgres suite,
+// not re-tested here).
+type fakeAiJobRepo struct {
+	queue      []domain.AiJob
+	claimErr   error
+	claimCalls int
+
+	completed   []string
+	completeErr error
+
+	failed []struct {
+		ID      string
+		RetryAt *time.Time
+		ErrMsg  string
+	}
+	failErr error
+}
+
+func newAiJobRepo() *fakeAiJobRepo { return &fakeAiJobRepo{} }
+
+func (r *fakeAiJobRepo) Enqueue(_ context.Context, j domain.AiJob) error {
+	r.queue = append(r.queue, j)
+	return nil
+}
+
+func (r *fakeAiJobRepo) ClaimDue(_ context.Context, _ time.Time, limit int) ([]domain.AiJob, error) {
+	r.claimCalls++
+	if r.claimErr != nil {
+		return nil, r.claimErr
+	}
+	batch := r.queue
+	if limit > 0 && len(batch) > limit {
+		batch = batch[:limit]
+	}
+	r.queue = r.queue[len(batch):]
+	return batch, nil
+}
+
+func (r *fakeAiJobRepo) Complete(_ context.Context, id string) error {
+	r.completed = append(r.completed, id)
+	return r.completeErr
+}
+
+func (r *fakeAiJobRepo) Fail(_ context.Context, id string, retryAt *time.Time, errMsg string) error {
+	r.failed = append(r.failed, struct {
+		ID      string
+		RetryAt *time.Time
+		ErrMsg  string
+	}{ID: id, RetryAt: retryAt, ErrMsg: errMsg})
+	return r.failErr
+}
+
+var _ port.AiJobRepo = (*fakeAiJobRepo)(nil)
+
+// --- ai usage repo ---------------------------------------------------------
+
+// fakeAiUsageRepo tracks per-user call counts in memory (day-agnostic: tests
+// don't need multi-day rollover, that's covered by Task 3's postgres suite).
+// A bump that would exceed limit leaves the counter unchanged and reports
+// allowed=false, mirroring the real race-free SQL semantics.
+type fakeAiUsageRepo struct {
+	calls map[string]int
+	err   error
+}
+
+func newAiUsageRepo() *fakeAiUsageRepo { return &fakeAiUsageRepo{calls: map[string]int{}} }
+
+func (r *fakeAiUsageRepo) IncrementAndCheck(_ context.Context, userID string, _ time.Time, limit int) (bool, error) {
+	if r.err != nil {
+		return false, r.err
+	}
+	if r.calls[userID]+1 > limit {
+		return false, nil
+	}
+	r.calls[userID]++
+	return true, nil
+}
+
+var _ port.AiUsageRepo = (*fakeAiUsageRepo)(nil)
+
+// --- classifier repo ---------------------------------------------------------
+
+type fakeClassifierRepo struct {
+	byID   map[string]domain.AiClassifier
+	owners map[string]string
+}
+
+func newClassifierRepo() *fakeClassifierRepo {
+	return &fakeClassifierRepo{byID: map[string]domain.AiClassifier{}, owners: map[string]string{}}
+}
+
+func (r *fakeClassifierRepo) Create(_ context.Context, c domain.AiClassifier) (domain.AiClassifier, error) {
+	if c.ID == "" {
+		c.ID = newID()
+	}
+	r.byID[c.ID] = c
+	r.owners[c.ID] = c.UserID
+	return c, nil
+}
+
+func (r *fakeClassifierRepo) GetByID(_ context.Context, id string) (domain.AiClassifier, error) {
+	c, ok := r.byID[id]
+	if !ok {
+		return domain.AiClassifier{}, domain.ErrNotFound
+	}
+	return c, nil
+}
+
+func (r *fakeClassifierRepo) ListByUser(_ context.Context, userID string) ([]domain.AiClassifier, error) {
+	out := []domain.AiClassifier{}
+	for id, c := range r.byID {
+		if r.owners[id] == userID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeClassifierRepo) ListEnabledByUser(_ context.Context, userID string) ([]domain.AiClassifier, error) {
+	out := []domain.AiClassifier{}
+	for id, c := range r.byID {
+		if r.owners[id] == userID && c.Enabled {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeClassifierRepo) Update(_ context.Context, c domain.AiClassifier) error {
+	r.byID[c.ID] = c
+	return nil
+}
+
+func (r *fakeClassifierRepo) Delete(_ context.Context, id string) error {
+	delete(r.byID, id)
+	delete(r.owners, id)
+	return nil
+}
+
+var _ port.ClassifierRepo = (*fakeClassifierRepo)(nil)
+
+// --- voice profile repo -------------------------------------------------------
+
+type fakeVoiceProfileRepo struct {
+	byUser map[string]domain.VoiceProfile
+}
+
+func newVoiceProfileRepo() *fakeVoiceProfileRepo {
+	return &fakeVoiceProfileRepo{byUser: map[string]domain.VoiceProfile{}}
+}
+
+func (r *fakeVoiceProfileRepo) Get(_ context.Context, userID string) (domain.VoiceProfile, error) {
+	p, ok := r.byUser[userID]
+	if !ok {
+		return domain.VoiceProfile{}, domain.ErrNotFound
+	}
+	return p, nil
+}
+
+func (r *fakeVoiceProfileRepo) Upsert(_ context.Context, p domain.VoiceProfile) error {
+	r.byUser[p.UserID] = p
+	return nil
+}
+
+var _ port.VoiceProfileRepo = (*fakeVoiceProfileRepo)(nil)

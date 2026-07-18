@@ -195,9 +195,40 @@ type SearchService interface {
 	Search(ctx context.Context, userID, query string) (SearchResult, error)
 }
 
-// AIService is the OpenRouter-backed compose/reply/summarize/ask endpoint.
+// ClassifierInput is the create/update payload for a user-defined
+// natural-language classifier (POST/PATCH /v1/classifiers). At least one of
+// TargetSplit/LabelName is required; TargetSplit, when set, is validated via
+// domain.ParseInboxSplit.
+type ClassifierInput struct {
+	Name        string            `json:"name"`
+	Prompt      string            `json:"prompt"`
+	TargetSplit domain.InboxSplit `json:"targetSplit,omitempty"`
+	LabelName   string            `json:"labelName,omitempty"`
+	Enabled     bool              `json:"enabled"`
+}
+
+// AIService is the OpenRouter-backed compose/reply/summarize/ask endpoint,
+// plus CRUD for the user's custom natural-language classifiers (applied at
+// ingest by AIJobService's classify job kind).
 type AIService interface {
 	Compose(ctx context.Context, userID string, req domain.AiComposeRequest) (domain.AiComposeResponse, error)
+	// Ask answers a natural-language question over the user's mailbox (or one
+	// thread when req.ThreadID is set) and returns the answer plus the thread/
+	// message ids it drew on. Counts against the daily AI budget.
+	Ask(ctx context.Context, userID string, req domain.AiAskRequest) (domain.AiAskResponse, error)
+	// ProposeEvent reads the thread and proposes a calendar event (title,
+	// attendees from participants, start/end aligned to real availability).
+	// The client reviews and creates it via the existing POST /v1/events.
+	ProposeEvent(ctx context.Context, userID, threadID string) (domain.AiEventProposal, error)
+	// InstantReplies returns the 3 cached quick replies for the thread,
+	// generating and caching them on demand when absent (on-open fallback for
+	// splits the worker skips). Counts against the daily AI budget only when
+	// it generates.
+	InstantReplies(ctx context.Context, userID, threadID string) ([]string, error)
+	ListClassifiers(ctx context.Context, userID string) ([]domain.AiClassifier, error)
+	CreateClassifier(ctx context.Context, userID string, in ClassifierInput) (domain.AiClassifier, error)
+	UpdateClassifier(ctx context.Context, userID, classifierID string, in ClassifierInput) (domain.AiClassifier, error)
+	DeleteClassifier(ctx context.Context, userID, classifierID string) error
 }
 
 // DeviceService manages push-notification device registrations.
@@ -220,4 +251,11 @@ type SyncService interface {
 	// ProcessDueWork delivers due scheduled drafts and resurfaces due
 	// snoozes/reminders (with push notifications).
 	ProcessDueWork(ctx context.Context) error
+}
+
+// AIJobService drains the background AI job queue (consumed by cmd/worker).
+type AIJobService interface {
+	// ProcessDueAiJobs claims and executes one batch of due AI jobs.
+	// It is a no-op returning nil when AI is not configured.
+	ProcessDueAiJobs(ctx context.Context) error
 }

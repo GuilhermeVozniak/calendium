@@ -3,6 +3,9 @@
 import type {
   AiComposeRequest,
   AiComposeResponse,
+  AiEditAction,
+  AiEventProposal,
+  AiSource,
   BulkAction,
   Draft,
   InboxSplit,
@@ -13,7 +16,7 @@ import type {
   ThreadAction,
   UnsubscribeResult,
 } from '@calendium/shared';
-import { UndoStack } from '@calendium/shared';
+import { ApiRequestError, UndoStack } from '@calendium/shared';
 import { useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { toast } from 'sonner';
 
@@ -25,9 +28,12 @@ import {
   getMockLabels,
   getMockThread,
   getMockThreads,
+  mockAiAskCited,
   mockAiCompose,
   mockArchiveOlderThan,
   mockBulkAction,
+  mockInstantReplies,
+  mockProposeEvent,
   mockRemindThread,
   mockSnoozeThread,
   mockUnsnoozeThread,
@@ -644,6 +650,79 @@ export async function runAiAsk(
     if (DEMO_MODE) {
       return { text: mockAiCompose({ action: 'ask', prompt, threadId }).text, source: 'demo' };
     }
+    throw err;
+  }
+}
+
+/**
+ * Maps an AI call failure to a friendly, user-facing message. 429 is the
+ * daily per-user AI budget (see backend/internal/service/ai_jobs.go); 502/503
+ * mean the upstream model provider is temporarily down. Anything else falls
+ * back to a generic "try again" message rather than leaking internals.
+ */
+export function aiErrorMessage(err: unknown): string {
+  if (err instanceof ApiRequestError) {
+    if (err.status === 429) return "You've reached your daily AI limit — try again tomorrow.";
+    if (err.status === 502 || err.status === 503) {
+      return 'AI is temporarily unavailable. Please try again shortly.';
+    }
+  }
+  return 'AI is unavailable right now. Please try again.';
+}
+
+/** Cited Q&A over the mailbox (or one thread when threadId is set) — powers the Ask AI sidebar. */
+export async function runAiAskCited(
+  question: string,
+  threadId?: string
+): Promise<{ answer: string; model: string; sources: AiSource[]; source: DataSource }> {
+  try {
+    const res = await getApiClient().aiAskCited({ question, threadId });
+    return { ...res, source: 'api' };
+  } catch (err) {
+    if (DEMO_MODE) return { ...mockAiAskCited(question, threadId), source: 'demo' };
+    throw err;
+  }
+}
+
+/** AI-generated quick-reply suggestions for a thread (used when thread.instantReplies isn't cached yet). */
+export async function runInstantReplies(
+  threadId: string
+): Promise<{ replies: string[]; source: DataSource }> {
+  try {
+    const res = await getApiClient().getInstantReplies(threadId);
+    return { replies: res.replies, source: 'api' };
+  } catch (err) {
+    if (DEMO_MODE) return { replies: mockInstantReplies(threadId), source: 'demo' };
+    throw err;
+  }
+}
+
+/** Improves/shortens/simplifies/fixes grammar on, or changes the tone of, an existing draft in place. */
+export async function runAiEditDraft(
+  action: AiEditAction,
+  draftId: string,
+  tone?: string
+): Promise<AiComposeResponse & { source: DataSource }> {
+  try {
+    const res = await getApiClient().aiEditDraft(action, draftId, tone);
+    return { ...res, source: 'api' };
+  } catch (err) {
+    if (DEMO_MODE) {
+      return { ...mockAiCompose({ action, draftId, prompt: '', tone }), source: 'demo' };
+    }
+    throw err;
+  }
+}
+
+/** Instant Event AI: proposes a calendar event derived from a thread. */
+export async function runProposeEvent(
+  threadId: string
+): Promise<AiEventProposal & { source: DataSource }> {
+  try {
+    const res = await getApiClient().proposeEvent(threadId);
+    return { ...res, source: 'api' };
+  } catch (err) {
+    if (DEMO_MODE) return { ...mockProposeEvent(threadId), source: 'demo' };
     throw err;
   }
 }

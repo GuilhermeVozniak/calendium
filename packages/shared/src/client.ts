@@ -1,12 +1,18 @@
 import type {
+  AiAskRequest,
+  AiAskResponse,
+  AiClassifier,
   AiComposeRequest,
   AiComposeResponse,
+  AiEditAction,
+  AiEventProposal,
   AvailabilitySlot,
   BulkAction,
   BulkActionResult,
   Calendar,
   CalendarSet,
   CalendarSetInput,
+  ClassifierInput,
   ConnectedAccount,
   DevicePlatform,
   Draft,
@@ -336,6 +342,39 @@ export class ApiClient {
   /** Ask a question about a thread/draft (action='ask'). */
   aiAsk(req: Omit<AiComposeRequest, 'action'>) {
     return this.aiCompose({ ...req, action: 'ask' });
+  }
+
+  // --- AI (M2.3) ---
+  /** Cited Q&A over the mailbox (or one thread when req.threadId is set); used by the AI sidebar. */
+  aiAskCited(req: AiAskRequest) {
+    return this.request<AiAskResponse>('POST', '/v1/ai/ask', req);
+  }
+  /** AI-generated quick-reply suggestions for a thread. */
+  getInstantReplies(threadId: string) {
+    return this.request<{ replies: string[] }>(
+      'GET',
+      `/v1/mail/threads/${threadId}/instant-replies`
+    );
+  }
+  /** Improves/shortens/simplifies/fixes grammar on, or changes the tone of, an existing draft in place. */
+  aiEditDraft(action: AiEditAction, draftId: string, tone?: string) {
+    return this.aiCompose({ action, draftId, prompt: '', tone });
+  }
+  /** Instant Event AI: proposes a calendar event derived from a thread. */
+  proposeEvent(threadId: string) {
+    return this.request<AiEventProposal>('POST', '/v1/ai/event-proposal', { threadId });
+  }
+  listClassifiers() {
+    return this.request<AiClassifier[]>('GET', '/v1/classifiers');
+  }
+  createClassifier(input: ClassifierInput) {
+    return this.request<AiClassifier>('POST', '/v1/classifiers', input);
+  }
+  updateClassifier(id: string, input: ClassifierInput) {
+    return this.request<AiClassifier>('PATCH', `/v1/classifiers/${id}`, input);
+  }
+  deleteClassifier(id: string) {
+    return this.request<void>('DELETE', `/v1/classifiers/${id}`);
   }
 
   // --- Push devices ---

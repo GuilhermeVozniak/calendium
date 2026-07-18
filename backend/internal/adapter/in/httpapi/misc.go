@@ -29,6 +29,45 @@ func (s *server) handleAiCompose(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+func (s *server) handleAiAsk(w http.ResponseWriter, r *http.Request) {
+	var req domain.AiAskRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	res, err := s.deps.AI.Ask(r.Context(), userFrom(r).ID, req)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *server) handleAiEventProposal(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ThreadID string `json:"threadId"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	proposal, err := s.deps.AI.ProposeEvent(r.Context(), userFrom(r).ID, req.ThreadID)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, proposal)
+}
+
+func (s *server) handleInstantReplies(w http.ResponseWriter, r *http.Request) {
+	replies, err := s.deps.AI.InstantReplies(r.Context(), userFrom(r).ID, r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string][]string{"replies": replies})
+}
+
 func (s *server) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Platform string `json:"platform"`

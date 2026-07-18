@@ -249,3 +249,44 @@ func TestDraftRepoUpdateResetsRetryBudget(t *testing.T) {
 		t.Fatalf("Delete unknown: err = %v, want ErrNotFound", err)
 	}
 }
+
+func TestDraftRepoGetAiGeneratedByThread(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	acct := seedAccount(t, st, "u1")
+	th := seedThread(t, st, acct.ID, time.Now())
+	threadID := th.ID
+
+	if _, err := st.Drafts().GetAiGeneratedByThread(ctx, threadID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("GetAiGeneratedByThread before any draft: err = %v, want ErrNotFound", err)
+	}
+
+	// A regular, user-authored draft on the same thread must not match.
+	if _, err := st.Drafts().Create(ctx, domain.Draft{
+		AccountID: acct.ID, ThreadID: &threadID, Subject: "manual reply",
+	}); err != nil {
+		t.Fatalf("Create manual draft: %v", err)
+	}
+	if _, err := st.Drafts().GetAiGeneratedByThread(ctx, threadID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("GetAiGeneratedByThread with only a manual draft: err = %v, want ErrNotFound", err)
+	}
+
+	aiDraft, err := st.Drafts().Create(ctx, domain.Draft{
+		AccountID: acct.ID, ThreadID: &threadID, Subject: "auto draft", AiGenerated: true,
+	})
+	if err != nil {
+		t.Fatalf("Create ai draft: %v", err)
+	}
+
+	got, err := st.Drafts().GetAiGeneratedByThread(ctx, threadID)
+	if err != nil {
+		t.Fatalf("GetAiGeneratedByThread: %v", err)
+	}
+	if got.ID != aiDraft.ID {
+		t.Fatalf("GetAiGeneratedByThread id = %s, want %s", got.ID, aiDraft.ID)
+	}
+	if !got.AiGenerated {
+		t.Fatal("AiGenerated = false, want true")
+	}
+}

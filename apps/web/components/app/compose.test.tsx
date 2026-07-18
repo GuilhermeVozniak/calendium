@@ -24,9 +24,11 @@ vi.mock('@/lib/settings-data', () => ({
 
 const useSnippetsMock = vi.fn();
 const runAiComposeMock = vi.fn();
+const aiErrorMessageMock = vi.fn((..._args: unknown[]) => 'AI is unavailable right now. Please try again.');
 vi.mock('@/lib/use-mail', () => ({
   useSnippets: () => useSnippetsMock(),
   runAiCompose: (...args: unknown[]) => runAiComposeMock(...args),
+  aiErrorMessage: (...args: unknown[]) => aiErrorMessageMock(...args),
 }));
 
 const useInstanceMock = vi.fn();
@@ -470,5 +472,39 @@ describe('ComposeForm — send flow', () => {
     );
     // Dialog stays open with the composed text intact — never fakes success.
     expect(screen.getByPlaceholderText('Subject')).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ComposeForm — AI assist (MINOR 6, final-review fix wave): the generate
+// path's catch-all must map failures through the shared aiErrorMessage
+// helper (like the AI edit menu already does) instead of a hardcoded generic
+// message, so 429/402/503 get the correct copy.
+// ---------------------------------------------------------------------------
+
+describe('ComposeForm — AI assist', () => {
+  beforeEach(() => {
+    useInstanceMock.mockReturnValue({
+      data: { features: { ai: true }, undoSendSeconds: 15 },
+    });
+  });
+
+  it('maps a generate failure through aiErrorMessage instead of a hardcoded message', async () => {
+    const apiErr = new Error('rate limited');
+    runAiComposeMock.mockRejectedValue(apiErr);
+    aiErrorMessageMock.mockReturnValue("You've reached your daily AI limit — try again tomorrow.");
+
+    const user = userEvent.setup();
+    renderCompose();
+    await waitForAccountsLoaded(ACCOUNT.email);
+
+    await user.click(screen.getByRole('button', { name: /ai assist/i }));
+    await user.type(screen.getByPlaceholderText(/polite decline/i), 'ask for an extension');
+    await user.click(screen.getByRole('button', { name: /draft it/i }));
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith("You've reached your daily AI limit — try again tomorrow.")
+    );
+    expect(aiErrorMessageMock).toHaveBeenCalledWith(apiErr);
   });
 });

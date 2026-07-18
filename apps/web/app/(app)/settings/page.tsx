@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format, formatDistanceToNow } from 'date-fns';
 import {
@@ -16,6 +17,7 @@ import {
   Monitor,
   Moon,
   Plus,
+  Sparkles,
   Sun,
   Trash2,
   X,
@@ -94,6 +96,7 @@ type SettingsTab =
   | 'sets'
   | 'appearance'
   | 'mailbox'
+  | 'ai'
   | 'notifications'
   | 'billing';
 
@@ -104,6 +107,7 @@ const KNOWN_TABS: SettingsTab[] = [
   'sets',
   'appearance',
   'mailbox',
+  'ai',
   'notifications',
   'billing',
 ];
@@ -112,6 +116,7 @@ export default function SettingsPage() {
   const instance = useInstance();
   const billingEnabled = !!instance.data?.features.billing;
   const pushEnabled = !!instance.data?.features.push;
+  const aiEnabled = !!instance.data?.features.ai;
   const vapidPublicKey = instance.data?.vapidPublicKey;
 
   const availableTabs = React.useMemo<SettingsTab[]>(
@@ -122,10 +127,11 @@ export default function SettingsPage() {
       'sets',
       'appearance',
       'mailbox',
+      ...(aiEnabled ? (['ai'] as SettingsTab[]) : []),
       ...(pushEnabled ? (['notifications'] as SettingsTab[]) : []),
       ...(billingEnabled ? (['billing'] as SettingsTab[]) : []),
     ],
-    [pushEnabled, billingEnabled]
+    [aiEnabled, pushEnabled, billingEnabled]
   );
 
   const [tab, setTab] = React.useState<SettingsTab>('accounts');
@@ -183,6 +189,7 @@ export default function SettingsPage() {
             <TabsTrigger value="sets">Sets</TabsTrigger>
             <TabsTrigger value="appearance">Appearance</TabsTrigger>
             <TabsTrigger value="mailbox">Mailbox</TabsTrigger>
+            {aiEnabled && <TabsTrigger value="ai">AI</TabsTrigger>}
             {pushEnabled && <TabsTrigger value="notifications">Notifications</TabsTrigger>}
             {billingEnabled && <TabsTrigger value="billing">Billing</TabsTrigger>}
           </TabsList>
@@ -204,6 +211,11 @@ export default function SettingsPage() {
           <TabsContent value="mailbox" className="mt-4">
             <MailboxSection />
           </TabsContent>
+          {aiEnabled && (
+            <TabsContent value="ai" className="mt-4">
+              <AiSection />
+            </TabsContent>
+          )}
           {pushEnabled && (
             <TabsContent value="notifications" className="mt-4">
               <NotificationsSection vapidPublicKey={vapidPublicKey} />
@@ -715,6 +727,31 @@ function AppearanceSection() {
           ))}
         </div>
       </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AI
+// ---------------------------------------------------------------------------
+
+function AiSection() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>AI classifiers</CardTitle>
+        <CardDescription>
+          Natural-language rules that route matching mail to a split and/or tag it with a label.
+        </CardDescription>
+        <CardAction>
+          <Button size="sm" asChild>
+            <Link href="/settings/classifiers">
+              <Sparkles />
+              Manage classifiers
+            </Link>
+          </Button>
+        </CardAction>
+      </CardHeader>
     </Card>
   );
 }

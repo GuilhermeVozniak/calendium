@@ -1,10 +1,12 @@
+import { ThreadAiPanel } from '@/components/ai/thread-ai-panel';
 import { Button } from '@/components/ui/button';
 import { Icon } from '@/components/ui/icon';
 import { Input } from '@/components/ui/input';
 import { Text } from '@/components/ui/text';
 import { api } from '@/lib/api';
 import { relativeTime } from '@/lib/format';
-import { isDemoMode, mockThreadDetail, withMockFallback } from '@/lib/mock';
+import { isDemoMode, mockInstantReplies, mockThreadDetail, withMockFallback } from '@/lib/mock';
+import { useServerConfig } from '@/lib/server-config';
 import type { Message, Page, Thread, UnsubscribeResult } from '@calendium/shared';
 import {
   useMutation,
@@ -42,6 +44,8 @@ export default function ThreadScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
+  const { config } = useServerConfig();
+  const aiEnabled = config?.features?.ai ?? false;
   const [reply, setReply] = React.useState('');
 
   const detailQuery = useQuery({
@@ -272,6 +276,18 @@ export default function ThreadScreen() {
   const thread = detailQuery.data?.thread;
   const messages = detailQuery.data?.messages ?? [];
 
+  // AI instant-reply suggestions (Task 17); only fetched once AI is enabled
+  // for this server and the thread has loaded.
+  const repliesQuery = useQuery({
+    queryKey: ['instant-replies', threadId],
+    enabled: aiEnabled && threadId.length > 0 && !!thread,
+    queryFn: () =>
+      withMockFallback(
+        () => api.getInstantReplies(threadId),
+        () => mockInstantReplies(threadId)
+      ),
+  });
+
   return (
     <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
       {/* Header */}
@@ -296,6 +312,17 @@ export default function ThreadScreen() {
           <Icon as={ClockIcon} className="size-5" />
         </Button>
       </View>
+
+      {thread && (
+        <ThreadAiPanel
+          enabled={aiEnabled}
+          summary={thread.summary}
+          repliesLoading={repliesQuery.isLoading}
+          repliesError={repliesQuery.error}
+          replies={repliesQuery.data?.replies ?? []}
+          onSelectReply={setReply}
+        />
+      )}
 
       {thread && canUnsubscribe(thread) && (
         <Pressable

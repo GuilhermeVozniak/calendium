@@ -145,8 +145,13 @@ func run(logger *slog.Logger) error {
 		Threads:       store.Threads(),
 		Messages:      store.Messages(),
 		Drafts:        store.Drafts(),
+		Usage:         store.AiUsage(),
+		VoiceProfiles: store.VoiceProfiles(),
+		Calendar:      calendars,
+		Classifiers:   store.Classifiers(),
 		AI:            ai,
 		Clock:         clock,
+		DailyLimit:    cfg.OpenRouter.DailyLimit,
 		SelfHosted:    cfg.Instance.SelfHosted,
 	})
 	devices := service.NewDeviceService(store.Devices(), clock)

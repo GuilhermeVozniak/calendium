@@ -127,8 +127,8 @@ func TestSyncStampsUnsubscribeOnThread(t *testing.T) {
 func TestSyncPreservesUnsubscribeAcrossHeaderlessDeltas(t *testing.T) {
 	ctx := context.Background()
 	t0 := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
-	t1 := t0.Add(10 * time.Minute)  // newer header-less reply
-	t2 := t0.Add(20 * time.Minute)  // even newer with different headers
+	t1 := t0.Add(10 * time.Minute) // newer header-less reply
+	t2 := t0.Add(20 * time.Minute) // even newer with different headers
 
 	accounts := newAccountRepo()
 	if _, err := accounts.Create(ctx, domain.ConnectedAccount{

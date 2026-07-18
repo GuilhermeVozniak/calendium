@@ -1,6 +1,8 @@
 import type {
   AiComposeRequest,
   AiComposeResponse,
+  AiEventProposal,
+  AiSource,
   EmailAddress,
   InboxSplit,
   Label,
@@ -71,6 +73,10 @@ interface ThreadSpec {
   participants: EmailAddress[];
   msgs: MsgSpec[];
   unsubscribe?: { mailto?: string; url?: string; oneClick?: boolean };
+  /** Pre-baked AI thread summary — scripted so Playwright runs keyless. */
+  summary?: string;
+  /** Pre-baked AI instant-reply suggestions — same reason. */
+  instantReplies?: string[];
 }
 
 function toHtml(text: string): string {
@@ -138,6 +144,8 @@ function build(spec: ThreadSpec): ThreadRecord {
       unsubscribeMailto: spec.unsubscribe?.mailto ?? null,
       unsubscribeUrl: spec.unsubscribe?.url ?? null,
       unsubscribeOneClick: spec.unsubscribe?.oneClick ?? false,
+      summary: spec.summary,
+      instantReplies: spec.instantReplies,
     },
   };
 }
@@ -150,6 +158,13 @@ const SPECS: ThreadSpec[] = [
     subject: 'Postmortem: checkout latency spike',
     unread: true,
     participants: [priya, chen],
+    summary:
+      'Checkout p99 latency spiked to 2.4s from a synchronous Redis call in the rate limiter; a load-shedding fallback and an async-by-default limiter are done, and the incident is now marked resolved.',
+    instantReplies: [
+      'Thanks for the update — looks resolved.',
+      'Great work resolving this so fast.',
+      'Can we schedule a follow-up review next week?',
+    ],
     msgs: [
       {
         from: priya,
@@ -728,4 +743,59 @@ export function mockAiCompose(req: AiComposeRequest): AiComposeResponse {
     );
   }
   return { text: lines.join('\n'), model: 'demo/local-fallback' };
+}
+
+/** Local fallback for GET .../instant-replies when the API is unreachable. */
+export function mockInstantReplies(threadId: string): string[] {
+  const record = store.get(threadId);
+  if (!record) return [];
+  return [
+    'Sounds good, thanks!',
+    'Let me look into this and follow up shortly.',
+    'Can we push this to next week?',
+  ];
+}
+
+/** Local fallback for POST /v1/ai/ask (cited Q&A) when the API is unreachable. */
+export function mockAiAskCited(
+  question: string,
+  threadId?: string
+): { answer: string; model: string; sources: AiSource[] } {
+  const records = threadId
+    ? [store.get(threadId)].filter((r): r is ThreadRecord => r !== undefined)
+    : [...store.values()].slice(0, 2);
+  const sources: AiSource[] = records.map((r) => {
+    const last = r.messages[r.messages.length - 1];
+    return {
+      threadId: r.thread.id,
+      messageId: last?.id,
+      subject: r.thread.subject,
+      snippet: last ? firstLine(last.bodyText) : r.thread.snippet,
+    };
+  });
+  const trimmed = question.trim().replace(/\?+$/, '');
+  return {
+    answer: trimmed
+      ? `Based on your mailbox: ${trimmed} — it looks like it's on track. See the linked conversation${sources.length === 1 ? '' : 's'} below for the details.`
+      : "I couldn't find anything relevant in your mailbox for that question.",
+    model: 'demo/local-fallback',
+    sources,
+  };
+}
+
+/** Local fallback for POST /v1/ai/event-proposal when the API is unreachable. */
+export function mockProposeEvent(threadId: string): AiEventProposal {
+  const record = store.get(threadId);
+  const start = new Date(NOW + 24 * 3_600_000);
+  start.setMinutes(0, 0, 0);
+  const end = new Date(start.getTime() + 30 * 60_000);
+  return {
+    title: record ? record.thread.subject.replace(/^(Re|Fwd):\s*/i, '') : 'Follow-up meeting',
+    attendees: record
+      ? record.thread.participants.map((p) => p.email).filter((email) => email !== MOCK_ME.email)
+      : [],
+    start: start.toISOString(),
+    end: end.toISOString(),
+    notes: 'Proposed from thread context (demo mode).',
+  };
 }

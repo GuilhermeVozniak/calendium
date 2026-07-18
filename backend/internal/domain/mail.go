@@ -108,6 +108,15 @@ type Thread struct {
 	UnsubscribeMailto   *string `json:"unsubscribeMailto"`
 	UnsubscribeURL      *string `json:"unsubscribeUrl"`
 	UnsubscribeOneClick bool    `json:"unsubscribeOneClick"`
+	// Summary is the AI-generated thread summary (empty until generated).
+	Summary string `json:"summary,omitempty"`
+	// InstantReplies is a cache of AI-generated reply suggestions.
+	InstantReplies []string `json:"instantReplies,omitempty"`
+	// InstantRepliesUpdatedAt is when InstantReplies was last (re)generated;
+	// nil until the first generation. Internal freshness bookkeeping for
+	// AIService.InstantReplies's on-open fallback (fresh when this is newer
+	// than LastMessageAt) -- not serialized to clients.
+	InstantRepliesUpdatedAt *time.Time `json:"-"`
 }
 
 // Attachment is file metadata on a message (bodies are fetched on demand).
@@ -157,6 +166,8 @@ type Draft struct {
 	SendAttempts int       `json:"sendAttempts"`
 	LastError    *string   `json:"lastError"`
 	UpdatedAt    time.Time `json:"updatedAt"`
+	// AiGenerated marks this draft as AI-generated (e.g., auto-reply, auto-draft).
+	AiGenerated bool `json:"aiGenerated"`
 }
 
 // Snippet is a reusable canned response with an optional keyboard shortcut.

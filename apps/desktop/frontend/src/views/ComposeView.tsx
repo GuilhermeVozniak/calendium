@@ -1,7 +1,7 @@
-import type { Draft, EmailAddress } from '@calendium/shared';
+import type { AiEditAction, Draft, EmailAddress } from '@calendium/shared';
 import { ApiRequestError } from '@calendium/shared';
 import { useQuery } from '@tanstack/react-query';
-import { Clock, Loader2, Send } from 'lucide-react';
+import { ChevronDown, Clock, Loader2, Send, Sparkles } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { api, orMock } from '@/lib/api';
@@ -12,7 +12,22 @@ import { errorMessage, toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { Button } from '@/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/ui/dropdown';
 import { Input } from '@/ui/input';
+
+const AI_EDIT_ACTIONS: { action: AiEditAction; label: string }[] = [
+  { action: 'improve', label: 'Improve' },
+  { action: 'shorten', label: 'Shorten' },
+  { action: 'simplify', label: 'Simplify' },
+  { action: 'fix_grammar', label: 'Fix grammar' },
+];
 
 function parseAddresses(value: string): EmailAddress[] {
   return value
@@ -55,6 +70,13 @@ export function ComposeHost() {
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [scheduleAt, setScheduleAt] = useState('');
   const [busy, setBusy] = useState<null | 'send' | 'draft'>(null);
+  // A real draftId, seeded lazily by ensureDraftId() the first time AI edit
+  // needs one (aiEditDraft edits an existing draft in place). Once set,
+  // submit() updates that same draft instead of creating a duplicate.
+  const [liveDraftId, setLiveDraftId] = useState<string | null>(null);
+  const [aiEditBusy, setAiEditBusy] = useState(false);
+  const [toneOpen, setToneOpen] = useState(false);
+  const [tone, setTone] = useState('');
 
   const { data: accounts = [] } = useQuery({
     queryKey: ['accounts'],
@@ -67,6 +89,7 @@ export function ComposeHost() {
   // Seed the form whenever the composer opens.
   useEffect(() => {
     if (!intent) return;
+    setLiveDraftId(null);
     if (intent.kind === 'reply') {
       setTo(intent.message.from.email);
       setCc('');
@@ -78,10 +101,12 @@ export function ComposeHost() {
       setShowCc(false);
       setSubject('');
     }
-    setBody('');
+    setBody(intent.kind === 'reply' ? (intent.body ?? '') : '');
     setScheduleOpen(false);
     setScheduleAt('');
     setBusy(null);
+    setToneOpen(false);
+    setTone('');
   }, [intent]);
 
   // Default the sending account: the reply's thread account if known, else first.
@@ -113,16 +138,63 @@ export function ComposeHost() {
 
   async function persistDraft(scheduledAt: string | null): Promise<Draft> {
     const input = buildInput(scheduledAt);
+    // Once a draft id exists (reopened via AI edit), update it in place rather
+    // than creating a duplicate.
+    if (liveDraftId) {
+      if (isDemoMode()) {
+        return {
+          id: liveDraftId,
+          ...input,
+          sendAttempts: 0,
+          lastError: null,
+          aiGenerated: false,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      return api.updateDraft(liveDraftId, input);
+    }
     if (isDemoMode()) {
       return {
         id: `draft_demo_${Date.now()}`,
         ...input,
         sendAttempts: 0,
+        aiGenerated: false,
         lastError: null,
         updatedAt: new Date().toISOString(),
       };
     }
     return api.saveDraft(input);
+  }
+
+  /**
+   * aiEditDraft needs a real draftId; a brand-new compose session doesn't have
+   * one until the first AI edit lazily persists the current form as a draft
+   * and remembers the id for the rest of the session (submit() then updates
+   * that same draft instead of creating a duplicate — see persistDraft above).
+   */
+  async function ensureDraftId(): Promise<string> {
+    if (liveDraftId) return liveDraftId;
+    const draft = await persistDraft(null);
+    setLiveDraftId(draft.id);
+    return draft.id;
+  }
+
+  async function runAiEdit(action: AiEditAction, toneValue?: string) {
+    setAiEditBusy(true);
+    try {
+      const draftId = await ensureDraftId();
+      const res = await orMock(
+        () => api.aiEditDraft(action, draftId, toneValue),
+        () => ({ text: `${body || 'Draft'} (edited — demo mode, no AI configured)`, model: 'demo/local-fallback' })
+      );
+      setBody(res.text);
+      setToneOpen(false);
+      setTone('');
+    } catch (e) {
+      toast({ title: 'AI edit failed', description: errorMessage(e), variant: 'destructive' });
+    } finally {
+      setAiEditBusy(false);
+    }
   }
 
   function showSentToast(draftId: string, scheduledAt: string | null) {
@@ -284,6 +356,34 @@ export function ComposeHost() {
               </Button>
             </div>
           )}
+
+          {toneOpen && (
+            <div className="flex items-center gap-2">
+              <span className="w-12 shrink-0 text-xs text-muted-foreground">Tone</span>
+              <Input
+                aria-label="Target tone"
+                value={tone}
+                autoFocus
+                onChange={(e) => setTone(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && tone.trim()) {
+                    e.preventDefault();
+                    void runAiEdit('change_tone', tone.trim());
+                  }
+                }}
+                placeholder="e.g. more formal"
+                disabled={aiEditBusy}
+              />
+              <Button
+                size="sm"
+                disabled={aiEditBusy || !tone.trim()}
+                onClick={() => void runAiEdit('change_tone', tone.trim())}
+              >
+                {aiEditBusy ? <Loader2 className="animate-spin" /> : null}
+                Apply
+              </Button>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -299,6 +399,27 @@ export function ComposeHost() {
           >
             <Clock /> Send later
           </Button>
+          {getActiveServerConfig()?.features.ai && (
+            <DropdownMenu>
+              <DropdownMenuTrigger>
+                <Button variant="outline" size="sm" disabled={aiEditBusy}>
+                  {aiEditBusy ? <Loader2 className="animate-spin" /> : <Sparkles />}
+                  Edit with AI
+                  <ChevronDown className="size-3 opacity-60" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent>
+                <DropdownMenuLabel>Edit with AI</DropdownMenuLabel>
+                {AI_EDIT_ACTIONS.map(({ action, label }) => (
+                  <DropdownMenuItem key={action} onSelect={() => void runAiEdit(action)}>
+                    {label}
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => setToneOpen(true)}>Change tone…</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           <Button
             variant="outline"
             size="sm"

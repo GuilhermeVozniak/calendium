@@ -85,6 +85,10 @@ export interface Thread {
   unsubscribeMailto: string | null;
   unsubscribeUrl: string | null;
   unsubscribeOneClick: boolean;
+  /** AI-generated thread summary; absent until generated. */
+  summary?: string;
+  /** Cache of AI-generated reply suggestions. */
+  instantReplies?: string[];
 }
 
 export interface Attachment {
@@ -128,6 +132,8 @@ export interface Draft {
   /** Most recent delivery failure, when a scheduled send has failed. */
   lastError: string | null;
   updatedAt: string;
+  /** Marks this draft as AI-generated (e.g., auto-reply, auto-draft). */
+  aiGenerated: boolean;
 }
 
 /**
@@ -337,7 +343,19 @@ export interface NotificationDevice {
 // AI (OpenRouter-backed)
 // ---------------------------------------------------------------------------
 
-export type AiAction = 'compose' | 'reply' | 'summarize' | 'ask';
+export type AiAction =
+  | 'compose'
+  | 'reply'
+  | 'summarize'
+  | 'ask'
+  | 'improve'
+  | 'shorten'
+  | 'simplify'
+  | 'fix_grammar'
+  | 'change_tone';
+
+/** The subset of AiAction driven by ApiClient#aiEditDraft (edit an existing draft in place). */
+export type AiEditAction = 'improve' | 'shorten' | 'simplify' | 'fix_grammar' | 'change_tone';
 
 export interface AiComposeRequest {
   action: AiAction;
@@ -345,11 +363,67 @@ export interface AiComposeRequest {
   prompt: string;
   threadId?: string;
   draftId?: string;
+  /** Target tone; only meaningful when action is 'change_tone'. */
+  tone?: string;
 }
 
 export interface AiComposeResponse {
   text: string;
   model: string;
+}
+
+/** POST /v1/ai/ask — cited question answering over the mailbox (or one thread). */
+export interface AiAskRequest {
+  question: string;
+  /** Scope to one thread; omitted = whole mailbox. */
+  threadId?: string;
+}
+
+/** One citation backing an AiAskResponse answer. */
+export interface AiSource {
+  threadId: string;
+  messageId?: string;
+  subject: string;
+  snippet: string;
+}
+
+export interface AiAskResponse {
+  answer: string;
+  model: string;
+  sources: AiSource[];
+}
+
+/** Instant Event AI's proposed calendar event, derived from a thread. */
+export interface AiEventProposal {
+  title: string;
+  attendees: string[];
+  start: string;
+  end: string;
+  location?: string;
+  notes?: string;
+}
+
+/**
+ * A user-defined natural-language mail classifier applied at ingest — mirrors
+ * domain.AiClassifier in backend/internal/domain/ai.go. When it matches, the
+ * thread is routed to targetSplit (if set) and tagged with labelName (if set).
+ */
+export interface AiClassifier {
+  id: string;
+  name: string;
+  prompt: string;
+  targetSplit?: InboxSplit;
+  labelName?: string;
+  enabled: boolean;
+}
+
+/** Create/update classifier payload (full replace on update); mirrors port.ClassifierInput. */
+export interface ClassifierInput {
+  name: string;
+  prompt: string;
+  targetSplit?: InboxSplit;
+  labelName?: string;
+  enabled: boolean;
 }
 
 // ---------------------------------------------------------------------------

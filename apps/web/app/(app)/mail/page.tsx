@@ -15,6 +15,8 @@ import { InboxZero } from '@/components/app/inbox-zero';
 import { LabelPicker } from '@/components/app/label-picker';
 import { TimePickerDialog } from '@/components/app/snooze-menu';
 import { ThreadView } from '@/components/app/thread-view';
+import { AiDraftBadge } from '@/components/mail/ai-draft-badge';
+import { ProposeEventDialog } from '@/components/mail/propose-event-dialog';
 import { Kbd, KbdGroup } from '@/components/ui/kbd';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -176,6 +178,7 @@ function MailClient() {
   const [snoozeOpen, setSnoozeOpen] = React.useState(false);
   const [remindOpen, setRemindOpen] = React.useState(false);
   const [zeroOpen, setZeroOpen] = React.useState(false);
+  const [proposeEventOpen, setProposeEventOpen] = React.useState(false);
 
   // Calendar peek: a right-side panel showing today's calendar beside the
   // inbox (mod+shift+k / palette). Hydrated from localStorage after mount
@@ -519,7 +522,8 @@ function MailClient() {
     else if (command === 'label') setLabelPickerOpen(true);
     else if (command === 'get-me-to-zero') setZeroOpen(true);
     else if (command === 'toggle-calendar-peek') setPeekOpen((o) => !o);
-  }, []);
+    else if (command === 'propose-event' && openThreadId) setProposeEventOpen(true);
+  }, [openThreadId]);
 
   React.useEffect(() => onMailCommand(runCommand), [runCommand]);
 
@@ -537,9 +541,10 @@ function MailClient() {
       pendingCommand === 'unread' ||
       pendingCommand === 'mark-read';
     if (needsSelection && !selectedThread) return;
+    if (pendingCommand === 'propose-event' && !openThreadId) return;
     runCommand(pendingCommand);
     setPendingCommand(null);
-  }, [pendingCommand, selectedThread, runCommand]);
+  }, [pendingCommand, selectedThread, openThreadId, runCommand]);
 
   const title = view ? VIEW_TITLES[view] : null;
 
@@ -670,11 +675,17 @@ function MailClient() {
             onClose={closeThread}
             onArchive={archiveSelected}
             onSnooze={() => setSnoozeOpen(true)}
+            onProposeEvent={() => setProposeEventOpen(true)}
           />
         </section>
       )}
 
       <CalendarPeek open={peekOpen} onOpenChange={setPeekOpen} />
+      <ProposeEventDialog
+        threadId={openThreadId}
+        open={proposeEventOpen}
+        onOpenChange={setProposeEventOpen}
+      />
 
       <LabelPicker
         open={labelPickerOpen}
@@ -853,6 +864,7 @@ function DraftsPane() {
       subject: full.subject,
       body: htmlToText(full.bodyHtml),
       threadId: full.threadId,
+      aiGenerated: full.aiGenerated,
     });
   }
 
@@ -874,34 +886,46 @@ function DraftsPane() {
         const preview = htmlToText(draft.bodyHtml).replace(/\s+/g, ' ').trim();
         return (
           <li key={draft.id} className="group relative border-b">
-            <button
-              type="button"
-              onClick={() => void open(draft)}
-              className="hover:bg-accent/40 flex w-full items-center gap-2.5 py-2.5 pr-12 pl-4 text-left"
-            >
-              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="flex items-baseline justify-between gap-2">
-                  <span className="truncate text-sm font-medium">
-                    {draft.subject.trim() || '(no subject)'}
+            {/* A plain div (not a <button>) wraps the row: the real <button> below
+                covers only the clickable text content, and the AI badge's own
+                action buttons sit beside it as siblings rather than nesting
+                inside another <button> (invalid HTML). */}
+            <div className="hover:bg-accent/40 flex w-full items-center gap-2 py-2.5 pr-12 pl-4">
+              <button
+                type="button"
+                onClick={() => void open(draft)}
+                className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+              >
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="flex items-baseline justify-between gap-2">
+                    <span className="truncate text-sm font-medium">
+                      {draft.subject.trim() || '(no subject)'}
+                    </span>
+                    <span className="text-muted-foreground shrink-0 text-xs">
+                      {formatListTime(draft.updatedAt)}
+                    </span>
                   </span>
-                  <span className="text-muted-foreground shrink-0 text-xs">
-                    {formatListTime(draft.updatedAt)}
+                  <span className="text-muted-foreground truncate text-xs">
+                    <span className="text-foreground/70">{draftRecipients(draft)}</span>
+                    {preview && <> — {preview}</>}
                   </span>
+                  {draft.lastError && (
+                    <span className="text-destructive truncate text-xs">
+                      Last send failed: {draft.lastError}
+                    </span>
+                  )}
                 </span>
-                <span className="text-muted-foreground truncate text-xs">
-                  <span className="text-foreground/70">{draftRecipients(draft)}</span>
-                  {preview && <> — {preview}</>}
-                </span>
-                {draft.lastError && (
-                  <span className="text-destructive truncate text-xs">
-                    Last send failed: {draft.lastError}
-                  </span>
+                {openingId === draft.id && (
+                  <Loader2 className="text-muted-foreground size-3.5 shrink-0 animate-spin" />
                 )}
-              </span>
-              {openingId === draft.id && (
-                <Loader2 className="text-muted-foreground size-3.5 shrink-0 animate-spin" />
+              </button>
+              {draft.aiGenerated && (
+                <AiDraftBadge
+                  onDiscard={() => void remove(draft.id)}
+                  onEditAndSend={() => void open(draft)}
+                />
               )}
-            </button>
+            </div>
             <button
               type="button"
               onClick={() => void remove(draft.id)}
