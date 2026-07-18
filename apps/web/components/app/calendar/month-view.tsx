@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils';
 
 import { eventTouchesDay } from './time-grid';
 import { FALLBACK_COLOR, sortByAllDayThenStart, withAlpha } from './event-render';
+import { JoinButton } from './join-button';
 
 const MAX_VISIBLE_PILLS = 3;
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -132,15 +133,26 @@ function MonthCell({ day, anchor, events, calendarById, onDayClick, onEventClick
                 {overflow.map((event) => {
                   const color = calendarById.get(event.calendarId)?.color ?? FALLBACK_COLOR;
                   return (
-                    <button
+                    // biome-ignore lint/a11y/useSemanticElements: hosts a real <button> (JoinButton) inline — nesting a button inside a button is invalid HTML, so this outer element is a div with button semantics instead.
+                    <div
                       key={event.id}
-                      type="button"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={event.title}
                       onClick={() => onEventClick(event)}
-                      className="truncate rounded px-1.5 py-1 text-left text-xs hover:bg-accent"
-                      style={{ color }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          onEventClick(event);
+                        }
+                      }}
+                      className="flex cursor-pointer items-center justify-between gap-2 rounded px-1.5 py-1 text-left text-xs hover:bg-accent"
                     >
-                      {event.title}
-                    </button>
+                      <span className="truncate" style={{ color }}>
+                        {event.title}
+                      </span>
+                      <JoinButton event={event} size="sm" />
+                    </div>
                   );
                 })}
               </div>

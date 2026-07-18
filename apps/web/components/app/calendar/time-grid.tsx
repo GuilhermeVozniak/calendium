@@ -9,6 +9,10 @@ import { hourLabelInZone, zoneCaption } from '@/lib/timezones';
 import { cn } from '@/lib/utils';
 
 import { FALLBACK_COLOR, withAlpha } from './event-render';
+import { JoinButton } from './join-button';
+
+/** Event blocks at/above this height (px) have room for a second text row (time range + Join). */
+const JOIN_BUTTON_MIN_HEIGHT = 40;
 
 const HOUR_HEIGHT = 48; // px per hour in the time grid
 
@@ -391,15 +395,24 @@ function DayColumn({ day, events, calendarById, now, onSlotClick, onEventClick }
       {positioned.map(({ event, top, height, leftPct, widthPct }) => {
         const color = calendarById.get(event.calendarId)?.color ?? FALLBACK_COLOR;
         return (
-          <button
+          // biome-ignore lint/a11y/useSemanticElements: hosts a real <button> (JoinButton) inline — nesting a button inside a button is invalid HTML, so this outer element is a div with button semantics instead.
+          <div
             key={event.id}
-            type="button"
+            role="button"
+            tabIndex={0}
+            aria-label={event.title}
             onClick={(e) => {
               e.stopPropagation();
               onEventClick(event);
             }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onEventClick(event);
+              }
+            }}
             className={cn(
-              'absolute z-10 flex flex-col overflow-hidden rounded-md border-l-[3px] px-1.5 py-1 text-left leading-tight shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              'absolute z-10 flex cursor-pointer flex-col overflow-hidden rounded-md border-l-[3px] px-1.5 py-1 text-left leading-tight shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring',
               event.status === 'tentative' && 'opacity-70'
             )}
             style={{
@@ -414,14 +427,16 @@ function DayColumn({ day, events, calendarById, now, onSlotClick, onEventClick }
             <span className="truncate text-xs font-medium" style={{ color }}>
               {event.title}
             </span>
-            {height >= 40 && (
-              <span className="truncate text-[10px]" style={{ color: withAlpha(color, 0.75) }}>
-                {format(new Date(event.start), 'h:mm')} –{' '}
-                {format(new Date(event.end), 'h:mm a')}
-                {event.conferencing ? ' · Meet' : ''}
+            {height >= JOIN_BUTTON_MIN_HEIGHT && (
+              <span className="flex items-center gap-1.5 text-[10px]" style={{ color: withAlpha(color, 0.75) }}>
+                <span className="truncate">
+                  {format(new Date(event.start), 'h:mm')} –{' '}
+                  {format(new Date(event.end), 'h:mm a')}
+                </span>
+                <JoinButton event={event} now={now} size="sm" />
               </span>
             )}
-          </button>
+          </div>
         );
       })}
 

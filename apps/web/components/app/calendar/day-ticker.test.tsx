@@ -160,6 +160,48 @@ describe('DayTicker', () => {
     expect(onEventClick).toHaveBeenCalledWith(event);
   });
 
+  describe('conference join affordance', () => {
+    it('shows a Join button on a ticker row with a detected conference link', () => {
+      const anchor = new Date(2026, 0, 15);
+      const event = makeEvent({
+        title: 'Standup',
+        location: 'https://meet.google.com/abc-defg-hij',
+        start: new Date(2026, 0, 15, 9, 0, 0).toISOString(),
+        end: new Date(2026, 0, 15, 9, 15, 0).toISOString(),
+      });
+      renderTicker({ anchor, events: [event] });
+      expect(screen.getByRole('button', { name: /join meet/i })).toBeInTheDocument();
+    });
+
+    it('shows no Join button on a row without a detected conference link', () => {
+      const anchor = new Date(2026, 0, 15);
+      const event = makeEvent({
+        title: 'Standup',
+        start: new Date(2026, 0, 15, 9, 0, 0).toISOString(),
+        end: new Date(2026, 0, 15, 9, 15, 0).toISOString(),
+      });
+      renderTicker({ anchor, events: [event] });
+      expect(screen.queryByRole('button', { name: /join/i })).not.toBeInTheDocument();
+    });
+
+    it('clicking the ticker row Join button does not also fire onEventClick', async () => {
+      const user = userEvent.setup();
+      const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+      const anchor = new Date(2026, 0, 15);
+      const event = makeEvent({
+        title: 'Standup',
+        location: 'https://meet.google.com/abc-defg-hij',
+        start: new Date(2026, 0, 15, 9, 0, 0).toISOString(),
+        end: new Date(2026, 0, 15, 9, 15, 0).toISOString(),
+      });
+      const { onEventClick } = renderTicker({ anchor, events: [event] });
+      await user.click(screen.getByRole('button', { name: /join meet/i }));
+      expect(openSpy).toHaveBeenCalled();
+      expect(onEventClick).not.toHaveBeenCalled();
+      openSpy.mockRestore();
+    });
+  });
+
   it('re-scrolls when events arrive after initial empty render', () => {
     const scrollSpy = vi.fn();
     const original = Element.prototype.scrollIntoView;

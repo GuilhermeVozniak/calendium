@@ -138,8 +138,8 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | Menu-bar next event + instant join (Notion Calendar) | Menu-bar countdown to your next meeting with one-click call join from anywhere | P1 | planned | desktop |
 | Auto-join meetings (Rise) | The app opens the video call for you at start time so no one is late hunting for the link | P2 | planned | desktop |
 | **Integrations** | | | | |
-| Conference-call detection with join button (Fantastical) | Detects Zoom/Meet/Teams/Webex links in any event and surfaces a one-click Join button at meeting time (`Conferencing` modeled on `Event`) | P0 | planned | web, desktop, mobile |
-| One-click add video conferencing (Fantastical) | Attach a Zoom/Meet/Teams/Webex room to any event during creation without leaving the app (`addConferencing` in `EventInput`) | P1 | planned | web, desktop, mobile |
+| Conference-call detection with join button (Fantastical) | Detects Zoom/Meet/Teams/Webex links in any event and surfaces a one-click Join button at meeting time (`Conferencing` modeled on `Event`); web renders it on time-grid/month-popover/ticker event surfaces and in the event dialog via shared `detectConference`/`isJoinable` | P0 | scaffolded | web, desktop, mobile |
+| One-click add video conferencing (Fantastical) | Attach a Zoom/Meet/Teams/Webex room to any event during creation without leaving the app (`addConferencing` in `EventInput`); web's event dialog offers this only on create — `EventPatch` has no conferencing field, so the backend can attach a link once at creation but not toggle it via PATCH on an existing event | P1 | scaffolded | web, desktop, mobile |
 | Automatic Google Meet attachment (Google Calendar) | Every event with guests gets a Meet link attached by default | P1 | planned | web, desktop, mobile |
 | Tasks inline with events (Fantastical) | Reminders/Todoist tasks render in the calendar timeline next to events and complete in place | P1 | planned | web, desktop, mobile |
 | Todos and events in one timeline (Amie) | Tasks live beside events and drag onto the grid to become time blocks | P1 | planned | web, desktop, mobile |

@@ -1,21 +1,45 @@
 import { render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { Event } from '@calendium/shared';
+
 import { TimeGrid } from './time-grid';
 
 const calendarById = new Map();
 
+function makeEvent(overrides: Partial<Event> = {}): Event {
+  return {
+    id: 'evt-1',
+    calendarId: 'cal-1',
+    title: 'Standup',
+    description: null,
+    location: null,
+    start: new Date(2026, 0, 15, 9, 0, 0).toISOString(),
+    end: new Date(2026, 0, 15, 9, 30, 0).toISOString(),
+    allDay: false,
+    recurrenceRule: null,
+    attendees: [],
+    conferencing: null,
+    status: 'confirmed',
+    visibility: 'default',
+    reminderMinutes: [],
+    ...overrides,
+  };
+}
+
 function renderGrid(overrides: {
   days?: Date[];
   pinnedZones?: string[];
+  events?: Event[];
+  now?: Date;
 } = {}) {
   const days = overrides.days ?? [new Date(2026, 0, 15)];
   return render(
     <TimeGrid
       days={days}
-      events={[]}
+      events={overrides.events ?? []}
       calendarById={calendarById}
-      now={new Date(2026, 0, 15, 9, 0)}
+      now={overrides.now ?? new Date(2026, 0, 15, 9, 0)}
       gmtLabel="GMT+0"
       pinnedZones={overrides.pinnedZones ?? []}
       onSlotClick={vi.fn()}
@@ -106,5 +130,61 @@ describe('TimeGrid — multi-timezone gutters', () => {
     ];
     renderGrid({ days, pinnedZones: ['America/New_York'] });
     expect(screen.getByTestId('tz-dst-marker-America/New_York')).toBeInTheDocument();
+  });
+});
+
+describe('TimeGrid — conference join affordance', () => {
+  it('shows a Join button on a tall event block (>= 2 rows) with a detected conference link', () => {
+    const event = makeEvent({
+      location: 'https://meet.google.com/abc-defg-hij',
+      start: new Date(2026, 0, 15, 9, 0, 0).toISOString(),
+      end: new Date(2026, 0, 15, 10, 0, 0).toISOString(), // 60min -> height 48px >= 40
+    });
+    renderGrid({ events: [event], now: new Date(2026, 0, 15, 9, 10) });
+    expect(screen.getByRole('button', { name: /join meet/i })).toBeInTheDocument();
+  });
+
+  it('does not show a Join button on a short event block (< 2 rows)', () => {
+    const event = makeEvent({
+      location: 'https://meet.google.com/abc-defg-hij',
+      start: new Date(2026, 0, 15, 9, 0, 0).toISOString(),
+      end: new Date(2026, 0, 15, 9, 30, 0).toISOString(), // 30min -> height 24px < 40
+    });
+    renderGrid({ events: [event], now: new Date(2026, 0, 15, 9, 10) });
+    expect(screen.queryByRole('button', { name: /join meet/i })).not.toBeInTheDocument();
+  });
+
+  it('shows no Join button on a tall event block without a detected conference link', () => {
+    const event = makeEvent({
+      start: new Date(2026, 0, 15, 9, 0, 0).toISOString(),
+      end: new Date(2026, 0, 15, 10, 0, 0).toISOString(),
+    });
+    renderGrid({ events: [event], now: new Date(2026, 0, 15, 9, 10) });
+    expect(screen.queryByRole('button', { name: /join/i })).not.toBeInTheDocument();
+  });
+
+  it('clicking the Join button does not also open the event dialog', async () => {
+    const onEventClick = vi.fn();
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const event = makeEvent({
+      location: 'https://meet.google.com/abc-defg-hij',
+      start: new Date(2026, 0, 15, 9, 0, 0).toISOString(),
+      end: new Date(2026, 0, 15, 10, 0, 0).toISOString(),
+    });
+    render(
+      <TimeGrid
+        days={[new Date(2026, 0, 15)]}
+        events={[event]}
+        calendarById={calendarById}
+        now={new Date(2026, 0, 15, 9, 10)}
+        gmtLabel="GMT+0"
+        onSlotClick={vi.fn()}
+        onEventClick={onEventClick}
+      />
+    );
+    screen.getByRole('button', { name: /join meet/i }).click();
+    expect(openSpy).toHaveBeenCalled();
+    expect(onEventClick).not.toHaveBeenCalled();
+    openSpy.mockRestore();
   });
 });
