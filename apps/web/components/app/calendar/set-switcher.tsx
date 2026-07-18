@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
-import type { CalendarSet, CalendarSetInput } from '@calendium/shared';
+import type { Calendar, CalendarSet, CalendarSetInput } from '@calendium/shared';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -59,6 +59,9 @@ interface FormState {
 
 const EMPTY_FORM: FormState = { name: '' };
 
+/** Thrown by the save mutation when the trimmed name collides with an existing set. */
+class DuplicateSetNameError extends Error {}
+
 export function SetSwitcher({ open, onOpenChange }: SetSwitcherProps) {
   const queryClient = useQueryClient();
   const setsQuery = useQuery({
@@ -81,18 +84,6 @@ export function SetSwitcher({ open, onOpenChange }: SetSwitcherProps) {
     if (open) setActiveIdState(getActiveSetId());
   }, [open]);
 
-  // Self-heal: once any calendar's visibility diverges from what the active
-  // set prescribes (a manual per-calendar toggle, applied elsewhere in the
-  // app), the "Active" badge - and the stored preference behind it - clears.
-  React.useEffect(() => {
-    if (!activeId || calendars.length === 0) return;
-    const active = allSets.find((s) => s.id === activeId);
-    if (active && !calendarsMatchSet(calendars, active)) {
-      setActiveSetId(null);
-      setActiveIdState(null);
-    }
-  }, [activeId, calendars, allSets]);
-
   const [renaming, setRenaming] = React.useState<CalendarSet | null>(null);
   const [formMode, setFormMode] = React.useState<'create' | 'rename' | null>(null);
   const [form, setForm] = React.useState<FormState>(EMPTY_FORM);
@@ -112,16 +103,57 @@ export function SetSwitcher({ open, onOpenChange }: SetSwitcherProps) {
   const apply = useMutation({
     mutationFn: (set: CalendarSet) => activateSet(set, calendars),
     onSuccess: (_data, set) => {
+      // Synchronously seed the ['calendars'] cache with the deterministic
+      // post-apply state (which calendars activateSet just made visible or
+      // hidden) BEFORE flipping activeId. The invalidate below is async
+      // (a background refetch); without this seed, the self-heal effect can
+      // run - in the same render as the activeId update - against the still
+      // stale cache and incorrectly clear the badge/localStorage it just
+      // wrote, with no way to recover. The invalidate is kept as a
+      // reconciliation pass against the true server state.
+      queryClient.setQueryData<Calendar[]>(['calendars'], (old) =>
+        old?.map((c) => ({ ...c, isVisible: set.calendarIds.includes(c.id) }))
+      );
       setActiveIdState(set.id);
       void queryClient.invalidateQueries({ queryKey: ['calendars'] });
       toast.success(`Applied "${set.name}"`);
     },
-    onError: () => toast.error('Could not apply the set'),
+    onError: () => {
+      toast.error('Could not apply the set');
+      // A partial batch failure (some PATCHes succeeded, one failed) can
+      // leave the server in a state the UI hasn't seen yet - reconcile the
+      // sidebar. setActiveSetId/activeId are correctly left untouched above.
+      void queryClient.invalidateQueries({ queryKey: ['calendars'] });
+    },
   });
+
+  // Self-heal: once any calendar's visibility diverges from what the active
+  // set prescribes (a manual per-calendar toggle, applied elsewhere in the
+  // app), the "Active" badge - and the stored preference behind it - clears.
+  //
+  // Suppressed while an apply is in flight: apply's onSuccess above seeds the
+  // ['calendars'] cache synchronously before flipping activeId, so the two
+  // should never disagree mid-mutation - this guard is cheap insurance
+  // against this effect racing that seed.
+  React.useEffect(() => {
+    if (apply.isPending) return;
+    if (!activeId || calendars.length === 0) return;
+    const active = allSets.find((s) => s.id === activeId);
+    if (active && !calendarsMatchSet(calendars, active)) {
+      setActiveSetId(null);
+      setActiveIdState(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, calendars, allSets, apply.isPending]);
 
   const save = useMutation({
     mutationFn: () => {
       const name = form.name.trim();
+      const excludeId = formMode === 'rename' ? renaming?.id : undefined;
+      const isDuplicate = sets.some(
+        (s) => s.id !== excludeId && s.name.trim().toLowerCase() === name.toLowerCase()
+      );
+      if (isDuplicate) throw new DuplicateSetNameError();
       if (formMode === 'rename' && renaming) {
         const input: CalendarSetInput = {
           name,
@@ -142,8 +174,13 @@ export function SetSwitcher({ open, onOpenChange }: SetSwitcherProps) {
       toast.success(formMode === 'rename' ? 'Set renamed' : 'Set saved');
       setFormMode(null);
     },
-    onError: () =>
-      toast.error(formMode === 'rename' ? 'Could not rename the set' : 'Could not save the set'),
+    onError: (err) => {
+      if (err instanceof DuplicateSetNameError) {
+        toast.error('A set with this name already exists');
+        return;
+      }
+      toast.error(formMode === 'rename' ? 'Could not rename the set' : 'Could not save the set');
+    },
   });
 
   const remove = useMutation({
@@ -237,7 +274,11 @@ export function SetSwitcher({ open, onOpenChange }: SetSwitcherProps) {
           </div>
 
           <DialogFooter className="sm:justify-between">
-            <Button variant="outline" onClick={openCreateForm} disabled={calendars.length === 0}>
+            <Button
+              variant="outline"
+              onClick={openCreateForm}
+              disabled={!calendars.some((c) => c.isVisible)}
+            >
               <Plus />
               Save current selection as set…
             </Button>
