@@ -125,6 +125,7 @@ func New(deps Deps) http.Handler {
 
 	authed("GET /v1/search", s.handleSearch)
 	authed("POST /v1/ai/compose", s.handleAiCompose)
+	authed("POST /v1/ai/ask", s.handleAiAsk)
 
 	authed("POST /v1/devices", s.handleRegisterDevice)
 	authed("DELETE /v1/devices/{id}", s.handleUnregisterDevice)
