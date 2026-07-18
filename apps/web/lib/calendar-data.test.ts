@@ -30,7 +30,6 @@ vi.mock('@/lib/calendar-mock', () => ({
 }));
 
 import { fetchBusyEvents } from '@/lib/calendar-data';
-import type { CalendarSet } from '@calendium/shared';
 
 const FROM = new Date('2026-07-20T00:00:00.000Z');
 const TO = new Date('2026-07-21T00:00:00.000Z');
