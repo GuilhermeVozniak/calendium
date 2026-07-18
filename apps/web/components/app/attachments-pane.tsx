@@ -71,6 +71,18 @@ export function AttachmentsPaneProvider({ children }: { children: React.ReactNod
     setIsOpen(true);
   }, []);
 
+  // Contact pane's "Search attachments from" quick action dispatches this
+  // CustomEvent (see contact-pane.tsx) because the two features shipped from
+  // isolated worktrees; the provider is the stable end of the bridge.
+  React.useEffect(() => {
+    const onSearchFrom = (e: Event) => {
+      const contact = (e as CustomEvent<{ contact?: string }>).detail?.contact;
+      if (contact) open({ contact });
+    };
+    window.addEventListener('calendium:search-attachments-from', onSearchFrom);
+    return () => window.removeEventListener('calendium:search-attachments-from', onSearchFrom);
+  }, [open]);
+
   const value = React.useMemo(() => ({ open }), [open]);
 
   return (
