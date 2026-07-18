@@ -48,6 +48,24 @@ export async function fetchEvents(from: Date, to: Date): Promise<Event[]> {
   }
 }
 
+/**
+ * Unfiltered event fetch for cross-account conflict math (Task 12): the same
+ * range query as fetchEvents, but deliberately never narrowed to visible
+ * calendars, so hidden calendars and other connected accounts still count as
+ * busy time. Consumed by double-booking warnings and quick-add slot
+ * suggestions - fetchEvents itself already happens not to filter (visibility
+ * is applied client-side by callers), but this wrapper keeps the "unfiltered"
+ * guarantee explicit and independent of whatever fetchEvents does next.
+ */
+export async function fetchBusyEvents(from: Date, to: Date): Promise<Event[]> {
+  try {
+    return await getApiClient().listEvents(from.toISOString(), to.toISOString());
+  } catch (err) {
+    if (DEMO_MODE) return calendarMock.listEvents(from.toISOString(), to.toISOString());
+    throw err;
+  }
+}
+
 export async function createEventApi(input: EventInput): Promise<Event> {
   try {
     return await getApiClient().createEvent(input);

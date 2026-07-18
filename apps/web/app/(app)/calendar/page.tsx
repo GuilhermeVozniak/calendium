@@ -28,9 +28,11 @@ import { Kbd } from '@/components/ui/kbd';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { fetchCalendars, fetchEvents, patchCalendar } from '@/lib/calendar-data';
+import { groupCalendarsByAccount } from '@/lib/calendar-accounts';
+import { fetchBusyEvents, fetchCalendars, fetchEvents, patchCalendar } from '@/lib/calendar-data';
 import type { CalendarView } from '@/lib/calendar-views';
 import { rangeLabel, stepAnchor, viewRange } from '@/lib/calendar-views';
+import { fetchAccounts } from '@/lib/settings-data';
 
 interface EventDialogState {
   open: boolean;
@@ -75,9 +77,17 @@ export default function CalendarPage() {
   const range = React.useMemo(() => viewRange(view, anchor), [view, anchor]);
 
   const calendarsQuery = useQuery({ queryKey: ['calendars'], queryFn: fetchCalendars });
+  const accountsQuery = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts });
   const eventsQuery = useQuery({
     queryKey: ['events', range.from.toISOString(), range.to.toISOString()],
     queryFn: () => fetchEvents(range.from, range.to),
+  });
+  // Unfiltered fetch (hidden calendars + every connected account included) so
+  // quick-add slot suggestions see the true cross-account busy picture, not
+  // just what's currently visible (Task 12 - cross-account conflict blocking).
+  const busyEventsQuery = useQuery({
+    queryKey: ['busy-events', range.from.toISOString(), range.to.toISOString()],
+    queryFn: () => fetchBusyEvents(range.from, range.to),
   });
 
   const calendars = React.useMemo(
@@ -94,6 +104,10 @@ export default function CalendarPage() {
         (e) => calendarById.get(e.calendarId)?.isVisible !== false && e.status !== 'cancelled'
       ),
     [eventsQuery.data, calendarById]
+  );
+  const accountGroups = React.useMemo(
+    () => groupCalendarsByAccount(calendars, accountsQuery.data ?? []),
+    [calendars, accountsQuery.data]
   );
 
   const toggleCalendar = useMutation({
@@ -253,7 +267,11 @@ export default function CalendarPage() {
           </Button>
         </div>
         <h1 className="text-sm font-semibold tracking-tight">{rangeLabel(view, anchor)}</h1>
-        <QuickAddBar calendars={calendars} events={events} onCreate={openCreate} />
+        <QuickAddBar
+          calendars={calendars}
+          events={busyEventsQuery.data ?? []}
+          onCreate={openCreate}
+        />
         <div className="ml-auto flex items-center gap-2">
           <Tabs value={view} onValueChange={(v) => setView(v as CalendarView)}>
             <TabsList className="h-8">
@@ -302,34 +320,49 @@ export default function CalendarPage() {
                 <Skeleton className="h-5 w-3/4" />
               </div>
             )}
-            {calendars.map((calendar) => (
-              <button
-                key={calendar.id}
-                type="button"
-                aria-pressed={calendar.isVisible}
-                onClick={() =>
-                  toggleCalendar.mutate({ id: calendar.id, isVisible: !calendar.isVisible })
-                }
-                className="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
-              >
-                <span
-                  className="flex size-4 shrink-0 items-center justify-center rounded-[4px] border"
-                  style={
-                    calendar.isVisible
-                      ? { backgroundColor: calendar.color, borderColor: calendar.color }
-                      : { borderColor: calendar.color }
-                  }
-                >
-                  {calendar.isVisible && <Check className="size-3 text-white" />}
-                </span>
-                <span className="truncate">{calendar.name}</span>
-                {calendar.isPrimary && (
-                  <span className="ml-auto text-[10px] text-muted-foreground uppercase">
-                    primary
-                  </span>
-                )}
-              </button>
-            ))}
+            <div className="flex flex-col gap-2.5">
+              {accountGroups.map((group) => (
+                <div key={group.accountId} className="flex flex-col gap-0.5">
+                  {/* One heading per connected account (Task 12 - multi-account
+                      overlay) so calendars from different Google/Microsoft
+                      accounts are never confused for one another. */}
+                  <h3
+                    className="truncate px-2 text-[11px] font-medium text-muted-foreground"
+                    title={group.email}
+                  >
+                    {group.email}
+                  </h3>
+                  {group.calendars.map((calendar) => (
+                    <button
+                      key={calendar.id}
+                      type="button"
+                      aria-pressed={calendar.isVisible}
+                      onClick={() =>
+                        toggleCalendar.mutate({ id: calendar.id, isVisible: !calendar.isVisible })
+                      }
+                      className="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
+                    >
+                      <span
+                        className="flex size-4 shrink-0 items-center justify-center rounded-[4px] border"
+                        style={
+                          calendar.isVisible
+                            ? { backgroundColor: calendar.color, borderColor: calendar.color }
+                            : { borderColor: calendar.color }
+                        }
+                      >
+                        {calendar.isVisible && <Check className="size-3 text-white" />}
+                      </span>
+                      <span className="truncate">{calendar.name}</span>
+                      {calendar.isPrimary && (
+                        <span className="ml-auto text-[10px] text-muted-foreground uppercase">
+                          primary
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </div>
           </div>
           <div className="mt-auto flex items-center gap-2 border-t pt-3 text-xs text-muted-foreground">
             <Globe className="size-3.5 shrink-0" />
