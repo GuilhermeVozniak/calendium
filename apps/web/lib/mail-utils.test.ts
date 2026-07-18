@@ -246,6 +246,15 @@ describe('orderSplits', () => {
       'team',
     ]);
   });
+
+  it('deduplicates IDs in the preference (first occurrence wins)', () => {
+    const result = orderSplits(defaults, ['team', 'vip', 'team', 'important', 'vip']).map(
+      (s) => s.value
+    );
+    expect(result).toEqual(['team', 'vip', 'important']);
+    // Verify each split appears exactly once
+    expect(new Set(result).size).toBe(result.length);
+  });
 });
 
 describe('mail command bus', () => {

@@ -17,13 +17,23 @@ export interface SplitTab {
  * Orders split tabs by the user's saved preference; splits missing from the
  * preference keep their default relative order after the preferred ones.
  * An empty preference returns the default order unchanged.
+ * Duplicates in the preference list are deduplicated (first occurrence wins).
  */
 export function orderSplits(
   defaults: readonly SplitTab[],
   preferred: readonly InboxSplit[]
 ): SplitTab[] {
   const byValue = new Map(defaults.map((s) => [s.value, s]));
-  const head = preferred.map((v) => byValue.get(v)).filter((s): s is SplitTab => s !== undefined);
+  // Dedupe preferred array: use Set to track first occurrence of each ID
+  const seenPreferred = new Set<InboxSplit>();
+  const deduped: InboxSplit[] = [];
+  for (const id of preferred) {
+    if (!seenPreferred.has(id)) {
+      seenPreferred.add(id);
+      deduped.push(id);
+    }
+  }
+  const head = deduped.map((v) => byValue.get(v)).filter((s): s is SplitTab => s !== undefined);
   const headSet = new Set(head.map((s) => s.value));
   return [...head, ...defaults.filter((s) => !headSet.has(s.value))];
 }

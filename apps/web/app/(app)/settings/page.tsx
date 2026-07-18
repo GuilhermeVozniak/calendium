@@ -23,6 +23,7 @@ import { toast } from 'sonner';
 import type {
   AccountStatus,
   ConnectedAccount,
+  InboxSplit,
   Provider,
   Snippet,
   Subscription,
@@ -645,28 +646,33 @@ function AppearanceSection() {
 
 function MailboxSection() {
   const prefsQuery = usePrefs();
-  const updatePrefs = useUpdatePrefs();
-  const [order, setOrder] = React.useState<string[]>([]);
+  const updatePrefsAsync = useUpdatePrefs();
+  const queryClient = useQueryClient();
 
-  // Initialize order from prefs
-  React.useEffect(() => {
-    if (prefsQuery.data?.prefs.splitOrder) {
-      setOrder(prefsQuery.data.prefs.splitOrder);
-    }
-  }, [prefsQuery.data]);
-
+  // Derive splits from prefs, matching the pattern in mail/page.tsx
   const splits = React.useMemo(
-    () => orderSplits(DEFAULT_SPLITS, order as any),
-    [order]
+    () => orderSplits(DEFAULT_SPLITS, prefsQuery.data?.prefs.splitOrder ?? []),
+    [prefsQuery.data]
   );
+
+  const updatePrefs = useMutation({
+    mutationFn: async (order: InboxSplit[]) => {
+      await updatePrefsAsync({ splitOrder: order });
+    },
+    onSuccess: () => {
+      toast.success('Split order saved');
+    },
+    onError: () => {
+      // Error toast is already handled by the hook
+    },
+  });
 
   const moveUp = (index: number) => {
     if (index <= 0) return;
     const newOrder = [...splits];
     [newOrder[index], newOrder[index - 1]] = [newOrder[index - 1]!, newOrder[index]!];
     const nextOrder = newOrder.map((s) => s.value);
-    setOrder(nextOrder);
-    void updatePrefs({ splitOrder: nextOrder as any });
+    updatePrefs.mutate(nextOrder);
   };
 
   const moveDown = (index: number) => {
@@ -674,8 +680,7 @@ function MailboxSection() {
     const newOrder = [...splits];
     [newOrder[index], newOrder[index + 1]] = [newOrder[index + 1]!, newOrder[index]!];
     const nextOrder = newOrder.map((s) => s.value);
-    setOrder(nextOrder);
-    void updatePrefs({ splitOrder: nextOrder as any });
+    updatePrefs.mutate(nextOrder);
   };
 
   if (prefsQuery.isLoading) {
@@ -709,7 +714,7 @@ function MailboxSection() {
                 size="icon"
                 className="size-8"
                 onClick={() => moveUp(index)}
-                disabled={index === 0}
+                disabled={index === 0 || updatePrefs.isPending}
                 aria-label={`Move ${split.label} up`}
               >
                 <ChevronUp className="size-4" />
@@ -719,7 +724,7 @@ function MailboxSection() {
                 size="icon"
                 className="size-8"
                 onClick={() => moveDown(index)}
-                disabled={index === splits.length - 1}
+                disabled={index === splits.length - 1 || updatePrefs.isPending}
                 aria-label={`Move ${split.label} down`}
               >
                 <ChevronDown className="size-4" />
