@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { addMonths, format, isSameMonth, startOfYear } from 'date-fns';
+import { addMonths, format, isSameMonth } from 'date-fns';
 
 import type { Event } from '@calendium/shared';
 
@@ -11,7 +11,8 @@ import { MiniMonth } from './mini-month';
 import { buildDensityMap } from './time-grid';
 
 export interface YearViewProps {
-  anchor: Date;
+  from: Date;
+  to: Date;
   events: Event[];
   onDayClick: (day: Date) => void;
 }
@@ -22,15 +23,14 @@ export interface YearViewProps {
  * coarse a zoom level to render events directly). Clicking any day drills
  * down to day view at that date.
  */
-export function YearView({ anchor, events, onDayClick }: YearViewProps) {
-  const yearStart = React.useMemo(() => startOfYear(anchor), [anchor]);
+export function YearView({ from, to, events, onDayClick }: YearViewProps) {
   const months = React.useMemo(
-    () => Array.from({ length: 12 }, (_, i) => addMonths(yearStart, i)),
-    [yearStart]
+    () => Array.from({ length: 12 }, (_, i) => addMonths(from, i)),
+    [from]
   );
   const density = React.useMemo(
-    () => buildDensityMap(events, yearStart, addMonths(yearStart, 12)),
-    [events, yearStart]
+    () => buildDensityMap(events, from, to),
+    [events, from, to]
   );
 
   return (

@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { Event } from '@calendium/shared';
 
+import { viewRange } from '@/lib/calendar-views';
+
 import { YearView } from './year-view';
 
 function makeEvent(overrides: Partial<Event> = {}): Event {
@@ -26,9 +28,27 @@ function makeEvent(overrides: Partial<Event> = {}): Event {
   };
 }
 
+function renderYear(overrides: {
+  anchor?: Date;
+  events?: Event[];
+} = {}) {
+  const anchor = overrides.anchor ?? new Date(2026, 6, 17);
+  const { from, to } = viewRange('year', anchor);
+  const onDayClick = vi.fn();
+  const utils = render(
+    <YearView
+      from={from}
+      to={to}
+      events={overrides.events ?? []}
+      onDayClick={onDayClick}
+    />
+  );
+  return { ...utils, anchor, from, to, onDayClick };
+}
+
 describe('YearView', () => {
   it('renders exactly the 12 months of the anchor year (2026)', () => {
-    render(<YearView anchor={new Date(2026, 6, 17)} events={[]} onDayClick={vi.fn()} />);
+    renderYear({ anchor: new Date(2026, 6, 17) });
     for (let m = 1; m <= 12; m++) {
       expect(screen.getByTestId(`year-month-2026-${String(m).padStart(2, '0')}`)).toBeInTheDocument();
     }
@@ -36,11 +56,14 @@ describe('YearView', () => {
     expect(screen.queryByTestId('year-month-2027-01')).not.toBeInTheDocument();
   });
 
-  it('computes a density map across the full year', () => {
+  it('computes a density map across the full year, respecting [from, to) boundary', () => {
     const events = [makeEvent()];
-    render(<YearView anchor={new Date(2026, 6, 17)} events={events} onDayClick={vi.fn()} />);
+    const { from, to } = renderYear({ events });
     expect(screen.getByTestId('mini-dots-2026-01-05').children).toHaveLength(1);
     expect(screen.getByTestId('mini-dots-2026-01-06').children).toHaveLength(0);
+    // Verify the density window is using the [from, to) range passed as props
+    expect(from.toISOString()).toBe(new Date(2026, 0, 1).toISOString());
+    expect(to.toISOString()).toBe(new Date(2027, 0, 1).toISOString());
   });
 
   it('caps intensity dots at 3 even with more overlapping events', () => {
@@ -51,14 +74,13 @@ describe('YearView', () => {
         end: new Date(2026, 0, 5, i + 1, 0, 0).toISOString(),
       })
     );
-    render(<YearView anchor={new Date(2026, 6, 17)} events={events} onDayClick={vi.fn()} />);
+    renderYear({ events });
     expect(screen.getByTestId('mini-dots-2026-01-05').children).toHaveLength(3);
   });
 
   it('fires onDayClick with the clicked day', async () => {
     const user = userEvent.setup();
-    const onDayClick = vi.fn();
-    render(<YearView anchor={new Date(2026, 6, 17)} events={[]} onDayClick={onDayClick} />);
+    const { onDayClick } = renderYear();
     await user.click(screen.getByTestId('mini-day-2026-03-10'));
     expect(onDayClick).toHaveBeenCalledTimes(1);
     expect(onDayClick.mock.calls[0][0].getFullYear()).toBe(2026);
@@ -70,7 +92,7 @@ describe('YearView', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 10, 20, 9, 0, 0)); // Nov 20, 2026
     try {
-      render(<YearView anchor={new Date(2026, 6, 17)} events={[]} onDayClick={vi.fn()} />);
+      renderYear({ anchor: new Date(2026, 6, 17) });
       expect(screen.getByTestId('year-month-2026-11')).toHaveAttribute('data-current-month', 'true');
       expect(screen.getByTestId('year-month-2026-01')).toHaveAttribute('data-current-month', 'false');
     } finally {

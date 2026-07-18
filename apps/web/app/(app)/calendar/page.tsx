@@ -364,7 +364,8 @@ export default function CalendarPage() {
             />
           ) : view === 'quarter' ? (
             <QuarterView
-              anchor={anchor}
+              from={range.from}
+              to={range.to}
               events={events}
               onDayClick={(day) => {
                 setAnchor(day);
@@ -373,7 +374,8 @@ export default function CalendarPage() {
             />
           ) : view === 'year' ? (
             <YearView
-              anchor={anchor}
+              from={range.from}
+              to={range.to}
               events={events}
               onDayClick={(day) => {
                 setAnchor(day);

@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { addMonths, format, isSameMonth, startOfQuarter } from 'date-fns';
+import { addMonths, format, isSameMonth } from 'date-fns';
 
 import type { Event } from '@calendium/shared';
 
@@ -11,7 +11,8 @@ import { MiniMonth } from './mini-month';
 import { buildDensityMap } from './time-grid';
 
 export interface QuarterViewProps {
-  anchor: Date;
+  from: Date;
+  to: Date;
   events: Event[];
   onDayClick: (day: Date) => void;
 }
@@ -22,15 +23,14 @@ export interface QuarterViewProps {
  * coarse a zoom level to render events directly). Clicking any day drills
  * down to day view at that date.
  */
-export function QuarterView({ anchor, events, onDayClick }: QuarterViewProps) {
-  const quarterStart = React.useMemo(() => startOfQuarter(anchor), [anchor]);
+export function QuarterView({ from, to, events, onDayClick }: QuarterViewProps) {
   const months = React.useMemo(
-    () => [0, 1, 2].map((i) => addMonths(quarterStart, i)),
-    [quarterStart]
+    () => [0, 1, 2].map((i) => addMonths(from, i)),
+    [from]
   );
   const density = React.useMemo(
-    () => buildDensityMap(events, quarterStart, addMonths(quarterStart, 3)),
-    [events, quarterStart]
+    () => buildDensityMap(events, from, to),
+    [events, from, to]
   );
 
   return (

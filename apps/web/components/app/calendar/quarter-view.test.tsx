@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { Event } from '@calendium/shared';
 
+import { viewRange } from '@/lib/calendar-views';
+
 import { QuarterView } from './quarter-view';
 
 function makeEvent(overrides: Partial<Event> = {}): Event {
@@ -26,9 +28,27 @@ function makeEvent(overrides: Partial<Event> = {}): Event {
   };
 }
 
+function renderQuarter(overrides: {
+  anchor?: Date;
+  events?: Event[];
+} = {}) {
+  const anchor = overrides.anchor ?? new Date(2026, 6, 17);
+  const { from, to } = viewRange('quarter', anchor);
+  const onDayClick = vi.fn();
+  const utils = render(
+    <QuarterView
+      from={from}
+      to={to}
+      events={overrides.events ?? []}
+      onDayClick={onDayClick}
+    />
+  );
+  return { ...utils, anchor, from, to, onDayClick };
+}
+
 describe('QuarterView', () => {
   it('renders exactly the 3 months of the anchor quarter (Q3 2026: Jul, Aug, Sep)', () => {
-    render(<QuarterView anchor={new Date(2026, 6, 17)} events={[]} onDayClick={vi.fn()} />);
+    renderQuarter({ anchor: new Date(2026, 6, 17) });
     expect(screen.getByTestId('quarter-month-2026-07')).toBeInTheDocument();
     expect(screen.getByTestId('quarter-month-2026-08')).toBeInTheDocument();
     expect(screen.getByTestId('quarter-month-2026-09')).toBeInTheDocument();
@@ -36,20 +56,23 @@ describe('QuarterView', () => {
     expect(screen.queryByTestId('quarter-month-2026-10')).not.toBeInTheDocument();
   });
 
-  it('computes a density map: a multi-day event counts on every day it touches', () => {
+  it('computes a density map: a multi-day event counts on every day it touches, respecting [from, to) boundary', () => {
     const events = [
       makeEvent({
         id: 'evt-multi',
         allDay: true,
         start: new Date(2026, 6, 14, 0, 0, 0).toISOString(),
-        end: new Date(2026, 6, 17, 0, 0, 0).toISOString(), // touches 14, 15, 16 (end exclusive)
+        end: new Date(2026, 6, 17, 0, 0, 0).toISOString(), // touches 14, 15, 16 (end exclusive on 17)
       }),
     ];
-    render(<QuarterView anchor={new Date(2026, 6, 17)} events={events} onDayClick={vi.fn()} />);
+    const { from, to } = renderQuarter({ events });
     expect(screen.getByTestId('mini-dots-2026-07-14').children).toHaveLength(1);
     expect(screen.getByTestId('mini-dots-2026-07-15').children).toHaveLength(1);
     expect(screen.getByTestId('mini-dots-2026-07-16').children).toHaveLength(1);
     expect(screen.getByTestId('mini-dots-2026-07-17').children).toHaveLength(0);
+    // Verify the density window is using the [from, to) range passed as props
+    expect(from.toISOString()).toBe(new Date(2026, 6, 1).toISOString());
+    expect(to.toISOString()).toBe(new Date(2026, 9, 1).toISOString());
   });
 
   it('caps intensity dots at 3 even with more overlapping events', () => {
@@ -60,14 +83,13 @@ describe('QuarterView', () => {
         end: new Date(2026, 6, 14, i + 1, 0, 0).toISOString(),
       })
     );
-    render(<QuarterView anchor={new Date(2026, 6, 17)} events={events} onDayClick={vi.fn()} />);
+    renderQuarter({ events });
     expect(screen.getByTestId('mini-dots-2026-07-14').children).toHaveLength(3);
   });
 
   it('fires onDayClick with the clicked day', async () => {
     const user = userEvent.setup();
-    const onDayClick = vi.fn();
-    render(<QuarterView anchor={new Date(2026, 6, 17)} events={[]} onDayClick={onDayClick} />);
+    const { onDayClick } = renderQuarter();
     await user.click(screen.getByTestId('mini-day-2026-07-15'));
     expect(onDayClick).toHaveBeenCalledTimes(1);
     expect(onDayClick.mock.calls[0][0].getFullYear()).toBe(2026);
@@ -79,7 +101,7 @@ describe('QuarterView', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 7, 3, 9, 0, 0)); // Aug 3, 2026 -> within Q3
     try {
-      render(<QuarterView anchor={new Date(2026, 6, 17)} events={[]} onDayClick={vi.fn()} />);
+      renderQuarter({ anchor: new Date(2026, 6, 17) });
       expect(screen.getByTestId('quarter-month-2026-08')).toHaveAttribute('data-current-month', 'true');
       expect(screen.getByTestId('quarter-month-2026-07')).toHaveAttribute('data-current-month', 'false');
       expect(screen.getByTestId('quarter-month-2026-09')).toHaveAttribute('data-current-month', 'false');
