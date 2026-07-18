@@ -1422,6 +1422,72 @@ func (r *fakeCalendarSetRepo) Delete(_ context.Context, id string) error {
 
 var _ port.CalendarSetRepo = (*fakeCalendarSetRepo)(nil)
 
+// --- calendar service (AIService.ProposeEvent availability) ------------------
+
+// fakeCalendarService serves a programmable Availability result and records
+// the from/to/duration it was called with. It exists solely so AIService
+// tests can satisfy AIServiceDeps.Calendar (port.CalendarService); every
+// method besides Availability is an unused stub.
+type fakeCalendarService struct {
+	availRet   []domain.AvailabilitySlot
+	availErr   error
+	availCalls int
+	gotFrom    time.Time
+	gotTo      time.Time
+	gotDur     time.Duration
+}
+
+func newCalendarService() *fakeCalendarService { return &fakeCalendarService{} }
+
+func (f *fakeCalendarService) Availability(_ context.Context, _ string, from, to time.Time, slotDuration time.Duration) ([]domain.AvailabilitySlot, error) {
+	f.availCalls++
+	f.gotFrom, f.gotTo, f.gotDur = from, to, slotDuration
+	return f.availRet, f.availErr
+}
+
+func (f *fakeCalendarService) ListCalendars(context.Context, string) ([]domain.Calendar, error) {
+	return nil, nil
+}
+func (f *fakeCalendarService) UpdateCalendar(context.Context, string, string, port.CalendarPatch) (domain.Calendar, error) {
+	return domain.Calendar{}, nil
+}
+func (f *fakeCalendarService) ListEvents(context.Context, string, time.Time, time.Time, []string) ([]domain.Event, error) {
+	return nil, nil
+}
+func (f *fakeCalendarService) CreateEvent(context.Context, string, domain.EventInput) (domain.Event, error) {
+	return domain.Event{}, nil
+}
+func (f *fakeCalendarService) UpdateEvent(context.Context, string, string, domain.EventPatch) (domain.Event, error) {
+	return domain.Event{}, nil
+}
+func (f *fakeCalendarService) DeleteEvent(context.Context, string, string) error { return nil }
+func (f *fakeCalendarService) RSVP(context.Context, string, string, domain.RsvpStatus) (domain.Event, error) {
+	return domain.Event{}, nil
+}
+func (f *fakeCalendarService) ListEventTemplates(context.Context, string) ([]domain.EventTemplate, error) {
+	return nil, nil
+}
+func (f *fakeCalendarService) CreateEventTemplate(context.Context, string, domain.EventTemplateInput) (domain.EventTemplate, error) {
+	return domain.EventTemplate{}, nil
+}
+func (f *fakeCalendarService) UpdateEventTemplate(context.Context, string, string, domain.EventTemplateInput) (domain.EventTemplate, error) {
+	return domain.EventTemplate{}, nil
+}
+func (f *fakeCalendarService) DeleteEventTemplate(context.Context, string, string) error { return nil }
+func (f *fakeCalendarService) UseEventTemplate(context.Context, string, string) error    { return nil }
+func (f *fakeCalendarService) ListCalendarSets(context.Context, string) ([]domain.CalendarSet, error) {
+	return nil, nil
+}
+func (f *fakeCalendarService) CreateCalendarSet(context.Context, string, domain.CalendarSetInput) (domain.CalendarSet, error) {
+	return domain.CalendarSet{}, nil
+}
+func (f *fakeCalendarService) UpdateCalendarSet(context.Context, string, string, domain.CalendarSetInput) (domain.CalendarSet, error) {
+	return domain.CalendarSet{}, nil
+}
+func (f *fakeCalendarService) DeleteCalendarSet(context.Context, string, string) error { return nil }
+
+var _ port.CalendarService = (*fakeCalendarService)(nil)
+
 // --- ai job repo ---------------------------------------------------------
 
 // fakeAiJobRepo serves a scripted queue from ClaimDue and records every

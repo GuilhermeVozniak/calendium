@@ -198,6 +198,10 @@ type SearchService interface {
 // AIService is the OpenRouter-backed compose/reply/summarize/ask endpoint.
 type AIService interface {
 	Compose(ctx context.Context, userID string, req domain.AiComposeRequest) (domain.AiComposeResponse, error)
+	// ProposeEvent reads the thread and proposes a calendar event (title,
+	// attendees from participants, start/end aligned to real availability).
+	// The client reviews and creates it via the existing POST /v1/events.
+	ProposeEvent(ctx context.Context, userID, threadID string) (domain.AiEventProposal, error)
 }
 
 // DeviceService manages push-notification device registrations.
