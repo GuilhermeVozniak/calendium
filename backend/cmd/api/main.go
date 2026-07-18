@@ -136,6 +136,7 @@ func run(logger *slog.Logger) error {
 		CalendarProviders: calendarProviders,
 		OAuth:             oauth,
 		Clock:             clock,
+		Settings:          store.UserSettings(),
 		SelfHosted:        cfg.Instance.SelfHosted,
 	})
 	search := service.NewSearchService(store.Subscriptions(), store.Threads(), store.Events(), clock, cfg.Instance.SelfHosted)
