@@ -490,11 +490,11 @@ func (s *CalendarService) CreateCalendarSet(ctx context.Context, userID string, 
 	for _, id := range in.CalendarIDs {
 		if _, seen := seenIDs[id]; !seen {
 			seenIDs[id] = struct{}{}
-			deduped = append(deduped, id)
-			// Validate: unknown id → ErrValidation
-			if _, exists := userCalendarMap[id]; !exists && id != "" {
+			// Validate: unknown id or empty string → ErrValidation
+			if _, exists := userCalendarMap[id]; !exists {
 				return domain.CalendarSet{}, fmt.Errorf("%w: calendar %s not found", domain.ErrValidation, id)
 			}
+			deduped = append(deduped, id)
 		}
 	}
 
@@ -543,11 +543,11 @@ func (s *CalendarService) UpdateCalendarSet(ctx context.Context, userID, setID s
 	for _, id := range in.CalendarIDs {
 		if _, seen := seenIDs[id]; !seen {
 			seenIDs[id] = struct{}{}
-			deduped = append(deduped, id)
-			// Validate: unknown id → ErrValidation
-			if _, exists := userCalendarMap[id]; !exists && id != "" {
+			// Validate: unknown id or empty string → ErrValidation
+			if _, exists := userCalendarMap[id]; !exists {
 				return domain.CalendarSet{}, fmt.Errorf("%w: calendar %s not found", domain.ErrValidation, id)
 			}
+			deduped = append(deduped, id)
 		}
 	}
 

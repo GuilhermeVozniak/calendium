@@ -1093,6 +1093,54 @@ func TestCalendarPaywall(t *testing.T) {
 		wantPaymentRequired(t, err)
 	})
 
+	// Template methods
+	t.Run("ListEventTemplates", func(t *testing.T) {
+		_, err := svc.ListEventTemplates(ctx, "u1")
+		wantPaymentRequired(t, err)
+	})
+	t.Run("CreateEventTemplate", func(t *testing.T) {
+		_, err := svc.CreateEventTemplate(ctx, "u1", domain.EventTemplateInput{
+			Name: "Meeting", Title: "Team Meeting", DurationMinutes: 60,
+		})
+		wantPaymentRequired(t, err)
+	})
+	t.Run("UpdateEventTemplate", func(t *testing.T) {
+		_, err := svc.UpdateEventTemplate(ctx, "u1", "t1", domain.EventTemplateInput{
+			Name: "Meeting", Title: "Team Meeting", DurationMinutes: 60,
+		})
+		wantPaymentRequired(t, err)
+	})
+	t.Run("DeleteEventTemplate", func(t *testing.T) {
+		err := svc.DeleteEventTemplate(ctx, "u1", "t1")
+		wantPaymentRequired(t, err)
+	})
+	t.Run("UseEventTemplate", func(t *testing.T) {
+		err := svc.UseEventTemplate(ctx, "u1", "t1")
+		wantPaymentRequired(t, err)
+	})
+
+	// Calendar Set methods
+	t.Run("ListCalendarSets", func(t *testing.T) {
+		_, err := svc.ListCalendarSets(ctx, "u1")
+		wantPaymentRequired(t, err)
+	})
+	t.Run("CreateCalendarSet", func(t *testing.T) {
+		_, err := svc.CreateCalendarSet(ctx, "u1", domain.CalendarSetInput{
+			Name: "Work", CalendarIDs: []string{"cal1"},
+		})
+		wantPaymentRequired(t, err)
+	})
+	t.Run("UpdateCalendarSet", func(t *testing.T) {
+		_, err := svc.UpdateCalendarSet(ctx, "u1", "s1", domain.CalendarSetInput{
+			Name: "Work", CalendarIDs: []string{"cal1"},
+		})
+		wantPaymentRequired(t, err)
+	})
+	t.Run("DeleteCalendarSet", func(t *testing.T) {
+		err := svc.DeleteCalendarSet(ctx, "u1", "s1")
+		wantPaymentRequired(t, err)
+	})
+
 	// None of the above should have reached a repo write.
 	if len(calendars.byID) != 0 || len(events.byID) != 0 {
 		t.Fatal("paywall allowed a repo write")
@@ -1171,6 +1219,15 @@ func TestEventTemplateCreate(t *testing.T) {
 			wantErr:   true,
 			wantErrIs: domain.ErrNotFound,
 		},
+		{
+			name:   "negative duration validation",
+			userID: "u1",
+			input: domain.EventTemplateInput{
+				Name: "Bad", Title: "Bad", DurationMinutes: -15,
+			},
+			wantErr:   true,
+			wantErrIs: domain.ErrValidation,
+		},
 	}
 
 	for _, tc := range tests {
@@ -1233,6 +1290,14 @@ func TestEventTemplateUpdate(t *testing.T) {
 	})
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for other user's template, got %v", err)
+	}
+
+	// Try to update with negative duration
+	_, err = f.svc.UpdateEventTemplate(ctx, "u1", created.ID, domain.EventTemplateInput{
+		Name: "Bad", Title: "Bad", DurationMinutes: -15,
+	})
+	if !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("expected ErrValidation for negative duration, got %v", err)
 	}
 }
 
@@ -1375,6 +1440,15 @@ func TestCalendarSetCreate(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name:   "empty string calendar id is rejected",
+			userID: "u1",
+			input: domain.CalendarSetInput{
+				Name: "BadEmpty", CalendarIDs: []string{"cal1", "", "cal1"},
+			},
+			wantErr:   true,
+			wantErrIs: domain.ErrValidation,
+		},
 	}
 
 	for _, tc := range tests {
@@ -1405,6 +1479,37 @@ func TestCalendarSetCreate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCalendarSetCreateDedupOrderDistinct(t *testing.T) {
+	ctx := context.Background()
+	f := newCalFixture(t)
+
+	// Seed cal2 so we have two calendars
+	if _, err := f.calendars.Upsert(ctx, f.calendars.byID["cal1"]); err != nil {
+		t.Fatalf("register cal1: %v", err)
+	}
+	if _, err := f.calendars.Upsert(ctx, domain.Calendar{
+		ID: "cal2", AccountID: "a1", ProviderCalendarID: "prov-cal-2",
+		Name: "Personal", CanWrite: true, IsVisible: true,
+	}); err != nil {
+		t.Fatalf("seed cal2: %v", err)
+	}
+
+	// Create set with [cal2, cal1, cal2] → should dedup to [cal2, cal1]
+	result, err := f.svc.CreateCalendarSet(ctx, "u1", domain.CalendarSetInput{
+		Name:        "Mixed",
+		CalendarIDs: []string{"cal2", "cal1", "cal2"},
+	})
+	if err != nil {
+		t.Fatalf("CreateCalendarSet: %v", err)
+	}
+	if len(result.CalendarIDs) != 2 {
+		t.Fatalf("expected 2 calendar IDs after dedup, got %d", len(result.CalendarIDs))
+	}
+	if result.CalendarIDs[0] != "cal2" || result.CalendarIDs[1] != "cal1" {
+		t.Fatalf("dedup order = %v, want [cal2 cal1]", result.CalendarIDs)
 	}
 }
 
