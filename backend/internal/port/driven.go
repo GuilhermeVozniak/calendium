@@ -198,6 +198,25 @@ type EventRepo interface {
 	Search(ctx context.Context, userID, query string, limit int) ([]domain.Event, error)
 }
 
+// EventTemplateRepo persists per-user saved event defaults.
+type EventTemplateRepo interface {
+	Create(ctx context.Context, userID string, t domain.EventTemplate) (domain.EventTemplate, error)
+	GetByID(ctx context.Context, id string) (domain.EventTemplate, string, error) // returns ownerUserID
+	ListByUser(ctx context.Context, userID string) ([]domain.EventTemplate, error)
+	Update(ctx context.Context, t domain.EventTemplate) error
+	IncrementUsage(ctx context.Context, id string) error
+	Delete(ctx context.Context, id string) error
+}
+
+// CalendarSetRepo persists per-user named calendar groups.
+type CalendarSetRepo interface {
+	Create(ctx context.Context, userID string, s domain.CalendarSet) (domain.CalendarSet, error)
+	GetByID(ctx context.Context, id string) (domain.CalendarSet, string, error) // returns ownerUserID
+	ListByUser(ctx context.Context, userID string) ([]domain.CalendarSet, error)
+	Update(ctx context.Context, s domain.CalendarSet) error
+	Delete(ctx context.Context, id string) error
+}
+
 // DeviceRepo persists push-notification device registrations.
 type DeviceRepo interface {
 	// Upsert matches on (userID, token) so re-registrations are idempotent.

@@ -26,57 +26,63 @@ type Store struct {
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 
 // Typed accessors — one per driven repo port.
-func (s *Store) Users() port.UserRepo                 { return userRepo{s} }
-func (s *Store) Subscriptions() port.SubscriptionRepo { return subscriptionRepo{s} }
-func (s *Store) StripeEvents() port.StripeEventRepo   { return stripeEventRepo{s} }
-func (s *Store) Accounts() port.AccountRepo           { return accountRepo{s} }
-func (s *Store) OAuthStates() port.OAuthStateRepo     { return oauthStateRepo{s} }
-func (s *Store) SyncStates() port.SyncStateRepo       { return syncStateRepo{s} }
-func (s *Store) Devices() port.DeviceRepo             { return deviceRepo{s} }
-func (s *Store) Threads() port.ThreadRepo             { return threadRepo{s} }
-func (s *Store) Messages() port.MessageRepo           { return messageRepo{s} }
-func (s *Store) Labels() port.LabelRepo               { return labelRepo{s} }
-func (s *Store) Drafts() port.DraftRepo               { return draftRepo{s} }
-func (s *Store) Snippets() port.SnippetRepo           { return snippetRepo{s} }
-func (s *Store) Calendars() port.CalendarRepo         { return calendarRepo{s} }
-func (s *Store) Events() port.EventRepo               { return eventRepo{s} }
-func (s *Store) Prefs() port.PrefsRepo                { return prefsRepo{s} }
+func (s *Store) Users() port.UserRepo                   { return userRepo{s} }
+func (s *Store) Subscriptions() port.SubscriptionRepo   { return subscriptionRepo{s} }
+func (s *Store) StripeEvents() port.StripeEventRepo     { return stripeEventRepo{s} }
+func (s *Store) Accounts() port.AccountRepo             { return accountRepo{s} }
+func (s *Store) OAuthStates() port.OAuthStateRepo       { return oauthStateRepo{s} }
+func (s *Store) SyncStates() port.SyncStateRepo         { return syncStateRepo{s} }
+func (s *Store) Devices() port.DeviceRepo               { return deviceRepo{s} }
+func (s *Store) Threads() port.ThreadRepo               { return threadRepo{s} }
+func (s *Store) Messages() port.MessageRepo             { return messageRepo{s} }
+func (s *Store) Labels() port.LabelRepo                 { return labelRepo{s} }
+func (s *Store) Drafts() port.DraftRepo                 { return draftRepo{s} }
+func (s *Store) Snippets() port.SnippetRepo             { return snippetRepo{s} }
+func (s *Store) Calendars() port.CalendarRepo           { return calendarRepo{s} }
+func (s *Store) Events() port.EventRepo                 { return eventRepo{s} }
+func (s *Store) EventTemplates() port.EventTemplateRepo { return eventTemplateRepo{s} }
+func (s *Store) CalendarSets() port.CalendarSetRepo     { return calendarSetRepo{s} }
+func (s *Store) Prefs() port.PrefsRepo                  { return prefsRepo{s} }
 
 var (
-	_ port.TxRunner         = (*Store)(nil)
-	_ port.UserRepo         = userRepo{}
-	_ port.SubscriptionRepo = subscriptionRepo{}
-	_ port.StripeEventRepo  = stripeEventRepo{}
-	_ port.AccountRepo      = accountRepo{}
-	_ port.OAuthStateRepo   = oauthStateRepo{}
-	_ port.SyncStateRepo    = syncStateRepo{}
-	_ port.DeviceRepo       = deviceRepo{}
-	_ port.ThreadRepo       = threadRepo{}
-	_ port.MessageRepo      = messageRepo{}
-	_ port.LabelRepo        = labelRepo{}
-	_ port.DraftRepo        = draftRepo{}
-	_ port.SnippetRepo      = snippetRepo{}
-	_ port.CalendarRepo     = calendarRepo{}
-	_ port.EventRepo        = eventRepo{}
-	_ port.PrefsRepo        = prefsRepo{}
+	_ port.TxRunner          = (*Store)(nil)
+	_ port.UserRepo          = userRepo{}
+	_ port.SubscriptionRepo  = subscriptionRepo{}
+	_ port.StripeEventRepo   = stripeEventRepo{}
+	_ port.AccountRepo       = accountRepo{}
+	_ port.OAuthStateRepo    = oauthStateRepo{}
+	_ port.SyncStateRepo     = syncStateRepo{}
+	_ port.DeviceRepo        = deviceRepo{}
+	_ port.ThreadRepo        = threadRepo{}
+	_ port.MessageRepo       = messageRepo{}
+	_ port.LabelRepo         = labelRepo{}
+	_ port.DraftRepo         = draftRepo{}
+	_ port.SnippetRepo       = snippetRepo{}
+	_ port.CalendarRepo      = calendarRepo{}
+	_ port.EventRepo         = eventRepo{}
+	_ port.EventTemplateRepo = eventTemplateRepo{}
+	_ port.CalendarSetRepo   = calendarSetRepo{}
+	_ port.PrefsRepo         = prefsRepo{}
 )
 
 type (
-	userRepo         struct{ *Store }
-	subscriptionRepo struct{ *Store }
-	stripeEventRepo  struct{ *Store }
-	accountRepo      struct{ *Store }
-	oauthStateRepo   struct{ *Store }
-	syncStateRepo    struct{ *Store }
-	deviceRepo       struct{ *Store }
-	threadRepo       struct{ *Store }
-	messageRepo      struct{ *Store }
-	labelRepo        struct{ *Store }
-	draftRepo        struct{ *Store }
-	snippetRepo      struct{ *Store }
-	calendarRepo     struct{ *Store }
-	eventRepo        struct{ *Store }
-	prefsRepo        struct{ *Store }
+	userRepo          struct{ *Store }
+	subscriptionRepo  struct{ *Store }
+	stripeEventRepo   struct{ *Store }
+	accountRepo       struct{ *Store }
+	oauthStateRepo    struct{ *Store }
+	syncStateRepo     struct{ *Store }
+	deviceRepo        struct{ *Store }
+	threadRepo        struct{ *Store }
+	messageRepo       struct{ *Store }
+	labelRepo         struct{ *Store }
+	draftRepo         struct{ *Store }
+	snippetRepo       struct{ *Store }
+	calendarRepo      struct{ *Store }
+	eventRepo         struct{ *Store }
+	eventTemplateRepo struct{ *Store }
+	calendarSetRepo   struct{ *Store }
+	prefsRepo         struct{ *Store }
 )
 
 // --- transactions -----------------------------------------------------------
