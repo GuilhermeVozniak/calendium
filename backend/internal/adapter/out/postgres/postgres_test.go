@@ -97,7 +97,8 @@ func truncateAll(t *testing.T) {
 	_, err := sharedDB.Exec(`TRUNCATE
 		users, subscriptions, stripe_events, connected_accounts, oauth_states,
 		labels, threads, thread_labels, messages, attachments, drafts, snippets,
-		calendars, events, devices, sync_state, user_prefs, event_templates, calendar_sets RESTART IDENTITY CASCADE`)
+		calendars, events, devices, sync_state, user_prefs, event_templates, calendar_sets,
+		ai_jobs, ai_classifiers, voice_profiles, ai_usage RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
