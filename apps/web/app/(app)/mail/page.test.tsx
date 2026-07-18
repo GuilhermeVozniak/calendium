@@ -1,10 +1,11 @@
 import * as React from 'react';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Thread } from '@calendium/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import MailPage from './page';
+import { dispatchMailCommand } from '@/lib/mail-utils';
 
 // ---------------------------------------------------------------------------
 // Reactive test doubles
@@ -129,6 +130,24 @@ const openComposeMock = vi.fn();
 vi.mock('@/components/app/compose', () => ({
   useCompose: () => ({ openCompose: openComposeMock }),
   htmlToText: (html: string) => html,
+}));
+
+// CalendarPeek owns its own data-fetching (React Query) and internal UI —
+// covered by calendar-peek.test.tsx. Here we only care that the mail page
+// wires `open`/`onOpenChange` correctly, so stub it down to a marker that
+// exposes the open state and lets a click flip it (mirroring the real
+// component's close button) without pulling in QueryClientProvider/EventDialog.
+const readStoredCalendarPeekOpenMock = vi.fn(() => false);
+vi.mock('@/components/app/calendar-peek', () => ({
+  readStoredCalendarPeekOpen: () => readStoredCalendarPeekOpenMock(),
+  CalendarPeek: ({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) =>
+    open ? (
+      <div data-testid="calendar-peek-stub">
+        <button type="button" onClick={() => onOpenChange(false)}>
+          Close calendar peek
+        </button>
+      </div>
+    ) : null,
 }));
 
 const toastSuccess = vi.fn();
@@ -557,5 +576,62 @@ describe('Mail page — bulk/label mutations gate their success toast on resolut
     await waitFor(() => expect(setLabelMock).toHaveBeenCalledWith('t1', 'lbl1', true));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(toastSuccess).not.toHaveBeenCalledWith(expect.stringContaining('Labeled'));
+  });
+});
+
+/** mod+shift+k, platform-agnostic — set both ctrlKey and metaKey so the
+ *  assertion holds regardless of the jsdom-reported platform (mirrors
+ *  lib/shortcuts.test.ts's own "mod" convention). */
+function pressTogglePeek() {
+  fireEvent.keyDown(document.body, { key: 'k', shiftKey: true, ctrlKey: true, metaKey: true });
+}
+
+describe('Mail page — calendar peek toggle', () => {
+  it('mod+shift+k opens the calendar peek panel', async () => {
+    render(<MailPage />);
+    await screen.findByRole('button', { name: /First conversation/ });
+
+    expect(screen.queryByTestId('calendar-peek-stub')).not.toBeInTheDocument();
+    pressTogglePeek();
+    expect(await screen.findByTestId('calendar-peek-stub')).toBeInTheDocument();
+
+    // Pressing it again closes the panel — a plain toggle, not a one-way open.
+    pressTogglePeek();
+    await waitFor(() => expect(screen.queryByTestId('calendar-peek-stub')).not.toBeInTheDocument());
+  });
+
+  it('bare k (previous conversation) does not open the peek — mod distinguishes the bindings', async () => {
+    const user = userEvent.setup();
+    render(<MailPage />);
+    const row = await screen.findByRole('button', { name: /Second conversation/ });
+    await user.hover(row);
+
+    await user.keyboard('k');
+    expect(screen.queryByTestId('calendar-peek-stub')).not.toBeInTheDocument();
+  });
+
+  it('the "Toggle calendar peek" MailCommand opens the panel (palette bridge)', async () => {
+    render(<MailPage />);
+    await screen.findByRole('button', { name: /First conversation/ });
+
+    expect(screen.queryByTestId('calendar-peek-stub')).not.toBeInTheDocument();
+    dispatchMailCommand('toggle-calendar-peek');
+    expect(await screen.findByTestId('calendar-peek-stub')).toBeInTheDocument();
+  });
+
+  it('hydrates the initial open state from localStorage on mount', async () => {
+    readStoredCalendarPeekOpenMock.mockReturnValueOnce(true);
+    render(<MailPage />);
+    expect(await screen.findByTestId('calendar-peek-stub')).toBeInTheDocument();
+  });
+
+  it("the panel's own close control flips peekOpen back through the page", async () => {
+    const user = userEvent.setup();
+    render(<MailPage />);
+    await screen.findByRole('button', { name: /First conversation/ });
+
+    pressTogglePeek();
+    await user.click(await screen.findByRole('button', { name: 'Close calendar peek' }));
+    await waitFor(() => expect(screen.queryByTestId('calendar-peek-stub')).not.toBeInTheDocument());
   });
 });

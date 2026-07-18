@@ -8,6 +8,7 @@ import { Loader2, Search, Sparkles, Star, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { BulkBar } from '@/components/app/bulk-bar';
+import { CalendarPeek, readStoredCalendarPeekOpen } from '@/components/app/calendar-peek';
 import { htmlToText, useCompose } from '@/components/app/compose';
 import { GetMeToZero } from '@/components/app/get-me-to-zero';
 import { InboxZero } from '@/components/app/inbox-zero';
@@ -175,6 +176,14 @@ function MailClient() {
   const [snoozeOpen, setSnoozeOpen] = React.useState(false);
   const [remindOpen, setRemindOpen] = React.useState(false);
   const [zeroOpen, setZeroOpen] = React.useState(false);
+
+  // Calendar peek: a right-side panel showing today's calendar beside the
+  // inbox (mod+shift+k / palette). Hydrated from localStorage after mount
+  // (SSR-safe, mirrors theme-provider's pattern) rather than read eagerly in
+  // useState, since the initial render may run on the server where
+  // localStorage isn't available.
+  const [peekOpen, setPeekOpen] = React.useState(false);
+  React.useEffect(() => setPeekOpen(readStoredCalendarPeekOpen()), []);
 
   const undo = React.useCallback(() => {
     void undoLast().then((did) => {
@@ -465,6 +474,11 @@ function MailClient() {
       handler: () => (selectedThread || selection.ids.size > 0) && setLabelPickerOpen(true),
     },
     { keys: '/', description: 'Search', handler: focusSearch },
+    {
+      keys: 'mod+shift+k',
+      description: 'Toggle calendar peek',
+      handler: () => setPeekOpen((o) => !o),
+    },
   ]);
 
   // --- Command palette bridge ----------------------------------------------
@@ -504,6 +518,7 @@ function MailClient() {
     else if (command === 'undo') handlers.undo();
     else if (command === 'label') setLabelPickerOpen(true);
     else if (command === 'get-me-to-zero') setZeroOpen(true);
+    else if (command === 'toggle-calendar-peek') setPeekOpen((o) => !o);
   }, []);
 
   React.useEffect(() => onMailCommand(runCommand), [runCommand]);
@@ -658,6 +673,8 @@ function MailClient() {
           />
         </section>
       )}
+
+      <CalendarPeek open={peekOpen} onOpenChange={setPeekOpen} />
 
       <LabelPicker
         open={labelPickerOpen}

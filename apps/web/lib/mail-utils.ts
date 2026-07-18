@@ -163,7 +163,8 @@ export type MailCommand =
   | 'search'
   | 'undo'
   | 'label'
-  | 'get-me-to-zero';
+  | 'get-me-to-zero'
+  | 'toggle-calendar-peek';
 
 export const MAIL_COMMAND_EVENT = 'calendium:mail-command';
 
