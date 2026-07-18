@@ -4,9 +4,13 @@
 import { addDays, dayKey, startOfDay } from '@/lib/format';
 import {
   ApiRequestError,
+  type AiAskResponse,
+  type AiClassifier,
   type AiComposeRequest,
   type AiComposeResponse,
+  type AiEditAction,
   type Calendar,
+  type ClassifierInput,
   type ConnectedAccount,
   type EmailAddress,
   type Event,
@@ -73,6 +77,7 @@ function thread(partial: {
   messageCount?: number;
   unread?: boolean;
   starred?: boolean;
+  summary?: string;
 }): Thread {
   return {
     id: partial.id,
@@ -85,6 +90,7 @@ function thread(partial: {
     messageCount: partial.messageCount ?? 1,
     unread: partial.unread ?? false,
     starred: partial.starred ?? false,
+    summary: partial.summary,
     lastMessageAt: minutesAgo(partial.minutesAgo),
     openedAt: null,
     snoozedUntil: null,
@@ -105,6 +111,8 @@ export const mockThreads: Thread[] = [
     minutesAgo: 12,
     messageCount: 4,
     unread: true,
+    summary:
+      'Sarah incorporated feedback from Friday. Two open questions remain before this can be locked in.',
   }),
   thread({
     id: 'thr_2',
@@ -423,4 +431,105 @@ export function mockAiCompose(req: AiComposeRequest): AiComposeResponse {
       ? 'Summary: the sender needs a decision on the two open items before Thursday; everything else is already agreed.'
       : `Hi,\n\nThanks for the note — ${req.prompt.trim().replace(/\.$/, '')}.\n\nHappy to move this forward; does Thursday afternoon work on your end?\n\nBest,\nSent with Calendium`;
   return { text, model: 'mock/offline' };
+}
+
+/** AI-generated quick-reply suggestions for a thread (demo mode only). */
+export function mockInstantReplies(threadId: string): { replies: string[] } {
+  const found = mockThreads.find((t) => t.id === threadId);
+  if (!found) {
+    throw new ApiRequestError(404, 'not_found', 'Thread not found');
+  }
+  return {
+    replies: ['Sounds good, thanks!', "I'll take a look and follow up.", 'Can we push to next week?'],
+  };
+}
+
+/**
+ * Applies a mock edit to `currentText` for one of the composer's action-sheet
+ * edit actions (improve/shorten/simplify/fix_grammar/change_tone). Only used
+ * in demo mode — the real request is `api.aiEditDraft`, which reads the
+ * server-side draft body itself.
+ */
+export function mockAiEditDraft(
+  action: AiEditAction,
+  currentText: string,
+  tone?: string
+): AiComposeResponse {
+  const trimmed = currentText.trim() || 'Thanks for the note — happy to help.';
+  const text = (() => {
+    switch (action) {
+      case 'shorten':
+        return trimmed.split(/\s+/).slice(0, Math.max(8, Math.ceil(trimmed.split(/\s+/).length / 2))).join(' ');
+      case 'simplify':
+        return trimmed
+          .replace(/\b(utilize|leverage)\b/gi, 'use')
+          .replace(/\b(in order to)\b/gi, 'to');
+      case 'fix_grammar':
+        return trimmed.replace(/\s+/g, ' ').trim();
+      case 'change_tone':
+        return `${trimmed}\n\n(${tone ?? 'adjusted'} tone)`;
+      default:
+        return `${trimmed}\n\nLet me know if you have any questions — happy to jump on a call.`;
+    }
+  })();
+  return { text, model: 'mock/offline' };
+}
+
+// ---------------------------------------------------------------------------
+// AI classifiers (Task 17 settings CRUD)
+// ---------------------------------------------------------------------------
+
+let mockClassifiers: AiClassifier[] = [
+  {
+    id: 'clf_receipts',
+    name: 'Receipts & invoices',
+    prompt: 'Purchase receipts, invoices, or payment confirmations.',
+    targetSplit: 'other',
+    labelName: 'Receipts',
+    enabled: true,
+  },
+  {
+    id: 'clf_travel',
+    name: 'Travel confirmations',
+    prompt: 'Flight, hotel, or rental car confirmations and itineraries.',
+    targetSplit: 'other',
+    enabled: true,
+  },
+];
+
+export function mockListClassifiers(): AiClassifier[] {
+  return mockClassifiers;
+}
+
+export function mockCreateClassifier(input: ClassifierInput): AiClassifier {
+  const created: AiClassifier = { id: `clf_${Date.now()}`, ...input };
+  mockClassifiers = [...mockClassifiers, created];
+  return created;
+}
+
+export function mockUpdateClassifier(id: string, input: ClassifierInput): AiClassifier {
+  const updated: AiClassifier = { id, ...input };
+  mockClassifiers = mockClassifiers.map((c) => (c.id === id ? updated : c));
+  return updated;
+}
+
+export function mockDeleteClassifier(id: string): void {
+  mockClassifiers = mockClassifiers.filter((c) => c.id !== id);
+}
+
+// ---------------------------------------------------------------------------
+// Ask AI (cited Q&A modal)
+// ---------------------------------------------------------------------------
+
+export function mockAskCited(question: string, threadId?: string): AiAskResponse {
+  const scoped = threadId ? mockThreads.filter((t) => t.id === threadId) : mockThreads.slice(0, 2);
+  return {
+    answer: `Based on your mailbox: ${question.trim().replace(/\?$/, '')} — here's what I found in the threads below.`,
+    model: 'mock/offline',
+    sources: scoped.map((t) => ({
+      threadId: t.id,
+      subject: t.subject,
+      snippet: t.snippet,
+    })),
+  };
 }
