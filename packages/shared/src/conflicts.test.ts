@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  type BusyInterval,
+  type ConflictInterval,
   findConflicts,
   mergeBusy,
   overlaps,
@@ -194,8 +194,8 @@ describe('toBusyIntervals', () => {
 function busy(
   startIso: string,
   endIso: string,
-  overrides: Partial<BusyInterval> = {}
-): BusyInterval {
+  overrides: Partial<ConflictInterval> = {}
+): ConflictInterval {
   return {
     start: new Date(startIso),
     end: new Date(endIso),

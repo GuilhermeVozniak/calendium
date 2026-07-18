@@ -7,8 +7,13 @@ import type {
   AiEditAction,
   AiEventProposal,
   AvailabilitySlot,
+  Booking,
+  BookingLink,
+  BookingLinkInput,
+  BookingRequest,
   BulkAction,
   BulkActionResult,
+  BusyInterval,
   Calendar,
   CalendarSet,
   CalendarSetInput,
@@ -24,18 +29,26 @@ import type {
   EventTemplateInput,
   InstanceInfo,
   Label,
+  MeetingPoll,
   Message,
   NotificationDevice,
   Page,
+  PollBallot,
+  PollInput,
   Provider,
+  PublicBookingPage,
+  PublicPoll,
   RsvpStatus,
   Snippet,
   Subscription,
   Thread,
   ThreadAction,
+  TimeProposal,
+  TimeProposalInput,
   UnsubscribeResult,
   User,
   UserPrefs,
+  UserSettings,
 } from './types';
 
 /**
@@ -384,4 +397,154 @@ export class ApiClient {
   unregisterDevice(deviceId: string) {
     return this.request<void>('DELETE', `/v1/devices/${deviceId}`);
   }
+
+  // --- Scheduling (M2.4) — owner-authenticated surface ---
+  // The public booking/poll routes are exposed as standalone fetchers below
+  // (fetchPublicBookingPage, fetchPublicSlots, createPublicBooking,
+  // fetchPublicPoll, votePublicPoll), since booking/poll visitor pages load
+  // before any ApiClient (with a signed-in getAccessToken) can exist.
+  listBookingLinks() {
+    return this.request<BookingLink[]>('GET', '/v1/booking-links');
+  }
+  createBookingLink(input: BookingLinkInput) {
+    return this.request<BookingLink>('POST', '/v1/booking-links', input);
+  }
+  updateBookingLink(id: string, input: BookingLinkInput) {
+    return this.request<BookingLink>('PUT', `/v1/booking-links/${id}`, input);
+  }
+  deleteBookingLink(id: string) {
+    return this.request<void>('DELETE', `/v1/booking-links/${id}`);
+  }
+  listBookings() {
+    return this.request<Booking[]>('GET', '/v1/bookings');
+  }
+  cancelBooking(id: string) {
+    return this.request<void>('POST', `/v1/bookings/${id}/cancel`);
+  }
+  listPolls() {
+    return this.request<MeetingPoll[]>('GET', '/v1/polls');
+  }
+  createPoll(input: PollInput) {
+    return this.request<MeetingPoll>('POST', '/v1/polls', input);
+  }
+  confirmPoll(id: string, optionId: string) {
+    return this.request<MeetingPoll>('POST', `/v1/polls/${id}/confirm`, { optionId });
+  }
+  deletePoll(id: string) {
+    return this.request<void>('DELETE', `/v1/polls/${id}`);
+  }
+  /** Propose-new-time: an invitee counter-proposes a time for an existing event. */
+  proposeTime(eventId: string, input: TimeProposalInput) {
+    return this.request<TimeProposal>('POST', `/v1/events/${eventId}/propose-time`, input);
+  }
+  listProposals(eventId: string) {
+    return this.request<TimeProposal[]>('GET', `/v1/events/${eventId}/proposals`);
+  }
+  /** Accepts a proposal: the organizer patches the event to the proposed time. */
+  acceptProposal(eventId: string, proposalId: string) {
+    return this.request<Event>('POST', `/v1/events/${eventId}/proposals/${proposalId}/accept`);
+  }
+  declineProposal(eventId: string, proposalId: string) {
+    return this.request<void>('POST', `/v1/events/${eventId}/proposals/${proposalId}/decline`);
+  }
+  /** Guest free/busy for the Find-a-Time grid. */
+  getFreeBusy(emails: string[], from: string, to: string) {
+    return this.request<Record<string, BusyInterval[]>>('POST', '/v1/freebusy', {
+      emails,
+      from,
+      to,
+    });
+  }
+  getSettings() {
+    return this.request<UserSettings>('GET', '/v1/settings');
+  }
+  updateSettings(s: UserSettings) {
+    return this.request<UserSettings>('PUT', '/v1/settings', s);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Scheduling (M2.4) — standalone unauthenticated fetchers
+//
+// The public booking page and public poll page must work without a signed-in
+// user (no Better Auth session, no ApiClient instance): a visitor opens
+// /book/{slug} or /poll/{token} directly. These mirror the fetchInstance
+// pattern above — a bare baseUrl + optional fetchImpl, no Authorization
+// header ever sent.
+// ---------------------------------------------------------------------------
+
+async function publicRequest<T>(
+  baseUrl: string,
+  method: string,
+  path: string,
+  body: unknown,
+  fetchImpl?: typeof fetch
+): Promise<T> {
+  const doFetch = fetchImpl ?? fetch;
+  const base = baseUrl.replace(/\/+$/, '');
+  const res = await doFetch(`${base}${path}`, {
+    method,
+    headers: {
+      Accept: 'application/json',
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => null);
+  if (!res.ok) {
+    const code = json?.error?.code ?? 'unknown';
+    const message = json?.error?.message ?? `Request failed with status ${res.status}`;
+    throw new ApiRequestError(res.status, code, message);
+  }
+  return json as T;
+}
+
+/** The public booking-link document: title, duration, owner display name — no auth. */
+export function fetchPublicBookingPage(
+  baseUrl: string,
+  slug: string,
+  fetchImpl?: typeof fetch
+): Promise<PublicBookingPage> {
+  return publicRequest(baseUrl, 'GET', `/v1/public/booking/${slug}`, undefined, fetchImpl);
+}
+
+/** Bookable start times for a booking link between from and to (RFC 3339). */
+export function fetchPublicSlots(
+  baseUrl: string,
+  slug: string,
+  from: string,
+  to: string,
+  fetchImpl?: typeof fetch
+): Promise<AvailabilitySlot[]> {
+  const qs = new URLSearchParams({ from, to });
+  return publicRequest(baseUrl, 'GET', `/v1/public/booking/${slug}/slots?${qs}`, undefined, fetchImpl);
+}
+
+/** Books a slot on a public booking link (hold → confirm pipeline). */
+export function createPublicBooking(
+  baseUrl: string,
+  slug: string,
+  req: BookingRequest,
+  fetchImpl?: typeof fetch
+): Promise<Booking> {
+  return publicRequest(baseUrl, 'POST', `/v1/public/booking/${slug}/bookings`, req, fetchImpl);
+}
+
+/** The public meeting-poll document: options plus anonymized tallies. */
+export function fetchPublicPoll(
+  baseUrl: string,
+  token: string,
+  fetchImpl?: typeof fetch
+): Promise<PublicPoll> {
+  return publicRequest(baseUrl, 'GET', `/v1/public/polls/${token}`, undefined, fetchImpl);
+}
+
+/** Records (or replaces) one voter's ballot; returns the refreshed public poll view. */
+export function votePublicPoll(
+  baseUrl: string,
+  token: string,
+  ballot: PollBallot,
+  fetchImpl?: typeof fetch
+): Promise<PublicPoll> {
+  return publicRequest(baseUrl, 'POST', `/v1/public/polls/${token}/votes`, ballot, fetchImpl);
 }

@@ -427,6 +427,194 @@ export interface ClassifierInput {
 }
 
 // ---------------------------------------------------------------------------
+// Scheduling (M2.4) — mirrors backend/internal/domain/scheduling.go and
+// backend/internal/port/driving.go field-for-field.
+// ---------------------------------------------------------------------------
+
+/** One weekly recurring open window, in the owning entity's time zone. */
+export interface AvailabilityWindow {
+  /** 0=Sunday … 6=Saturday */
+  weekday: number;
+  /** "09:00" (24h HH:MM) */
+  start: string;
+  /** "17:00", must be > start */
+  end: string;
+}
+
+/** A personal Calendly-style scheduling page: /book/{slug} → live slots → visitor books. */
+export interface BookingLink {
+  id: string;
+  slug: string;
+  title: string;
+  description: string | null;
+  /** Target (writable) calendar. */
+  calendarId: string;
+  durationMinutes: number;
+  /** IANA name; windows interpreted here. */
+  timeZone: string;
+  windows: AvailabilityWindow[];
+  bufferBeforeMin: number;
+  bufferAfterMin: number;
+  /** 0 = unlimited confirmed bookings/day. */
+  dailyLimit: number;
+  minNoticeMin: number;
+  /** 0 = default 60. */
+  maxAdvanceDays: number;
+  respectWorkingHours: boolean;
+  addConferencing: boolean;
+  active: boolean;
+  createdAt: string;
+}
+
+/** Create/update booking-link payload; mirrors port.BookingLinkInput. */
+export type BookingLinkInput = Omit<BookingLink, 'id' | 'createdAt' | 'description'> & {
+  description?: string;
+};
+
+/** The slot-hold lifecycle: hold → confirmed | cancelled. */
+export type BookingStatus = 'hold' | 'confirmed' | 'cancelled';
+
+/** One visitor reservation against a BookingLink. */
+export interface Booking {
+  id: string;
+  linkId: string;
+  status: BookingStatus;
+  start: string;
+  end: string;
+  inviteeName: string;
+  inviteeEmail: string;
+  inviteeTimeZone: string;
+  note: string | null;
+  /** Mirrored event once confirmed. */
+  eventId: string | null;
+  createdAt: string;
+}
+
+/** The public GET /v1/public/booking/{slug} document — no owner PII beyond display name. */
+export interface PublicBookingPage {
+  slug: string;
+  title: string;
+  description: string | null;
+  ownerName: string;
+  durationMinutes: number;
+  /** Owner's link TZ (for "times shown in…" hints). */
+  timeZone: string;
+}
+
+/** The public booking payload. */
+export interface BookingRequest {
+  start: string;
+  inviteeName: string;
+  inviteeEmail: string;
+  inviteeTimeZone: string;
+  note?: string;
+}
+
+/** The meeting-poll lifecycle. */
+export type PollStatus = 'open' | 'confirmed' | 'cancelled';
+
+/** One voter's answer for one option. */
+export type PollVoteChoice = 'yes' | 'no' | 'if_needed';
+
+/** One candidate slot on a poll. */
+export interface PollOption {
+  id: string;
+  start: string;
+  end: string;
+}
+
+/** Aggregated votes for one option. */
+export interface PollTally {
+  yes: number;
+  no: number;
+  ifNeeded: number;
+}
+
+/** Proposes candidate slots invitees vote on via a public link. */
+export interface MeetingPoll {
+  id: string;
+  /** Unguessable public URL token (32 hex chars). */
+  token: string;
+  title: string;
+  description: string | null;
+  calendarId: string;
+  durationMinutes: number;
+  options: PollOption[];
+  status: PollStatus;
+  winnerOptionId: string | null;
+  eventId: string | null;
+  createdAt: string;
+}
+
+/** Create-poll payload; mirrors port.PollInput. */
+export interface PollInput {
+  title: string;
+  description?: string;
+  calendarId: string;
+  durationMinutes: number;
+  /** IDs assigned server-side. */
+  options: Array<{ start: string; end: string }>;
+}
+
+/** The public poll document, incl. anonymized tallies. */
+export interface PublicPoll {
+  token: string;
+  title: string;
+  description: string | null;
+  organizerName: string;
+  durationMinutes: number;
+  status: PollStatus;
+  options: PollOption[];
+  /** optionID → tally */
+  tallies: Record<string, PollTally>;
+  winnerOptionId: string | null;
+}
+
+/** One public voter's submission. */
+export interface PollBallot {
+  voterEmail: string;
+  voterName: string;
+  /** optionID → choice */
+  choices: Record<string, PollVoteChoice>;
+}
+
+/** The propose-new-time lifecycle. */
+export type ProposalStatus = 'pending' | 'accepted' | 'declined' | 'superseded';
+
+/** An invitee's counter-proposed time for an existing event. */
+export interface TimeProposal {
+  id: string;
+  eventId: string;
+  proposerEmail: string;
+  proposerName: string;
+  start: string;
+  end: string;
+  note: string | null;
+  status: ProposalStatus;
+  createdAt: string;
+}
+
+/** Propose-new-time payload; mirrors port.TimeProposalInput. */
+export interface TimeProposalInput {
+  start: string;
+  end: string;
+  note?: string;
+}
+
+/** One busy span from a provider free/busy query. */
+export interface BusyInterval {
+  start: string;
+  end: string;
+}
+
+/** Per-user scheduling preferences (working hours in timeZone, displayed location). */
+export interface UserSettings {
+  timeZone: string;
+  workingHours: AvailabilityWindow[];
+  workingLocation: string;
+}
+
+// ---------------------------------------------------------------------------
 // API envelopes
 // ---------------------------------------------------------------------------
 
