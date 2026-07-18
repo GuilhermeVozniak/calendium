@@ -5,7 +5,7 @@ import { Text } from '@/components/ui/text';
 import { api } from '@/lib/api';
 import { relativeTime } from '@/lib/format';
 import { isDemoMode, mockThreadDetail, withMockFallback } from '@/lib/mock';
-import type { Message, Page, Thread } from '@calendium/shared';
+import type { Message, Page, Thread, UnsubscribeResult } from '@calendium/shared';
 import {
   useMutation,
   useQuery,
@@ -13,20 +13,32 @@ import {
   type InfiniteData,
 } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ArchiveIcon, ChevronLeftIcon, ClockIcon, SendIcon } from 'lucide-react-native';
+import { ArchiveIcon, ChevronLeftIcon, ClockIcon, MailXIcon, SendIcon } from 'lucide-react-native';
 import * as React from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, ScrollView, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Linking,
+  Platform,
+  Pressable,
+  ScrollView,
+  View,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { snoozePresets } from '@/lib/triage';
+import { canUnsubscribe, snoozePresets, unsubscribeMessage } from '@/lib/triage';
 
 type ThreadDetail = { thread: Thread; messages: Message[] };
 // The inbox list is cursor-paginated, so its cache is InfiniteData<Page<Thread>>.
 type ThreadsData = InfiniteData<Page<Thread>>;
 
 export default function ThreadScreen() {
-  const params = useLocalSearchParams<{ id: string }>();
+  const params = useLocalSearchParams<{ id: string; nextId?: string }>();
   const threadId = typeof params.id === 'string' ? params.id : '';
+  // Passed by the inbox list (nextAfterRemoval) so archive can advance straight
+  // to the next conversation instead of dropping back to the list.
+  const nextThreadId = typeof params.nextId === 'string' ? params.nextId : undefined;
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
@@ -47,6 +59,16 @@ export default function ThreadScreen() {
       router.back();
     } else {
       router.replace('/(tabs)/inbox');
+    }
+  };
+
+  // Auto-advance after archive: prefer the next thread id the inbox list
+  // handed us (nextAfterRemoval), else fall back to the normal back navigation.
+  const advanceAfterArchive = () => {
+    if (nextThreadId) {
+      router.replace({ pathname: '/thread/[id]', params: { id: nextThreadId } });
+    } else {
+      goBack();
     }
   };
 
@@ -120,7 +142,7 @@ export default function ThreadScreen() {
     if (!thread) return;
     const previous = queryClient.getQueryData<ThreadsData>(['threads', thread.split]);
     removeFromInboxList(thread);
-    goBack();
+    advanceAfterArchive();
     try {
       await api.actOnThread(thread.id, 'archive');
     } catch (error) {
@@ -153,6 +175,45 @@ export default function ThreadScreen() {
       { text: 'Cancel', style: 'cancel' as const },
     ]);
   };
+
+  // Shared tail of a successful (real or demo) unsubscribe: open the link for
+  // "link" results, tell the user what happened, then offer to archive.
+  const handleUnsubscribeResult = (res: UnsubscribeResult) => {
+    if (res.method === 'link' && res.url) {
+      void Linking.openURL(res.url);
+    }
+    Alert.alert('Unsubscribe', unsubscribeMessage(res), [
+      {
+        text: 'OK',
+        onPress: () =>
+          Alert.alert('Archive all from this sender?', undefined, [
+            { text: 'Archive', onPress: () => void archive() },
+            { text: 'Not now', style: 'cancel' },
+          ]),
+      },
+    ]);
+  };
+
+  const unsubscribeMutation = useMutation({
+    mutationFn: (id: string) => api.unsubscribeThread(id),
+    onSuccess: handleUnsubscribeResult,
+    onError: (error) => {
+      const thread = detailQuery.data?.thread;
+      if (isDemoMode() && thread) {
+        // Demo mode only: simulate the result the same way the real backend
+        // would pick a method, since there is no backend to ask.
+        const res: UnsubscribeResult =
+          thread.unsubscribeOneClick && thread.unsubscribeUrl
+            ? { method: 'one_click' }
+            : thread.unsubscribeMailto
+              ? { method: 'mailto' }
+              : { method: 'link', url: thread.unsubscribeUrl ?? undefined };
+        handleUnsubscribeResult(res);
+        return;
+      }
+      Alert.alert('Could not unsubscribe', error instanceof Error ? error.message : 'Please try again.');
+    },
+  });
 
   const appendMessage = (message: Message) => {
     queryClient.setQueryData<ThreadDetail>(['thread', threadId], (data) =>
@@ -235,6 +296,16 @@ export default function ThreadScreen() {
           <Icon as={ClockIcon} className="size-5" />
         </Button>
       </View>
+
+      {thread && canUnsubscribe(thread) && (
+        <Pressable
+          onPress={() => unsubscribeMutation.mutate(thread.id)}
+          disabled={unsubscribeMutation.isPending}
+          className="flex-row items-center gap-2 border-b border-border bg-muted/30 px-4 py-2.5 active:bg-accent">
+          <Icon as={MailXIcon} className="size-4 text-muted-foreground" />
+          <Text className="flex-1 text-sm text-muted-foreground">Unsubscribe from this sender</Text>
+        </Pressable>
+      )}
 
       <KeyboardAvoidingView
         className="flex-1"

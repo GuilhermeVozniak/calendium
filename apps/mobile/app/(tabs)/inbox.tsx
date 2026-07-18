@@ -13,7 +13,16 @@ import {
   type InfiniteData,
 } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { ArchiveIcon, ClockIcon, InboxIcon, SquarePenIcon, StarIcon, XIcon } from 'lucide-react-native';
+import {
+  ArchiveIcon,
+  ClockIcon,
+  EllipsisVerticalIcon,
+  InboxIcon,
+  SparklesIcon,
+  SquarePenIcon,
+  StarIcon,
+  XIcon,
+} from 'lucide-react-native';
 import * as React from 'react';
 import { ActivityIndicator, Alert, FlatList, Pressable, RefreshControl, ScrollView, View } from 'react-native';
 import ReanimatedSwipeable, {
@@ -21,7 +30,7 @@ import ReanimatedSwipeable, {
 } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { snoozePresets } from '@/lib/triage';
+import { nextAfterRemoval, snoozePresets, zeroCutoffs } from '@/lib/triage';
 
 // All InboxSplit categories, in the order they surface in the split-inbox rail.
 // Must stay in sync with the shared InboxSplit union so every backend-classified
@@ -128,12 +137,76 @@ export default function InboxScreen() {
     ]);
   };
 
+  // "Get Me To Zero": bulk-archives every split's cached threads older than the
+  // chosen cutoff. Optimistic removal mirrors actMutation/snoozeMutation above;
+  // demo mode has no backend, so the local count stands as the real outcome.
+  const zeroMutation = useMutation({
+    mutationFn: (iso: string) => api.archiveOlderThan(iso),
+    onMutate: (iso) => {
+      const previous: Partial<Record<InboxSplit, ThreadsData | undefined>> = {};
+      let count = 0;
+      const cutoff = Date.parse(iso);
+      for (const s of SPLITS) {
+        previous[s.key] = queryClient.getQueryData<ThreadsData>(['threads', s.key]);
+        updateList(s.key, (items) =>
+          items.filter((t) => {
+            const stale = Date.parse(t.lastMessageAt) < cutoff;
+            if (stale) count++;
+            return !stale;
+          })
+        );
+      }
+      return { previous, count };
+    },
+    onSuccess: (result) => {
+      Alert.alert(
+        'Get Me To Zero',
+        `Archived ${result.archivedCount} conversation${result.archivedCount === 1 ? '' : 's'}.`
+      );
+    },
+    onError: (error, _iso, context) => {
+      if (isDemoMode()) {
+        Alert.alert(
+          'Get Me To Zero',
+          `Archived ${context?.count ?? 0} conversation${context?.count === 1 ? '' : 's'}.`
+        );
+        return;
+      }
+      if (context?.previous) {
+        for (const s of SPLITS) {
+          const data = context.previous[s.key];
+          if (data) queryClient.setQueryData(['threads', s.key], data);
+        }
+      }
+      Alert.alert('Could not run Get Me To Zero', error instanceof Error ? error.message : 'Please try again.');
+    },
+  });
+
+  const promptGetMeToZero = () => {
+    Alert.alert('Get Me To Zero', undefined, [
+      ...zeroCutoffs().map((cutoff) => ({
+        text: cutoff.label,
+        onPress: () => zeroMutation.mutate(cutoff.iso),
+      })),
+      { text: 'Cancel', style: 'cancel' as const },
+    ]);
+  };
+
   const openThread = (thread: Thread) => {
     setSelected(null);
     // Read state is recorded server-side by the thread screen (POST .../open)
     // and reconciled back into this list, so we no longer fake `unread` here —
     // the dot reflects real data only.
-    router.push({ pathname: '/thread/[id]', params: { id: thread.id } });
+    // nextId lets the thread screen auto-advance straight to the next
+    // conversation after an archive, instead of dropping back to this list.
+    const nextId = nextAfterRemoval(
+      threads.map((t) => t.id),
+      thread.id
+    );
+    router.push({
+      pathname: '/thread/[id]',
+      params: nextId ? { id: thread.id, nextId } : { id: thread.id },
+    });
   };
 
   return (
@@ -141,13 +214,18 @@ export default function InboxScreen() {
       {/* Header */}
       <View className="flex-row items-center justify-between px-4 pb-2 pt-1">
         <Text variant="h3">Inbox</Text>
-        <Button
-          size="icon"
-          variant="ghost"
-          className="rounded-full"
-          onPress={() => router.push('/compose')}>
-          <Icon as={SquarePenIcon} className="size-5" />
-        </Button>
+        <View className="flex-row items-center gap-1">
+          <Button size="icon" variant="ghost" className="rounded-full" onPress={promptGetMeToZero}>
+            <Icon as={EllipsisVerticalIcon} className="size-5" />
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="rounded-full"
+            onPress={() => router.push('/compose')}>
+            <Icon as={SquarePenIcon} className="size-5" />
+          </Button>
+        </View>
       </View>
 
       {/* Split chips */}
@@ -210,14 +288,24 @@ export default function InboxScreen() {
             ) : null
           }
           ListEmptyComponent={
-            <View className="items-center gap-2 px-8 pt-24">
-              <Icon as={InboxIcon} className="size-8 text-muted-foreground" />
-              <Text className="text-center text-sm text-muted-foreground">
-                {threadsQuery.isError
-                  ? "Couldn't load this inbox."
-                  : `Inbox zero — nothing in ${SPLITS.find((s) => s.key === split)?.label ?? split}.`}
-              </Text>
-            </View>
+            threadsQuery.isError ? (
+              <View className="items-center gap-2 px-8 pt-24">
+                <Icon as={InboxIcon} className="size-8 text-muted-foreground" />
+                <Text className="text-center text-sm text-muted-foreground">
+                  Couldn't load this inbox.
+                </Text>
+              </View>
+            ) : (
+              <View className="items-center gap-2 px-8 pt-24">
+                <Icon as={SparklesIcon} className="size-8 text-muted-foreground" />
+                <Text className="text-center text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  You're at Inbox Zero
+                </Text>
+                <Text className="text-center text-sm text-muted-foreground">
+                  Nothing in {SPLITS.find((s) => s.key === split)?.label ?? split}. Enjoy the quiet.
+                </Text>
+              </View>
+            )
           }
           renderItem={({ item }) => (
             <SwipeableThreadRow

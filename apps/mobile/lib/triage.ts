@@ -1,3 +1,7 @@
+import { nextAfterRemoval, type Thread, type UnsubscribeResult } from '@calendium/shared';
+
+export { nextAfterRemoval };
+
 export interface SnoozePreset {
   label: string;
   until: Date;
@@ -17,4 +21,26 @@ export function snoozePresets(now: Date = new Date()): SnoozePreset[] {
     { label: 'Tomorrow 8 AM', until: tomorrow },
     { label: 'Next week', until: nextWeek },
   ];
+}
+
+/** Get Me To Zero cutoffs for the mobile action sheet. */
+export function zeroCutoffs(now: Date = new Date()): { id: string; label: string; iso: string }[] {
+  const day = 24 * 3_600_000;
+  return [
+    { id: 'week', label: 'Older than 1 week', iso: new Date(now.getTime() - 7 * day).toISOString() },
+    { id: 'two-weeks', label: 'Older than 2 weeks', iso: new Date(now.getTime() - 14 * day).toISOString() },
+    { id: 'month', label: 'Older than 1 month', iso: new Date(now.getTime() - 30 * day).toISOString() },
+    { id: 'quarter', label: 'Older than 3 months', iso: new Date(now.getTime() - 90 * day).toISOString() },
+  ];
+}
+
+export function canUnsubscribe(thread: Pick<Thread, 'unsubscribeMailto' | 'unsubscribeUrl'>): boolean {
+  return Boolean(thread.unsubscribeMailto || thread.unsubscribeUrl);
+}
+
+/** Human copy for an unsubscribe result, shared by the confirmation toast. */
+export function unsubscribeMessage(res: UnsubscribeResult): string {
+  return res.method === 'link'
+    ? 'Opening the unsubscribe page…'
+    : 'Unsubscribed — the sender has been asked to stop.';
 }
