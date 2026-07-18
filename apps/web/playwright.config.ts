@@ -32,10 +32,12 @@ export default defineConfig({
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
-    command: `node_modules/.bin/next dev -p ${PORT}`,
+    command: process.env.CI
+      ? `node_modules/.bin/next build && node_modules/.bin/next start -p ${PORT}`
+      : `node_modules/.bin/next dev -p ${PORT}`,
     url: BASE_URL,
     reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
+    timeout: 240_000,
     env: {
       NEXT_PUBLIC_DEMO_MODE: 'true',
       // Unreachable on purpose — forces every real API attempt to fail fast
