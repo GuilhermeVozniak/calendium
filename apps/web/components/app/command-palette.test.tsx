@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { CalendarSet, Event, EventTemplate, Thread } from '@calendium/shared';
+import type { CalendarSet, Event, EventTemplate, Message, Thread } from '@calendium/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CommandPalette } from '@/components/app/command-palette';
@@ -16,14 +16,28 @@ import { resetShortcutHints } from '@/lib/shortcut-hints';
 const pushMock = vi.fn();
 const replaceMock = vi.fn();
 let currentPathname = '/mail';
+let currentThreadIdParam: string | null = null;
 vi.mock('next/navigation', () => ({
   usePathname: () => currentPathname,
   useRouter: () => ({ push: pushMock, replace: replaceMock }),
+  useSearchParams: () => ({
+    get: (key: string) => (key === 't' ? currentThreadIdParam : null),
+  }),
 }));
 
 const openComposeMock = vi.fn();
 vi.mock('@/components/app/compose', () => ({
   useCompose: () => ({ openCompose: openComposeMock }),
+}));
+
+const useThreadDetailMock = vi.fn();
+vi.mock('@/lib/use-mail', () => ({
+  useThreadDetail: (threadId: string | null) => useThreadDetailMock(threadId),
+}));
+
+const useSelfEmailsMock = vi.fn();
+vi.mock('@/lib/use-identity', () => ({
+  useSelfEmails: () => useSelfEmailsMock(),
 }));
 
 let themeState = { resolvedTheme: 'light' as 'light' | 'dark', setTheme: vi.fn() };
@@ -70,9 +84,11 @@ vi.mock('@/lib/use-instance', () => ({
 }));
 
 const toastMessage = vi.fn();
+const toastError = vi.fn();
 vi.mock('sonner', () => ({
   toast: {
     message: (...args: unknown[]) => toastMessage(...args),
+    error: (...args: unknown[]) => toastError(...args),
   },
 }));
 
@@ -97,11 +113,14 @@ async function openPalette() {
 beforeEach(() => {
   vi.clearAllMocks();
   currentPathname = '/mail';
+  currentThreadIdParam = null;
   themeState = { resolvedTheme: 'light', setTheme: vi.fn() };
   aiEnabled = false;
   fetchSearchMock.mockResolvedValue({ threads: [], events: [] });
   fetchEventTemplatesMock.mockResolvedValue([]);
   fetchCalendarSetsMock.mockResolvedValue([]);
+  useThreadDetailMock.mockReturnValue({ data: undefined });
+  useSelfEmailsMock.mockReturnValue(new Set(['me@example.com']));
   resetShortcutHints();
 });
 
@@ -267,6 +286,92 @@ describe('CommandPalette — mail commands', () => {
     await user.click(screen.getByText('Toggle calendar peek'));
     expect(pushMock).toHaveBeenCalledWith('/mail');
     expect(takePendingMailCommand()).toBe('toggle-calendar-peek');
+  });
+});
+
+describe('CommandPalette — Instant Intro', () => {
+  const INTRO_THREAD = { id: 'thr-intro', subject: 'Intro: Maya <> Calendium' } as unknown as Thread;
+  const INTRO_MESSAGES = [
+    {
+      id: 'm1',
+      threadId: 'thr-intro',
+      from: { name: 'Tom Bakker', email: 'tom@bakker.vc' },
+      to: [{ name: 'Maya', email: 'maya@sequoia.com' }],
+      cc: [{ name: 'You', email: 'me@example.com' }],
+      subject: 'Intro: Maya <> Calendium',
+      sentAt: '2026-07-18T10:00:00.000Z',
+    },
+  ] as unknown as Message[];
+
+  it('is hidden when not viewing a thread', async () => {
+    currentThreadIdParam = null;
+    renderPalette();
+    await openPalette();
+    expect(screen.queryByText('Instant Intro')).not.toBeInTheDocument();
+  });
+
+  it('is hidden off /mail even if a thread id happens to be present', async () => {
+    currentPathname = '/calendar';
+    currentThreadIdParam = 'thr-intro';
+    // Emulates the real hook's enabled:threadId!==null behavior: the
+    // palette must pass `null` (not 'thr-intro') once off /mail, so this
+    // only resolves truthy when actually called with a real id.
+    useThreadDetailMock.mockImplementation((threadId: string | null) =>
+      threadId
+        ? { data: { thread: INTRO_THREAD, messages: INTRO_MESSAGES, source: 'api' } }
+        : { data: undefined }
+    );
+    renderPalette();
+    await openPalette();
+    expect(screen.queryByText('Instant Intro')).not.toBeInTheDocument();
+  });
+
+  it('dispatches a prefilled compose (to/bcc/subject) for an intro thread', async () => {
+    currentThreadIdParam = 'thr-intro';
+    useThreadDetailMock.mockReturnValue({
+      data: { thread: INTRO_THREAD, messages: INTRO_MESSAGES, source: 'api' },
+    });
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+
+    await user.click(screen.getByText('Instant Intro'));
+
+    expect(openComposeMock).toHaveBeenCalledTimes(1);
+    const draft = openComposeMock.mock.calls[0]![0];
+    expect(draft.to).toEqual([{ name: 'Maya', email: 'maya@sequoia.com' }]);
+    expect(draft.bcc).toEqual([{ name: 'Tom Bakker', email: 'tom@bakker.vc' }]);
+    expect(draft.subject).toBe('Re: Intro: Maya <> Calendium');
+    expect(draft.threadId).toBe('thr-intro');
+  });
+
+  it('shows a toast and does not open compose for a non-intro thread', async () => {
+    currentThreadIdParam = 'thr-solo';
+    useThreadDetailMock.mockReturnValue({
+      data: {
+        thread: { id: 'thr-solo', subject: 'Just us' } as unknown as Thread,
+        messages: [
+          {
+            id: 'm1',
+            threadId: 'thr-solo',
+            from: { name: 'You', email: 'me@example.com' },
+            to: [{ name: 'Ada', email: 'ada@x.com' }],
+            cc: [],
+            subject: 'Just us',
+            sentAt: '2026-07-18T10:00:00.000Z',
+          },
+        ] as unknown as Message[],
+        source: 'api',
+      },
+    });
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+
+    await user.click(screen.getByText('Instant Intro'));
+
+    expect(toastError).toHaveBeenCalledWith("This doesn't look like an intro thread");
+    expect(openComposeMock).not.toHaveBeenCalled();
   });
 });
 

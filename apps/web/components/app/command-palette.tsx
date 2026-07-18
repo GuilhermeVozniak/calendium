@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
   Archive,
   BellRing,
@@ -31,10 +31,13 @@ import {
   Star,
   Sun,
   Tag,
+  UserPlus,
   Vote,
 } from 'lucide-react';
 
 import { useQuery } from '@tanstack/react-query';
+import { buildInstantIntro } from '@calendium/shared';
+import { toast } from 'sonner';
 
 import { useAskSidebar } from '@/components/ai/ask-sidebar';
 import { useCompose } from '@/components/app/compose';
@@ -60,7 +63,9 @@ import { fetchSearch } from '@/lib/search-data';
 import { MOD_KEY, useShortcuts } from '@/lib/shortcuts';
 import { teachShortcut } from '@/lib/shortcut-hints';
 import { fetchEventTemplates } from '@/lib/template-data';
+import { useSelfEmails } from '@/lib/use-identity';
 import { useInstance } from '@/lib/use-instance';
+import { useThreadDetail } from '@/lib/use-mail';
 
 /** Palette label per view, keyed off the same VIEW_KEYS map the calendar page
  * binds its d/w/m/q/y/a shortcuts from - deriving both here keeps the two
@@ -91,6 +96,12 @@ export function CommandPalette() {
   const { setTheme, resolvedTheme } = useTheme();
   const { openSidebar } = useAskSidebar();
   const aiEnabled = useInstance().data?.features.ai ?? false;
+  const searchParams = useSearchParams();
+  // Instant Intro needs the open thread's messages, so it's only meaningful
+  // — and only shown — while actually viewing that thread on /mail?t=<id>.
+  const openThreadId = pathname === '/mail' ? searchParams.get('t') : null;
+  const { data: openThreadDetail } = useThreadDetail(openThreadId);
+  const selfEmails = useSelfEmails();
 
   // Reset the query when the palette closes; debounce it for live search.
   React.useEffect(() => {
@@ -221,6 +232,34 @@ export function CommandPalette() {
               C
             </Kbd>
           </CommandItem>
+          {openThreadDetail?.thread && (
+            <CommandItem
+              onSelect={() =>
+                run(() => {
+                  const myEmail = [...selfEmails][0] ?? '';
+                  const draft = buildInstantIntro(
+                    openThreadDetail.thread,
+                    openThreadDetail.messages,
+                    myEmail
+                  );
+                  if (!draft) {
+                    toast.error("This doesn't look like an intro thread");
+                    return;
+                  }
+                  openCompose({
+                    to: draft.to,
+                    bcc: draft.bcc,
+                    subject: draft.subject,
+                    body: draft.body,
+                    threadId: draft.threadId,
+                  });
+                })
+              }
+            >
+              <UserPlus />
+              Instant Intro
+            </CommandItem>
+          )}
           <CommandItem onSelect={() => { teachShortcut('search', '/', 'Search'); runMailCommand('search'); }}>
             <Search />
             Search mail
