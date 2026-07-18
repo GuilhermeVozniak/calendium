@@ -10,6 +10,7 @@ import { toast } from 'sonner';
 import { BulkBar } from '@/components/app/bulk-bar';
 import { htmlToText, useCompose } from '@/components/app/compose';
 import { GetMeToZero } from '@/components/app/get-me-to-zero';
+import { InboxZero } from '@/components/app/inbox-zero';
 import { LabelPicker } from '@/components/app/label-picker';
 import { TimePickerDialog } from '@/components/app/snooze-menu';
 import { ThreadView } from '@/components/app/thread-view';
@@ -892,23 +893,27 @@ function ErrorState() {
 }
 
 function EmptyState({ view, q }: { view: MailboxView | null; q: string }) {
-  let headline = "You're at Inbox Zero";
-  let sub = 'Nothing needs your attention here. Enjoy the calm.';
+  if (!q.trim() && !view) {
+    return <InboxZero />;
+  }
+
+  let headline = "No results";
+  let sub = "Nothing matches.";
   if (q.trim()) {
-    headline = 'No results';
-    sub = `Nothing matches “${q.trim()}”.`;
-  } else if (view === 'starred') {
-    headline = 'No starred conversations';
-    sub = 'Press S on any conversation to star it.';
-  } else if (view === 'snoozed') {
-    headline = 'Nothing snoozed';
-    sub = 'Press H to snooze a conversation until later.';
-  } else if (view === 'sent') {
-    headline = 'No sent mail yet';
-    sub = 'Messages you send will appear here.';
-  } else if (view === 'drafts') {
-    headline = 'No drafts';
-    sub = 'Press C to start writing — drafts autosave.';
+    headline = "No results";
+    sub = `Nothing matches "${q.trim()}".`;
+  } else if (view === "starred") {
+    headline = "No starred conversations";
+    sub = "Press S on any conversation to star it.";
+  } else if (view === "snoozed") {
+    headline = "Nothing snoozed";
+    sub = "Press H to snooze a conversation until later.";
+  } else if (view === "sent") {
+    headline = "No sent mail yet";
+    sub = "Messages you send will appear here.";
+  } else if (view === "drafts") {
+    headline = "No drafts";
+    sub = "Press C to start writing — drafts autosave.";
   }
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
@@ -919,9 +924,10 @@ function EmptyState({ view, q }: { view: MailboxView | null; q: string }) {
       <p className="text-muted-foreground max-w-xs text-xs text-balance">{sub}</p>
       {!q && !view && (
         <p className="text-muted-foreground mt-2 flex items-center gap-1.5 text-xs">
-          <KbdGroup size="sm" keys={['⌘', 'K']} /> for commands
+          <KbdGroup size="sm" keys={["⌘", "K"]} /> for commands
         </p>
       )}
     </div>
   );
 }
+
