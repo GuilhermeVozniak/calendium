@@ -894,14 +894,21 @@ function ErrorState() {
 
 function EmptyState({ view, q }: { view: MailboxView | null; q: string }) {
   if (!q.trim() && !view) {
-    return <InboxZero />;
+    return (
+      <div className="flex flex-1 flex-col">
+        <InboxZero />
+        <p className="text-muted-foreground flex items-center justify-center gap-1.5 pb-6 text-xs">
+          <KbdGroup size="sm" keys={["⌘", "K"]} /> for commands
+        </p>
+      </div>
+    );
   }
 
   let headline = "No results";
   let sub = "Nothing matches.";
   if (q.trim()) {
     headline = "No results";
-    sub = `Nothing matches "${q.trim()}".`;
+    sub = `Nothing matches “${q.trim()}”.`;
   } else if (view === "starred") {
     headline = "No starred conversations";
     sub = "Press S on any conversation to star it.";
@@ -922,11 +929,6 @@ function EmptyState({ view, q }: { view: MailboxView | null; q: string }) {
       </div>
       <p className="text-sm font-medium">{headline}</p>
       <p className="text-muted-foreground max-w-xs text-xs text-balance">{sub}</p>
-      {!q && !view && (
-        <p className="text-muted-foreground mt-2 flex items-center gap-1.5 text-xs">
-          <KbdGroup size="sm" keys={["⌘", "K"]} /> for commands
-        </p>
-      )}
     </div>
   );
 }
