@@ -409,7 +409,11 @@ export default function CalendarScreen() {
             {selectedJoinInfo && (
               <Button
                 className="mt-1 flex-row gap-2"
-                onPress={() => Linking.openURL(selectedJoinInfo.url)}>
+                onPress={() =>
+                  Linking.openURL(selectedJoinInfo.url).catch(() =>
+                    Alert.alert('Could not open the meeting link')
+                  )
+                }>
                 <Icon as={VideoIcon} className="size-4 text-primary-foreground" />
                 <Text>{selectedJoinInfo.label}</Text>
               </Button>
@@ -450,7 +454,9 @@ export default function CalendarScreen() {
                 </Pressable>
               ))}
               {(templatesQuery.data?.length ?? 0) === 0 && (
-                <Text className="text-sm text-muted-foreground">No saved templates yet.</Text>
+                <Text className="text-sm text-muted-foreground">
+                  {templatesQuery.isError ? "Couldn't load templates." : 'No saved templates yet.'}
+                </Text>
               )}
             </View>
 
@@ -591,7 +597,11 @@ function EventRow({
         {joinInfo && (
           <Pressable
             testID={`join-button-${event.id}`}
-            onPress={() => Linking.openURL(joinInfo.url)}
+            onPress={() =>
+              Linking.openURL(joinInfo.url).catch(() =>
+                Alert.alert('Could not open the meeting link')
+              )
+            }
             className="mt-1 flex-row items-center gap-1 self-start rounded-full bg-primary/10 px-2 py-0.5">
             <Icon as={VideoIcon} size={11} className="text-primary" />
             <Text className="text-[11px] font-medium text-primary">{joinInfo.label}</Text>
