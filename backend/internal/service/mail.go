@@ -968,10 +968,41 @@ func (s *MailService) ReactToMessage(ctx context.Context, userID, messageID, emo
 	// threaded "reply" back to themselves makes no sense.
 	willReply := sendReply && !strings.EqualFold(msg.From.Email, acct.Email)
 
+	// When a tiny-reply is wanted, create the draft FIRST: it's fast local DB
+	// work, not an external call, and Delivery's truth depends on whether it
+	// actually lands. Deciding Delivery up front and writing it in a single
+	// Reactions.Create (the repo has no Update; ON CONFLICT preserves the
+	// existing delivery) would leave a permanently false Delivery="sent" row
+	// with no queued draft on a rare drafts.Create failure. So Delivery
+	// below reflects the OBSERVED outcome, not a prediction.
+	var draftID *string
 	delivery := "local"
 	if willReply {
-		delivery = "sent"
+		now := s.clock.Now()
+		sendAt := now.Add(s.undoSendGrace)
+		draft := domain.Draft{
+			ID:          newID(),
+			AccountID:   acct.ID,
+			ThreadID:    &msg.ThreadID,
+			To:          []domain.EmailAddress{msg.From},
+			Subject:     "Re: " + msg.Subject,
+			BodyHTML:    "<p>" + emoji + "</p>",
+			ScheduledAt: &sendAt,
+			UpdatedAt:   now,
+		}
+		created, err := s.drafts.Create(ctx, draft)
+		if err != nil {
+			// Best-effort: a failed draft never fails the reaction; it is
+			// logged and discarded rather than rolled back, and simply
+			// leaves the reaction recorded as "local" below.
+			s.logger.Warn("tiny-reply draft creation failed", "message", messageID, "error", err)
+		} else {
+			id := created.ID
+			draftID = &id
+			delivery = "sent"
+		}
 	}
+
 	react, err := s.reactions.Create(ctx, domain.Reaction{
 		MessageID: messageID,
 		UserID:    userID,
@@ -981,33 +1012,7 @@ func (s *MailService) ReactToMessage(ctx context.Context, userID, messageID, emo
 	if err != nil {
 		return port.ReactionResult{}, err
 	}
-	result := port.ReactionResult{Reaction: react}
-	if !willReply {
-		return result, nil
-	}
-
-	now := s.clock.Now()
-	sendAt := now.Add(s.undoSendGrace)
-	draft := domain.Draft{
-		ID:          newID(),
-		AccountID:   acct.ID,
-		ThreadID:    &msg.ThreadID,
-		To:          []domain.EmailAddress{msg.From},
-		Subject:     "Re: " + msg.Subject,
-		BodyHTML:    "<p>" + emoji + "</p>",
-		ScheduledAt: &sendAt,
-		UpdatedAt:   now,
-	}
-	created, err := s.drafts.Create(ctx, draft)
-	if err != nil {
-		// Best-effort: the reaction is already stored (Delivery: "sent"); a
-		// failure here is logged and discarded rather than rolled back.
-		s.logger.Warn("tiny-reply draft creation failed", "message", messageID, "error", err)
-		return result, nil
-	}
-	draftID := created.ID
-	result.DraftID = &draftID
-	return result, nil
+	return port.ReactionResult{Reaction: react, DraftID: draftID}, nil
 }
 
 // RemoveReaction deletes the caller's reaction from messageID.

@@ -1898,6 +1898,81 @@ func TestReactToMessageLocalOnlyWhenSendReplyFalse(t *testing.T) {
 	}
 }
 
+// failingDraftCreateRepo wraps a DraftRepo and forces Create to always fail,
+// letting a test exercise ReactToMessage's drafts.Create error path without
+// modifying the shared fakeDraftRepo used across the package.
+type failingDraftCreateRepo struct {
+	port.DraftRepo
+	err error
+}
+
+func (r *failingDraftCreateRepo) Create(_ context.Context, _ domain.Draft) (domain.Draft, error) {
+	return domain.Draft{}, r.err
+}
+
+// draftExistsAtReactionCreateSpy wraps a ReactionRepo and records, at the
+// moment Create is invoked, whether a tiny-reply draft already exists —
+// proving the fix creates the draft BEFORE persisting the reaction so
+// Delivery reflects the OBSERVED outcome rather than a prediction.
+type draftExistsAtReactionCreateSpy struct {
+	port.ReactionRepo
+	drafts        *fakeDraftRepo
+	createCalls   int
+	draftsAtFirst int
+}
+
+func (s *draftExistsAtReactionCreateSpy) Create(ctx context.Context, react domain.Reaction) (domain.Reaction, error) {
+	s.createCalls++
+	if s.createCalls == 1 {
+		s.draftsAtFirst = len(s.drafts.byID)
+	}
+	return s.ReactionRepo.Create(ctx, react)
+}
+
+func TestReactToMessageDraftFailureRecordsLocalDelivery(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	f.svc = NewMailService(MailServiceDeps{
+		Accounts:      f.accounts,
+		Threads:       f.threads,
+		Messages:      f.messages,
+		Drafts:        &failingDraftCreateRepo{DraftRepo: f.drafts, err: errors.New("db unavailable")},
+		Snippets:      f.snippets,
+		Labels:        f.labels,
+		Reactions:     f.reactions,
+		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: f.provider},
+		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: f.oauth},
+		Unsubscriber:  f.unsub,
+		Clock:         f.clock,
+		SelfHosted:    true,
+		UndoSendGrace: 15 * time.Second,
+	})
+
+	res, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", true)
+	if err != nil {
+		t.Fatalf("ReactToMessage: %v (a draft failure must never fail the reaction)", err)
+	}
+	if res.Reaction.Delivery != "local" {
+		t.Fatalf("Delivery = %q, want local when the tiny-reply draft failed to queue", res.Reaction.Delivery)
+	}
+	if res.DraftID != nil {
+		t.Fatalf("DraftID = %v, want nil after a draft creation failure", *res.DraftID)
+	}
+	if len(f.drafts.byID) != 0 {
+		t.Fatalf("no draft should be persisted, got %d", len(f.drafts.byID))
+	}
+	grouped, err := f.reactions.ListByMessages(ctx, []string{"m1"})
+	if err != nil {
+		t.Fatalf("ListByMessages: %v", err)
+	}
+	if len(grouped["m1"]) != 1 || grouped["m1"][0].Delivery != "local" {
+		t.Fatalf("stored reaction = %+v, want exactly one reaction with Delivery=local", grouped["m1"])
+	}
+}
+
 func TestReactToMessageSendsGraceScheduledTinyReply(t *testing.T) {
 	f := newMailFixture(t)
 	ctx := context.Background()
@@ -1933,6 +2008,48 @@ func TestReactToMessageSendsGraceScheduledTinyReply(t *testing.T) {
 	wantSendAt := f.clock.Now().Add(f.svc.undoSendGrace)
 	if d.ScheduledAt == nil || !d.ScheduledAt.Equal(wantSendAt) {
 		t.Fatalf("draft ScheduledAt = %v, want now+grace %v", d.ScheduledAt, wantSendAt)
+	}
+}
+
+// TestReactToMessageRecordsDeliveryAfterDraftExists pins the corrected
+// ordering: the tiny-reply draft is created BEFORE the single
+// Reactions.Create call, so Delivery="sent" is only ever persisted once the
+// draft genuinely exists (never predicted ahead of the outcome).
+func TestReactToMessageRecordsDeliveryAfterDraftExists(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	spy := &draftExistsAtReactionCreateSpy{ReactionRepo: f.reactions, drafts: f.drafts}
+	f.svc = NewMailService(MailServiceDeps{
+		Accounts:      f.accounts,
+		Threads:       f.threads,
+		Messages:      f.messages,
+		Drafts:        f.drafts,
+		Snippets:      f.snippets,
+		Labels:        f.labels,
+		Reactions:     spy,
+		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: f.provider},
+		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: f.oauth},
+		Unsubscriber:  f.unsub,
+		Clock:         f.clock,
+		SelfHosted:    true,
+		UndoSendGrace: 15 * time.Second,
+	})
+
+	res, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", true)
+	if err != nil {
+		t.Fatalf("ReactToMessage: %v", err)
+	}
+	if res.Reaction.Delivery != "sent" {
+		t.Fatalf("Delivery = %q, want sent", res.Reaction.Delivery)
+	}
+	if spy.createCalls != 1 {
+		t.Fatalf("Reactions.Create called %d times, want exactly 1", spy.createCalls)
+	}
+	if spy.draftsAtFirst != 1 {
+		t.Fatalf("drafts persisted at Reactions.Create time = %d, want 1 (draft must exist first)", spy.draftsAtFirst)
 	}
 }
 
