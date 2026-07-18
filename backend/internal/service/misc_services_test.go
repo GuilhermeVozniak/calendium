@@ -704,3 +704,86 @@ func TestUserServiceGetUser(t *testing.T) {
 		}
 	})
 }
+
+// --- SettingsService -----------------------------------------------------------
+
+// TestSettingsServiceGet_DefaultsOnMissingRow covers the missing-row default:
+// the repo (real and fake) synthesizes TimeZone "UTC" with no working hours,
+// and the service normalizes WorkingHours to an empty (never nil) slice.
+func TestSettingsServiceGet_DefaultsOnMissingRow(t *testing.T) {
+	svc := NewSettingsService(newUserSettingsRepo())
+
+	got, err := svc.Get(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.TimeZone != "UTC" {
+		t.Fatalf("TimeZone = %q, want UTC", got.TimeZone)
+	}
+	if got.WorkingHours == nil || len(got.WorkingHours) != 0 {
+		t.Fatalf("WorkingHours = %#v, want empty non-nil slice", got.WorkingHours)
+	}
+}
+
+// TestSettingsServiceUpdate_RoundTrip covers a valid update persisting and
+// echoing back through Get.
+func TestSettingsServiceUpdate_RoundTrip(t *testing.T) {
+	repo := newUserSettingsRepo()
+	svc := NewSettingsService(repo)
+	ctx := context.Background()
+
+	in := domain.UserSettings{
+		TimeZone:        "America/New_York",
+		WorkingLocation: "home",
+		WorkingHours: []domain.AvailabilityWindow{
+			{Weekday: 1, Start: "09:00", End: "17:00"},
+		},
+	}
+	updated, err := svc.Update(ctx, "u1", in)
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.UserID != "u1" {
+		t.Fatalf("UserID = %q, want u1", updated.UserID)
+	}
+
+	got, err := svc.Get(ctx, "u1")
+	if err != nil {
+		t.Fatalf("Get after Update: %v", err)
+	}
+	if got.TimeZone != "America/New_York" || got.WorkingLocation != "home" {
+		t.Fatalf("Get after Update = %+v, want America/New_York, home", got)
+	}
+	if len(got.WorkingHours) != 1 || got.WorkingHours[0].Start != "09:00" {
+		t.Fatalf("WorkingHours after Update = %+v", got.WorkingHours)
+	}
+}
+
+// TestSettingsServiceUpdate_InvalidTimeZone covers time.LoadLocation
+// rejection: an unloadable zone name is a validation error, not persisted.
+func TestSettingsServiceUpdate_InvalidTimeZone(t *testing.T) {
+	repo := newUserSettingsRepo()
+	svc := NewSettingsService(repo)
+
+	_, err := svc.Update(context.Background(), "u1", domain.UserSettings{TimeZone: "Not/AZone"})
+	if !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("err = %v, want ErrValidation", err)
+	}
+}
+
+// TestSettingsServiceUpdate_InvalidWorkingHours covers AvailabilityWindow
+// validation (end must be after start) rejecting the update before Upsert.
+func TestSettingsServiceUpdate_InvalidWorkingHours(t *testing.T) {
+	repo := newUserSettingsRepo()
+	svc := NewSettingsService(repo)
+
+	_, err := svc.Update(context.Background(), "u1", domain.UserSettings{
+		TimeZone: "UTC",
+		WorkingHours: []domain.AvailabilityWindow{
+			{Weekday: 1, Start: "17:00", End: "09:00"},
+		},
+	})
+	if !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("err = %v, want ErrValidation", err)
+	}
+}

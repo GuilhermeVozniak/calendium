@@ -157,6 +157,27 @@ func run(logger *slog.Logger) error {
 	})
 	devices := service.NewDeviceService(store.Devices(), clock)
 	prefs := service.NewPrefsService(store.Prefs())
+	scheduling := service.NewSchedulingService(service.SchedulingServiceDeps{
+		Subscriptions:     store.Subscriptions(),
+		Users:             store.Users(),
+		Accounts:          store.Accounts(),
+		Calendars:         store.Calendars(),
+		Events:            store.Events(),
+		Links:             store.BookingLinks(),
+		Bookings:          store.Bookings(),
+		Polls:             store.Polls(),
+		Proposals:         store.TimeProposals(),
+		Settings:          store.UserSettings(),
+		Tx:                store,
+		CalendarProviders: calendarProviders,
+		MailProviders:     mailProviders,
+		OAuth:             oauth,
+		Clock:             clock,
+		SelfHosted:        cfg.Instance.SelfHosted,
+		PublicWebURL:      cfg.Instance.PublicWebURL,
+		Logger:            logger,
+	})
+	settingsSvc := service.NewSettingsService(store.UserSettings())
 
 	// --- instance discovery document (GET /v1/instance) ---
 	mode := httpapi.ModeCloud
@@ -214,6 +235,8 @@ func run(logger *slog.Logger) error {
 		AI:                 aiSvc,
 		Devices:            devices,
 		Prefs:              prefs,
+		Scheduling:         scheduling,
+		Settings:           settingsSvc,
 		Payments:           stripe,
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
