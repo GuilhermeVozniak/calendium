@@ -49,8 +49,14 @@ func TestParseProvider(t *testing.T) {
 
 func TestParseAiAction(t *testing.T) {
 	checkValidator(t, "ParseAiAction", ParseAiAction,
-		[]string{"compose", "reply", "summarize", "ask"},
+		[]string{"compose", "reply", "summarize", "ask", "improve", "shorten", "simplify", "fix_grammar", "change_tone"},
 		[]string{"", "Compose", "translate", "summarise", "answer"})
+}
+
+func TestParseAiJobKind(t *testing.T) {
+	checkValidator(t, "ParseAiJobKind", ParseAiJobKind,
+		[]string{"thread_summary", "instant_replies", "auto_draft", "classify", "reminder_detect", "voice_profile"},
+		[]string{"", "ThreadSummary", "thread-summary", "unknown"})
 }
 
 func TestParseRsvpStatus(t *testing.T) {
