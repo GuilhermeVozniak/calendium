@@ -1892,6 +1892,12 @@ var _ port.BookingRepo = (*fakeBookingRepo)(nil)
 type fakePollRepo struct {
 	byID  map[string]domain.MeetingPoll
 	votes map[string]domain.PollVote
+
+	// createErrs, when non-empty, is consumed FIFO by Create (one error per
+	// call, poll not stored) instead of the normal insert path — lets a test
+	// simulate a token collision (domain.ErrConflict) that the service must
+	// retry past with a freshly generated token.
+	createErrs []error
 }
 
 func newPollRepo() *fakePollRepo {
@@ -1903,6 +1909,11 @@ func pollVoteKey(pollID, optionID, voterEmail string) string {
 }
 
 func (r *fakePollRepo) Create(_ context.Context, p domain.MeetingPoll) (domain.MeetingPoll, error) {
+	if len(r.createErrs) > 0 {
+		err := r.createErrs[0]
+		r.createErrs = r.createErrs[1:]
+		return domain.MeetingPoll{}, err
+	}
 	if p.ID == "" {
 		p.ID = newID()
 	}
