@@ -17,7 +17,11 @@ import {
   type EventTemplate,
   type InboxSplit,
   type Message,
+  type OpenEvent,
   type Page,
+  type Reaction,
+  type ReactionResult,
+  type SendSuggestion,
   type Subscription,
   type Thread,
 } from '@calendium/shared';
@@ -247,6 +251,7 @@ function messagesForThread(t: Thread): Message[] {
       sentAt: new Date(lastAt - (count - 1 - i) * stepMs).toISOString(),
       isDraft: false,
       openedAt: null,
+      reactions: [],
     } satisfies Message;
   });
 }
@@ -411,10 +416,26 @@ export const mockAccounts: ConnectedAccount[] = [
     status: 'active',
     scopes: ['gmail.modify', 'calendar'],
     vipSenders: [],
+    signatureHtml: '<p>Best,<br/>You</p>',
+    autoBcc: [],
     lastSyncedAt: minutesAgo(4),
     createdAt: daysFromNow(-30),
   },
 ];
+
+/** Replaces a mock account's signature in place (demo mode only). */
+export function mockSetSignature(accountId: string, signatureHtml: string): ConnectedAccount {
+  const account = mockAccounts.find((a) => a.id === accountId) ?? mockAccounts[0];
+  account.signatureHtml = signatureHtml;
+  return account;
+}
+
+/** Replaces a mock account's auto-BCC list in place (demo mode only). */
+export function mockSetAutoBcc(accountId: string, autoBcc: string[]): ConnectedAccount {
+  const account = mockAccounts.find((a) => a.id === accountId) ?? mockAccounts[0];
+  account.autoBcc = autoBcc;
+  return account;
+}
 
 export const mockSubscription: Subscription = {
   status: 'trialing',
@@ -532,4 +553,61 @@ export function mockAskCited(question: string, threadId?: string): AiAskResponse
       snippet: t.snippet,
     })),
   };
+}
+
+// ---------------------------------------------------------------------------
+// M2.5 — Recent Opens, Smart Send, reactions (Task 20 mobile parity)
+// ---------------------------------------------------------------------------
+
+/** Recent Opens feed (demo mode only) — a handful of sent messages the recipient opened. */
+export function mockOpens(): Page<OpenEvent> {
+  const withParticipants = mockThreads.filter((t) => t.participants.length > 0).slice(0, 6);
+  return {
+    items: withParticipants.map((t, i) => ({
+      messageId: `${t.id}_open`,
+      threadId: t.id,
+      accountId: t.accountId,
+      subject: t.subject,
+      recipients: t.participants.filter((p) => p.email !== 'you@calendium.app'),
+      openedAt: minutesAgo(5 + i * 12),
+      sentAt: minutesAgo(40 + i * 12),
+    })),
+    nextCursor: null,
+  };
+}
+
+/**
+ * Smart Send suggestion (demo mode only). Mirrors the real backend's
+ * "insufficient history" behavior (ApiRequestError 404) for any recipient not
+ * already in the mock thread data, so demo mode exercises the same
+ * resolution-gated hiding the real 404 does.
+ */
+export function mockSendSuggestion(email: string): SendSuggestion {
+  const known = mockThreads.some((t) => t.participants.some((p) => p.email === email));
+  if (!known) {
+    throw new ApiRequestError(404, 'not_found', 'Not enough open history yet for this recipient.');
+  }
+  return {
+    email,
+    suggestedAt: new Date(NOW + 18 * 3_600_000).toISOString(),
+    utcOffsetHours: -5,
+    confidence: 0.72,
+    sampleSize: 8,
+  };
+}
+
+/** Stores a demo-mode-only emoji reaction; sendReply flips Delivery to "sent" (mirrors the real backend). */
+export function mockReactToMessage(
+  messageId: string,
+  emoji: string,
+  sendReply: boolean
+): ReactionResult {
+  const reaction: Reaction = {
+    id: `reaction_${Date.now()}`,
+    messageId,
+    emoji,
+    delivery: sendReply ? 'sent' : 'local',
+    createdAt: new Date().toISOString(),
+  };
+  return { reaction, draftId: sendReply ? `draft_reaction_${Date.now()}` : null };
 }

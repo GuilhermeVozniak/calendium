@@ -6,13 +6,18 @@ jest.mock('@/lib/server-config', () => ({
 const mockGetThread = jest.fn();
 const mockGetInstantReplies = jest.fn();
 const mockMarkThreadOpened = jest.fn();
+const mockReactToMessage = jest.fn();
 jest.mock('@/lib/api', () => ({
   api: {
     getThread: (...args: unknown[]) => mockGetThread(...args),
     getInstantReplies: (...args: unknown[]) => mockGetInstantReplies(...args),
     markThreadOpened: (...args: unknown[]) => mockMarkThreadOpened(...args),
+    reactToMessage: (...args: unknown[]) => mockReactToMessage(...args),
   },
 }));
+
+let lastAlertButtons: Array<{ text?: string; onPress?: () => void }> | undefined;
+let alertSpy: jest.SpyInstance;
 
 const mockRouterBack = jest.fn();
 const mockCanGoBack = jest.fn(() => true);
@@ -28,6 +33,7 @@ jest.mock('react-native-safe-area-context', () => ({
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import type { Message, Thread } from '@calendium/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Alert } from 'react-native';
 import ThreadScreen from './[id]';
 
 const AI_ENABLED_CONFIG = { features: { billing: false, google: false, microsoft: false, ai: true, push: false } };
@@ -70,6 +76,7 @@ const MESSAGES: Message[] = [
     sentAt: new Date().toISOString(),
     isDraft: false,
     openedAt: null,
+    reactions: [],
   },
 ];
 
@@ -99,7 +106,22 @@ beforeEach(() => {
   mockGetInstantReplies.mockResolvedValue({
     replies: ['Sounds good, thanks!', "I'll take a look and follow up."],
   });
+  lastAlertButtons = undefined;
+  alertSpy = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
+    lastAlertButtons = buttons as typeof lastAlertButtons;
+  });
 });
+
+afterEach(() => {
+  alertSpy.mockRestore();
+});
+
+async function pressAlertOption(label: string) {
+  const button = lastAlertButtons?.find((b) => b.text === label);
+  await act(async () => {
+    button?.onPress?.();
+  });
+}
 
 describe('ThreadScreen — AI surfacing', () => {
   it('renders the summary line from thread.summary and the instant-reply chips', async () => {
@@ -132,5 +154,57 @@ describe('ThreadScreen — AI surfacing', () => {
     ).toBeNull();
     expect(mockGetInstantReplies).not.toHaveBeenCalled();
     expect(screen.queryByText('Sounds good, thanks!')).toBeNull();
+  });
+});
+
+// Pure rendering checks (no live interaction): pre-seeds a reaction on the
+// fixture message so the "sent" tiny-reply indicator's honesty — driven
+// strictly by the loaded reaction's `delivery` field — is verified straight
+// from data, independent of the live long-press flow exercised below.
+describe('ThreadScreen — reaction chips (rendering)', () => {
+  it('shows the tiny-reply "sent" indicator only for a reaction whose delivery is "sent"', async () => {
+    mockGetThread.mockResolvedValue({
+      thread: THREAD,
+      messages: [
+        {
+          ...MESSAGES[0],
+          reactions: [
+            { id: 'r_sent', messageId: 'msg_1', emoji: '👍', delivery: 'sent', createdAt: new Date().toISOString() },
+            { id: 'r_local', messageId: 'msg_1', emoji: '✅', delivery: 'local', createdAt: new Date().toISOString() },
+          ],
+        },
+      ],
+    });
+
+    await renderScreen();
+    await flush();
+
+    expect(screen.getByText('👍')).toBeTruthy();
+    expect(screen.getByText('✅')).toBeTruthy();
+    expect(screen.getByTestId('reaction-sent-r_sent')).toBeTruthy();
+    expect(screen.queryByTestId('reaction-sent-r_local')).toBeNull();
+  });
+});
+
+describe('ThreadScreen — reaction long-press interaction', () => {
+  it('long-press on a message opens the reaction picker and calls reactToMessage with sendReply', async () => {
+    mockReactToMessage.mockResolvedValue({
+      reaction: {
+        id: 'reaction_1',
+        messageId: 'msg_1',
+        emoji: '👍',
+        delivery: 'sent',
+        createdAt: new Date().toISOString(),
+      },
+      draftId: 'draft_1',
+    });
+    await renderScreen();
+    await flush();
+
+    fireEvent(await screen.findByTestId('message-msg_1'), 'longPress');
+    await pressAlertOption('👍');
+    await flush();
+
+    expect(mockReactToMessage).toHaveBeenCalledWith('msg_1', '👍', true);
   });
 });

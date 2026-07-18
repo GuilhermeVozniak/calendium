@@ -10,11 +10,13 @@ import {
   mockAccounts,
   mockAiCompose,
   mockAiEditDraft,
+  mockSendSuggestion,
   withMockFallback,
 } from '@/lib/mock';
+import { formatSendSuggestion, htmlToPlainText } from '@/lib/mail-extras';
 import { useServerConfig } from '@/lib/server-config';
 import { ApiRequestError, type AiEditAction } from '@calendium/shared';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { SendIcon, SparklesIcon, Wand2Icon, XIcon } from 'lucide-react-native';
 import * as React from 'react';
@@ -41,6 +43,37 @@ export default function ComposeScreen() {
       withMockFallback(
         () => api.listAccounts(),
         () => mockAccounts
+      ),
+  });
+
+  // Signature auto-append (M2.5): once the sending account resolves, append
+  // its plain-text signature (htmlToPlainText strips the stored, possibly
+  // rich, signatureHtml — mobile compose is plain-text only) exactly once per
+  // compose session, never again on later body edits.
+  const signatureAppendedRef = React.useRef(false);
+  React.useEffect(() => {
+    const account = accountsQuery.data?.[0];
+    if (!account || signatureAppendedRef.current) return;
+    signatureAppendedRef.current = true;
+    const signature = htmlToPlainText(account.signatureHtml).trim();
+    if (!signature) return;
+    setBody((current) => (current ? `${current}\n\n${signature}` : signature));
+  }, [accountsQuery.data]);
+
+  // Smart Send (M2.5): once a recipient with a well-formed email address is
+  // entered, look up their inferred best-open-time. Resolution-gated — the
+  // line only renders once the request actually resolves, and a 404 (too
+  // little open history) is a normal, silent "no suggestion" outcome, never
+  // an error toast.
+  const firstRecipientEmail = to.split(/[,;\s]+/).find((token) => /^\S+@\S+\.\S+$/.test(token));
+  const suggestionQuery = useQuery({
+    queryKey: ['send-suggestion', firstRecipientEmail],
+    enabled: Boolean(firstRecipientEmail),
+    retry: false,
+    queryFn: () =>
+      withMockFallback(
+        () => api.getSendSuggestion(firstRecipientEmail!),
+        () => mockSendSuggestion(firstRecipientEmail!)
       ),
   });
 
@@ -227,6 +260,11 @@ export default function ComposeScreen() {
           autoCorrect={false}
           keyboardType="email-address"
         />
+        {suggestionQuery.data && (
+          <Text className="px-1 text-xs text-muted-foreground">
+            {formatSendSuggestion(suggestionQuery.data)}
+          </Text>
+        )}
         <Input value={subject} onChangeText={setSubject} placeholder="Subject" />
         <Input
           value={body}
