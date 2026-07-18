@@ -53,6 +53,8 @@ func statusFor(err error) (int, string) {
 		return http.StatusConflict, "conflict"
 	case errors.Is(err, domain.ErrSelfHosted):
 		return http.StatusNotImplemented, "self_hosted"
+	case errors.Is(err, domain.ErrNotImplemented):
+		return http.StatusNotImplemented, "not_implemented"
 	case errors.Is(err, domain.ErrAIOutput):
 		return http.StatusBadGateway, "ai_output_invalid"
 	case errors.Is(err, domain.ErrAIUnavailable):
@@ -81,6 +83,8 @@ func safeMessage(code string) string {
 		return "The request conflicts with the current state of the resource."
 	case "self_hosted":
 		return "Billing is disabled on self-hosted instances."
+	case "not_implemented":
+		return "This feature is not yet available."
 	case "ai_output_invalid":
 		return "The AI returned an unexpected response."
 	case "ai_unavailable":

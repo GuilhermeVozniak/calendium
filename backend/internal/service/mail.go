@@ -784,7 +784,11 @@ func emptyIfNil(addrs []domain.EmailAddress) []domain.EmailAddress {
 // Recent Opens, Smart Send, attachment quick access, contact summary, and
 // emoji reactions — is implemented in later M2.5 tasks (8, 9, 10 in
 // docs/superpowers/plans/2026-07-17-m2-5-compose-contact.md).
-var errNotImplemented = errors.New("not implemented")
+//
+// errNotImplemented aliases domain.ErrNotImplemented (rather than a bare
+// errors.New) so callers can errors.Is against the shared sentinel and the
+// HTTP adapter maps every stub uniformly to 501.
+var errNotImplemented = domain.ErrNotImplemented
 
 func (s *MailService) ListOpens(ctx context.Context, userID, cursor string, limit int) (domain.Page[domain.OpenEvent], error) {
 	return domain.Page[domain.OpenEvent]{}, errNotImplemented

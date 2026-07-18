@@ -15,6 +15,7 @@ import "errors"
 //	ErrValidation      → 400
 //	ErrConflict        → 409
 //	ErrSelfHosted      → 501
+//	ErrNotImplemented  → 501
 //	ErrAIUnavailable   → 503
 //	ErrAIOutput        → 502
 //	ErrRateLimited     → 429
@@ -28,6 +29,14 @@ var (
 	// instances (the Stripe billing endpoints). The HTTP adapter maps it to
 	// 501 Not Implemented.
 	ErrSelfHosted = errors.New("self-hosted")
+	// ErrNotImplemented marks a method that is a temporary stub during M2.5
+	// buildout (the real implementation lands in a later task). Stubs must
+	// return this sentinel rather than a bare error string, so callers can
+	// errors.Is against it and it must never survive to a shipped,
+	// feature-complete endpoint. The HTTP adapter maps it to 501 Not
+	// Implemented (error code "not_implemented", distinct from
+	// ErrSelfHosted's "self_hosted").
+	ErrNotImplemented = errors.New("not implemented")
 	// ErrAIUnavailable marks that AI is not configured on this deployment
 	// (no API key). The HTTP adapter maps it to 503 Service Unavailable.
 	ErrAIUnavailable = errors.New("ai unavailable")

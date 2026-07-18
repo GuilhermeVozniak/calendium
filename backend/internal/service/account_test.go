@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -128,6 +129,131 @@ func TestDisconnectAccount(t *testing.T) {
 
 		if err := svc.Disconnect(ctx, "u1", "ghost"); !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("Disconnect(u1, ghost) err = %v, want ErrNotFound", err)
+		}
+	})
+}
+
+// --- AccountService.SetSignature ---------------------------------------------
+
+// TestSetSignature pins account.go SetSignature: an owned account's
+// SignatureHTML is replaced verbatim (no sanitization at this layer — that
+// happens at the HTTP boundary) and persisted via Update; a foreign account
+// returns domain.ErrNotFound and leaves the account untouched.
+func TestSetSignature(t *testing.T) {
+	ctx := context.Background()
+	const owner = "u1"
+	const html = "<p>Best,<br>Ada</p>"
+
+	t.Run("happy path persists the signature", func(t *testing.T) {
+		accounts := newAccountRepo()
+		if _, err := accounts.Create(ctx, domain.ConnectedAccount{ID: "a1", UserID: owner}); err != nil {
+			t.Fatal(err)
+		}
+		svc := NewAccountService(accounts, nil, nil, nil, nil, "", newClock(time.Now()))
+
+		got, err := svc.SetSignature(ctx, owner, "a1", html)
+		if err != nil {
+			t.Fatalf("SetSignature: %v", err)
+		}
+		if got.SignatureHTML != html {
+			t.Fatalf("SignatureHTML = %q, want %q", got.SignatureHTML, html)
+		}
+		if accounts.updated == nil || accounts.updated.SignatureHTML != html {
+			t.Fatalf("not persisted through Update: %+v", accounts.updated)
+		}
+	})
+
+	t.Run("foreign account returns ErrNotFound, unchanged", func(t *testing.T) {
+		accounts := newAccountRepo()
+		if _, err := accounts.Create(ctx, domain.ConnectedAccount{ID: "a1", UserID: "u2"}); err != nil {
+			t.Fatal(err)
+		}
+		svc := NewAccountService(accounts, nil, nil, nil, nil, "", newClock(time.Now()))
+
+		if _, err := svc.SetSignature(ctx, owner, "a1", html); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("SetSignature(intruder) err = %v, want ErrNotFound", err)
+		}
+		if accounts.updated != nil {
+			t.Fatalf("foreign account was updated: %+v", accounts.updated)
+		}
+		stored, err := accounts.GetByID(ctx, "a1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.SignatureHTML != "" {
+			t.Fatalf("SignatureHTML = %q, want unchanged empty", stored.SignatureHTML)
+		}
+	})
+
+	t.Run("missing account returns ErrNotFound", func(t *testing.T) {
+		accounts := newAccountRepo()
+		svc := NewAccountService(accounts, nil, nil, nil, nil, "", newClock(time.Now()))
+
+		if _, err := svc.SetSignature(ctx, owner, "ghost", html); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("SetSignature(ghost) err = %v, want ErrNotFound", err)
+		}
+	})
+}
+
+// --- AccountService.SetAutoBcc ------------------------------------------------
+
+// TestSetAutoBcc pins account.go SetAutoBcc: an owned account's auto-BCC list
+// is normalized (trimmed, lowercased, de-duplicated — same as SetVipSenders)
+// and persisted via Update; a foreign account returns domain.ErrNotFound and
+// leaves the account untouched.
+func TestSetAutoBcc(t *testing.T) {
+	ctx := context.Background()
+	const owner = "u1"
+
+	t.Run("happy path normalizes and persists", func(t *testing.T) {
+		accounts := newAccountRepo()
+		if _, err := accounts.Create(ctx, domain.ConnectedAccount{ID: "a1", UserID: owner}); err != nil {
+			t.Fatal(err)
+		}
+		svc := NewAccountService(accounts, nil, nil, nil, nil, "", newClock(time.Now()))
+
+		got, err := svc.SetAutoBcc(ctx, owner, "a1",
+			[]string{" Archive@X.com ", "archive@x.com", "", "legal@y.com"})
+		if err != nil {
+			t.Fatalf("SetAutoBcc: %v", err)
+		}
+		want := []string{"archive@x.com", "legal@y.com"}
+		if !reflect.DeepEqual(got.AutoBcc, want) {
+			t.Fatalf("AutoBcc = %v, want %v", got.AutoBcc, want)
+		}
+		if accounts.updated == nil || !reflect.DeepEqual(accounts.updated.AutoBcc, want) {
+			t.Fatalf("not persisted through Update: %+v", accounts.updated)
+		}
+	})
+
+	t.Run("foreign account returns ErrNotFound, unchanged", func(t *testing.T) {
+		accounts := newAccountRepo()
+		if _, err := accounts.Create(ctx, domain.ConnectedAccount{ID: "a1", UserID: "u2"}); err != nil {
+			t.Fatal(err)
+		}
+		svc := NewAccountService(accounts, nil, nil, nil, nil, "", newClock(time.Now()))
+
+		if _, err := svc.SetAutoBcc(ctx, owner, "a1", []string{"x@y.com"}); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("SetAutoBcc(intruder) err = %v, want ErrNotFound", err)
+		}
+		if accounts.updated != nil {
+			t.Fatalf("foreign account was updated: %+v", accounts.updated)
+		}
+		stored, err := accounts.GetByID(ctx, "a1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(stored.AutoBcc) != 0 {
+			t.Fatalf("AutoBcc = %v, want unchanged empty", stored.AutoBcc)
+		}
+	})
+
+	t.Run("missing account returns ErrNotFound", func(t *testing.T) {
+		accounts := newAccountRepo()
+		svc := NewAccountService(accounts, nil, nil, nil, nil, "", newClock(time.Now()))
+
+		if _, err := svc.SetAutoBcc(ctx, owner, "ghost", []string{"x@y.com"}); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("SetAutoBcc(ghost) err = %v, want ErrNotFound", err)
 		}
 	})
 }

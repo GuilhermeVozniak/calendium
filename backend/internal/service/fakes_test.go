@@ -1087,6 +1087,9 @@ type fakeMailProvider struct {
 	sentResult      port.SentMessage
 	sendErr         error
 	modifyLabelsErr error
+	// fetchAttachmentErr overrides FetchAttachment's default
+	// domain.ErrNotImplemented return; nil keeps the default.
+	fetchAttachmentErr error
 
 	// recording
 	sent               []port.OutgoingMessage
@@ -1131,9 +1134,15 @@ func (p *fakeMailProvider) ModifyLabels(_ context.Context, accessToken, provider
 }
 
 // FetchAttachment is an M2.5 stub (real provider fetch lands in a later
-// task); it returns zero values so the package compiles.
+// task); it returns domain.ErrNotImplemented by default, consistent with the
+// package-level errNotImplemented used by the other M2.5 stubs, so tests can
+// errors.Is against a shared sentinel rather than a bare nil-nil result.
+// fetchAttachmentErr lets a test override the returned error.
 func (p *fakeMailProvider) FetchAttachment(_ context.Context, accessToken, providerMessageID, providerAttachmentID string) ([]byte, string, error) {
-	return nil, "", nil
+	if p.fetchAttachmentErr != nil {
+		return nil, "", p.fetchAttachmentErr
+	}
+	return nil, "", domain.ErrNotImplemented
 }
 
 var _ port.MailProvider = (*fakeMailProvider)(nil)
