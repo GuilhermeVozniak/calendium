@@ -3,6 +3,23 @@ import { describe, expect, it } from 'vitest';
 import { detectConference, isJoinable } from './conferencing';
 
 describe('detectConference', () => {
+  it('keeps multi-param teams meetup-join urls intact past &', () => {
+    const url =
+      'https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0?context=%7b%22Tid%22%3a%22t%22%7d&anon=true';
+    expect(detectConference({ conferencing: null, location: url, description: null })).toEqual({
+      provider: 'teams',
+      url,
+    });
+  });
+
+  it('keeps multi-param webex j.php urls intact past &', () => {
+    const url = 'https://company.webex.com/company/j.php?MTID=m123&RGID=r456';
+    expect(detectConference({ conferencing: null, location: url, description: null })).toEqual({
+      provider: 'webex',
+      url,
+    });
+  });
+
   it('matches a zoom /j/ URL with a password query param', () => {
     const result = detectConference({
       conferencing: null,

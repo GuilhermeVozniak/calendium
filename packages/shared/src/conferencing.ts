@@ -16,8 +16,8 @@ export interface DetectedConference {
 const PATTERNS: ReadonlyArray<readonly [ConferenceProvider, RegExp]> = [
   ['zoom', /https?:\/\/(?:[\w-]+\.)?zoom\.us\/(?:j|my|s|w)\/[\w?=&.-]+/i],
   ['meet', /https?:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}(?:\?[\w=&-]*)?/i],
-  ['teams', /https?:\/\/teams\.(?:microsoft|live)\.com\/(?:l\/meetup-join|meet)\/[\w%/=?.-]+/i],
-  ['webex', /https?:\/\/(?:[\w-]+\.)?webex\.com\/(?:meet|join|wbxmjs|[\w-]+\/j\.php)[\w%/=?.-]*/i],
+  ['teams', /https?:\/\/teams\.(?:microsoft|live)\.com\/(?:l\/meetup-join|meet)\/[\w%/=?.&-]+/i],
+  ['webex', /https?:\/\/(?:[\w-]+\.)?webex\.com\/(?:meet|join|wbxmjs|[\w-]+\/j\.php)[\w%/=?.&-]*/i],
 ];
 
 /**
