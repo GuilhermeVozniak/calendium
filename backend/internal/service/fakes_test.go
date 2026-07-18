@@ -400,9 +400,44 @@ var _ port.ThreadRepo = (*fakeThreadRepo)(nil)
 type fakeMessageRepo struct {
 	byID  map[string]domain.Message
 	order []string
+
+	// attachmentByID indexes attachments seeded via seedAttachment, keyed by
+	// attachment id, for GetAttachment (Task 9: attachment quick access).
+	attachmentByID map[string]fakeAttachmentRecord
+
+	// searchAttachmentsResult is returned verbatim by SearchAttachments;
+	// lastSearchQuery records the last query passed in (Task 9).
+	searchAttachmentsResult domain.Page[domain.AttachmentHit]
+	lastSearchQuery         port.AttachmentQuery
+
+	// contactSummaryResult/contactSummaryErr are returned verbatim by
+	// ContactSummary (defaults to ErrNotFound, matching the prior stub);
+	// lastContactEmail records the last email passed in (Task 9).
+	contactSummaryResult domain.ContactSummary
+	contactSummaryErr    error
+	lastContactEmail     string
 }
 
-func newMessageRepo() *fakeMessageRepo { return &fakeMessageRepo{byID: map[string]domain.Message{}} }
+// fakeAttachmentRecord pairs a seeded attachment with its owning message id.
+type fakeAttachmentRecord struct {
+	att       domain.Attachment
+	messageID string
+}
+
+func newMessageRepo() *fakeMessageRepo {
+	return &fakeMessageRepo{
+		byID:                    map[string]domain.Message{},
+		attachmentByID:          map[string]fakeAttachmentRecord{},
+		searchAttachmentsResult: domain.Page[domain.AttachmentHit]{Items: []domain.AttachmentHit{}},
+		contactSummaryErr:       domain.ErrNotFound,
+	}
+}
+
+// seedAttachment registers att as belonging to messageID so a later
+// GetAttachment(att.ID) resolves it (Task 9: attachment quick access).
+func (r *fakeMessageRepo) seedAttachment(messageID string, att domain.Attachment) {
+	r.attachmentByID[att.ID] = fakeAttachmentRecord{att: att, messageID: messageID}
+}
 
 func (r *fakeMessageRepo) Upsert(_ context.Context, m domain.Message) (domain.Message, error) {
 	if _, ok := r.byID[m.ID]; !ok {
@@ -457,9 +492,8 @@ func (r *fakeMessageRepo) ListSentByAccount(_ context.Context, accountID, accoun
 	return out, nil
 }
 
-// ListOpens, OpenHourHistogram, SearchAttachments, GetAttachment, and
-// ContactSummary are M2.5 stubs (real Postgres queries land in later
-// tasks); they return zero values so the package compiles.
+// ListOpens and OpenHourHistogram are M2.5 stubs (a separate task); they
+// return zero values so the package compiles.
 func (r *fakeMessageRepo) ListOpens(_ context.Context, q port.OpensQuery) (domain.Page[domain.OpenEvent], error) {
 	return domain.Page[domain.OpenEvent]{Items: []domain.OpenEvent{}}, nil
 }
@@ -468,16 +502,31 @@ func (r *fakeMessageRepo) OpenHourHistogram(_ context.Context, userID, recipient
 	return [24]int{}, nil
 }
 
+// SearchAttachments records q and returns the programmed
+// searchAttachmentsResult (Task 9: attachment quick access).
 func (r *fakeMessageRepo) SearchAttachments(_ context.Context, q port.AttachmentQuery) (domain.Page[domain.AttachmentHit], error) {
-	return domain.Page[domain.AttachmentHit]{Items: []domain.AttachmentHit{}}, nil
+	r.lastSearchQuery = q
+	return r.searchAttachmentsResult, nil
 }
 
+// GetAttachment resolves attachments seeded via seedAttachment; unseeded ids
+// are ErrNotFound (Task 9: attachment quick access).
 func (r *fakeMessageRepo) GetAttachment(_ context.Context, attachmentID string) (domain.Attachment, string, error) {
-	return domain.Attachment{}, "", domain.ErrNotFound
+	rec, ok := r.attachmentByID[attachmentID]
+	if !ok {
+		return domain.Attachment{}, "", domain.ErrNotFound
+	}
+	return rec.att, rec.messageID, nil
 }
 
+// ContactSummary records email and returns the programmed
+// contactSummaryResult/contactSummaryErr (Task 9: contact summary).
 func (r *fakeMessageRepo) ContactSummary(_ context.Context, userID, email string) (domain.ContactSummary, error) {
-	return domain.ContactSummary{}, domain.ErrNotFound
+	r.lastContactEmail = email
+	if r.contactSummaryErr != nil {
+		return domain.ContactSummary{}, r.contactSummaryErr
+	}
+	return r.contactSummaryResult, nil
 }
 
 var _ port.MessageRepo = (*fakeMessageRepo)(nil)
@@ -1088,19 +1137,29 @@ type fakeMailProvider struct {
 	sendErr         error
 	modifyLabelsErr error
 	// fetchAttachmentErr overrides FetchAttachment's default
-	// domain.ErrNotImplemented return; nil keeps the default.
+	// domain.ErrNotImplemented return; nil keeps the default unless
+	// fetchAttachmentData/fetchAttachmentMimeType are set (Task 9).
 	fetchAttachmentErr error
+	// fetchAttachmentData/fetchAttachmentMimeType configure FetchAttachment's
+	// success return (Task 9: attachment content fetch); leaving both zero
+	// keeps the ErrNotImplemented default.
+	fetchAttachmentData     []byte
+	fetchAttachmentMimeType string
 
 	// recording
-	sent               []port.OutgoingMessage
-	syncMailCalls      int
-	syncPageIdx        int      // next index into syncPages to serve (clamped to the last entry)
-	syncMailCursors    []string // cursor arg on every SyncMail call, in call order
-	modifyLabelsCalls  int
-	lastModifyToken    string
-	lastModifyThreadID string
-	lastModifyAdd      []string
-	lastModifyRemove   []string
+	sent                     []port.OutgoingMessage
+	syncMailCalls            int
+	syncPageIdx              int      // next index into syncPages to serve (clamped to the last entry)
+	syncMailCursors          []string // cursor arg on every SyncMail call, in call order
+	modifyLabelsCalls        int
+	lastModifyToken          string
+	lastModifyThreadID       string
+	lastModifyAdd            []string
+	lastModifyRemove         []string
+	fetchAttachmentCalls     int
+	lastFetchAttachmentToken string
+	lastFetchMessageID       string // providerMessageID arg on the last FetchAttachment call
+	lastFetchAttachmentID    string // providerAttachmentID arg on the last FetchAttachment call
 }
 
 func newMailProvider() *fakeMailProvider { return &fakeMailProvider{} }
@@ -1139,8 +1198,15 @@ func (p *fakeMailProvider) ModifyLabels(_ context.Context, accessToken, provider
 // errors.Is against a shared sentinel rather than a bare nil-nil result.
 // fetchAttachmentErr lets a test override the returned error.
 func (p *fakeMailProvider) FetchAttachment(_ context.Context, accessToken, providerMessageID, providerAttachmentID string) ([]byte, string, error) {
+	p.fetchAttachmentCalls++
+	p.lastFetchAttachmentToken = accessToken
+	p.lastFetchMessageID = providerMessageID
+	p.lastFetchAttachmentID = providerAttachmentID
 	if p.fetchAttachmentErr != nil {
 		return nil, "", p.fetchAttachmentErr
+	}
+	if p.fetchAttachmentData != nil || p.fetchAttachmentMimeType != "" {
+		return p.fetchAttachmentData, p.fetchAttachmentMimeType, nil
 	}
 	return nil, "", domain.ErrNotImplemented
 }

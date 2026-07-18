@@ -21,6 +21,11 @@ const (
 	maxThreadPageSize     = 200
 )
 
+const (
+	defaultAttachmentPageSize = 50
+	maxAttachmentPageSize     = 100
+)
+
 // MailServiceDeps wires a MailService.
 type MailServiceDeps struct {
 	Subscriptions port.SubscriptionRepo
@@ -777,6 +782,87 @@ func emptyIfNil(addrs []domain.EmailAddress) []domain.EmailAddress {
 	return addrs
 }
 
+// --- Attachments & Contact (Task 9) -----------------------------------------
+
+// SearchAttachments searches mirrored attachment metadata scoped to the
+// caller's own accounts (q.UserID is always overwritten with userID).
+func (s *MailService) SearchAttachments(ctx context.Context, userID string, q port.AttachmentQuery) (domain.Page[domain.AttachmentHit], error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.Page[domain.AttachmentHit]{}, err
+	}
+	q.UserID = userID
+	if q.Limit <= 0 {
+		q.Limit = defaultAttachmentPageSize
+	}
+	if q.Limit > maxAttachmentPageSize {
+		q.Limit = maxAttachmentPageSize
+	}
+	page, err := s.messages.SearchAttachments(ctx, q)
+	if err != nil {
+		return domain.Page[domain.AttachmentHit]{}, err
+	}
+	if page.Items == nil {
+		page.Items = []domain.AttachmentHit{}
+	}
+	return page, nil
+}
+
+// GetAttachmentContent fetches an attachment body on demand. Ownership is
+// checked (via the owning message's account) before ever touching the
+// provider, and a foreign or unknown attachment/message/account is
+// indistinguishable from missing (ErrNotFound, never 403). Provider errors
+// propagate unwrapped so callers can errors.Is against the provider's
+// domain sentinels.
+func (s *MailService) GetAttachmentContent(ctx context.Context, userID, attachmentID string) ([]byte, string, string, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return nil, "", "", err
+	}
+	att, messageID, err := s.messages.GetAttachment(ctx, attachmentID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	msg, err := s.messages.GetByID(ctx, messageID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	acct, err := ownedAccount(ctx, s.accounts, userID, msg.AccountID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if att.ProviderAttachmentID == "" {
+		return nil, "", "", fmt.Errorf("%w: attachment content not synced", domain.ErrNotFound)
+	}
+	provider, ok := s.mail[acct.Provider]
+	if !ok {
+		return nil, "", "", fmt.Errorf("%w: no mail provider for account", domain.ErrValidation)
+	}
+	token, err := s.tokens.accessToken(ctx, acct)
+	if err != nil {
+		return nil, "", "", err
+	}
+	// Provider errors propagate raw (sentinel-preserving): no fmt.Errorf wrap.
+	data, mimeType, err := provider.FetchAttachment(ctx, token, msg.ProviderMessageID, att.ProviderAttachmentID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if mimeType == "" {
+		mimeType = att.MimeType
+	}
+	return data, mimeType, att.Filename, nil
+}
+
+// GetContact aggregates everything the local mirror knows about a sender.
+func (s *MailService) GetContact(ctx context.Context, userID, email string) (domain.ContactSummary, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.ContactSummary{}, err
+	}
+	canonical, err := canonicalEmail(email)
+	if err != nil {
+		return domain.ContactSummary{}, fmt.Errorf("%w: invalid email %q", domain.ErrValidation, email)
+	}
+	return s.messages.ContactSummary(ctx, userID, canonical)
+}
+
 // --- M2.5 Compose & Contact --------------------------------------------------
 //
 // The methods below satisfy the widened port.MailService interface so the
@@ -796,18 +882,6 @@ func (s *MailService) ListOpens(ctx context.Context, userID, cursor string, limi
 
 func (s *MailService) SuggestSendTime(ctx context.Context, userID, recipientEmail string) (domain.SendSuggestion, error) {
 	return domain.SendSuggestion{}, errNotImplemented
-}
-
-func (s *MailService) SearchAttachments(ctx context.Context, userID string, q port.AttachmentQuery) (domain.Page[domain.AttachmentHit], error) {
-	return domain.Page[domain.AttachmentHit]{}, errNotImplemented
-}
-
-func (s *MailService) GetAttachmentContent(ctx context.Context, userID, attachmentID string) ([]byte, string, string, error) {
-	return nil, "", "", errNotImplemented
-}
-
-func (s *MailService) GetContact(ctx context.Context, userID, email string) (domain.ContactSummary, error) {
-	return domain.ContactSummary{}, errNotImplemented
 }
 
 func (s *MailService) ReactToMessage(ctx context.Context, userID, messageID, emoji string, sendReply bool) (port.ReactionResult, error) {
