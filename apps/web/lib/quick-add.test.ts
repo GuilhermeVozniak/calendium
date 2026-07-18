@@ -519,6 +519,28 @@ describe('parseQuickAdd', () => {
       expect(parsed.title).toBe('rent reminder on the 1st');
     });
   });
+
+  describe('hasExplicitTime', () => {
+    it('is true for a bare hour range with no am/pm ( "call 9-10")', () => {
+      const parsed = parseQuickAdd('call 9-10', REF)!;
+      expect(parsed.hasExplicitTime).toBe(true);
+    });
+
+    it('is false when only a date, no time, was recognized ("lunch tomorrow")', () => {
+      const parsed = parseQuickAdd('lunch tomorrow', REF)!;
+      expect(parsed.hasExplicitTime).toBe(false);
+    });
+
+    it('is true for an explicit "at <hour>" time ("standup at 9")', () => {
+      const parsed = parseQuickAdd('standup at 9', REF)!;
+      expect(parsed.hasExplicitTime).toBe(true);
+    });
+
+    it('is false when nothing at all was recognized', () => {
+      const parsed = parseQuickAdd('Buy milk', REF)!;
+      expect(parsed.hasExplicitTime).toBe(false);
+    });
+  });
 });
 
 describe('nextHalfHour', () => {

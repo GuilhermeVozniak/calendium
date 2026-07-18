@@ -264,6 +264,9 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
     return {
       calendarId,
       title: title.trim() || '(No title)',
+      // TODO(M2.2-final): same tri-state clear gap as recurrenceRule had — see Task 8 review.
+      // `|| undefined` means an edit that clears these fields omits them from the
+      // PATCH instead of sending '' to actually clear them on the backend.
       description: description.trim() || undefined,
       location: location.trim() || undefined,
       start: startIso,
@@ -282,6 +285,15 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
       if (!event) return createEventApi(input);
       // PATCH cannot move calendars or toggle conferencing; send only the
       // fields the backend's EventPatch accepts instead of silently dropping them.
+      //
+      // recurrenceRule is tri-state on the backend: an absent key means
+      // "unchanged", while an explicit "" means "clear the recurrence" (see
+      // EventPatch.RecurrenceRule, a *string, in backend/internal/domain).
+      // JSON.stringify drops `undefined` keys entirely, so `input.recurrenceRule`
+      // (which is `recurrenceRule ?? undefined`) is only correct for two of the
+      // three states — it can't distinguish "dismissed an existing rule" from
+      // "never had one" since both end up `undefined`. Compare against the
+      // event's original rule to recover the third state explicitly.
       const patch: EventPatch = {
         title: input.title,
         description: input.description,
@@ -289,7 +301,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
         start: input.start,
         end: input.end,
         allDay: input.allDay,
-        recurrenceRule: input.recurrenceRule,
+        recurrenceRule: event.recurrenceRule && !recurrenceRule ? '' : input.recurrenceRule,
         attendeeEmails: input.attendeeEmails,
         reminderMinutes: input.reminderMinutes,
       };

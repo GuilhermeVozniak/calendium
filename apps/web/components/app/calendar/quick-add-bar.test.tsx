@@ -115,6 +115,21 @@ describe('QuickAddBar — live preview chips', () => {
   });
 });
 
+describe('QuickAddBar — heuristic/parser agreement on bare ranges', () => {
+  it('renders no free-slot suggestions for a bare time range with no am/pm ("lunch 3-4")', () => {
+    renderBar({ events: BUSY_EVENTS });
+
+    const input = screen.getByLabelText('Quick add event');
+    fireEvent.change(input, { target: { value: 'lunch 3-4' } });
+
+    // The parser resolved an explicit time range (3pm-4pm via the "early
+    // hours mean PM" heuristic), so free-slot suggestions must not appear —
+    // even though the old local EXPLICIT_TIME_HINT_RE regex didn't recognize
+    // a bare, unmarked range like this.
+    expect(screen.queryByText('Suggested times')).not.toBeInTheDocument();
+  });
+});
+
 describe('QuickAddBar — free-slot suggestions', () => {
   it('renders up to 3 free-slot suggestions derived from a busy fixture when no explicit time was typed', async () => {
     renderBar({ events: BUSY_EVENTS });

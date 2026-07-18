@@ -17,12 +17,10 @@ const WORK_DAY_END_HOUR = 18;
 const MAX_SUGGESTIONS = 3;
 const DEFAULT_SUGGESTION_DURATION = 30;
 
-// UI-only heuristic for deciding whether to surface free-slot suggestions and
-// the date/time preview chip — deliberately separate from QuickAddParse's
-// own (more thorough) date/time grammar so this component doesn't need to
-// change the parser's public shape just to expose "was a time recognized?".
-const EXPLICIT_TIME_HINT_RE =
-  /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\bnoon\b|\bmidnight\b|\bmidday\b|\bat\s+\d{1,2}\b/i;
+// UI-only heuristic for the date preview chip. Whether an explicit *time*
+// was recognized comes straight from the parser's own `hasExplicitTime`
+// flag (see QuickAddParse) instead of a locally re-derived regex, so this
+// component can never disagree with what parseQuickAdd actually matched.
 const EXPLICIT_DATE_HINT_RE =
   /\b(?:today|tonight|tomorrow|tmrw?)\b|\b(?:next\s+|this\s+)?(?:sun|mon|tue|wed|thu|fri|sat)\w*\b|\b\d{1,2}\/\d{1,2}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\.?\s+\d{1,2}\b/i;
 
@@ -87,7 +85,7 @@ export function QuickAddBar({ calendars, events, onCreate }: QuickAddBarProps) {
     [text, trimmed]
   );
 
-  const hasExplicitTime = EXPLICIT_TIME_HINT_RE.test(text);
+  const hasExplicitTime = parsed?.hasExplicitTime ?? false;
   const hasDateOrTimeHint = hasExplicitTime || EXPLICIT_DATE_HINT_RE.test(text);
 
   const suggestions = React.useMemo(() => {

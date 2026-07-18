@@ -304,6 +304,71 @@ describe('EventDialog — quick-add defaults prefill', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Edit-mode recurrence clear — the backend's EventPatch.RecurrenceRule is a
+// *string where nil means "unchanged" and non-nil "" means "CLEAR"; JSON.stringify
+// drops `undefined` keys entirely, so dismissing an existing recurrence must
+// send an explicit empty string, not omit the field.
+// ---------------------------------------------------------------------------
+
+describe('EventDialog — edit-mode recurrence clear (tri-state PATCH)', () => {
+  function recurringEvent(): Event {
+    return {
+      id: 'ev1',
+      calendarId: 'cal-work',
+      title: 'Standup',
+      description: null,
+      location: null,
+      start: new Date(2026, 6, 8, 9, 0, 0, 0).toISOString(),
+      end: new Date(2026, 6, 8, 9, 30, 0, 0).toISOString(),
+      allDay: false,
+      recurrenceRule: 'FREQ=DAILY',
+      attendees: [],
+      conferencing: null,
+      status: 'confirmed',
+      visibility: 'default',
+      reminderMinutes: [],
+    };
+  }
+
+  it('sends recurrenceRule: "" in the PATCH when an existing recurrence is dismissed and saved', async () => {
+    const user = userEvent.setup();
+    renderDialog({ event: recurringEvent() });
+    await screen.findByText('Every day');
+
+    await user.click(screen.getByRole('button', { name: 'Remove recurrence' }));
+    expect(screen.getByText('Does not repeat')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+    await waitFor(() => expect(updateEventApiMock).toHaveBeenCalledTimes(1));
+    const [, patch] = updateEventApiMock.mock.calls[0]!;
+    expect(patch.recurrenceRule).toBe('');
+  });
+
+  it('sends the unchanged recurrenceRule in the PATCH when left untouched', async () => {
+    const user = userEvent.setup();
+    renderDialog({ event: recurringEvent() });
+    await screen.findByText('Every day');
+
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+    await waitFor(() => expect(updateEventApiMock).toHaveBeenCalledTimes(1));
+    const [, patch] = updateEventApiMock.mock.calls[0]!;
+    expect(patch.recurrenceRule).toBe('FREQ=DAILY');
+  });
+
+  it('omits recurrenceRule from the PATCH when the event never had one', async () => {
+    const user = userEvent.setup();
+    const event = { ...recurringEvent(), recurrenceRule: null };
+    renderDialog({ event });
+    await screen.findByText('Does not repeat');
+
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+    await waitFor(() => expect(updateEventApiMock).toHaveBeenCalledTimes(1));
+    const [, patch] = updateEventApiMock.mock.calls[0]!;
+    expect(patch.recurrenceRule).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Reminders — exercises the unexported reminderLabel() helper indirectly.
 // ---------------------------------------------------------------------------
 

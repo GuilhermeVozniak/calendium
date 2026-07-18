@@ -31,6 +31,14 @@ export interface QuickAddParse {
   attendeeNames: string[];
   /** Explicit duration, when given (e.g. "for 45 min", "for an hour"). */
   durationMinutes: number | null;
+  /**
+   * True when a time-consuming grammar stage (range, "at <hour>", clock time,
+   * meridiem time, or a time word like "noon") actually matched — as opposed
+   * to only a date being recognized. Callers (e.g. QuickAddBar) use this to
+   * decide whether to show free-slot suggestions instead of re-deriving the
+   * same judgment with their own regex, which can disagree with the parser.
+   */
+  hasExplicitTime: boolean;
 }
 
 const WEEKDAY_PREFIXES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
@@ -280,11 +288,14 @@ export function parseQuickAdd(raw: string, ref: Date = new Date()): QuickAddPars
     alertMatch = consume(ALERT_RE);
   }
 
+  let hasExplicitTime = false;
+
   // --- 4a. time range ("12:30-1:30", "2 to 3pm") ---
   let rangeStart: number | null = null;
   let rangeEnd: number | null = null;
   const range = consume(RANGE_RE);
   if (range) {
+    hasExplicitTime = true;
     const sh = Number(range[1]);
     const sm = Number(range[2] ?? '0');
     const eh = Number(range[4]);
@@ -314,18 +325,24 @@ export function parseQuickAdd(raw: string, ref: Date = new Date()): QuickAddPars
   if (rangeStart === null) {
     const at = consume(AT_TIME_RE);
     if (at) {
+      hasExplicitTime = true;
       singleMinutes = resolveSingle(Number(at[1]), Number(at[2] ?? '0'), at[3]);
     } else {
       const clock = consume(CLOCK_TIME_RE);
       if (clock) {
+        hasExplicitTime = true;
         singleMinutes = resolveSingle(Number(clock[1]), Number(clock[2]), clock[3]);
       } else {
         const mer = consume(MERIDIEM_TIME_RE);
         if (mer) {
+          hasExplicitTime = true;
           singleMinutes = resolveSingle(Number(mer[1]), 0, mer[2]);
         } else {
           const word = consume(WORD_TIME_RE);
-          if (word) singleMinutes = word[1].toLowerCase() === 'midnight' ? 0 : 12 * 60;
+          if (word) {
+            hasExplicitTime = true;
+            singleMinutes = word[1].toLowerCase() === 'midnight' ? 0 : 12 * 60;
+          }
         }
       }
     }
@@ -445,5 +462,6 @@ export function parseQuickAdd(raw: string, ref: Date = new Date()): QuickAddPars
     attendeeEmails,
     attendeeNames,
     durationMinutes,
+    hasExplicitTime,
   };
 }
