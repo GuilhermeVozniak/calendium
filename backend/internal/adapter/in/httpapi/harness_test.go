@@ -552,11 +552,22 @@ type fakeAIService struct {
 	ret    domain.AiComposeResponse
 	err    error
 	gotReq domain.AiComposeRequest
+
+	instantRepliesRet         []string
+	instantRepliesErr         error
+	gotInstantRepliesUserID   string
+	gotInstantRepliesThreadID string
 }
 
 func (f *fakeAIService) Compose(ctx context.Context, userID string, req domain.AiComposeRequest) (domain.AiComposeResponse, error) {
 	f.gotReq = req
 	return f.ret, f.err
+}
+
+func (f *fakeAIService) InstantReplies(ctx context.Context, userID, threadID string) ([]string, error) {
+	f.gotInstantRepliesUserID = userID
+	f.gotInstantRepliesThreadID = threadID
+	return f.instantRepliesRet, f.instantRepliesErr
 }
 
 // --- DeviceService -----------------------------------------------------------

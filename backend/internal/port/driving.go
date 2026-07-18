@@ -198,6 +198,11 @@ type SearchService interface {
 // AIService is the OpenRouter-backed compose/reply/summarize/ask endpoint.
 type AIService interface {
 	Compose(ctx context.Context, userID string, req domain.AiComposeRequest) (domain.AiComposeResponse, error)
+	// InstantReplies returns the 3 cached quick replies for the thread,
+	// generating and caching them on demand when absent (on-open fallback for
+	// splits the worker skips). Counts against the daily AI budget only when
+	// it generates.
+	InstantReplies(ctx context.Context, userID, threadID string) ([]string, error)
 }
 
 // DeviceService manages push-notification device registrations.

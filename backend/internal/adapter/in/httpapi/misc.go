@@ -29,6 +29,15 @@ func (s *server) handleAiCompose(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+func (s *server) handleInstantReplies(w http.ResponseWriter, r *http.Request) {
+	replies, err := s.deps.AI.InstantReplies(r.Context(), userFrom(r).ID, r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string][]string{"replies": replies})
+}
+
 func (s *server) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Platform string `json:"platform"`

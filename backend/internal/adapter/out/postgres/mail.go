@@ -16,7 +16,7 @@ import (
 const threadCols = `t.id, t.account_id, t.provider_thread_id, t.subject, t.snippet,
 	t.participants, t.split, t.message_count, t.unread, t.starred, t.in_inbox, t.last_message_at,
 	t.opened_at, t.snoozed_until, t.remind_at, t.unsubscribe_mailto, t.unsubscribe_url, t.unsubscribe_one_click,
-	t.summary, t.instant_replies,
+	t.summary, t.instant_replies, t.instant_replies_updated_at,
 	coalesce((SELECT json_agg(tl.label_id ORDER BY tl.label_id)
 	          FROM thread_labels tl WHERE tl.thread_id = t.id), '[]'::json)::text`
 
@@ -24,12 +24,12 @@ func scanThread(r rowScanner) (domain.Thread, error) {
 	var t domain.Thread
 	var participants, instantReplies []byte
 	var labels string
-	var opened, snoozed, remind sql.NullTime
+	var opened, snoozed, remind, instantRepliesUpdatedAt sql.NullTime
 	var unsubMailto, unsubURL sql.NullString
 	if err := r.Scan(&t.ID, &t.AccountID, &t.ProviderThreadID, &t.Subject, &t.Snippet,
 		&participants, &t.Split, &t.MessageCount, &t.Unread, &t.Starred, &t.InInbox, &t.LastMessageAt,
 		&opened, &snoozed, &remind, &unsubMailto, &unsubURL, &t.UnsubscribeOneClick,
-		&t.Summary, &instantReplies, &labels); err != nil {
+		&t.Summary, &instantReplies, &instantRepliesUpdatedAt, &labels); err != nil {
 		return domain.Thread{}, notFound(err)
 	}
 	if err := unmarshalInto(participants, &t.Participants); err != nil {
@@ -53,6 +53,7 @@ func scanThread(r rowScanner) (domain.Thread, error) {
 	t.OpenedAt = timePtr(opened)
 	t.SnoozedUntil = timePtr(snoozed)
 	t.RemindAt = timePtr(remind)
+	t.InstantRepliesUpdatedAt = timePtr(instantRepliesUpdatedAt)
 	if unsubMailto.Valid {
 		t.UnsubscribeMailto = &unsubMailto.String
 	}

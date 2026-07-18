@@ -72,12 +72,20 @@ func TestProcessDueAiJobsDispatchesClaimedBatch(t *testing.T) {
 		{ID: "j2", UserID: "u1", Kind: domain.AiJobInstantReplies, ThreadID: strPtr("t2"), Attempts: 1},
 	}
 
+	// runInstantReplies (Task 7) is real now, so j2's dispatch actually calls
+	// the AI: Messages must be wired and the fake must serve a well-formed
+	// reply, or the job would fail/retry instead of completing as asserted
+	// below.
+	ai := newAI()
+	ai.jsonOut = `{"replies": ["ok"]}`
 	svc := NewAIJobService(AIJobServiceDeps{
-		Jobs:    jobs,
-		Usage:   newAiUsageRepo(),
-		Threads: threads,
-		Clock:   newClock(time.Now()),
-		AI:      newAI(),
+		Jobs:       jobs,
+		Usage:      newAiUsageRepo(),
+		Threads:    threads,
+		Messages:   newMessageRepo(),
+		Clock:      newClock(time.Now()),
+		AI:         ai,
+		DailyLimit: 10,
 	})
 
 	if err := svc.ProcessDueAiJobs(ctx); err != nil {

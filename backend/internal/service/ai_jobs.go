@@ -231,10 +231,32 @@ func (s *AIJobService) runThreadSummary(ctx context.Context, j domain.AiJob) err
 	return err
 }
 
-// runInstantReplies is a stub in this task; Task 7 fills in real generation.
+// runInstantReplies generates and persists the Instant Reply cache: 3 short,
+// ready-to-send suggestions responding to the newest message in the thread
+// (normalizeInstantReplies in ai_prompts.go validates/clamps the model's raw
+// output). A malformed 0-reply response comes back wrapped in
+// domain.ErrAIOutput, which classifyJobError has no special case for, so it
+// takes the same generic backoff/dead-letter path as any other handler
+// defect -- exactly the "retry error" this task's tests expect.
 func (s *AIJobService) runInstantReplies(ctx context.Context, j domain.AiJob) error {
-	_, err := s.threadFor(ctx, j)
-	return err
+	t, err := s.threadFor(ctx, j)
+	if err != nil {
+		return err
+	}
+	msgs, err := s.d.Messages.ListByThread(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	var out instantRepliesOut
+	if _, err := s.completeJSONBudgeted(ctx, j.UserID, instantRepliesSystem,
+		instantRepliesUserPrompt(t.Subject, msgs), &out); err != nil {
+		return err
+	}
+	replies, err := normalizeInstantReplies(out.Replies)
+	if err != nil {
+		return err
+	}
+	return s.d.Threads.SetInstantReplies(ctx, t.ID, replies, s.d.Clock.Now())
 }
 
 // runAutoDraft is a stub in this task; Task 8 fills in real generation.

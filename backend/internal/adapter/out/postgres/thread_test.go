@@ -582,6 +582,9 @@ func TestThreadRepoSetSummaryAndInstantReplies(t *testing.T) {
 	if len(got.InstantReplies) != 2 || got.InstantReplies[0] != "Sounds good" || got.InstantReplies[1] != "Will do" {
 		t.Fatalf("InstantReplies = %+v", got.InstantReplies)
 	}
+	if got.InstantRepliesUpdatedAt == nil || !got.InstantRepliesUpdatedAt.Equal(at) {
+		t.Fatalf("InstantRepliesUpdatedAt = %v, want %v", got.InstantRepliesUpdatedAt, at)
+	}
 
 	if err := st.Threads().SetSummary(ctx, "nope", "x", at); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("SetSummary unknown: err = %v, want ErrNotFound", err)
