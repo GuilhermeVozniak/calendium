@@ -47,6 +47,11 @@ func (s *Store) AiJobs() port.AiJobRepo                 { return aiJobRepo{s} }
 func (s *Store) Classifiers() port.ClassifierRepo       { return classifierRepo{s} }
 func (s *Store) VoiceProfiles() port.VoiceProfileRepo   { return voiceProfileRepo{s} }
 func (s *Store) AiUsage() port.AiUsageRepo              { return aiUsageRepo{s} }
+func (s *Store) BookingLinks() port.BookingLinkRepo     { return bookingLinkRepo{s} }
+func (s *Store) Bookings() port.BookingRepo             { return bookingRepo{s} }
+func (s *Store) Polls() port.PollRepo                   { return pollRepo{s} }
+func (s *Store) TimeProposals() port.TimeProposalRepo   { return timeProposalRepo{s} }
+func (s *Store) UserSettings() port.UserSettingsRepo    { return userSettingsRepo{s} }
 
 var (
 	_ port.TxRunner          = (*Store)(nil)
@@ -71,6 +76,11 @@ var (
 	_ port.ClassifierRepo    = classifierRepo{}
 	_ port.VoiceProfileRepo  = voiceProfileRepo{}
 	_ port.AiUsageRepo       = aiUsageRepo{}
+	_ port.BookingLinkRepo   = bookingLinkRepo{}
+	_ port.BookingRepo       = bookingRepo{}
+	_ port.PollRepo          = pollRepo{}
+	_ port.TimeProposalRepo  = timeProposalRepo{}
+	_ port.UserSettingsRepo  = userSettingsRepo{}
 )
 
 type (
@@ -95,6 +105,11 @@ type (
 	classifierRepo    struct{ *Store }
 	voiceProfileRepo  struct{ *Store }
 	aiUsageRepo       struct{ *Store }
+	bookingLinkRepo   struct{ *Store }
+	bookingRepo       struct{ *Store }
+	pollRepo          struct{ *Store }
+	timeProposalRepo  struct{ *Store }
+	userSettingsRepo  struct{ *Store }
 )
 
 // --- transactions -----------------------------------------------------------
