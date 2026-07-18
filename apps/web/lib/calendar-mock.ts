@@ -44,6 +44,9 @@ interface SeedEvent {
   title: string;
   /** Day offset from the start (Sunday) of the current week. */
   day: number;
+  /** Week offset from the current week (0 = this week). Lets seeds spread
+   *  across a full month so month view has something in every row. */
+  weekOffset?: number;
   hour?: number;
   minute?: number;
   durationMinutes?: number;
@@ -229,11 +232,73 @@ function seed(): MockStore {
       location: 'GRU T2',
       reminders: [1440, 120],
     },
-    { calendarId: 'cal-personal', title: 'Brunch with parents', day: 0, hour: 11, durationMinutes: 90 }
+    { calendarId: 'cal-personal', title: 'Brunch with parents', day: 0, hour: 11, durationMinutes: 90 },
+
+    // Spread a lighter set of events across neighboring weeks so month view
+    // (which shows 5-6 weeks at once) isn't empty outside the current week.
+    { calendarId: 'cal-work', title: 'Monthly planning', weekOffset: -2, day: 1, hour: 10, durationMinutes: 60 },
+    { calendarId: 'cal-personal', title: 'Gym', weekOffset: -2, day: 3, hour: 7, durationMinutes: 60 },
+    {
+      calendarId: 'cal-work',
+      title: 'Board update draft',
+      weekOffset: -2,
+      day: 4,
+      hour: 14,
+      durationMinutes: 45,
+    },
+    { calendarId: 'cal-personal', title: 'Haircut', weekOffset: -1, day: 2, hour: 17, durationMinutes: 45 },
+    {
+      calendarId: 'cal-work',
+      title: 'Roadmap review',
+      weekOffset: -1,
+      day: 3,
+      hour: 11,
+      durationMinutes: 60,
+      meet: true,
+    },
+    { calendarId: 'cal-work', title: 'All-hands', weekOffset: -1, day: 5, hour: 9, durationMinutes: 30, meet: true },
+    {
+      calendarId: 'cal-personal',
+      title: 'Anniversary dinner',
+      weekOffset: 1,
+      day: 5,
+      hour: 19,
+      durationMinutes: 120,
+      location: 'Mocotó',
+    },
+    {
+      calendarId: 'cal-work',
+      title: 'Customer call',
+      weekOffset: 1,
+      day: 2,
+      hour: 13,
+      durationMinutes: 30,
+      meet: true,
+    },
+    { calendarId: 'cal-personal', title: 'Gym', weekOffset: 1, day: 1, hour: 7, durationMinutes: 60 },
+    { calendarId: 'cal-work', title: 'Retro', weekOffset: 1, day: 4, hour: 16, durationMinutes: 45 },
+    {
+      calendarId: 'cal-work',
+      title: 'Quarterly business review',
+      weekOffset: 2,
+      day: 2,
+      hour: 10,
+      durationMinutes: 90,
+      meet: true,
+    },
+    {
+      calendarId: 'cal-personal',
+      title: 'Weekend trip planning',
+      weekOffset: 2,
+      day: 4,
+      hour: 18,
+      durationMinutes: 30,
+    },
+    { calendarId: 'cal-work', title: 'Perf reviews due', weekOffset: 2, day: 5, allDay: true }
   );
 
   const events: Event[] = seeds.map((s, i) => {
-    const dayDate = addDays(weekStart, s.day);
+    const dayDate = addDays(weekStart, (s.weekOffset ?? 0) * 7 + s.day);
     const start = s.allDay
       ? startOfDay(dayDate)
       : setMinutes(setHours(startOfDay(dayDate), s.hour ?? 9), s.minute ?? 0);

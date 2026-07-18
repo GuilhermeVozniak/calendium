@@ -16,8 +16,9 @@ import {
 import type { Calendar as CalendarModel, Event, EventInput } from '@calendium/shared';
 
 import { AvailabilityDialog } from '@/components/app/availability';
-import { AgendaView } from '@/components/app/calendar/agenda-view';
+import { DayTicker } from '@/components/app/calendar/day-ticker';
 import { MiniMonth } from '@/components/app/calendar/mini-month';
+import { MonthView } from '@/components/app/calendar/month-view';
 import { TimeGrid } from '@/components/app/calendar/time-grid';
 import { EventDialog } from '@/components/app/event-dialog';
 import { Button } from '@/components/ui/button';
@@ -193,6 +194,9 @@ export default function CalendarPage() {
         case 'w':
           setView('week');
           break;
+        case 'm':
+          setView('month');
+          break;
         case 'a':
           setView('ticker');
           break;
@@ -278,6 +282,9 @@ export default function CalendarPage() {
               <TabsTrigger value="week" className="px-2.5 text-xs">
                 Week
               </TabsTrigger>
+              <TabsTrigger value="month" className="px-2.5 text-xs">
+                Month
+              </TabsTrigger>
               <TabsTrigger value="ticker" className="px-2.5 text-xs">
                 Agenda
               </TabsTrigger>
@@ -349,11 +356,23 @@ export default function CalendarPage() {
         {/* Main view */}
         <main className="flex min-h-0 flex-1 flex-col">
           {view === 'ticker' ? (
-            <AgendaView
+            <DayTicker
+              anchor={anchor}
               events={events}
               calendarById={calendarById}
-              from={range.from}
-              loading={eventsQuery.isLoading}
+              onAnchorChange={setAnchor}
+              onEventClick={handleEventClick}
+            />
+          ) : view === 'month' ? (
+            <MonthView
+              anchor={anchor}
+              days={range.days}
+              events={events}
+              calendarById={calendarById}
+              onDayClick={(day) => {
+                setAnchor(day);
+                setView('day');
+              }}
               onEventClick={handleEventClick}
             />
           ) : (

@@ -15,55 +15,46 @@ import { eventTouchesDay } from './time-grid';
 const AGENDA_DAYS = 14;
 const FALLBACK_COLOR = '#6366f1';
 
-export interface AgendaViewProps {
-  events: Event[];
-  calendarById: Map<string, CalendarModel>;
-  from: Date;
-  loading: boolean;
-  onEventClick: (event: Event) => void;
+export interface DayGroup {
+  day: Date;
+  items: Event[];
 }
 
-export function AgendaView({ events, calendarById, from, loading, onEventClick }: AgendaViewProps) {
-  const groups = React.useMemo(() => {
-    const list: Array<{ day: Date; items: Event[] }> = [];
-    for (let i = 0; i < AGENDA_DAYS; i++) {
-      const day = addDays(from, i);
-      const items = events
-        .filter((e) => eventTouchesDay(e, day))
-        .sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.start.localeCompare(b.start));
-      if (items.length > 0) list.push({ day, items });
-    }
-    return list;
-  }, [events, from]);
-
-  if (loading) {
-    return (
-      <div className="flex-1 space-y-3 overflow-y-auto p-6">
-        <Skeleton className="h-6 w-40" />
-        <Skeleton className="h-24 w-full" />
-        <Skeleton className="h-6 w-40" />
-        <Skeleton className="h-24 w-full" />
-      </div>
-    );
+/**
+ * Groups events into per-day buckets over a rolling window starting at
+ * `from`, hiding days with no events. Shared by AgendaView and DayTicker (the
+ * "hybrid list" reuses this same grouping engine so both agenda-style views
+ * stay in sync).
+ */
+export function groupEventsByDay(events: Event[], from: Date, numDays: number = AGENDA_DAYS): DayGroup[] {
+  const list: DayGroup[] = [];
+  for (let i = 0; i < numDays; i++) {
+    const day = addDays(from, i);
+    const items = events
+      .filter((e) => eventTouchesDay(e, day))
+      .sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.start.localeCompare(b.start));
+    if (items.length > 0) list.push({ day, items });
   }
+  return list;
+}
 
-  if (groups.length === 0) {
-    return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
-        <CalendarDays className="size-8 text-muted-foreground" />
-        <p className="text-sm font-medium">No events in the next {AGENDA_DAYS} days</p>
-        <p className="text-xs text-muted-foreground">
-          Press <Kbd size="sm">C</Kbd> or use quick add to create one.
-        </p>
-      </div>
-    );
-  }
+export interface DayGroupListProps {
+  groups: DayGroup[];
+  calendarById: Map<string, CalendarModel>;
+  onEventClick: (event: Event) => void;
+  /** Registers/unregisters each day-section's DOM node, keyed by yyyy-MM-dd (for scroll-to-day). */
+  sectionRef?: (key: string, node: HTMLElement | null) => void;
+  className?: string;
+}
 
+/** Renders day-grouped event rows — the reusable core of the agenda engine. */
+export function DayGroupList({ groups, calendarById, onEventClick, sectionRef, className }: DayGroupListProps) {
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="mx-auto max-w-3xl p-6">
-        {groups.map(({ day, items }) => (
-          <section key={day.toISOString()} className="mb-6">
+    <div className={cn('mx-auto max-w-3xl p-6', className)}>
+      {groups.map(({ day, items }) => {
+        const key = format(day, 'yyyy-MM-dd');
+        return (
+          <section key={key} ref={(node) => sectionRef?.(key, node)} className="mb-6">
             <h2 className={cn('mb-2 text-sm font-semibold', isToday(day) && 'text-primary')}>
               {isToday(day) ? 'Today' : format(day, 'EEEE, MMMM d')}
             </h2>
@@ -106,8 +97,49 @@ export function AgendaView({ events, calendarById, from, loading, onEventClick }
               })}
             </div>
           </section>
-        ))}
+        );
+      })}
+    </div>
+  );
+}
+
+export interface AgendaViewProps {
+  events: Event[];
+  calendarById: Map<string, CalendarModel>;
+  from: Date;
+  loading: boolean;
+  onEventClick: (event: Event) => void;
+}
+
+export function AgendaView({ events, calendarById, from, loading, onEventClick }: AgendaViewProps) {
+  const groups = React.useMemo(() => groupEventsByDay(events, from, AGENDA_DAYS), [events, from]);
+
+  if (loading) {
+    return (
+      <div className="flex-1 space-y-3 overflow-y-auto p-6">
+        <Skeleton className="h-6 w-40" />
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-6 w-40" />
+        <Skeleton className="h-24 w-full" />
       </div>
+    );
+  }
+
+  if (groups.length === 0) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
+        <CalendarDays className="size-8 text-muted-foreground" />
+        <p className="text-sm font-medium">No events in the next {AGENDA_DAYS} days</p>
+        <p className="text-xs text-muted-foreground">
+          Press <Kbd size="sm">C</Kbd> or use quick add to create one.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <DayGroupList groups={groups} calendarById={calendarById} onEventClick={onEventClick} />
     </div>
   );
 }
