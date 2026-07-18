@@ -49,13 +49,21 @@ Configuration reference: `docs/self-hosting/configuration.md`. To take a real in
 6. **AI (optional):** `OPENROUTER_API_KEY` (+ `OPENROUTER_MODEL`).
 7. Run `cmd/api` and `cmd/worker` (both apply migrations), connect a real mailbox from Settings, and watch the first incremental sync land in Postgres.
 
-## What's Missing to Achieve the Goal — M2 Full Parity (not started)
+## M2.1 — Triage Power (COMPLETE)
 
-**Email — still planned:** Get Me To Zero, bulk triage, one-click/bulk unsubscribe, auto-advance, reorderable splits, contact pane w/ social insights, inbox-zero celebration, stars/labels fully keyboard-driven, Smart Send, Instant Intro, Recent Opens feed, Auto Bcc, emoji reactions, per-account signatures, attachment quick access.
+Shipped nine triage-power features (Get Me To Zero, Bulk triage actions, One-click and bulk unsubscribe, Inbox zero celebration design, Auto-advance, Reorderable splits, Stars and labels via shortcuts, Undo anything, Shortcut teaching UX) backed by the real REST v1 endpoints.
 
-**AI — still planned:** Auto Drafts, Instant Reply, Auto Labels + custom classifiers, personal voice learning, AI editing commands, Auto Reminders, AI scheduling drafts, Ask AI sidebar (cited sources), external AI-agent integrations, Instant Event AI.
+## M2.2 — Calendar Core (COMPLETE)
 
-**Calendar — mostly planned** (CRUD/RSVP/availability are live): Natural-language event parsing, NLP command bar, event templates, full view range (day→year + ticker), multi-account overlay w/ cross-account blocking, calendar sets, booking pages/links, appointment schedules, meeting polls, multi-timezone grid + Time Travel, conferencing auto-attach + join buttons, tasks/todos on grid, docs on events, travel time, focus-time auto-decline + FocusGuard, AI scheduling engine, working hours/location, propose-new-time RSVP, OOO auto-decline, EA delegation, time analytics, weather, auto buffers, etc.
+Shipped keyboard-first calendar with full view range (day/week/month/quarter/year/agenda via d/w/m/q/y/a keys), natural-language event parsing in quick-add bar (parseQuickAdd; live preview chips for location/time/attendees/recurrence/alerts), event templates (CRUD endpoints: `/v1/event-templates`, create/list/update/delete/use), calendar sets (CRUD endpoints: `/v1/calendar-sets`, toggle visibility per set), multi-timezone pinning on time-grid gutters, multi-account overlay with visible/hidden cross-account conflict detection, join buttons on conference events (Conferencing.provider + url detection), command palette integration (calendar commands via calendar-commands.ts bus), and calendar peek toggle from mail page (mod+shift+k). Backend migration 0006 for templates and sets tables. Keyboard shortcuts: t/j/k for navigation, d/w/m/q/y/a for view switching, c/s for create/availability, /  to focus quick-add. All e2e flows tested.
+
+## What's Missing to Achieve the Goal — M2 Full Parity
+
+**Email — M2.1 complete, M2.3+ planned:** Contact pane w/ social insights, Smart Send, Instant Intro, Recent Opens feed, Auto Bcc, emoji reactions, per-account signatures, attachment quick access.
+
+**AI — all planned:** Auto Drafts, Instant Reply, Auto Labels + custom classifiers, personal voice learning, AI editing commands, Auto Reminders, AI scheduling drafts, Ask AI sidebar (cited sources), external AI-agent integrations, Instant Event AI.
+
+**Calendar — M2.2 complete** (natural-language parsing, templates, sets, views, multi-TZ, keyboard-first, peek, conferencing join); **M2.3+ planned:** NLP command bar, booking pages/links, appointment schedules, meeting polls, Time Travel TZ comparison, conferencing auto-attach (already partial), tasks/todos on grid, docs on events, travel time, focus-time auto-decline + FocusGuard, AI scheduling engine, working hours/location, propose-new-time RSVP, OOO auto-decline, EA delegation, time analytics, weather, auto buffers.
 
 **Collaboration — all planned:** shared conversations, team comments w/ @mentions, team read statuses, team snippets, Find-a-Time grids, team scheduling links, team availability.
 
@@ -63,4 +71,4 @@ Configuration reference: `docs/self-hosting/configuration.md`. To take a real in
 
 ## Summary
 
-**M0 and M1 are complete in code and fully tested.** Going live requires only operator credentials (checklist above). The remaining product work is **M2 full parity**, which needs product prioritization before planning — see `docs/superpowers/plans/2026-07-17-m1-closeout.md` for the audit-grounded closeout that produced this revision.
+**M0, M1, M2.1 (Triage Power), and M2.2 (Calendar Core) are complete in code and fully tested.** Going live requires only operator credentials (checklist above). The remaining product work is **M2 full parity** (M2.3+ features + AI suite + collaboration), which needs product prioritization before planning.

@@ -86,18 +86,18 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | Feature | What it is | Priority | Status | Platforms |
 | --- | --- | --- | --- | --- |
 | **Creation** | | | | |
-| Natural-language event parsing (Fantastical) | Typing "Lunch with Sarah at 1pm tomorrow" parses title, time, date, location, alerts, and recurrence live into a structured event | P0 | planned | web, desktop, mobile |
-| Event and task templates (Fantastical) | Reusable event/task templates (title, invitees, conferencing, alerts) to create recurring meeting types in one tap | P1 | planned | web, desktop, mobile |
+| Natural-language event parsing (Fantastical) | Typing "Lunch with Sarah at 1pm tomorrow" parses title, time, date, location, alerts, and recurrence live into a structured event | P0 | scaffolded | web, desktop, mobile |
+| Event and task templates (Fantastical) | Reusable event/task templates (title, invitees, conferencing, alerts) to create recurring meeting types in one tap | P1 | scaffolded | web, desktop, mobile |
 | NLP command bar for events (Vimcal) | A GPT-backed command bar turning free-form phrases into fully formed meetings with guests and conferencing | P1 | planned | web, desktop |
 | Instant Event AI (Superhuman) | AI reads the email thread and proposes a ready-to-send event with title, attendees, and suggested time | P1 | planned | web, desktop, mobile |
 | Auto events from Gmail (Google Calendar) | Flights, hotels, reservations detected in mail added to the calendar automatically with full details | P1 | planned | web, desktop, mobile |
 | Siri / Apple Intelligence event creation (Apple Calendar) | Speak or type a natural phrase; people, dates, places extracted into an event | P2 | planned | mobile |
 | Auto-detected events from Mail and Messages (Apple Calendar) | Flights, reservations, appointments found in messages suggested as events automatically | P2 | planned | mobile |
 | **Views** | | | | |
-| Full view range: day/week/month/quarter/year + DayTicker (Fantastical) | Polished day, week, month, quarter, year, and hybrid list/ticker views adapting across desktop and mobile | P0 | planned | web, desktop, mobile |
-| Multi-account overlay with cross-account blocking (Notion Calendar) | Overlay all work and personal accounts in one grid and block conflicts across accounts so double-booking is impossible | P0 | planned | web, desktop, mobile |
-| Calendar Sets (Fantastical) | Group calendars into named sets (work, home) that toggle together and switch automatically by time or location | P1 | planned | web, desktop, mobile |
-| Side-by-side calendar in inbox (Superhuman) | A mini day/week calendar opens beside the inbox to check and manage the schedule without leaving email | P1 | planned | web, desktop |
+| Full view range: day/week/month/quarter/year + DayTicker (Fantastical) | Polished day, week, month, quarter, year, and hybrid list/ticker views adapting across desktop and mobile | P0 | scaffolded | web, desktop, mobile |
+| Multi-account overlay with cross-account blocking (Notion Calendar) | Overlay all work and personal accounts in one grid and block conflicts across accounts so double-booking is impossible | P0 | scaffolded | web, desktop, mobile |
+| Calendar Sets (Fantastical) | Group calendars into named sets (work, home) that toggle together and switch automatically by time or location | P1 | scaffolded | web, desktop, mobile |
+| Side-by-side calendar in inbox (Superhuman) | A mini day/week calendar opens beside the inbox to check and manage the schedule without leaving email | P1 | scaffolded | web, desktop |
 | Keyword auto color-coding and time breakdown (Vimcal) | Events auto-colored by keyword rules and rolled up into a report of how time is actually spent | P2 | planned | web, desktop |
 | Time Insights analytics (Google Calendar) | Panel breaking down meeting hours, most-met-with people, and the meetings-vs-focus split | P2 | planned | web, desktop |
 | **Scheduling** | | | | |
@@ -115,7 +115,7 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | AI task slotting (Amie) | AI suggests the best open slots for unscheduled todos based on schedule and energy of the day | P2 | planned | web, desktop, mobile |
 | Auto buffers between meetings (Rise) | Automatically inserts breathing room between back-to-back meetings for preparation and recovery | P2 | planned | web, desktop, mobile |
 | **Time zones** | | | | |
-| Multiple time zones on the grid (Notion Calendar) | Pin several time zones as parallel columns on the week grid to reason about distributed-team hours | P0 | planned | web, desktop |
+| Multiple time zones on the grid (Notion Calendar) | Pin several time zones as parallel columns on the week grid to reason about distributed-team hours | P0 | scaffolded | web, desktop |
 | Time Travel timezone comparison (Vimcal) | Temporarily overlay any city's timezone on the calendar to find globally workable slots, DST handled automatically | P1 | planned | web, desktop, mobile |
 | Secondary time zone display (Google Calendar) | Labeled second time zone alongside the primary axis plus a world-clock widget | P1 | planned | web, desktop |
 | Recipient-time-zone preview (Vimcal) | Shared slots and booking pages render automatically in the recipient's local time zone, eliminating conversion errors | P2 | planned | web, desktop |
@@ -131,9 +131,9 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | EA delegation mode (Vimcal) | Executive assistants manage multiple executives' calendars from one interface with calendar holds and scheduling analytics | P2 | planned | web, desktop |
 | **Speed** | | | | |
 | Sub-100ms speed with a shortcut for everything (Vimcal) | Every calendar action, from event creation to jumping between meetings, has a shortcut and responds in under 100ms | P0 | planned | web, desktop |
-| Keyboard-first navigation (Notion Calendar) | Single-key shortcuts (T today, J/K move, S share availability, ? shortcut list) drive the whole app | P1 | planned | web, desktop |
-| Command menu / Cmd+K (Notion Calendar) | Palette to jump to dates, switch views, and trigger any calendar action without the mouse (unified with the mail palette) | P1 | planned | web, desktop |
-| Keyboard-first calendar control in email (Superhuman) | All calendar actions (view, share, create, RSVP) reachable via shortcuts inside the mail workflow with no context switch | P1 | planned | web, desktop |
+| Keyboard-first navigation (Notion Calendar) | Single-key shortcuts (T today, J/K move, S share availability, ? shortcut list) drive the whole app | P1 | scaffolded | web, desktop |
+| Command menu / Cmd+K (Notion Calendar) | Palette to jump to dates, switch views, and trigger any calendar action without the mouse (unified with the mail palette) | P1 | scaffolded | web, desktop |
+| Keyboard-first calendar control in email (Superhuman) | All calendar actions (view, share, create, RSVP) reachable via shortcuts inside the mail workflow with no context switch | P1 | scaffolded | web, desktop |
 | Menu-bar mini calendar (Fantastical) | Full mini calendar in the macOS menu bar for glance-and-create access without opening the main app | P1 | planned | desktop |
 | Menu-bar next event + instant join (Notion Calendar) | Menu-bar countdown to your next meeting with one-click call join from anywhere | P1 | planned | desktop |
 | Auto-join meetings (Rise) | The app opens the video call for you at start time so no one is late hunting for the link | P2 | planned | desktop |
