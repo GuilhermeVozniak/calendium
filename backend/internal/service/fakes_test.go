@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"calendium/backend/internal/domain"
@@ -327,6 +328,36 @@ func (r *fakeThreadRepo) AppendSentMessage(_ context.Context, id string, sentAt 
 	return nil
 }
 
+func (r *fakeThreadRepo) SetSummary(_ context.Context, threadID, summary string, at time.Time) error {
+	t, ok := r.byID[threadID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	t.Summary = summary
+	r.byID[threadID] = t
+	return nil
+}
+
+func (r *fakeThreadRepo) SetInstantReplies(_ context.Context, threadID string, replies []string, at time.Time) error {
+	t, ok := r.byID[threadID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	t.InstantReplies = replies
+	r.byID[threadID] = t
+	return nil
+}
+
+func (r *fakeThreadRepo) SetReminderIfUnset(_ context.Context, threadID string, remindAt time.Time) error {
+	t, ok := r.byID[threadID]
+	if !ok || t.RemindAt != nil {
+		return nil
+	}
+	t.RemindAt = &remindAt
+	r.byID[threadID] = t
+	return nil
+}
+
 func (r *fakeThreadRepo) ListInboxBefore(_ context.Context, userID string, before time.Time, limit int) ([]domain.Thread, error) {
 	r.listInboxBeforeCalls++
 	var threads []domain.Thread
@@ -400,6 +431,24 @@ func (r *fakeMessageRepo) ListByThread(_ context.Context, threadID string) ([]do
 	return out, nil
 }
 
+// ListSentByAccount returns messages from accountID whose From address
+// matches accountEmail (case-insensitive), newest-first, capped at limit.
+func (r *fakeMessageRepo) ListSentByAccount(_ context.Context, accountID, accountEmail string, limit int) ([]domain.Message, error) {
+	out := []domain.Message{}
+	for i := len(r.order) - 1; i >= 0; i-- {
+		m, ok := r.byID[r.order[i]]
+		if !ok || m.AccountID != accountID || !strings.EqualFold(m.From.Email, accountEmail) {
+			continue
+		}
+		out = append(out, m)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].SentAt.After(out[j].SentAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 var _ port.MessageRepo = (*fakeMessageRepo)(nil)
 
 // --- draft repo --------------------------------------------------------------
@@ -446,6 +495,19 @@ func (r *fakeDraftRepo) GetByID(_ context.Context, id string) (domain.Draft, err
 		return domain.Draft{}, domain.ErrNotFound
 	}
 	return d, nil
+}
+
+// GetAiGeneratedByThread returns the newest AI-generated draft on threadID
+// (insertion order, last wins), mirroring the postgres adapter's "newest
+// wins" semantics.
+func (r *fakeDraftRepo) GetAiGeneratedByThread(_ context.Context, threadID string) (domain.Draft, error) {
+	for i := len(r.order) - 1; i >= 0; i-- {
+		d, ok := r.byID[r.order[i]]
+		if ok && d.AiGenerated && d.ThreadID != nil && *d.ThreadID == threadID {
+			return d, nil
+		}
+	}
+	return domain.Draft{}, domain.ErrNotFound
 }
 
 func (r *fakeDraftRepo) ListByUser(_ context.Context, userID string) ([]domain.Draft, error) {

@@ -16,21 +16,26 @@ import (
 const threadCols = `t.id, t.account_id, t.provider_thread_id, t.subject, t.snippet,
 	t.participants, t.split, t.message_count, t.unread, t.starred, t.in_inbox, t.last_message_at,
 	t.opened_at, t.snoozed_until, t.remind_at, t.unsubscribe_mailto, t.unsubscribe_url, t.unsubscribe_one_click,
+	t.summary, t.instant_replies,
 	coalesce((SELECT json_agg(tl.label_id ORDER BY tl.label_id)
 	          FROM thread_labels tl WHERE tl.thread_id = t.id), '[]'::json)::text`
 
 func scanThread(r rowScanner) (domain.Thread, error) {
 	var t domain.Thread
-	var participants []byte
+	var participants, instantReplies []byte
 	var labels string
 	var opened, snoozed, remind sql.NullTime
 	var unsubMailto, unsubURL sql.NullString
 	if err := r.Scan(&t.ID, &t.AccountID, &t.ProviderThreadID, &t.Subject, &t.Snippet,
 		&participants, &t.Split, &t.MessageCount, &t.Unread, &t.Starred, &t.InInbox, &t.LastMessageAt,
-		&opened, &snoozed, &remind, &unsubMailto, &unsubURL, &t.UnsubscribeOneClick, &labels); err != nil {
+		&opened, &snoozed, &remind, &unsubMailto, &unsubURL, &t.UnsubscribeOneClick,
+		&t.Summary, &instantReplies, &labels); err != nil {
 		return domain.Thread{}, notFound(err)
 	}
 	if err := unmarshalInto(participants, &t.Participants); err != nil {
+		return domain.Thread{}, err
+	}
+	if err := unmarshalInto(instantReplies, &t.InstantReplies); err != nil {
 		return domain.Thread{}, err
 	}
 	if err := unmarshalInto([]byte(labels), &t.LabelIDs); err != nil {
@@ -38,6 +43,9 @@ func scanThread(r rowScanner) (domain.Thread, error) {
 	}
 	if t.Participants == nil {
 		t.Participants = []domain.EmailAddress{}
+	}
+	if t.InstantReplies == nil {
+		t.InstantReplies = []string{}
 	}
 	if t.LabelIDs == nil {
 		t.LabelIDs = []string{}
@@ -106,6 +114,9 @@ func (r threadRepo) Upsert(ctx context.Context, t domain.Thread) (domain.Thread,
 	}
 	if t.Participants == nil {
 		t.Participants = []domain.EmailAddress{}
+	}
+	if t.InstantReplies == nil {
+		t.InstantReplies = []string{}
 	}
 	if t.LabelIDs == nil {
 		t.LabelIDs = []string{}
@@ -225,6 +236,10 @@ func (r threadRepo) Update(ctx context.Context, t domain.Thread) error {
 	if err != nil {
 		return err
 	}
+	instantReplies, err := jsonArray(t.InstantReplies)
+	if err != nil {
+		return err
+	}
 	return mustAffect(r.q(ctx).ExecContext(ctx, `
 		UPDATE threads SET
 			subject         = $2,
@@ -242,12 +257,47 @@ func (r threadRepo) Update(ctx context.Context, t domain.Thread) error {
 			unsubscribe_mailto = $14,
 			unsubscribe_url = $15,
 			unsubscribe_one_click = $16,
+			summary         = $17,
+			instant_replies = $18::jsonb,
 			updated_at      = now()
 		WHERE id = $1`,
 		t.ID, t.Subject, t.Snippet, participants, string(t.Split), t.MessageCount,
 		t.Unread, t.Starred, t.InInbox, t.LastMessageAt,
 		nullTimePtr(t.OpenedAt), nullTimePtr(t.SnoozedUntil), nullTimePtr(t.RemindAt),
-		t.UnsubscribeMailto, t.UnsubscribeURL, t.UnsubscribeOneClick))
+		t.UnsubscribeMailto, t.UnsubscribeURL, t.UnsubscribeOneClick, t.Summary, instantReplies))
+}
+
+// SetSummary is a targeted write for the Auto Summarize AI job: it never
+// touches columns a concurrent user mutation may have changed.
+func (r threadRepo) SetSummary(ctx context.Context, threadID, summary string, at time.Time) error {
+	return mustAffect(r.q(ctx).ExecContext(ctx, `
+		UPDATE threads SET summary = $2, summary_updated_at = $3, updated_at = now()
+		WHERE id = $1`, threadID, summary, at))
+}
+
+// SetInstantReplies is a targeted write for the Instant Reply AI job: it
+// never touches columns a concurrent user mutation may have changed.
+func (r threadRepo) SetInstantReplies(ctx context.Context, threadID string, replies []string, at time.Time) error {
+	if replies == nil {
+		replies = []string{}
+	}
+	encoded, err := jsonArray(replies)
+	if err != nil {
+		return err
+	}
+	return mustAffect(r.q(ctx).ExecContext(ctx, `
+		UPDATE threads SET instant_replies = $2::jsonb, instant_replies_updated_at = $3, updated_at = now()
+		WHERE id = $1`, threadID, encoded, at))
+}
+
+// SetReminderIfUnset arms remind_at only when it is currently null, so an AI
+// auto-reminder never overwrites a user-chosen reminder. Silently no-ops
+// (no error) when the thread is missing or the reminder is already set.
+func (r threadRepo) SetReminderIfUnset(ctx context.Context, threadID string, remindAt time.Time) error {
+	_, err := r.q(ctx).ExecContext(ctx, `
+		UPDATE threads SET remind_at = $2, updated_at = now()
+		WHERE id = $1 AND remind_at IS NULL`, threadID, remindAt)
+	return err
 }
 
 // MarkOpened records the first open of a thread with a targeted write: it
@@ -529,6 +579,49 @@ func (r messageRepo) ListByThread(ctx context.Context, threadID string) ([]domai
 	rows, err := r.q(ctx).QueryContext(ctx,
 		`SELECT `+messageCols+` FROM messages m WHERE m.thread_id = $1 ORDER BY m.sent_at, m.id`,
 		threadID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	msgs := []domain.Message{}
+	ids := []string{}
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+		ids = append(ids, m.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return msgs, nil
+	}
+	byMsg, err := r.attachmentsFor(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range msgs {
+		if atts, ok := byMsg[msgs[i].ID]; ok {
+			msgs[i].Attachments = atts
+		}
+	}
+	return msgs, nil
+}
+
+// ListSentByAccount returns the newest messages sent from the account's own
+// address (from_addr email match), newest first — the voice-learning corpus.
+func (r messageRepo) ListSentByAccount(ctx context.Context, accountID, accountEmail string, limit int) ([]domain.Message, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.q(ctx).QueryContext(ctx, `
+		SELECT `+messageCols+` FROM messages m
+		WHERE m.account_id = $1 AND lower(m.from_addr->>'email') = lower($2)
+		ORDER BY m.sent_at DESC, m.id DESC LIMIT $3`, accountID, accountEmail, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -125,6 +125,13 @@ type ThreadRepo interface {
 	// ListInboxBefore returns inbox threads (in_inbox, not snoozed) with
 	// last_message_at strictly before the cutoff, oldest first.
 	ListInboxBefore(ctx context.Context, userID string, before time.Time, limit int) ([]domain.Thread, error)
+	// SetSummary/SetInstantReplies are targeted writes that never clobber
+	// concurrent user mutations (same pattern as MarkOpened/ClearSnooze).
+	SetSummary(ctx context.Context, threadID, summary string, at time.Time) error
+	SetInstantReplies(ctx context.Context, threadID string, replies []string, at time.Time) error
+	// SetReminderIfUnset arms remind_at only when currently null, so an AI
+	// auto-reminder never overwrites a user-chosen reminder.
+	SetReminderIfUnset(ctx context.Context, threadID string, remindAt time.Time) error
 }
 
 // MessageRepo persists mirrored mail messages.
@@ -133,6 +140,9 @@ type MessageRepo interface {
 	GetByID(ctx context.Context, id string) (domain.Message, error)
 	GetByProviderID(ctx context.Context, accountID, providerMessageID string) (domain.Message, error)
 	ListByThread(ctx context.Context, threadID string) ([]domain.Message, error)
+	// ListSentByAccount returns the newest messages sent from the account's
+	// own address (from_addr email match), newest first.
+	ListSentByAccount(ctx context.Context, accountID, accountEmail string, limit int) ([]domain.Message, error)
 }
 
 // DraftRepo persists drafts, including scheduled (Send Later / undo-send
@@ -154,6 +164,9 @@ type DraftRepo interface {
 	// attempt counter and stores errMsg, setting scheduled_at to nextAttemptAt
 	// to retry, or leaving it clear (nil) to dead-letter the draft.
 	RecordSendFailure(ctx context.Context, id string, nextAttemptAt *time.Time, errMsg string) error
+	// GetAiGeneratedByThread returns the provisional AI draft for the thread
+	// (ErrNotFound when none).
+	GetAiGeneratedByThread(ctx context.Context, threadID string) (domain.Draft, error)
 }
 
 // SnippetRepo persists per-user canned responses.
@@ -273,6 +286,46 @@ type OAuthStateRepo interface {
 	// Consume atomically fetches and deletes the state; domain.ErrNotFound
 	// when missing (replayed or forged).
 	Consume(ctx context.Context, state string) (OAuthState, error)
+}
+
+// AiJobRepo persists the background AI job queue.
+type AiJobRepo interface {
+	// Enqueue inserts the job; on (kind, thread_id) conflict it resets
+	// run_after/locked_at so a message burst collapses into one fresh job.
+	Enqueue(ctx context.Context, j domain.AiJob) error
+	// ClaimDue atomically claims up to limit due jobs (run_after <= now,
+	// unlocked or lock expired >10m) with FOR UPDATE SKIP LOCKED, bumping
+	// attempts and locked_at. Safe under concurrent workers.
+	ClaimDue(ctx context.Context, now time.Time, limit int) ([]domain.AiJob, error)
+	// Complete deletes a finished job.
+	Complete(ctx context.Context, id string) error
+	// Fail records errMsg and re-arms the job at retryAt, or dead-letters it
+	// (row deleted, error logged by caller) when retryAt is nil.
+	Fail(ctx context.Context, id string, retryAt *time.Time, errMsg string) error
+}
+
+// ClassifierRepo persists user-defined natural-language classifiers.
+type ClassifierRepo interface {
+	Create(ctx context.Context, c domain.AiClassifier) (domain.AiClassifier, error)
+	GetByID(ctx context.Context, id string) (domain.AiClassifier, error)
+	ListByUser(ctx context.Context, userID string) ([]domain.AiClassifier, error)
+	ListEnabledByUser(ctx context.Context, userID string) ([]domain.AiClassifier, error)
+	Update(ctx context.Context, c domain.AiClassifier) error
+	Delete(ctx context.Context, id string) error
+}
+
+// VoiceProfileRepo persists per-user writing-style profiles.
+type VoiceProfileRepo interface {
+	Get(ctx context.Context, userID string) (domain.VoiceProfile, error) // ErrNotFound when absent
+	Upsert(ctx context.Context, p domain.VoiceProfile) error
+}
+
+// AiUsageRepo enforces the per-user daily AI budget.
+type AiUsageRepo interface {
+	// IncrementAndCheck atomically bumps the user's counter for day and
+	// reports whether this call was within limit (counter <= limit after
+	// the bump refuses: allowed=false leaves the counter unchanged).
+	IncrementAndCheck(ctx context.Context, userID string, day time.Time, limit int) (allowed bool, err error)
 }
 
 // ---------------------------------------------------------------------------
