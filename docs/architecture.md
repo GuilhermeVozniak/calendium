@@ -82,6 +82,15 @@ All endpoints JSON, Bearer-authenticated unless noted. Errors: `{ "error": { "co
 | `POST /v1/events` / `PATCH /v1/events/{id}` / `DELETE` | Event CRUD (writes through to provider; PATCH body is `EventPatch` — no `calendarId`/`addConferencing`) |
 | `POST /v1/events/{id}/rsvp` | `{response}` |
 | `GET /v1/availability?from&to&duration` | Free slots for share-availability |
+| `POST /v1/mail/threads/bulk-actions` | Bulk archive/read/label with per-id `failedIds` reporting (cap 200) |
+| `POST /v1/mail/threads/zero` | Get Me To Zero: archive all inbox mail older than `olderThan` |
+| `GET /v1/mail/labels` / `POST /v1/mail/threads/{id}/labels` | Label listing and single-thread label add/remove |
+| `POST /v1/mail/threads/{id}/unsubscribe` | Execute unsubscribe: `{method: one_click\|mailto\|link, url?}` (RFC 8058 one-click POST) |
+| `DELETE /v1/mail/threads/{id}/snooze` | Manual unsnooze (client-side undo; does not mark unread) |
+| `GET/PUT /v1/prefs` | User preferences: `{splitOrder}` (reorderable splits) |
+| `GET/POST /v1/event-templates` / `PUT/DELETE /v1/event-templates/{id}` | Event template CRUD (full-replace PUT) |
+| `POST /v1/event-templates/{id}/use` | Bump a template's usage counter (204) |
+| `GET/POST /v1/calendar-sets` / `PUT/DELETE /v1/calendar-sets/{id}` | Calendar set CRUD (named visibility groups, full-replace PUT) |
 | `GET /v1/search?q` | Unified search over threads + events |
 | `POST /v1/ai/compose` | OpenRouter-backed compose/reply/summarize/ask |
 | `POST /v1/devices` / `DELETE /v1/devices/{id}` | Push token registration |
