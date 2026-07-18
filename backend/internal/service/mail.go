@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -30,6 +31,7 @@ type MailServiceDeps struct {
 	Drafts        port.DraftRepo
 	Snippets      port.SnippetRepo
 	Labels        port.LabelRepo
+	Reactions     port.ReactionRepo
 	MailProviders map[domain.Provider]port.MailProvider
 	OAuth         map[domain.Provider]port.OAuthGateway
 	// Unsubscriber performs the RFC 8058 one-click POST; nil disables the
@@ -40,6 +42,9 @@ type MailServiceDeps struct {
 	SelfHosted bool
 	// UndoSendGrace <= 0 falls back to DefaultUndoSendGrace.
 	UndoSendGrace time.Duration
+	// Logger receives best-effort operational logging (tiny-reply delivery
+	// failures). Defaults to slog.Default() when nil.
+	Logger *slog.Logger
 }
 
 // MailService implements port.MailService.
@@ -51,11 +56,13 @@ type MailService struct {
 	drafts        port.DraftRepo
 	snippets      port.SnippetRepo
 	labels        port.LabelRepo
+	reactions     port.ReactionRepo
 	mail          map[domain.Provider]port.MailProvider
 	tokens        tokenSource
 	unsubscriber  port.UnsubscribeGateway
 	clock         port.Clock
 	undoSendGrace time.Duration
+	logger        *slog.Logger
 }
 
 var _ port.MailService = (*MailService)(nil)
@@ -65,6 +72,10 @@ func NewMailService(d MailServiceDeps) *MailService {
 	if grace <= 0 {
 		grace = DefaultUndoSendGrace
 	}
+	logger := d.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &MailService{
 		ent:           entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
 		accounts:      d.Accounts,
@@ -73,11 +84,13 @@ func NewMailService(d MailServiceDeps) *MailService {
 		drafts:        d.Drafts,
 		snippets:      d.Snippets,
 		labels:        d.Labels,
+		reactions:     d.Reactions,
 		mail:          d.MailProviders,
 		tokens:        tokenSource{accounts: d.Accounts, oauth: d.OAuth, clock: d.Clock},
 		unsubscriber:  d.Unsubscriber,
 		clock:         d.Clock,
 		undoSendGrace: grace,
+		logger:        logger,
 	}
 }
 
@@ -119,7 +132,34 @@ func (s *MailService) GetThread(ctx context.Context, userID, threadID string) (d
 	if msgs == nil {
 		msgs = []domain.Message{}
 	}
+	if err := s.attachReactions(ctx, msgs); err != nil {
+		return domain.Thread{}, nil, err
+	}
 	return t, msgs, nil
+}
+
+// attachReactions fills each message's Reactions in place with a single
+// ReactionRepo.ListByMessages call, defaulting to an empty (never nil) slice.
+func (s *MailService) attachReactions(ctx context.Context, msgs []domain.Message) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	ids := make([]string, len(msgs))
+	for i, m := range msgs {
+		ids[i] = m.ID
+	}
+	byMessage, err := s.reactions.ListByMessages(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for i := range msgs {
+		reactions := byMessage[msgs[i].ID]
+		if reactions == nil {
+			reactions = []domain.Reaction{}
+		}
+		msgs[i].Reactions = reactions
+	}
+	return nil
 }
 
 func (s *MailService) ActOnThread(ctx context.Context, userID, threadID string, action domain.ThreadAction) (domain.Thread, error) {
@@ -844,10 +884,105 @@ func (s *MailService) GetContact(ctx context.Context, userID, email string) (dom
 	return domain.ContactSummary{}, errNotImplemented
 }
 
+// ReactToMessage stores an emoji reaction on messageID (idempotent per
+// (message, user, emoji)) and, when sendReply requests it and the message
+// isn't from the account owner themselves (never reply-react to yourself),
+// also queues a tiny threaded reply through the normal scheduled-send
+// pipeline (grace-delayed, undo-send capable, delivered by the worker).
+//
+// The reaction row persists first with its final Delivery value; queuing the
+// tiny-reply draft is then attempted best-effort (M2.4 Book/ConfirmPoll
+// convention): a failure is logged and discarded, never rolled back against
+// the already-stored reaction.
 func (s *MailService) ReactToMessage(ctx context.Context, userID, messageID, emoji string, sendReply bool) (port.ReactionResult, error) {
-	return port.ReactionResult{}, errNotImplemented
+	if err := s.ent.require(ctx, userID); err != nil {
+		return port.ReactionResult{}, err
+	}
+	msg, acct, err := ownedMessage(ctx, s.messages, s.accounts, userID, messageID)
+	if err != nil {
+		return port.ReactionResult{}, err
+	}
+	if err := validateEmoji(emoji); err != nil {
+		return port.ReactionResult{}, err
+	}
+
+	// Never reply-react to your own message: the account owner sent it, so a
+	// threaded "reply" back to themselves makes no sense.
+	willReply := sendReply && !strings.EqualFold(msg.From.Email, acct.Email)
+
+	delivery := "local"
+	if willReply {
+		delivery = "sent"
+	}
+	react, err := s.reactions.Create(ctx, domain.Reaction{
+		MessageID: messageID,
+		UserID:    userID,
+		Emoji:     emoji,
+		Delivery:  delivery,
+	})
+	if err != nil {
+		return port.ReactionResult{}, err
+	}
+	result := port.ReactionResult{Reaction: react}
+	if !willReply {
+		return result, nil
+	}
+
+	now := s.clock.Now()
+	sendAt := now.Add(s.undoSendGrace)
+	draft := domain.Draft{
+		ID:          newID(),
+		AccountID:   acct.ID,
+		ThreadID:    &msg.ThreadID,
+		To:          []domain.EmailAddress{msg.From},
+		Subject:     "Re: " + msg.Subject,
+		BodyHTML:    "<p>" + emoji + "</p>",
+		ScheduledAt: &sendAt,
+		UpdatedAt:   now,
+	}
+	created, err := s.drafts.Create(ctx, draft)
+	if err != nil {
+		// Best-effort: the reaction is already stored (Delivery: "sent"); a
+		// failure here is logged and discarded rather than rolled back.
+		s.logger.Warn("tiny-reply draft creation failed", "message", messageID, "error", err)
+		return result, nil
+	}
+	draftID := created.ID
+	result.DraftID = &draftID
+	return result, nil
 }
 
+// RemoveReaction deletes the caller's reaction from messageID.
+// domain.ErrNotFound when it doesn't exist.
 func (s *MailService) RemoveReaction(ctx context.Context, userID, messageID, emoji string) error {
-	return errNotImplemented
+	if err := s.ent.require(ctx, userID); err != nil {
+		return err
+	}
+	if _, _, err := ownedMessage(ctx, s.messages, s.accounts, userID, messageID); err != nil {
+		return err
+	}
+	return s.reactions.DeleteByEmoji(ctx, messageID, userID, emoji)
+}
+
+// maxEmojiBytes bounds a stored reaction's emoji: generous enough for any
+// real emoji (including multi-codepoint ZWJ sequences like "👨‍👩‍👧‍👦") while
+// rejecting arbitrary text.
+const maxEmojiBytes = 16
+
+// validateEmoji rejects anything that isn't a short, letter/digit-free emoji:
+// empty, over maxEmojiBytes, or containing an ASCII letter or digit (which
+// would make it plain text, not an emoji).
+func validateEmoji(emoji string) error {
+	if emoji == "" {
+		return fmt.Errorf("%w: emoji is required", domain.ErrValidation)
+	}
+	if len(emoji) > maxEmojiBytes {
+		return fmt.Errorf("%w: emoji must be at most %d bytes", domain.ErrValidation, maxEmojiBytes)
+	}
+	for _, r := range emoji {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return fmt.Errorf("%w: emoji must not contain ASCII letters or digits", domain.ErrValidation)
+		}
+	}
+	return nil
 }

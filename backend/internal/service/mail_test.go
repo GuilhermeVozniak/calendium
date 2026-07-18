@@ -1830,3 +1830,229 @@ func TestSuggestSendTimeReturnsSuggestionFromHistogram(t *testing.T) {
 		t.Errorf("SuggestedAt = %v, want %v", got.SuggestedAt, want)
 	}
 }
+
+func TestValidateEmoji(t *testing.T) {
+	tests := []struct {
+		name    string
+		emoji   string
+		wantErr bool
+	}{
+		{"thumbs up accepted", "👍", false},
+		{"heart accepted", "❤️", false},
+		{"empty rejected", "", true},
+		{"ascii letters rejected", "abc", true},
+		{"over 16 bytes rejected", "👍👍👍👍👍", true}, // 5 × 4-byte emoji = 20 bytes
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateEmoji(tt.emoji)
+			if tt.wantErr && !errors.Is(err, domain.ErrValidation) {
+				t.Fatalf("validateEmoji(%q) err = %v, want ErrValidation", tt.emoji, err)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("validateEmoji(%q) err = %v, want nil", tt.emoji, err)
+			}
+		})
+	}
+}
+
+func TestReactToMessageRejectsInvalidEmoji(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	if _, err := f.svc.ReactToMessage(ctx, "u1", "m1", "abc", false); !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("err = %v, want ErrValidation", err)
+	}
+	grouped, err := f.reactions.ListByMessages(ctx, []string{"m1"})
+	if err != nil {
+		t.Fatalf("ListByMessages: %v", err)
+	}
+	if len(grouped["m1"]) != 0 {
+		t.Fatalf("invalid emoji must not be stored: %+v", grouped["m1"])
+	}
+}
+
+func TestReactToMessageLocalOnlyWhenSendReplyFalse(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	res, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", false)
+	if err != nil {
+		t.Fatalf("ReactToMessage: %v", err)
+	}
+	if res.Reaction.Delivery != "local" {
+		t.Fatalf("Delivery = %q, want local", res.Reaction.Delivery)
+	}
+	if res.DraftID != nil {
+		t.Fatalf("DraftID = %v, want nil (no tiny reply requested)", *res.DraftID)
+	}
+	if len(f.drafts.byID) != 0 {
+		t.Fatalf("no draft should have been created, got %d", len(f.drafts.byID))
+	}
+}
+
+func TestReactToMessageSendsGraceScheduledTinyReply(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	res, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", true)
+	if err != nil {
+		t.Fatalf("ReactToMessage: %v", err)
+	}
+	if res.Reaction.Delivery != "sent" {
+		t.Fatalf("Delivery = %q, want sent", res.Reaction.Delivery)
+	}
+	if res.DraftID == nil {
+		t.Fatal("DraftID = nil, want a queued tiny-reply draft id")
+	}
+	d, err := f.drafts.GetByID(ctx, *res.DraftID)
+	if err != nil {
+		t.Fatalf("GetByID(draft): %v", err)
+	}
+	if d.ThreadID == nil || *d.ThreadID != "t1" {
+		t.Fatalf("draft ThreadID = %v, want t1 (threaded reply)", d.ThreadID)
+	}
+	if len(d.To) != 1 || d.To[0].Email != "friend@example.com" {
+		t.Fatalf("draft To = %+v, want [friend@example.com]", d.To)
+	}
+	if d.Subject != "Re: Hi" {
+		t.Fatalf("draft Subject = %q, want %q", d.Subject, "Re: Hi")
+	}
+	if d.BodyHTML != "<p>👍</p>" {
+		t.Fatalf("draft BodyHTML = %q, want %q", d.BodyHTML, "<p>👍</p>")
+	}
+	wantSendAt := f.clock.Now().Add(f.svc.undoSendGrace)
+	if d.ScheduledAt == nil || !d.ScheduledAt.Equal(wantSendAt) {
+		t.Fatalf("draft ScheduledAt = %v, want now+grace %v", d.ScheduledAt, wantSendAt)
+	}
+}
+
+func TestReactToMessageSelfMessageNeverSendsReply(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	acct := f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", acct.Email, "Hi")
+
+	res, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", true)
+	if err != nil {
+		t.Fatalf("ReactToMessage: %v", err)
+	}
+	if res.Reaction.Delivery != "local" {
+		t.Fatalf("Delivery = %q, want local (never reply-react to yourself)", res.Reaction.Delivery)
+	}
+	if res.DraftID != nil {
+		t.Fatalf("DraftID = %v, want nil", *res.DraftID)
+	}
+	if len(f.drafts.byID) != 0 {
+		t.Fatalf("no draft should have been created, got %d", len(f.drafts.byID))
+	}
+}
+
+func TestReactToMessageDuplicateIsIdempotent(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	first, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", false)
+	if err != nil {
+		t.Fatalf("first ReactToMessage: %v", err)
+	}
+	second, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", false)
+	if err != nil {
+		t.Fatalf("second ReactToMessage: %v", err)
+	}
+	if second.Reaction.ID != first.Reaction.ID {
+		t.Fatalf("duplicate reaction returned a different id: got %s want %s", second.Reaction.ID, first.Reaction.ID)
+	}
+	grouped, err := f.reactions.ListByMessages(ctx, []string{"m1"})
+	if err != nil {
+		t.Fatalf("ListByMessages: %v", err)
+	}
+	if len(grouped["m1"]) != 1 {
+		t.Fatalf("grouped[m1] = %+v, want exactly 1 stored reaction", grouped["m1"])
+	}
+}
+
+func TestReactToMessageForeignMessageIsNotFound(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	if _, err := f.svc.ReactToMessage(ctx, "intruder", "m1", "👍", false); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestGetThreadEmbedsReactions(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedThread(t, "t1", "a1", nil)
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+	f.seedMessage(t, "m2", "t1", "a1", "friend@example.com", "Yo")
+
+	if _, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", false); err != nil {
+		t.Fatalf("react m1: %v", err)
+	}
+	if _, err := f.svc.ReactToMessage(ctx, "u1", "m1", "🎉", false); err != nil {
+		t.Fatalf("react m1 again: %v", err)
+	}
+
+	_, msgs, err := f.svc.GetThread(ctx, "u1", "t1")
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("messages = %d, want 2", len(msgs))
+	}
+	if len(msgs[0].Reactions) != 2 {
+		t.Fatalf("m1 reactions = %+v, want 2", msgs[0].Reactions)
+	}
+	if msgs[1].Reactions == nil || len(msgs[1].Reactions) != 0 {
+		t.Fatalf("m2 reactions = %v, want non-nil empty slice", msgs[1].Reactions)
+	}
+}
+
+func TestRemoveReactionDeletes(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	if _, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", false); err != nil {
+		t.Fatalf("react: %v", err)
+	}
+	if err := f.svc.RemoveReaction(ctx, "u1", "m1", "👍"); err != nil {
+		t.Fatalf("RemoveReaction: %v", err)
+	}
+	grouped, err := f.reactions.ListByMessages(ctx, []string{"m1"})
+	if err != nil {
+		t.Fatalf("ListByMessages: %v", err)
+	}
+	if len(grouped["m1"]) != 0 {
+		t.Fatalf("grouped[m1] = %+v, want empty after removal", grouped["m1"])
+	}
+
+	if err := f.svc.RemoveReaction(ctx, "u1", "m1", "👍"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("second remove err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestRemoveReactionForeignMessageIsNotFound(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	if err := f.svc.RemoveReaction(ctx, "intruder", "m1", "👍"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
