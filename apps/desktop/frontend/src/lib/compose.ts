@@ -6,7 +6,13 @@ import type { Message, Thread } from '@calendium/shared';
  */
 export type ComposeIntent =
   | { kind: 'new' }
-  | { kind: 'reply'; thread: Thread; message: Message };
+  | {
+      kind: 'reply';
+      thread: Thread;
+      message: Message;
+      /** Prefills the body (e.g. an AI instant-reply suggestion) instead of leaving it blank. */
+      body?: string;
+    };
 
 const COMPOSE_EVENT = 'calendium:compose';
 

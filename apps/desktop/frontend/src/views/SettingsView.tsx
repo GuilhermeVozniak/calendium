@@ -1,5 +1,5 @@
-import type { Provider, SubscriptionStatus } from '@calendium/shared';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { AiClassifier, ClassifierInput, InboxSplit, Provider, SubscriptionStatus } from '@calendium/shared';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import {
   CreditCard,
@@ -10,17 +10,212 @@ import {
   Plus,
   RefreshCw,
   Server,
+  Trash2,
 } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 
 import { api, apiConfigured, orMock } from '@/lib/api';
 import { clearStoredToken, signOut } from '@/lib/auth';
-import { mockAccounts, mockSubscription, mockUser } from '@/lib/mock';
+import {
+  createMockClassifier,
+  deleteMockClassifier,
+  listMockClassifiers,
+  mockAccounts,
+  mockSubscription,
+  mockUser,
+  updateMockClassifier,
+} from '@/lib/mock';
 import { useServerConfig, webOrigin } from '@/lib/server-config';
 import { errorMessage, toast } from '@/lib/toast';
 import { desktop, isDesktop, onDeepLink } from '@/lib/wails';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
+import { Input } from '@/ui/input';
+
+const SPLIT_OPTIONS: InboxSplit[] = ['important', 'vip', 'team', 'calendar', 'news', 'social', 'other'];
+const MAX_CLASSIFIERS = 20;
+
+function validateClassifier(form: { name: string; prompt: string; targetSplit: string; labelName: string }): string | null {
+  if (!form.name.trim()) return 'Give the classifier a name.';
+  if (!form.prompt.trim()) return 'Describe what this classifier should match.';
+  if (!form.targetSplit && !form.labelName.trim()) {
+    return 'Choose a target split or a label — at least one is required.';
+  }
+  return null;
+}
+
+function ClassifiersSection() {
+  const queryClient = useQueryClient();
+  const { data: classifiers = [] } = useQuery({
+    queryKey: ['classifiers'],
+    queryFn: () => orMock(() => api.listClassifiers(), () => listMockClassifiers()),
+  });
+
+  const [formOpen, setFormOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [prompt, setPrompt] = useState('');
+  const [targetSplit, setTargetSplit] = useState('');
+  const [labelName, setLabelName] = useState('');
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const create = useMutation({
+    mutationFn: (input: ClassifierInput) =>
+      orMock(() => api.createClassifier(input), () => createMockClassifier(input)),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['classifiers'] });
+      toast({ title: 'Classifier created' });
+      setFormOpen(false);
+      setName('');
+      setPrompt('');
+      setTargetSplit('');
+      setLabelName('');
+    },
+    onError: (e) => toast({ title: 'Could not create the classifier', description: errorMessage(e), variant: 'destructive' }),
+  });
+
+  const remove = useMutation({
+    mutationFn: (id: string) => orMock(() => api.deleteClassifier(id), () => deleteMockClassifier(id)),
+    onSuccess: (_data, id) => {
+      queryClient.setQueryData<AiClassifier[]>(['classifiers'], (prev) => prev?.filter((c) => c.id !== id));
+      toast({ title: 'Classifier deleted' });
+    },
+    onError: (e) => toast({ title: 'Could not delete the classifier', description: errorMessage(e), variant: 'destructive' }),
+  });
+
+  const toggle = useMutation({
+    mutationFn: (classifier: AiClassifier) => {
+      const input: ClassifierInput = {
+        name: classifier.name,
+        prompt: classifier.prompt,
+        targetSplit: classifier.targetSplit,
+        labelName: classifier.labelName,
+        enabled: !classifier.enabled,
+      };
+      return orMock(
+        () => api.updateClassifier(classifier.id, input),
+        () => updateMockClassifier(classifier.id, input)
+      );
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData<AiClassifier[]>(['classifiers'], (prev) =>
+        prev?.map((c) => (c.id === updated.id ? updated : c))
+      );
+    },
+    onError: (e) => toast({ title: 'Could not update the classifier', description: errorMessage(e), variant: 'destructive' }),
+  });
+
+  function submit() {
+    const error = validateClassifier({ name, prompt, targetSplit, labelName });
+    if (error) {
+      setFormError(error);
+      return;
+    }
+    setFormError(null);
+    create.mutate({
+      name: name.trim(),
+      prompt: prompt.trim(),
+      targetSplit: (targetSplit || undefined) as InboxSplit | undefined,
+      labelName: labelName.trim() || undefined,
+      enabled: true,
+    });
+  }
+
+  const atCap = classifiers.length >= MAX_CLASSIFIERS;
+  const fieldClass =
+    'flex h-8 w-full rounded-md border border-input bg-transparent px-2.5 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring';
+
+  return (
+    <Section title="AI classifiers">
+      {classifiers.length > 0 && (
+        <ul className="divide-y">
+          {classifiers.map((classifier) => (
+            <li key={classifier.id} className="flex items-center gap-2 p-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate text-sm font-medium">{classifier.name}</span>
+                  {classifier.targetSplit && (
+                    <Badge variant="outline" className="capitalize">
+                      {classifier.targetSplit}
+                    </Badge>
+                  )}
+                  {classifier.labelName && <Badge variant="secondary">{classifier.labelName}</Badge>}
+                </div>
+                <p className="truncate text-xs text-muted-foreground">{classifier.prompt}</p>
+              </div>
+              <input
+                type="checkbox"
+                checked={classifier.enabled}
+                onChange={() => toggle.mutate(classifier)}
+                aria-label={`${classifier.enabled ? 'Disable' : 'Enable'} ${classifier.name}`}
+              />
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
+                aria-label={`Delete ${classifier.name}`}
+                onClick={() => remove.mutate(classifier.id)}
+              >
+                <Trash2 />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex flex-col gap-2 border-t p-3">
+        {formOpen ? (
+          <>
+            <Input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
+            <textarea
+              placeholder="Describe what to match, e.g. cold recruiter outreach."
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={2}
+              className="w-full resize-none rounded-md border border-input bg-transparent px-2.5 py-1.5 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+            <div className="flex gap-2">
+              <select
+                value={targetSplit}
+                onChange={(e) => setTargetSplit(e.target.value)}
+                className={fieldClass}
+              >
+                <option value="">No target split</option>
+                {SPLIT_OPTIONS.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+              <Input
+                placeholder="Label name"
+                value={labelName}
+                onChange={(e) => setLabelName(e.target.value)}
+              />
+            </div>
+            {formError && <p className="text-xs text-destructive">{formError}</p>}
+            <div className="flex gap-2">
+              <Button size="sm" disabled={create.isPending} onClick={submit}>
+                {create.isPending ? <Loader2 className="animate-spin" /> : null}
+                Create
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setFormOpen(false)}>
+                Cancel
+              </Button>
+            </div>
+          </>
+        ) : (
+          <Button variant="outline" size="sm" className="self-start" disabled={atCap} onClick={() => setFormOpen(true)}>
+            <Plus /> New classifier
+          </Button>
+        )}
+        {atCap && (
+          <p className="text-xs text-muted-foreground">
+            You've reached the limit of {MAX_CLASSIFIERS} classifiers.
+          </p>
+        )}
+      </div>
+    </Section>
+  );
+}
 
 const STATUS_BADGE: Record<SubscriptionStatus, { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {
   active: { label: 'Active', variant: 'default' },
@@ -248,6 +443,8 @@ export function SettingsView() {
             )}
           </div>
         </Section>
+
+        {config?.features?.ai && <ClassifiersSection />}
 
         <Section title="Server">
           <div className="flex flex-col gap-3 p-3">
