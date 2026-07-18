@@ -30,6 +30,7 @@ import { detectConference } from '@calendium/shared';
 
 import { ConflictWarning } from '@/components/app/calendar/conflict-warning';
 import { JoinButton } from '@/components/app/calendar/join-button';
+import { FindATimeGrid, ProposalsList, ProposeTimeForm } from '@/components/app/find-a-time';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -176,6 +177,15 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
     !!event &&
     event.attendees.length > 0 &&
     !(organizer && selfEmails.has(organizer.email.toLowerCase()));
+
+  // Find-a-Time grid drives start/end while creating/editing (organizer
+  // side); a duration-sized column pick just overwrites the current fields.
+  const startForGrid = parseInput(start, allDay);
+  const endForGrid = parseInput(end, allDay);
+  const gridDurationMinutes =
+    startForGrid && endForGrid && endForGrid > startForGrid
+      ? Math.round((endForGrid.getTime() - startForGrid.getTime()) / 60_000)
+      : 30;
 
   React.useEffect(() => {
     if (!open) return;
@@ -619,6 +629,38 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
               />
             </div>
           </FieldRow>
+
+          {attendees.length > 0 && !isInvite && (
+            <FindATimeGrid
+              attendeeEmails={attendees}
+              durationMinutes={gridDurationMinutes}
+              initialDate={startForGrid ?? new Date()}
+              onPick={(pickedStart, pickedEnd) => {
+                setStart(formatInput(pickedStart, allDay));
+                setEnd(formatInput(pickedEnd, allDay));
+              }}
+            />
+          )}
+
+          {event && isInvite && (
+            <ProposeTimeForm
+              eventId={event.id}
+              initialStart={startForGrid ?? new Date(event.start)}
+              initialEnd={endForGrid ?? new Date(event.end)}
+              onProposed={() => toast.success('Proposed a new time')}
+            />
+          )}
+
+          {event && !isInvite && (
+            <ProposalsList
+              eventId={event.id}
+              onAccepted={() => {
+                void queryClient.invalidateQueries({ queryKey: ['events'] });
+                toast.success('Proposal accepted');
+                onOpenChange(false);
+              }}
+            />
+          )}
 
           <FieldRow icon={Video}>
             {!event ? (
