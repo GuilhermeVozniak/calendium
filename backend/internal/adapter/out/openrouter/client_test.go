@@ -239,3 +239,66 @@ func TestCompleteJSON(t *testing.T) {
 		}
 	})
 }
+
+func TestStripJSONFences(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// Existing behavior (backward compat)
+		{"bare object", `{"ok":true}`, `{"ok":true}`},
+		{"bare array", `[1,2,3]`, `[1,2,3]`},
+		{"exact json fence", "```json\n{\"ok\":true}\n```", `{"ok":true}`},
+		{"exact bare fence", "```\n{\"ok\":true}\n```", `{"ok":true}`},
+
+		// Prose before/after ```json fence (main fix)
+		{
+			"prose before and after json fence",
+			"Sure, here's the JSON:\n```json\n{\"a\":1}\n```\nLet me know if that helps!",
+			`{"a":1}`,
+		},
+		{
+			"prose before and after bare fence",
+			"Here's your data:\n```\n{\"name\":\"Alice\"}\n```\nDone!",
+			`{"name":"Alice"}`,
+		},
+
+		// Prose around raw JSON (no fence)
+		{
+			"prose around raw object",
+			"Here you go: {\"a\":1} hope that helps",
+			`{"a":1}`,
+		},
+		{
+			"prose around raw array",
+			"The list is: [1,2,3] thanks",
+			`[1,2,3]`,
+		},
+
+		// Leading/trailing whitespace handling
+		{"leading whitespace", "   {\"ok\":true}", `{"ok":true}`},
+		{"trailing whitespace", "{\"ok\":true}   ", `{"ok":true}`},
+		{"whitespace and fence", "   ```json\n{\"x\":0}\n```   ", `{"x":0}`},
+
+		// Multiple fences (extract first)
+		{
+			"multiple fences, extract first",
+			"```json\n{\"first\":1}\n```\nmore text\n```json\n{\"second\":2}\n```",
+			`{"first":1}`,
+		},
+
+		// Genuinely invalid (should return trimmed input, decode will fail)
+		{"invalid plain text", "not json at all", "not json at all"},
+		{"empty string", "", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripJSONFences(tc.in)
+			if got != tc.want {
+				t.Errorf("stripJSONFences(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

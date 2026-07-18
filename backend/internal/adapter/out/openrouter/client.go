@@ -65,13 +65,82 @@ func (c *Client) CompleteJSON(ctx context.Context, system, user string, out any)
 	return model, nil
 }
 
-// stripJSONFences tolerates models that wrap JSON in ```json fences.
+// stripJSONFences robustly extracts JSON from prose-wrapped LLM output.
+// It tries in order:
+// 1. Extract content from first ```json or ``` fenced block (anywhere in string)
+// 2. If trimmed string starts with { or [, return as-is
+// 3. Locate first { or [ and last } or ] and take that slice
+// 4. Return trimmed input (decode will fail → ErrAIOutput path)
 func stripJSONFences(s string) string {
 	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "```json")
-	s = strings.TrimPrefix(s, "```")
-	s = strings.TrimSuffix(s, "```")
-	return strings.TrimSpace(s)
+
+	// Strategy 1: Look for fenced blocks (```json or bare ```)
+	// Find first opening fence
+	jsonFenceIdx := strings.Index(s, "```json")
+	bareFenceIdx := strings.Index(s, "```")
+
+	// Determine which fence comes first (prefer ```json if at same position)
+	var fenceStart int
+	var jsonTyped bool
+	if jsonFenceIdx >= 0 && (bareFenceIdx < 0 || jsonFenceIdx <= bareFenceIdx) {
+		fenceStart = jsonFenceIdx
+		jsonTyped = true
+	} else if bareFenceIdx >= 0 {
+		fenceStart = bareFenceIdx
+		jsonTyped = false
+	} else {
+		fenceStart = -1
+	}
+
+	if fenceStart >= 0 {
+		// Found a fence; extract its content
+		var contentStart int
+		if jsonTyped {
+			contentStart = fenceStart + len("```json")
+		} else {
+			contentStart = fenceStart + len("```")
+		}
+
+		// Find the closing fence (next ``` line)
+		closingFenceIdx := strings.Index(s[contentStart:], "```")
+		if closingFenceIdx >= 0 {
+			content := s[contentStart : contentStart+closingFenceIdx]
+			return strings.TrimSpace(content)
+		}
+	}
+
+	// Strategy 2: If trimmed string starts with { or [, use as-is
+	if len(s) > 0 && (s[0] == '{' || s[0] == '[') {
+		return s
+	}
+
+	// Strategy 3: Find first { or [ and last } or ]
+	firstOpenIdx := -1
+	openChar := byte(0)
+	for i := 0; i < len(s); i++ {
+		if s[i] == '{' || s[i] == '[' {
+			firstOpenIdx = i
+			openChar = s[i]
+			break
+		}
+	}
+
+	if firstOpenIdx >= 0 {
+		// Determine closing character
+		closeChar := byte('}')
+		if openChar == '[' {
+			closeChar = ']'
+		}
+
+		// Find last closing character
+		lastCloseIdx := strings.LastIndexByte(s, closeChar)
+		if lastCloseIdx > firstOpenIdx {
+			return strings.TrimSpace(s[firstOpenIdx : lastCloseIdx+1])
+		}
+	}
+
+	// Strategy 4: Return trimmed input (decode will fail)
+	return s
 }
 
 // complete is the shared request path; jsonMode adds response_format.
