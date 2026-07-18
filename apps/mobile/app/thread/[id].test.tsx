@@ -108,14 +108,16 @@ describe('ThreadScreen — AI surfacing', () => {
 
     expect(screen.getByText('Sarah needs a decision on the two open items before Thursday.')).toBeTruthy();
     expect(mockGetInstantReplies).toHaveBeenCalledWith('thr_1');
-    expect(screen.getByText('Sounds good, thanks!')).toBeTruthy();
+    // findByText: the replies arrive from a second async round (getThread ->
+    // render -> getInstantReplies -> setState), which one flush() may not cover.
+    expect(await screen.findByText('Sounds good, thanks!')).toBeTruthy();
   });
 
   it('prefills the reply box when an instant-reply chip is tapped', async () => {
     await renderScreen();
     await flush();
 
-    await fireEvent.press(screen.getByText('Sounds good, thanks!'));
+    await fireEvent.press(await screen.findByText('Sounds good, thanks!'));
 
     expect(screen.getByDisplayValue('Sounds good, thanks!')).toBeTruthy();
   });

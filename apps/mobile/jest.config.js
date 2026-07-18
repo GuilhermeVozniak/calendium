@@ -48,6 +48,13 @@ module.exports = {
     // See the ROOT_NODE_MODULES comment above: dedupes `react` to the copy
     // react-native/@testing-library already use, so contexts/hooks match.
     '^react$': path.join(ROOT_NODE_MODULES, 'react'),
+    // Same dedupe for react-native itself: bun's store can hold two
+    // peer-hashed react-native@<ver> entries, and a dependency (e.g.
+    // lucide-react-native) resolving the copy jest-expo did NOT mock crashes
+    // at import with "__fbBatchedBridgeConfig is not set". Pin every
+    // react-native import to the copy this app resolves.
+    '^react-native$': path.dirname(require.resolve('react-native/package.json')),
+    '^react-native/(.*)$': `${path.dirname(require.resolve('react-native/package.json'))}/$1`,
     '^react/jsx-runtime$': path.join(ROOT_NODE_MODULES, 'react', 'jsx-runtime'),
     '^react/jsx-dev-runtime$': path.join(ROOT_NODE_MODULES, 'react', 'jsx-dev-runtime'),
   },
