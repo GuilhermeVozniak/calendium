@@ -22,12 +22,9 @@ const defaultMaxAdvanceDays = 60
 // PublicSlots query, independent of the link's own MaxAdvanceDays.
 const maxPublicSlotsWindow = 31 * 24 * time.Hour
 
-// SchedulingServiceDeps wires a SchedulingService. Only the fields consumed
-// by the booking-link CRUD, public booking page, and slot engine (this file)
-// are stored today; Polls/Proposals/Tx/CalendarProviders/MailProviders/OAuth/
-// PublicWebURL are carried here so later scheduling work (Book, meeting
-// polls, propose-new-time, guest free/busy — separate tasks) can extend
-// NewSchedulingService's construction without changing this struct's shape.
+// SchedulingServiceDeps wires a SchedulingService: booking-link CRUD,
+// public booking page/slots/booking, meeting polls, propose-new-time, and
+// guest free/busy.
 type SchedulingServiceDeps struct {
 	Subscriptions     port.SubscriptionRepo
 	Users             port.UserRepo
@@ -53,10 +50,10 @@ type SchedulingServiceDeps struct {
 	Logger *slog.Logger
 }
 
-// SchedulingService implements the booking-link surface of
-// port.SchedulingService (CRUD, public page, public slots), meeting polls,
-// and propose-new-time. Book and guest free/busy are added by later tasks in
-// additional files in this package.
+// SchedulingService implements the full port.SchedulingService: booking-link
+// CRUD, public page/slots/booking, meeting polls, propose-new-time, and
+// guest free/busy, split across this file plus scheduling_booking.go,
+// scheduling_proposals.go, and scheduling_freebusy.go in this package.
 type SchedulingService struct {
 	ent       entitlement
 	users     port.UserRepo

@@ -27,6 +27,9 @@ var (
 	_ port.AIService       = (*fakeAIService)(nil)
 	_ port.DeviceService   = (*fakeDeviceService)(nil)
 	_ port.PrefsService    = (*fakePrefsService)(nil)
+
+	_ port.SchedulingService = (*fakeSchedulingService)(nil)
+	_ port.SettingsService   = (*fakeSettingsService)(nil)
 )
 
 const (
@@ -662,6 +665,185 @@ func (f *fakePrefsService) UpdatePrefs(ctx context.Context, userID string, p dom
 	return f.updateRet, f.updateErr
 }
 
+// --- SchedulingService --------------------------------------------------------
+//
+// fakeSchedulingService implements the full port.SchedulingService: the
+// owner-authenticated methods (booking links, bookings, polls, proposals,
+// guest free/busy, ExpireHolds) are real configurable doubles with
+// captured-args fields; the public (unauthenticated) methods — PublicPage,
+// PublicSlots, Book, PublicPollByToken, VotePoll — are covered by the
+// parallel public-routes task's own fake and are simple zero-value stubs
+// here so this type still satisfies the interface.
+
+type fakeSchedulingService struct {
+	// booking links
+	createLinkRet       domain.BookingLink
+	createLinkErr       error
+	gotCreateLinkUserID string
+	gotCreateLinkIn     port.BookingLinkInput
+
+	updateLinkRet       domain.BookingLink
+	updateLinkErr       error
+	gotUpdateLinkUserID string
+	gotUpdateLinkID     string
+	gotUpdateLinkIn     port.BookingLinkInput
+
+	listLinksRet       []domain.BookingLink
+	listLinksErr       error
+	gotListLinksUserID string
+
+	deleteLinkErr       error
+	gotDeleteLinkUserID string
+	gotDeleteLinkID     string
+
+	// bookings
+	listBookingsRet []domain.Booking
+	listBookingsErr error
+
+	cancelBookingErr   error
+	gotCancelBookingID string
+
+	// public surface — stubs (owned by the public-routes task)
+	publicPageRet  port.PublicBookingPage
+	publicPageErr  error
+	publicSlotsRet []domain.AvailabilitySlot
+	publicSlotsErr error
+	bookRet        domain.Booking
+	bookErr        error
+
+	// meeting polls
+	createPollRet domain.MeetingPoll
+	createPollErr error
+
+	listPollsRet []domain.MeetingPoll
+	listPollsErr error
+
+	confirmPollRet         domain.MeetingPoll
+	confirmPollErr         error
+	gotConfirmPollID       string
+	gotConfirmPollOptionID string
+
+	deletePollErr   error
+	gotDeletePollID string
+
+	publicPollRet port.PublicPoll
+	publicPollErr error
+	votePollRet   port.PublicPoll
+	votePollErr   error
+
+	// propose-new-time
+	proposeTimeRet domain.TimeProposal
+	proposeTimeErr error
+
+	listProposalsRet []domain.TimeProposal
+	listProposalsErr error
+
+	acceptProposalRet domain.Event
+	acceptProposalErr error
+
+	declineProposalErr error
+
+	// guest free/busy
+	freeBusyRet       map[string][]domain.BusyInterval
+	freeBusyErr       error
+	gotFreeBusyUserID string
+	gotFreeBusyReq    port.FreeBusyRequest
+
+	expireHoldsErr error
+}
+
+func (f *fakeSchedulingService) CreateLink(ctx context.Context, userID string, in port.BookingLinkInput) (domain.BookingLink, error) {
+	f.gotCreateLinkUserID, f.gotCreateLinkIn = userID, in
+	return f.createLinkRet, f.createLinkErr
+}
+func (f *fakeSchedulingService) UpdateLink(ctx context.Context, userID, linkID string, in port.BookingLinkInput) (domain.BookingLink, error) {
+	f.gotUpdateLinkUserID, f.gotUpdateLinkID, f.gotUpdateLinkIn = userID, linkID, in
+	return f.updateLinkRet, f.updateLinkErr
+}
+func (f *fakeSchedulingService) ListLinks(ctx context.Context, userID string) ([]domain.BookingLink, error) {
+	f.gotListLinksUserID = userID
+	return f.listLinksRet, f.listLinksErr
+}
+func (f *fakeSchedulingService) DeleteLink(ctx context.Context, userID, linkID string) error {
+	f.gotDeleteLinkUserID, f.gotDeleteLinkID = userID, linkID
+	return f.deleteLinkErr
+}
+func (f *fakeSchedulingService) ListBookings(ctx context.Context, userID string) ([]domain.Booking, error) {
+	return f.listBookingsRet, f.listBookingsErr
+}
+func (f *fakeSchedulingService) CancelBooking(ctx context.Context, userID, bookingID string) error {
+	f.gotCancelBookingID = bookingID
+	return f.cancelBookingErr
+}
+func (f *fakeSchedulingService) PublicPage(ctx context.Context, slug string) (port.PublicBookingPage, error) {
+	return f.publicPageRet, f.publicPageErr
+}
+func (f *fakeSchedulingService) PublicSlots(ctx context.Context, slug string, from, to time.Time) ([]domain.AvailabilitySlot, error) {
+	return f.publicSlotsRet, f.publicSlotsErr
+}
+func (f *fakeSchedulingService) Book(ctx context.Context, slug string, req port.BookingRequest) (domain.Booking, error) {
+	return f.bookRet, f.bookErr
+}
+func (f *fakeSchedulingService) CreatePoll(ctx context.Context, userID string, in port.PollInput) (domain.MeetingPoll, error) {
+	return f.createPollRet, f.createPollErr
+}
+func (f *fakeSchedulingService) ListPolls(ctx context.Context, userID string) ([]domain.MeetingPoll, error) {
+	return f.listPollsRet, f.listPollsErr
+}
+func (f *fakeSchedulingService) ConfirmPoll(ctx context.Context, userID, pollID, optionID string) (domain.MeetingPoll, error) {
+	f.gotConfirmPollID, f.gotConfirmPollOptionID = pollID, optionID
+	return f.confirmPollRet, f.confirmPollErr
+}
+func (f *fakeSchedulingService) DeletePoll(ctx context.Context, userID, pollID string) error {
+	f.gotDeletePollID = pollID
+	return f.deletePollErr
+}
+func (f *fakeSchedulingService) PublicPollByToken(ctx context.Context, token string) (port.PublicPoll, error) {
+	return f.publicPollRet, f.publicPollErr
+}
+func (f *fakeSchedulingService) VotePoll(ctx context.Context, token string, ballot port.PollBallot) (port.PublicPoll, error) {
+	return f.votePollRet, f.votePollErr
+}
+func (f *fakeSchedulingService) ProposeTime(ctx context.Context, userID, eventID string, in port.TimeProposalInput) (domain.TimeProposal, error) {
+	return f.proposeTimeRet, f.proposeTimeErr
+}
+func (f *fakeSchedulingService) ListProposals(ctx context.Context, userID, eventID string) ([]domain.TimeProposal, error) {
+	return f.listProposalsRet, f.listProposalsErr
+}
+func (f *fakeSchedulingService) AcceptProposal(ctx context.Context, userID, eventID, proposalID string) (domain.Event, error) {
+	return f.acceptProposalRet, f.acceptProposalErr
+}
+func (f *fakeSchedulingService) DeclineProposal(ctx context.Context, userID, eventID, proposalID string) error {
+	return f.declineProposalErr
+}
+func (f *fakeSchedulingService) GuestFreeBusy(ctx context.Context, userID string, req port.FreeBusyRequest) (map[string][]domain.BusyInterval, error) {
+	f.gotFreeBusyUserID, f.gotFreeBusyReq = userID, req
+	return f.freeBusyRet, f.freeBusyErr
+}
+func (f *fakeSchedulingService) ExpireHolds(ctx context.Context) error {
+	return f.expireHoldsErr
+}
+
+// --- SettingsService -----------------------------------------------------------
+
+type fakeSettingsService struct {
+	getRet domain.UserSettings
+	getErr error
+
+	updateRet       domain.UserSettings
+	updateErr       error
+	gotUpdateUserID string
+	gotUpdateIn     domain.UserSettings
+}
+
+func (f *fakeSettingsService) Get(ctx context.Context, userID string) (domain.UserSettings, error) {
+	return f.getRet, f.getErr
+}
+func (f *fakeSettingsService) Update(ctx context.Context, userID string, s domain.UserSettings) (domain.UserSettings, error) {
+	f.gotUpdateUserID, f.gotUpdateIn = userID, s
+	return f.updateRet, f.updateErr
+}
+
 // --- harness -----------------------------------------------------------------
 
 type harness struct {
@@ -677,6 +859,8 @@ type harness struct {
 	ai        *fakeAIService
 	devices   *fakeDeviceService
 	prefs     *fakePrefsService
+	sched     *fakeSchedulingService
+	settings  *fakeSettingsService
 }
 
 // newHarness wires every double into Deps with a discard logger and one
@@ -699,19 +883,23 @@ func newHarness(t *testing.T) *harness {
 		ai:        &fakeAIService{},
 		devices:   &fakeDeviceService{},
 		prefs:     &fakePrefsService{},
+		sched:     &fakeSchedulingService{},
+		settings:  &fakeSettingsService{},
 	}
 	h.deps = Deps{
-		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Verifier:  ver,
-		Users:     users,
-		Billing:   h.billing,
-		Accounts:  h.accounts,
-		Mail:      h.mail,
-		Calendars: h.calendars,
-		Search:    h.search,
-		AI:        h.ai,
-		Devices:   h.devices,
-		Prefs:     h.prefs,
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Verifier:   ver,
+		Users:      users,
+		Billing:    h.billing,
+		Accounts:   h.accounts,
+		Mail:       h.mail,
+		Calendars:  h.calendars,
+		Search:     h.search,
+		AI:         h.ai,
+		Devices:    h.devices,
+		Prefs:      h.prefs,
+		Scheduling: h.sched,
+		Settings:   h.settings,
 	}
 	return h
 }

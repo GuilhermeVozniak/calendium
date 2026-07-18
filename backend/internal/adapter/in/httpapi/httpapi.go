@@ -25,6 +25,13 @@ type Deps struct {
 	AI        port.AIService
 	Devices   port.DeviceService
 	Prefs     port.PrefsService
+	// Scheduling covers booking links, bookings, meeting polls,
+	// propose-new-time, and guest free/busy (owner-authenticated surface;
+	// the public booking/poll routes live behind their own rate limiter).
+	Scheduling port.SchedulingService
+	// Settings is per-user scheduling preferences (time zone, working
+	// hours, working location).
+	Settings port.SettingsService
 	// Payments is the raw Stripe gateway. The webhook route verifies and
 	// applies events through Billing; the port is part of Deps so the
 	// composition surface matches the adapter contract.
@@ -139,6 +146,33 @@ func New(deps Deps) http.Handler {
 
 	authed("GET /v1/prefs", s.handleGetPrefs)
 	authed("PUT /v1/prefs", s.handleUpdatePrefs)
+
+	// Scheduling: owner-authenticated surface (booking links, bookings,
+	// meeting polls, propose-new-time, guest free/busy, settings). The
+	// public booking/poll routes are registered separately, in the
+	// unauthenticated section above, behind their own rate limiter.
+	authed("GET /v1/booking-links", s.handleListLinks)
+	authed("POST /v1/booking-links", s.handleCreateLink)
+	authed("PUT /v1/booking-links/{id}", s.handleUpdateLink)
+	authed("DELETE /v1/booking-links/{id}", s.handleDeleteLink)
+
+	authed("GET /v1/bookings", s.handleListBookings)
+	authed("POST /v1/bookings/{id}/cancel", s.handleCancelBooking)
+
+	authed("GET /v1/polls", s.handleListPolls)
+	authed("POST /v1/polls", s.handleCreatePoll)
+	authed("POST /v1/polls/{id}/confirm", s.handleConfirmPoll)
+	authed("DELETE /v1/polls/{id}", s.handleDeletePoll)
+
+	authed("POST /v1/events/{id}/propose-time", s.handleProposeTime)
+	authed("GET /v1/events/{id}/proposals", s.handleListProposals)
+	authed("POST /v1/events/{id}/proposals/{pid}/accept", s.handleAcceptProposal)
+	authed("POST /v1/events/{id}/proposals/{pid}/decline", s.handleDeclineProposal)
+
+	authed("POST /v1/freebusy", s.handleGuestFreeBusy)
+
+	authed("GET /v1/settings", s.handleGetSettings)
+	authed("PUT /v1/settings", s.handleUpdateSettings)
 
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins)
