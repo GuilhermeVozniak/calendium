@@ -31,7 +31,7 @@ Go stdlib only: `net/http` (1.22 pattern routing), `database/sql`, `crypto/*`, `
 ```
 backend/
 ├─ cmd/api/main.go            # HTTP API entrypoint (composition root: wire adapters → services)
-├─ cmd/worker/main.go         # background loops: provider sync, scheduled send, snooze/reminder wakeups, push dispatch
+├─ cmd/worker/main.go         # background loops: provider sync, scheduled send, snooze/reminder wakeups, push dispatch, ai_jobs drain
 ├─ internal/domain/           # pure entities + invariants; zero imports outside stdlib
 │    user.go subscription.go account.go mail.go calendar.go notification.go errors.go
 ├─ internal/port/             # interfaces only — the hexagon's edges
@@ -92,7 +92,11 @@ All endpoints JSON, Bearer-authenticated unless noted. Errors: `{ "error": { "co
 | `POST /v1/event-templates/{id}/use` | Bump a template's usage counter (204) |
 | `GET/POST /v1/calendar-sets` / `PUT/DELETE /v1/calendar-sets/{id}` | Calendar set CRUD (named visibility groups, full-replace PUT) |
 | `GET /v1/search?q` | Unified search over threads + events |
-| `POST /v1/ai/compose` | OpenRouter-backed compose/reply/summarize/ask |
+| `POST /v1/ai/compose` | OpenRouter-backed compose/reply/summarize plus `improve\|shorten\|simplify\|fix_grammar\|change_tone` editing actions |
+| `POST /v1/ai/ask` | Cited-source Q&A over inbox/calendar (budget-gated) |
+| `POST /v1/ai/event-proposal` | AI reads a thread and proposes a ready-to-send event (title/attendees/time) |
+| `GET /v1/mail/threads/{id}/instant-replies` | Up to 3 precomputed reply drafts, cached on the thread |
+| `GET/POST /v1/classifiers` / `PATCH/DELETE /v1/classifiers/{id}` | User-defined natural-language mail classifiers (Auto Labels) |
 | `POST /v1/devices` / `DELETE /v1/devices/{id}` | Push token registration |
 | `GET /healthz` | Liveness (unauthenticated) |
 
@@ -105,6 +109,19 @@ All endpoints JSON, Bearer-authenticated unless noted. Errors: `{ "error": { "co
 ## Push notifications
 
 `port.PushSender` fans out to APNs (iOS/macOS), FCM (Android), and Web Push (VAPID) adapters, all stdlib-implemented. Triggers: new important mail, event reminders, snooze/reminder wake-ups.
+
+## AI suite
+
+- `port.AI` (`internal/port/driven.go`) is the OpenRouter chat-completions surface: `Complete` returns freeform text; `CompleteJSON` requests a JSON-object response (OpenRouter `response_format: json_object`) and decodes it into a caller-supplied struct, wrapping decode failures in `domain.ErrAIOutput`-wrapped errors. `internal/adapter/out/openrouter/client.go` implements both against the OpenRouter chat-completions API.
+- Background AI work is queued in Postgres `ai_jobs` (`backend/migrations/0007_ai_suite.sql`) and drained by the worker's ai-jobs loop, gated entirely on `OPENROUTER_API_KEY` being set — unset, the loop never starts, `GET /v1/instance` reports `features.ai: false`, and the interactive `/v1/ai/*` endpoints return `503`. Job kinds: `thread_summary`, `instant_replies`, `auto_draft`, `classify`, `reminder_detect`, `voice_profile` (30-day self-refresh of the user's writing-style profile).
+- **Claim.** `AiJobRepo.ClaimDue` uses `SELECT ... FOR UPDATE SKIP LOCKED` to atomically claim up to N due jobs (`run_after <= now`, unlocked or lock expired after 10 minutes) — safe under concurrent workers. Thread-scoped kinds (`thread_summary`, `instant_replies`, `auto_draft`, `reminder_detect`) dedup to one pending job per `(kind, thread_id)` via a partial unique index, so a burst of inbound messages collapses into a single fresh job.
+- **Retry/backoff** (`internal/service/ai_jobs.go`). Generic failures back off `1m → 4m → 16m` (capped at 30m) and dead-letter (row dropped, error logged) once `attempts` reaches 4. `domain.ErrRateLimited` and `domain.ErrAIUnavailable` (and anything wrapping them via `errors.Is`) instead rearm at a flat 15 minutes regardless of attempt count and never dead-letter, since provider throttling/outages are expected to recover. `domain.ErrNotFound` (e.g. the thread was deleted) drops the job silently.
+- **Budget.** `AiUsageRepo.IncrementAndCheck` atomically bumps a per-user, per-UTC-day counter and refuses the call once it would exceed `AI_DAILY_LIMIT` (default 300); interactive endpoints and background jobs share the same budget, and it rearms at the next UTC midnight.
+- **Interactive endpoints** (all budget-gated): `POST /v1/ai/compose` (compose/reply/summarize plus editing actions), `POST /v1/ai/ask` (cited-source Q&A), `POST /v1/ai/event-proposal`, `GET /v1/mail/threads/{id}/instant-replies`, and `/v1/classifiers` CRUD.
+
+## Worker loops
+
+`cmd/worker` runs up to three independent loops against the same composition root: **sync** (1 minute) polls every syncable account for incremental mail + calendar changes; **due-work** (5 seconds) processes scheduled sends, undo-send holds, and snooze/reminder wake-ups — kept short because it bounds how late an undo-send delivery can fire; **ai-jobs** (15 seconds) drains the `ai_jobs` queue and starts only when `OPENROUTER_API_KEY` is configured.
 
 ## Environment
 

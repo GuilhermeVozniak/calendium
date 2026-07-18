@@ -93,8 +93,9 @@ redirect-URI setup.
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `OPENROUTER_API_KEY` | No | — | Enables `POST /v1/ai/compose` (compose/reply/summarize/ask). Sets `features.ai` when present. |
+| `OPENROUTER_API_KEY` | No | — | Enables the AI suite: interactive `/v1/ai/compose`, `/v1/ai/ask`, `/v1/ai/event-proposal`, `/v1/mail/threads/{id}/instant-replies`, `/v1/classifiers`, and the worker's background `ai_jobs` loop (thread summaries, instant replies, auto drafts, auto labels, reminder detection, voice learning). Sets `features.ai` when present; unset, the ai-jobs loop never starts and the interactive endpoints return `503`. |
 | `OPENROUTER_MODEL` | No | `openrouter/auto` | Model slug for AI requests. |
+| `AI_DAILY_LIMIT` | No | `300` | Per-user daily AI call budget, shared by the interactive endpoints above and the background `ai_jobs` queue. Rearms at the next UTC midnight. Must be a positive integer. |
 
 ## Push notifications
 
