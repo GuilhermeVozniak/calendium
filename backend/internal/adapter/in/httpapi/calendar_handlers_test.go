@@ -12,6 +12,35 @@ import (
 	"calendium/backend/internal/port"
 )
 
+// auth check for template/set handlers
+func TestTemplateAndSetHandlersRequireAuth(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"list templates", http.MethodGet, "/v1/event-templates"},
+		{"create template", http.MethodPost, "/v1/event-templates"},
+		{"update template", http.MethodPut, "/v1/event-templates/t1"},
+		{"delete template", http.MethodDelete, "/v1/event-templates/t1"},
+		{"use template", http.MethodPost, "/v1/event-templates/t1/use"},
+		{"list sets", http.MethodGet, "/v1/calendar-sets"},
+		{"create set", http.MethodPost, "/v1/calendar-sets"},
+		{"update set", http.MethodPut, "/v1/calendar-sets/s1"},
+		{"delete set", http.MethodDelete, "/v1/calendar-sets/s1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			rec := h.anon(tt.method, tt.path, nil)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401", rec.Code)
+			}
+		})
+	}
+}
+
 func TestHandleListEventsParsing(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -264,6 +293,277 @@ func TestHandleRsvp(t *testing.T) {
 		rec := h.authed(http.MethodPost, "/v1/events/ev1/rsvp", strings.NewReader("{"))
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+}
+
+// --- Event Template Handlers -------------------------------------------------
+
+func TestHandleListEventTemplates(t *testing.T) {
+	t.Run("empty list", func(t *testing.T) {
+		h := newHarness(t)
+		h.calendars.listTemplatesRet = []domain.EventTemplate{}
+		rec := h.authed(http.MethodGet, "/v1/event-templates", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		var got []domain.EventTemplate
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("templates = %+v, want empty", got)
+		}
+	})
+
+	t.Run("multiple templates", func(t *testing.T) {
+		h := newHarness(t)
+		h.calendars.listTemplatesRet = []domain.EventTemplate{
+			{ID: "t1", Name: "Meeting"},
+			{ID: "t2", Name: "1:1"},
+		}
+		rec := h.authed(http.MethodGet, "/v1/event-templates", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		var got []domain.EventTemplate
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(got) != 2 || got[0].ID != "t1" || got[1].ID != "t2" {
+			t.Fatalf("templates = %+v", got)
+		}
+	})
+}
+
+func TestHandleCreateEventTemplate(t *testing.T) {
+	t.Run("valid input", func(t *testing.T) {
+		h := newHarness(t)
+		input := domain.EventTemplateInput{
+			Name:            "Meeting",
+			Title:           "1:1 Meeting",
+			DurationMinutes: 30,
+		}
+		h.calendars.createTemplateRet = domain.EventTemplate{ID: "t1", Name: "Meeting", Title: "1:1 Meeting"}
+		rec := h.authed(http.MethodPost, "/v1/event-templates", jsonBody(t, input))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.calendars.gotCreateTemplate.Name != "Meeting" {
+			t.Fatalf("name = %q, want Meeting", h.calendars.gotCreateTemplate.Name)
+		}
+		if h.calendars.gotCreateTemplate.DurationMinutes != 30 {
+			t.Fatalf("duration = %d, want 30", h.calendars.gotCreateTemplate.DurationMinutes)
+		}
+	})
+
+	t.Run("malformed JSON rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPost, "/v1/event-templates", strings.NewReader("{"))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+}
+
+func TestHandleUpdateEventTemplate(t *testing.T) {
+	t.Run("valid patch", func(t *testing.T) {
+		h := newHarness(t)
+		input := domain.EventTemplateInput{
+			Name:            "Updated Meeting",
+			Title:           "Updated 1:1",
+			DurationMinutes: 45,
+		}
+		h.calendars.updateTemplateRet = domain.EventTemplate{ID: "t1", Name: "Updated Meeting"}
+		rec := h.authed(http.MethodPut, "/v1/event-templates/t1", jsonBody(t, input))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.calendars.gotUpdateTemplID != "t1" {
+			t.Fatalf("templateID = %q, want t1", h.calendars.gotUpdateTemplID)
+		}
+		if h.calendars.gotUpdateTemplate.Name != "Updated Meeting" {
+			t.Fatalf("name = %q, want Updated Meeting", h.calendars.gotUpdateTemplate.Name)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		h := newHarness(t)
+		h.calendars.updateTemplateErr = domain.ErrNotFound
+		input := domain.EventTemplateInput{Name: "test", DurationMinutes: 30}
+		rec := h.authed(http.MethodPut, "/v1/event-templates/t1", jsonBody(t, input))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rec.Code)
+		}
+	})
+}
+
+func TestHandleDeleteEventTemplate(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodDelete, "/v1/event-templates/t1", nil)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.calendars.gotDeleteTemplID != "t1" {
+			t.Fatalf("templateID = %q, want t1", h.calendars.gotDeleteTemplID)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		h := newHarness(t)
+		h.calendars.deleteTemplateErr = domain.ErrNotFound
+		rec := h.authed(http.MethodDelete, "/v1/event-templates/t1", nil)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rec.Code)
+		}
+	})
+}
+
+func TestHandleUseEventTemplate(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPost, "/v1/event-templates/t1/use", nil)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.calendars.gotUseTemplID != "t1" {
+			t.Fatalf("templateID = %q, want t1", h.calendars.gotUseTemplID)
+		}
+		if h.calendars.useTemplateCalls != 1 {
+			t.Fatalf("useTemplateCalls = %d, want 1", h.calendars.useTemplateCalls)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		h := newHarness(t)
+		h.calendars.useTemplateErr = domain.ErrNotFound
+		rec := h.authed(http.MethodPost, "/v1/event-templates/t1/use", nil)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rec.Code)
+		}
+	})
+}
+
+// --- Calendar Set Handlers ---------------------------------------------------
+
+func TestHandleListCalendarSets(t *testing.T) {
+	t.Run("empty list", func(t *testing.T) {
+		h := newHarness(t)
+		h.calendars.listSetsRet = []domain.CalendarSet{}
+		rec := h.authed(http.MethodGet, "/v1/calendar-sets", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		var got []domain.CalendarSet
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("sets = %+v, want empty", got)
+		}
+	})
+
+	t.Run("multiple sets", func(t *testing.T) {
+		h := newHarness(t)
+		h.calendars.listSetsRet = []domain.CalendarSet{
+			{ID: "s1", Name: "Work", CalendarIDs: []string{"c1"}},
+			{ID: "s2", Name: "Personal", CalendarIDs: []string{"c2"}},
+		}
+		rec := h.authed(http.MethodGet, "/v1/calendar-sets", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		var got []domain.CalendarSet
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(got) != 2 || got[0].ID != "s1" || got[1].ID != "s2" {
+			t.Fatalf("sets = %+v", got)
+		}
+	})
+}
+
+func TestHandleCreateCalendarSet(t *testing.T) {
+	t.Run("valid input", func(t *testing.T) {
+		h := newHarness(t)
+		input := domain.CalendarSetInput{
+			Name:        "Work",
+			CalendarIDs: []string{"c1", "c2"},
+			Position:    0,
+		}
+		h.calendars.createSetRet = domain.CalendarSet{ID: "s1", Name: "Work", CalendarIDs: []string{"c1", "c2"}}
+		rec := h.authed(http.MethodPost, "/v1/calendar-sets", jsonBody(t, input))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.calendars.gotCreateSet.Name != "Work" {
+			t.Fatalf("name = %q, want Work", h.calendars.gotCreateSet.Name)
+		}
+		if len(h.calendars.gotCreateSet.CalendarIDs) != 2 {
+			t.Fatalf("calendarIDs = %v, want 2 items", h.calendars.gotCreateSet.CalendarIDs)
+		}
+	})
+
+	t.Run("malformed JSON rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPost, "/v1/calendar-sets", strings.NewReader("{"))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+}
+
+func TestHandleUpdateCalendarSet(t *testing.T) {
+	t.Run("valid patch", func(t *testing.T) {
+		h := newHarness(t)
+		input := domain.CalendarSetInput{
+			Name:        "Updated Work",
+			CalendarIDs: []string{"c1", "c2", "c3"},
+			Position:    1,
+		}
+		h.calendars.updateSetRet = domain.CalendarSet{ID: "s1", Name: "Updated Work"}
+		rec := h.authed(http.MethodPut, "/v1/calendar-sets/s1", jsonBody(t, input))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.calendars.gotUpdateSetID != "s1" {
+			t.Fatalf("setID = %q, want s1", h.calendars.gotUpdateSetID)
+		}
+		if h.calendars.gotUpdateSet.Name != "Updated Work" {
+			t.Fatalf("name = %q, want Updated Work", h.calendars.gotUpdateSet.Name)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		h := newHarness(t)
+		h.calendars.updateSetErr = domain.ErrNotFound
+		input := domain.CalendarSetInput{Name: "test", CalendarIDs: []string{}}
+		rec := h.authed(http.MethodPut, "/v1/calendar-sets/s1", jsonBody(t, input))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rec.Code)
+		}
+	})
+}
+
+func TestHandleDeleteCalendarSet(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodDelete, "/v1/calendar-sets/s1", nil)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.calendars.gotDeleteSetID != "s1" {
+			t.Fatalf("setID = %q, want s1", h.calendars.gotDeleteSetID)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		h := newHarness(t)
+		h.calendars.deleteSetErr = domain.ErrNotFound
+		rec := h.authed(http.MethodDelete, "/v1/calendar-sets/s1", nil)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rec.Code)
 		}
 	})
 }

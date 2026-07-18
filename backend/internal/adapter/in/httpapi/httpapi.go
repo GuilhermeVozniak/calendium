@@ -112,6 +112,17 @@ func New(deps Deps) http.Handler {
 	authed("POST /v1/events/{id}/rsvp", s.handleRsvp)
 	authed("GET /v1/availability", s.handleAvailability)
 
+	authed("GET /v1/event-templates", s.handleListEventTemplates)
+	authed("POST /v1/event-templates", s.handleCreateEventTemplate)
+	authed("PUT /v1/event-templates/{id}", s.handleUpdateEventTemplate)
+	authed("DELETE /v1/event-templates/{id}", s.handleDeleteEventTemplate)
+	authed("POST /v1/event-templates/{id}/use", s.handleUseEventTemplate)
+
+	authed("GET /v1/calendar-sets", s.handleListCalendarSets)
+	authed("POST /v1/calendar-sets", s.handleCreateCalendarSet)
+	authed("PUT /v1/calendar-sets/{id}", s.handleUpdateCalendarSet)
+	authed("DELETE /v1/calendar-sets/{id}", s.handleDeleteCalendarSet)
+
 	authed("GET /v1/search", s.handleSearch)
 	authed("POST /v1/ai/compose", s.handleAiCompose)
 

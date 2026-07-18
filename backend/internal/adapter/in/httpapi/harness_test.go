@@ -403,6 +403,46 @@ type fakeCalendarService struct {
 	availErr    error
 	availCalls  int
 	gotAvailDur time.Duration
+
+	// Event Template methods
+	listTemplatesRet   []domain.EventTemplate
+	listTemplatesErr   error
+	listTemplatesCalls int
+
+	createTemplateRet domain.EventTemplate
+	createTemplateErr error
+	gotCreateTemplate domain.EventTemplateInput
+	gotCreateTemplID  string
+
+	updateTemplateRet domain.EventTemplate
+	updateTemplateErr error
+	gotUpdateTemplate domain.EventTemplateInput
+	gotUpdateTemplID  string
+
+	deleteTemplateErr error
+	gotDeleteTemplID  string
+
+	useTemplateErr   error
+	gotUseTemplID    string
+	useTemplateCalls int
+
+	// Calendar Set methods
+	listSetsRet   []domain.CalendarSet
+	listSetsErr   error
+	listSetsCalls int
+
+	createSetRet   domain.CalendarSet
+	createSetErr   error
+	gotCreateSet   domain.CalendarSetInput
+	gotCreateSetID string
+
+	updateSetRet   domain.CalendarSet
+	updateSetErr   error
+	gotUpdateSet   domain.CalendarSetInput
+	gotUpdateSetID string
+
+	deleteSetErr   error
+	gotDeleteSetID string
 }
 
 func (f *fakeCalendarService) ListCalendars(ctx context.Context, userID string) ([]domain.Calendar, error) {
@@ -440,41 +480,55 @@ func (f *fakeCalendarService) Availability(ctx context.Context, userID string, f
 // --- Event Template Methods
 
 func (f *fakeCalendarService) ListEventTemplates(ctx context.Context, userID string) ([]domain.EventTemplate, error) {
-	return nil, nil
+	f.listTemplatesCalls++
+	return f.listTemplatesRet, f.listTemplatesErr
 }
 
 func (f *fakeCalendarService) CreateEventTemplate(ctx context.Context, userID string, in domain.EventTemplateInput) (domain.EventTemplate, error) {
-	return domain.EventTemplate{}, nil
+	f.gotCreateTemplate = in
+	f.gotCreateTemplID = userID
+	return f.createTemplateRet, f.createTemplateErr
 }
 
 func (f *fakeCalendarService) UpdateEventTemplate(ctx context.Context, userID, templateID string, in domain.EventTemplateInput) (domain.EventTemplate, error) {
-	return domain.EventTemplate{}, nil
+	f.gotUpdateTemplate = in
+	f.gotUpdateTemplID = templateID
+	return f.updateTemplateRet, f.updateTemplateErr
 }
 
 func (f *fakeCalendarService) DeleteEventTemplate(ctx context.Context, userID, templateID string) error {
-	return nil
+	f.gotDeleteTemplID = templateID
+	return f.deleteTemplateErr
 }
 
 func (f *fakeCalendarService) UseEventTemplate(ctx context.Context, userID, templateID string) error {
-	return nil
+	f.useTemplateCalls++
+	f.gotUseTemplID = templateID
+	return f.useTemplateErr
 }
 
 // --- Calendar Set Methods
 
 func (f *fakeCalendarService) ListCalendarSets(ctx context.Context, userID string) ([]domain.CalendarSet, error) {
-	return nil, nil
+	f.listSetsCalls++
+	return f.listSetsRet, f.listSetsErr
 }
 
 func (f *fakeCalendarService) CreateCalendarSet(ctx context.Context, userID string, in domain.CalendarSetInput) (domain.CalendarSet, error) {
-	return domain.CalendarSet{}, nil
+	f.gotCreateSet = in
+	f.gotCreateSetID = userID
+	return f.createSetRet, f.createSetErr
 }
 
 func (f *fakeCalendarService) UpdateCalendarSet(ctx context.Context, userID, setID string, in domain.CalendarSetInput) (domain.CalendarSet, error) {
-	return domain.CalendarSet{}, nil
+	f.gotUpdateSet = in
+	f.gotUpdateSetID = setID
+	return f.updateSetRet, f.updateSetErr
 }
 
 func (f *fakeCalendarService) DeleteCalendarSet(ctx context.Context, userID, setID string) error {
-	return nil
+	f.gotDeleteSetID = setID
+	return f.deleteSetErr
 }
 
 // --- SearchService -----------------------------------------------------------

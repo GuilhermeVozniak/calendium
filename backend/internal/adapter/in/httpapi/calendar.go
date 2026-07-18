@@ -145,3 +145,105 @@ func timeRange(fromRaw, toRaw string) (from, to time.Time, err error) {
 	}
 	return from, to, nil
 }
+
+// Event Template Handlers
+
+func (s *server) handleListEventTemplates(w http.ResponseWriter, r *http.Request) {
+	templates, err := s.deps.Calendars.ListEventTemplates(r.Context(), userFrom(r).ID)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, templates)
+}
+
+func (s *server) handleCreateEventTemplate(w http.ResponseWriter, r *http.Request) {
+	var in domain.EventTemplateInput
+	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	template, err := s.deps.Calendars.CreateEventTemplate(r.Context(), userFrom(r).ID, in)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, template)
+}
+
+func (s *server) handleUpdateEventTemplate(w http.ResponseWriter, r *http.Request) {
+	var in domain.EventTemplateInput
+	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	template, err := s.deps.Calendars.UpdateEventTemplate(r.Context(), userFrom(r).ID, r.PathValue("id"), in)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, template)
+}
+
+func (s *server) handleDeleteEventTemplate(w http.ResponseWriter, r *http.Request) {
+	if err := s.deps.Calendars.DeleteEventTemplate(r.Context(), userFrom(r).ID, r.PathValue("id")); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) handleUseEventTemplate(w http.ResponseWriter, r *http.Request) {
+	if err := s.deps.Calendars.UseEventTemplate(r.Context(), userFrom(r).ID, r.PathValue("id")); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Calendar Set Handlers
+
+func (s *server) handleListCalendarSets(w http.ResponseWriter, r *http.Request) {
+	sets, err := s.deps.Calendars.ListCalendarSets(r.Context(), userFrom(r).ID)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sets)
+}
+
+func (s *server) handleCreateCalendarSet(w http.ResponseWriter, r *http.Request) {
+	var in domain.CalendarSetInput
+	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	set, err := s.deps.Calendars.CreateCalendarSet(r.Context(), userFrom(r).ID, in)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, set)
+}
+
+func (s *server) handleUpdateCalendarSet(w http.ResponseWriter, r *http.Request) {
+	var in domain.CalendarSetInput
+	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	set, err := s.deps.Calendars.UpdateCalendarSet(r.Context(), userFrom(r).ID, r.PathValue("id"), in)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, set)
+}
+
+func (s *server) handleDeleteCalendarSet(w http.ResponseWriter, r *http.Request) {
+	if err := s.deps.Calendars.DeleteCalendarSet(r.Context(), userFrom(r).ID, r.PathValue("id")); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
