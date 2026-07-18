@@ -188,3 +188,87 @@ func TestPagePopulated(t *testing.T) {
 		t.Fatalf("*Page.NextCursor = %q, want %q", *p.NextCursor, cursor)
 	}
 }
+
+func TestValidateSlug(t *testing.T) {
+	valid := []string{"a", "ab", "my-booking-link", "a1-b2-c3", "123", "x0x"}
+	for _, s := range valid {
+		s := s
+		t.Run("valid/"+s, func(t *testing.T) {
+			if err := ValidateSlug(s); err != nil {
+				t.Fatalf("ValidateSlug(%q) unexpected err: %v", s, err)
+			}
+		})
+	}
+
+	invalid := []struct{ slug, label string }{
+		{"", "empty"},
+		{"Abc", "uppercase"},
+		{"ABC", "all-uppercase"},
+		{"-abc", "leading-hyphen"},
+		{"abc-", "trailing-hyphen"},
+		{"a_b", "underscore"},
+		{"a b", "space"},
+		{"a.b", "dot"},
+	}
+	for _, tc := range invalid {
+		tc := tc
+		t.Run("invalid/"+tc.label, func(t *testing.T) {
+			if err := ValidateSlug(tc.slug); !errors.Is(err, ErrValidation) {
+				t.Fatalf("ValidateSlug(%q) err = %v, want ErrValidation", tc.slug, err)
+			}
+		})
+	}
+
+	// 65-char slug (exceeds the 64-char max).
+	long := ""
+	for i := 0; i < 65; i++ {
+		long += "a"
+	}
+	t.Run("invalid/too-long", func(t *testing.T) {
+		if err := ValidateSlug(long); !errors.Is(err, ErrValidation) {
+			t.Fatalf("ValidateSlug(65-char) err = %v, want ErrValidation", err)
+		}
+	})
+
+	// Reserved slugs.
+	for _, s := range []string{"api", "www", "book", "admin", "app", "settings", "pricing", "docs", "signin", "poll"} {
+		s := s
+		t.Run("reserved/"+s, func(t *testing.T) {
+			if err := ValidateSlug(s); !errors.Is(err, ErrValidation) {
+				t.Fatalf("ValidateSlug(%q) err = %v, want ErrValidation (reserved)", s, err)
+			}
+		})
+	}
+}
+
+func TestAvailabilityWindowValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		window  AvailabilityWindow
+		wantErr bool
+	}{
+		{"valid", AvailabilityWindow{Weekday: 1, Start: "09:00", End: "17:00"}, false},
+		{"valid sunday", AvailabilityWindow{Weekday: 0, Start: "00:00", End: "23:59"}, false},
+		{"valid saturday", AvailabilityWindow{Weekday: 6, Start: "08:30", End: "12:15"}, false},
+		{"weekday negative", AvailabilityWindow{Weekday: -1, Start: "09:00", End: "17:00"}, true},
+		{"weekday too large", AvailabilityWindow{Weekday: 7, Start: "09:00", End: "17:00"}, true},
+		{"bad start hour out of range", AvailabilityWindow{Weekday: 1, Start: "25:00", End: "17:00"}, true},
+		{"bad start garbage", AvailabilityWindow{Weekday: 1, Start: "abc", End: "17:00"}, true},
+		{"bad end format", AvailabilityWindow{Weekday: 1, Start: "09:00", End: "5pm"}, true},
+		{"bad end minute out of range", AvailabilityWindow{Weekday: 1, Start: "09:00", End: "17:60"}, true},
+		{"end equals start", AvailabilityWindow{Weekday: 1, Start: "09:00", End: "09:00"}, true},
+		{"end before start", AvailabilityWindow{Weekday: 1, Start: "17:00", End: "09:00"}, true},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.window.Validate()
+			if tt.wantErr && !errors.Is(err, ErrValidation) {
+				t.Fatalf("Validate() err = %v, want ErrValidation", err)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Validate() unexpected err: %v", err)
+			}
+		})
+	}
+}
