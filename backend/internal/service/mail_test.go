@@ -779,6 +779,37 @@ func TestUpdateDraft(t *testing.T) {
 			t.Fatalf("AccountID = %q, want a1", got.AccountID)
 		}
 	})
+
+	t.Run("manual save clears AiGenerated", func(t *testing.T) {
+		// A saved edit means the owner is now authoring this draft: Task 8's
+		// auto_draft job handler relies on this flag flip so it never
+		// overwrites a draft the owner has touched.
+		f := newMailFixture(t)
+		f.seedAccount(t, "a1", owner)
+		if _, err := f.drafts.Create(context.Background(), domain.Draft{
+			ID: "d1", AccountID: "a1", Subject: "orig", AiGenerated: true,
+		}); err != nil {
+			t.Fatalf("seed draft: %v", err)
+		}
+
+		got, err := f.svc.UpdateDraft(context.Background(), owner, "d1", port.DraftInput{
+			Subject:  "edited by owner",
+			BodyHTML: "body",
+		})
+		if err != nil {
+			t.Fatalf("UpdateDraft: %v", err)
+		}
+		if got.AiGenerated {
+			t.Fatalf("AiGenerated = true, want false after a manual save")
+		}
+		stored, err := f.drafts.GetByID(context.Background(), "d1")
+		if err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		if stored.AiGenerated {
+			t.Fatalf("persisted AiGenerated = true, want false")
+		}
+	})
 }
 
 // --- MailService.GetDraft ------------------------------------------------------

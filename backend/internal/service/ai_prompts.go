@@ -109,3 +109,22 @@ const askSystem = "You are Calendium's assistant. Answer the question using " +
 	"ONLY the provided messages, each tagged [msg:<id>]. Cite the ids of the " +
 	"messages you actually used. If the answer is not in the messages, say so " +
 	`and cite nothing. Respond as JSON: {"answer": "...", "sourceMessageIds": ["..."]}`
+
+// --- auto_draft ---
+
+// autoDraftOut is runAutoDraft's structured CompleteJSON output (both the
+// no-availability first pass and the availability-aware second pass decode
+// into this same shape).
+type autoDraftOut struct {
+	ShouldDraft      bool   `json:"shouldDraft"`      // false: no reply expected from the owner
+	IsMeetingRequest bool   `json:"isMeetingRequest"` // sender is asking to meet/schedule
+	Subject          string `json:"subject"`
+	BodyHTML         string `json:"bodyHtml"`
+}
+
+const autoDraftSystem = "You are Calendium's email assistant drafting a reply " +
+	"the owner will review before sending. Decide first whether the newest " +
+	"message actually awaits a reply from the owner. If it proposes a meeting, " +
+	"set isMeetingRequest and, when an AVAILABILITY block is provided, offer " +
+	"2-3 of those exact times. Respond as JSON: " +
+	`{"shouldDraft": bool, "isMeetingRequest": bool, "subject": "...", "bodyHtml": "..."}`

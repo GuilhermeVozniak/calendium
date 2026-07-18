@@ -1246,6 +1246,87 @@ func (a *fakeAI) CompleteJSON(_ context.Context, system, user string, out any) (
 
 var _ port.AI = (*fakeAI)(nil)
 
+// --- calendar service (driving) ----------------------------------------------
+
+// fakeCalendarService is a minimal port.CalendarService double for
+// AIJobService tests exercising runAutoDraft's scheduling path: only
+// ListCalendars and Availability carry meaningful behavior (programmable via
+// calendars/slots/availErr); every other method is unused by this task's
+// handlers and returns a zero value.
+type fakeCalendarService struct {
+	calendars []domain.Calendar
+	slots     []domain.AvailabilitySlot
+	availErr  error
+
+	lastAvailFrom time.Time
+	lastAvailTo   time.Time
+}
+
+func newCalendarService() *fakeCalendarService { return &fakeCalendarService{} }
+
+func (c *fakeCalendarService) ListCalendars(_ context.Context, _ string) ([]domain.Calendar, error) {
+	return c.calendars, nil
+}
+
+func (c *fakeCalendarService) UpdateCalendar(_ context.Context, _, _ string, _ port.CalendarPatch) (domain.Calendar, error) {
+	return domain.Calendar{}, nil
+}
+
+func (c *fakeCalendarService) ListEvents(_ context.Context, _ string, _, _ time.Time, _ []string) ([]domain.Event, error) {
+	return nil, nil
+}
+
+func (c *fakeCalendarService) CreateEvent(_ context.Context, _ string, _ domain.EventInput) (domain.Event, error) {
+	return domain.Event{}, nil
+}
+
+func (c *fakeCalendarService) UpdateEvent(_ context.Context, _, _ string, _ domain.EventPatch) (domain.Event, error) {
+	return domain.Event{}, nil
+}
+
+func (c *fakeCalendarService) DeleteEvent(_ context.Context, _, _ string) error { return nil }
+
+func (c *fakeCalendarService) RSVP(_ context.Context, _, _ string, _ domain.RsvpStatus) (domain.Event, error) {
+	return domain.Event{}, nil
+}
+
+func (c *fakeCalendarService) Availability(_ context.Context, _ string, from, to time.Time, _ time.Duration) ([]domain.AvailabilitySlot, error) {
+	c.lastAvailFrom, c.lastAvailTo = from, to
+	return c.slots, c.availErr
+}
+
+func (c *fakeCalendarService) ListEventTemplates(_ context.Context, _ string) ([]domain.EventTemplate, error) {
+	return nil, nil
+}
+
+func (c *fakeCalendarService) CreateEventTemplate(_ context.Context, _ string, _ domain.EventTemplateInput) (domain.EventTemplate, error) {
+	return domain.EventTemplate{}, nil
+}
+
+func (c *fakeCalendarService) UpdateEventTemplate(_ context.Context, _, _ string, _ domain.EventTemplateInput) (domain.EventTemplate, error) {
+	return domain.EventTemplate{}, nil
+}
+
+func (c *fakeCalendarService) DeleteEventTemplate(_ context.Context, _, _ string) error { return nil }
+
+func (c *fakeCalendarService) UseEventTemplate(_ context.Context, _, _ string) error { return nil }
+
+func (c *fakeCalendarService) ListCalendarSets(_ context.Context, _ string) ([]domain.CalendarSet, error) {
+	return nil, nil
+}
+
+func (c *fakeCalendarService) CreateCalendarSet(_ context.Context, _ string, _ domain.CalendarSetInput) (domain.CalendarSet, error) {
+	return domain.CalendarSet{}, nil
+}
+
+func (c *fakeCalendarService) UpdateCalendarSet(_ context.Context, _, _ string, _ domain.CalendarSetInput) (domain.CalendarSet, error) {
+	return domain.CalendarSet{}, nil
+}
+
+func (c *fakeCalendarService) DeleteCalendarSet(_ context.Context, _, _ string) error { return nil }
+
+var _ port.CalendarService = (*fakeCalendarService)(nil)
+
 // --- push --------------------------------------------------------------------
 
 // fakePush records every fan-out and can be programmed to fail.
