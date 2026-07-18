@@ -21,7 +21,7 @@ var configEnvKeys = []string{
 	"STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PRICE_ID_ANNUAL",
 	"APNS_KEY_ID", "APNS_TEAM_ID", "APNS_KEY_P8",
 	"FCM_SERVICE_ACCOUNT_JSON", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY",
-	"OPENROUTER_API_KEY", "OPENROUTER_MODEL",
+	"OPENROUTER_API_KEY", "OPENROUTER_MODEL", "AI_DAILY_LIMIT",
 	"HTTP_ADDR", "PORT", "TOKEN_ENCRYPTION_KEY", "UNDO_SEND_SECONDS",
 	"INSTANCE_NAME", "PUBLIC_WEB_URL", "APP_URL", "PUBLIC_API_URL",
 	"SELF_HOSTED", "OAUTH_ALLOWED_REDIRECT_URIS", "CORS_ALLOWED_ORIGINS",
@@ -141,6 +141,32 @@ func TestFromEnv(t *testing.T) {
 		{
 			name:    "UNDO_SEND_SECONDS non-int errors",
 			env:     withBase(map[string]string{"UNDO_SEND_SECONDS": "abc"}),
+			wantErr: true,
+		},
+		// ---- AI_DAILY_LIMIT ----
+		{
+			name:  "AI_DAILY_LIMIT default 300",
+			env:   withBase(nil),
+			check: func(t *testing.T, c Config) { assertInt(t, "OpenRouter.DailyLimit", c.OpenRouter.DailyLimit, 300) },
+		},
+		{
+			name:  "AI_DAILY_LIMIT custom",
+			env:   withBase(map[string]string{"AI_DAILY_LIMIT": "500"}),
+			check: func(t *testing.T, c Config) { assertInt(t, "OpenRouter.DailyLimit", c.OpenRouter.DailyLimit, 500) },
+		},
+		{
+			name:    "AI_DAILY_LIMIT zero errors",
+			env:     withBase(map[string]string{"AI_DAILY_LIMIT": "0"}),
+			wantErr: true,
+		},
+		{
+			name:    "AI_DAILY_LIMIT negative errors",
+			env:     withBase(map[string]string{"AI_DAILY_LIMIT": "-5"}),
+			wantErr: true,
+		},
+		{
+			name:    "AI_DAILY_LIMIT non-int errors",
+			env:     withBase(map[string]string{"AI_DAILY_LIMIT": "abc"}),
 			wantErr: true,
 		},
 		// ---- SELF_HOSTED ----
@@ -356,5 +382,12 @@ func assertBool(t *testing.T, field string, got, want bool) {
 	t.Helper()
 	if got != want {
 		t.Errorf("%s = %v, want %v", field, got, want)
+	}
+}
+
+func assertInt(t *testing.T, field string, got, want int) {
+	t.Helper()
+	if got != want {
+		t.Errorf("%s = %d, want %d", field, got, want)
 	}
 }

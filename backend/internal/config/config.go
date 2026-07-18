@@ -99,6 +99,9 @@ type Push struct {
 type OpenRouter struct {
 	APIKey string // OPENROUTER_API_KEY
 	Model  string // OPENROUTER_MODEL (default "openrouter/auto")
+	// DailyLimit is the per-user daily AI job budget (AI_DAILY_LIMIT,
+	// default 300).
+	DailyLimit int
 }
 
 // Crypto holds secrets-at-rest material.
@@ -251,6 +254,16 @@ func FromEnv() (Config, error) {
 
 	if cfg.OpenRouter.Model == "" {
 		cfg.OpenRouter.Model = "openrouter/auto"
+	}
+
+	cfg.OpenRouter.DailyLimit = 300
+	if v := os.Getenv("AI_DAILY_LIMIT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			errs = append(errs, fmt.Errorf("AI_DAILY_LIMIT must be a positive integer, got %q", v))
+		} else {
+			cfg.OpenRouter.DailyLimit = n
+		}
 	}
 
 	cfg.Mail.UndoSendGrace = 15 * time.Second

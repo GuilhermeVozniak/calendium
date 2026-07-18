@@ -221,3 +221,10 @@ type SyncService interface {
 	// snoozes/reminders (with push notifications).
 	ProcessDueWork(ctx context.Context) error
 }
+
+// AIJobService drains the background AI job queue (consumed by cmd/worker).
+type AIJobService interface {
+	// ProcessDueAiJobs claims and executes one batch of due AI jobs.
+	// It is a no-op returning nil when AI is not configured.
+	ProcessDueAiJobs(ctx context.Context) error
+}

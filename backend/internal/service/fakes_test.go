@@ -1421,3 +1421,174 @@ func (r *fakeCalendarSetRepo) Delete(_ context.Context, id string) error {
 }
 
 var _ port.CalendarSetRepo = (*fakeCalendarSetRepo)(nil)
+
+// --- ai job repo ---------------------------------------------------------
+
+// fakeAiJobRepo serves a scripted queue from ClaimDue and records every
+// Complete/Fail call so AIJobService tests can assert dispatch, budget, and
+// backoff/dead-letter outcomes. Enqueue is a bare append (no dedup — the
+// real dedup-on-conflict semantics are covered by Task 3's postgres suite,
+// not re-tested here).
+type fakeAiJobRepo struct {
+	queue      []domain.AiJob
+	claimErr   error
+	claimCalls int
+
+	completed   []string
+	completeErr error
+
+	failed []struct {
+		ID      string
+		RetryAt *time.Time
+		ErrMsg  string
+	}
+	failErr error
+}
+
+func newAiJobRepo() *fakeAiJobRepo { return &fakeAiJobRepo{} }
+
+func (r *fakeAiJobRepo) Enqueue(_ context.Context, j domain.AiJob) error {
+	r.queue = append(r.queue, j)
+	return nil
+}
+
+func (r *fakeAiJobRepo) ClaimDue(_ context.Context, _ time.Time, limit int) ([]domain.AiJob, error) {
+	r.claimCalls++
+	if r.claimErr != nil {
+		return nil, r.claimErr
+	}
+	batch := r.queue
+	if limit > 0 && len(batch) > limit {
+		batch = batch[:limit]
+	}
+	r.queue = r.queue[len(batch):]
+	return batch, nil
+}
+
+func (r *fakeAiJobRepo) Complete(_ context.Context, id string) error {
+	r.completed = append(r.completed, id)
+	return r.completeErr
+}
+
+func (r *fakeAiJobRepo) Fail(_ context.Context, id string, retryAt *time.Time, errMsg string) error {
+	r.failed = append(r.failed, struct {
+		ID      string
+		RetryAt *time.Time
+		ErrMsg  string
+	}{ID: id, RetryAt: retryAt, ErrMsg: errMsg})
+	return r.failErr
+}
+
+var _ port.AiJobRepo = (*fakeAiJobRepo)(nil)
+
+// --- ai usage repo ---------------------------------------------------------
+
+// fakeAiUsageRepo tracks per-user call counts in memory (day-agnostic: tests
+// don't need multi-day rollover, that's covered by Task 3's postgres suite).
+// A bump that would exceed limit leaves the counter unchanged and reports
+// allowed=false, mirroring the real race-free SQL semantics.
+type fakeAiUsageRepo struct {
+	calls map[string]int
+	err   error
+}
+
+func newAiUsageRepo() *fakeAiUsageRepo { return &fakeAiUsageRepo{calls: map[string]int{}} }
+
+func (r *fakeAiUsageRepo) IncrementAndCheck(_ context.Context, userID string, _ time.Time, limit int) (bool, error) {
+	if r.err != nil {
+		return false, r.err
+	}
+	if r.calls[userID]+1 > limit {
+		return false, nil
+	}
+	r.calls[userID]++
+	return true, nil
+}
+
+var _ port.AiUsageRepo = (*fakeAiUsageRepo)(nil)
+
+// --- classifier repo ---------------------------------------------------------
+
+type fakeClassifierRepo struct {
+	byID   map[string]domain.AiClassifier
+	owners map[string]string
+}
+
+func newClassifierRepo() *fakeClassifierRepo {
+	return &fakeClassifierRepo{byID: map[string]domain.AiClassifier{}, owners: map[string]string{}}
+}
+
+func (r *fakeClassifierRepo) Create(_ context.Context, c domain.AiClassifier) (domain.AiClassifier, error) {
+	if c.ID == "" {
+		c.ID = newID()
+	}
+	r.byID[c.ID] = c
+	r.owners[c.ID] = c.UserID
+	return c, nil
+}
+
+func (r *fakeClassifierRepo) GetByID(_ context.Context, id string) (domain.AiClassifier, error) {
+	c, ok := r.byID[id]
+	if !ok {
+		return domain.AiClassifier{}, domain.ErrNotFound
+	}
+	return c, nil
+}
+
+func (r *fakeClassifierRepo) ListByUser(_ context.Context, userID string) ([]domain.AiClassifier, error) {
+	out := []domain.AiClassifier{}
+	for id, c := range r.byID {
+		if r.owners[id] == userID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeClassifierRepo) ListEnabledByUser(_ context.Context, userID string) ([]domain.AiClassifier, error) {
+	out := []domain.AiClassifier{}
+	for id, c := range r.byID {
+		if r.owners[id] == userID && c.Enabled {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeClassifierRepo) Update(_ context.Context, c domain.AiClassifier) error {
+	r.byID[c.ID] = c
+	return nil
+}
+
+func (r *fakeClassifierRepo) Delete(_ context.Context, id string) error {
+	delete(r.byID, id)
+	delete(r.owners, id)
+	return nil
+}
+
+var _ port.ClassifierRepo = (*fakeClassifierRepo)(nil)
+
+// --- voice profile repo -------------------------------------------------------
+
+type fakeVoiceProfileRepo struct {
+	byUser map[string]domain.VoiceProfile
+}
+
+func newVoiceProfileRepo() *fakeVoiceProfileRepo {
+	return &fakeVoiceProfileRepo{byUser: map[string]domain.VoiceProfile{}}
+}
+
+func (r *fakeVoiceProfileRepo) Get(_ context.Context, userID string) (domain.VoiceProfile, error) {
+	p, ok := r.byUser[userID]
+	if !ok {
+		return domain.VoiceProfile{}, domain.ErrNotFound
+	}
+	return p, nil
+}
+
+func (r *fakeVoiceProfileRepo) Upsert(_ context.Context, p domain.VoiceProfile) error {
+	r.byUser[p.UserID] = p
+	return nil
+}
+
+var _ port.VoiceProfileRepo = (*fakeVoiceProfileRepo)(nil)

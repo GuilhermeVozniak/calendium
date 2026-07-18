@@ -18,6 +18,7 @@ import (
 
 	"calendium/backend/internal/adapter/out/googleapi"
 	"calendium/backend/internal/adapter/out/msgraph"
+	"calendium/backend/internal/adapter/out/openrouter"
 	"calendium/backend/internal/adapter/out/postgres"
 	"calendium/backend/internal/adapter/out/push"
 	"calendium/backend/internal/config"
@@ -34,6 +35,8 @@ const (
 	// dueWorkInterval paces scheduled sends and snooze/reminder wake-ups;
 	// it bounds how late an undo-send delivery can fire, so keep it short.
 	dueWorkInterval = 5 * time.Second
+	// aiJobInterval paces the background AI job queue drain.
+	aiJobInterval = 15 * time.Second
 	// perAccountTimeout bounds one account's sync pass.
 	perAccountTimeout = 5 * time.Minute
 )
@@ -119,6 +122,41 @@ func run(logger *slog.Logger) error {
 		Clock:             service.SystemClock{},
 	})
 
+	// --- AI job queue (Task 4): gated on OPENROUTER_API_KEY, degrades to a
+	// no-op loop-that-never-starts when unset. ---
+	var aiGateway port.AI
+	if cfg.OpenRouter.APIKey != "" {
+		aiGateway = openrouter.NewClient(cfg.OpenRouter.APIKey, cfg.OpenRouter.Model, hc)
+	}
+	calendarSvc := service.NewCalendarService(service.CalendarServiceDeps{
+		Subscriptions:     store.Subscriptions(),
+		Accounts:          store.Accounts(),
+		Calendars:         store.Calendars(),
+		Events:            store.Events(),
+		Templates:         store.EventTemplates(),
+		Sets:              store.CalendarSets(),
+		CalendarProviders: calendarProviders,
+		OAuth:             oauth,
+		Clock:             service.SystemClock{},
+		SelfHosted:        cfg.Instance.SelfHosted,
+	})
+	aiJobSvc := service.NewAIJobService(service.AIJobServiceDeps{
+		Jobs:          store.AiJobs(),
+		Usage:         store.AiUsage(),
+		Accounts:      store.Accounts(),
+		Threads:       store.Threads(),
+		Messages:      store.Messages(),
+		Drafts:        store.Drafts(),
+		Labels:        store.Labels(),
+		Classifiers:   store.Classifiers(),
+		VoiceProfiles: store.VoiceProfiles(),
+		Calendar:      calendarSvc,
+		AI:            aiGateway,
+		Clock:         service.SystemClock{},
+		DailyLimit:    cfg.OpenRouter.DailyLimit,
+		Logger:        logger,
+	})
+
 	// --- loops ---
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -136,10 +174,22 @@ func run(logger *slog.Logger) error {
 			}
 		})
 	}()
+	if aiGateway != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runLoop(ctx, aiJobInterval, func(ctx context.Context) {
+				if err := aiJobSvc.ProcessDueAiJobs(ctx); err != nil {
+					logger.Error("worker: process ai jobs", "error", err)
+				}
+			})
+		}()
+	}
 
 	logger.Info("worker: loops started",
 		"sync_interval", syncInterval.String(),
 		"due_work_interval", dueWorkInterval.String(),
+		"ai_jobs_enabled", aiGateway != nil,
 		"providers", len(mailProviders))
 	wg.Wait()
 	logger.Info("worker: shut down cleanly")
