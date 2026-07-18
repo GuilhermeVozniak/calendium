@@ -409,26 +409,14 @@ func (s *SchedulingService) ConfirmPoll(ctx context.Context, userID, pollID, opt
 		return domain.MeetingPoll{}, err
 	}
 
-	// Email every yes/if_needed voter before flipping the poll to confirmed,
-	// so a send failure never leaves the poll falsely marked confirmed.
-	if provider, ok := s.mail[acct.Provider]; ok && len(attendeeEmails) > 0 {
-		token, err := s.tokens.accessToken(ctx, acct)
-		if err != nil {
-			return domain.MeetingPoll{}, err
-		}
-		for _, email := range attendeeEmails {
-			subject, body := buildPollConfirmationEmail(p, *winner, email)
-			if _, err := provider.Send(ctx, token, port.OutgoingMessage{
-				From:     domain.EmailAddress{Email: acct.Email},
-				To:       []domain.EmailAddress{{Email: email}},
-				Subject:  subject,
-				BodyText: body,
-			}); err != nil {
-				return domain.MeetingPoll{}, fmt.Errorf("poll confirmation email to %s failed: %w", email, err)
-			}
-		}
-	}
-
+	// Flip the poll to confirmed (winner + event ID persisted) before sending
+	// any confirmation email. This must happen first: the provider event and
+	// the local mirror already committed above, so at this point the poll
+	// MUST end up confirmed no matter what happens next. Confirming first
+	// also makes the confirmation email genuinely best-effort (see below) and
+	// puts a subsequent retry on the idempotent short-circuit at the top of
+	// this method (Status == PollConfirmed) instead of re-running provider
+	// event creation and producing a duplicate calendar event.
 	p.Status = domain.PollConfirmed
 	winnerID := optionID
 	p.WinnerOptionID = &winnerID
@@ -437,6 +425,24 @@ func (s *SchedulingService) ConfirmPoll(ctx context.Context, userID, pollID, opt
 	if err := s.polls.Update(ctx, p); err != nil {
 		return domain.MeetingPoll{}, err
 	}
+
+	// Email every yes/if_needed voter; best-effort like notifyThread in
+	// sync.go — a send failure never rolls back the now-confirmed poll, it is
+	// simply discarded.
+	if provider, ok := s.mail[acct.Provider]; ok && len(attendeeEmails) > 0 {
+		if token, err := s.tokens.accessToken(ctx, acct); err == nil {
+			for _, email := range attendeeEmails {
+				subject, body := buildPollConfirmationEmail(p, *winner, email)
+				_, _ = provider.Send(ctx, token, port.OutgoingMessage{
+					From:     domain.EmailAddress{Email: acct.Email},
+					To:       []domain.EmailAddress{{Email: email}},
+					Subject:  subject,
+					BodyText: body,
+				})
+			}
+		}
+	}
+
 	return p, nil
 }
 

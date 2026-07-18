@@ -533,6 +533,108 @@ func TestPollConfirm_IdempotentSameOption(t *testing.T) {
 	}
 }
 
+// TestPollConfirm_MailSendFailureStillConfirms: the confirmation email is
+// best-effort (matching sync.go's notifyThread convention). A Send failure
+// must never leave the provider event orphaned with the poll stuck open —
+// the poll must still end up confirmed, with the winner and event ID
+// persisted, after exactly one provider.CreateEvent call, and ConfirmPoll
+// itself must not return an error for a mail failure.
+func TestPollConfirm_MailSendFailureStillConfirms(t *testing.T) {
+	ctx := context.Background()
+	f := newPollFixture(t)
+	poll, err := f.svc.CreatePoll(ctx, "u1", validPollInput(f.clock.Now()))
+	if err != nil {
+		t.Fatalf("CreatePoll: %v", err)
+	}
+	opt1 := poll.Options[0].ID
+	if _, err := f.svc.VotePoll(ctx, poll.Token, port.PollBallot{
+		VoterEmail: "alice@example.com", Choices: map[string]domain.PollVoteChoice{opt1: domain.VoteYes},
+	}); err != nil {
+		t.Fatalf("VotePoll: %v", err)
+	}
+
+	f.calProv.createdEvent = domain.Event{ID: "provider-assigned", ProviderEventID: "prov-evt-1"}
+	f.mailProv.sendErr = errors.New("smtp 500")
+
+	got, err := f.svc.ConfirmPoll(ctx, "u1", poll.ID, opt1)
+	if err != nil {
+		t.Fatalf("ConfirmPoll returned an error for a mail-send failure: %v", err)
+	}
+	if got.Status != domain.PollConfirmed {
+		t.Fatalf("Status = %q, want confirmed despite mail failure", got.Status)
+	}
+	if got.WinnerOptionID == nil || *got.WinnerOptionID != opt1 {
+		t.Fatalf("WinnerOptionID = %v, want %q", got.WinnerOptionID, opt1)
+	}
+	if got.EventID == nil || *got.EventID == "" {
+		t.Fatal("EventID not persisted despite mail failure")
+	}
+	if len(f.events.order) != 1 {
+		t.Fatalf("provider events created = %d, want exactly 1", len(f.events.order))
+	}
+	if len(f.mailProv.sent) != 1 {
+		t.Fatalf("send attempts = %d, want 1 (best-effort attempt still made)", len(f.mailProv.sent))
+	}
+
+	// The confirmed state must also be durably persisted, not just returned.
+	persisted, err := f.polls.GetByID(ctx, poll.ID)
+	if err != nil {
+		t.Fatalf("GetByID after confirm: %v", err)
+	}
+	if persisted.Status != domain.PollConfirmed || persisted.EventID == nil || *persisted.EventID != *got.EventID {
+		t.Fatalf("persisted poll = %+v, want confirmed with matching event id", persisted)
+	}
+}
+
+// TestPollConfirm_RetryAfterMailFailureDoesNotDuplicateEvent: retrying
+// ConfirmPoll after a mail-send failure must land on the idempotent
+// short-circuit (poll already PollConfirmed with this option) rather than
+// re-running provider.CreateEvent, which would otherwise produce a duplicate
+// calendar event.
+func TestPollConfirm_RetryAfterMailFailureDoesNotDuplicateEvent(t *testing.T) {
+	ctx := context.Background()
+	f := newPollFixture(t)
+	poll, err := f.svc.CreatePoll(ctx, "u1", validPollInput(f.clock.Now()))
+	if err != nil {
+		t.Fatalf("CreatePoll: %v", err)
+	}
+	opt1 := poll.Options[0].ID
+	if _, err := f.svc.VotePoll(ctx, poll.Token, port.PollBallot{
+		VoterEmail: "alice@example.com", Choices: map[string]domain.PollVoteChoice{opt1: domain.VoteYes},
+	}); err != nil {
+		t.Fatalf("VotePoll: %v", err)
+	}
+
+	f.mailProv.sendErr = errors.New("smtp 500")
+
+	first, err := f.svc.ConfirmPoll(ctx, "u1", poll.ID, opt1)
+	if err != nil {
+		t.Fatalf("first ConfirmPoll (mail failure) returned an error: %v", err)
+	}
+	if len(f.events.order) != 1 {
+		t.Fatalf("provider events after first confirm = %d, want 1", len(f.events.order))
+	}
+	sentBefore := len(f.mailProv.sent)
+
+	// Any further provider.CreateEvent call would hit this and fail the
+	// test's expectations below, proving the retry never re-invokes it.
+	f.calProv.createErr = errors.New("must not be called again")
+
+	second, err := f.svc.ConfirmPoll(ctx, "u1", poll.ID, opt1)
+	if err != nil {
+		t.Fatalf("retry after mail failure returned an error (should hit idempotent no-op): %v", err)
+	}
+	if second.EventID == nil || first.EventID == nil || *second.EventID != *first.EventID {
+		t.Fatalf("retry changed the confirmed event: first=%+v second=%+v", first, second)
+	}
+	if len(f.events.order) != 1 {
+		t.Fatalf("provider events after retry = %d, want still 1 (no duplicate event)", len(f.events.order))
+	}
+	if len(f.mailProv.sent) != sentBefore {
+		t.Fatal("retry after mail failure re-sent the confirmation email")
+	}
+}
+
 func TestPollConfirm_DifferentOptionAfterConfirmIsConflict(t *testing.T) {
 	ctx := context.Background()
 	f := newPollFixture(t)
