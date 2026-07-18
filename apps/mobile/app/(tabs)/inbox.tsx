@@ -159,6 +159,12 @@ export default function InboxScreen() {
       return { previous, count };
     },
     onSuccess: (result) => {
+      // The optimistic removal above is a client-side date-cutoff guess; the
+      // server's real inbox-membership rules (and any other device's writes)
+      // can differ, so reconcile every split's cache against the server
+      // instead of trusting the optimistic state as final (mirrors web's
+      // getMeToZero in lib/use-mail.ts).
+      void queryClient.invalidateQueries({ queryKey: ['threads'] });
       Alert.alert(
         'Get Me To Zero',
         `Archived ${result.archivedCount} conversation${result.archivedCount === 1 ? '' : 's'}.`
