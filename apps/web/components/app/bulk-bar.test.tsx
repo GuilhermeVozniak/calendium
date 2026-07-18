@@ -1,8 +1,16 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BulkBar } from './bulk-bar';
+import { resetShortcutHints } from '@/lib/shortcut-hints';
+
+const toastMessage = vi.fn();
+vi.mock('sonner', () => ({
+  toast: {
+    message: (...args: unknown[]) => toastMessage(...args),
+  },
+}));
 
 function makeProps() {
   return {
@@ -14,6 +22,11 @@ function makeProps() {
     onClear: vi.fn(),
   };
 }
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  resetShortcutHints();
+});
 
 describe('BulkBar', () => {
   it('renders nothing when the selection is empty', () => {
@@ -33,5 +46,37 @@ describe('BulkBar', () => {
     expect(props.onLabel).toHaveBeenCalledOnce();
     await userEvent.click(screen.getByRole('button', { name: /Clear/ }));
     expect(props.onClear).toHaveBeenCalledOnce();
+  });
+
+  it('teaches shortcut hints on button clicks', async () => {
+    const props = makeProps();
+    render(<BulkBar {...props} />);
+
+    // Archive should teach with "E" key
+    await userEvent.click(screen.getByRole('button', { name: /Archive/ }));
+    expect(toastMessage).toHaveBeenCalledWith('Tip: press E to Archive');
+
+    // Second click on Archive should NOT re-toast (dedup)
+    toastMessage.mockClear();
+    await userEvent.click(screen.getByRole('button', { name: /Archive/ }));
+    expect(toastMessage).not.toHaveBeenCalled();
+
+    // Mark read should teach with "⇧I" key
+    await userEvent.click(screen.getByRole('button', { name: /Mark read/ }));
+    expect(toastMessage).toHaveBeenCalledWith('Tip: press ⇧I to Mark read');
+
+    // Second click on Mark read should NOT re-toast (dedup)
+    toastMessage.mockClear();
+    await userEvent.click(screen.getByRole('button', { name: /Mark read/ }));
+    expect(toastMessage).not.toHaveBeenCalled();
+
+    // Label should teach with "L" key
+    await userEvent.click(screen.getByRole('button', { name: /Label/ }));
+    expect(toastMessage).toHaveBeenCalledWith('Tip: press L to Label');
+
+    // Second click on Label should NOT re-toast (dedup)
+    toastMessage.mockClear();
+    await userEvent.click(screen.getByRole('button', { name: /Label/ }));
+    expect(toastMessage).not.toHaveBeenCalled();
   });
 });

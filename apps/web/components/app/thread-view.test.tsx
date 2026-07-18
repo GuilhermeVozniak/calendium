@@ -4,6 +4,7 @@ import type { Message, Thread } from '@calendium/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ThreadView } from '@/components/app/thread-view';
+import { resetShortcutHints } from '@/lib/shortcut-hints';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -109,6 +110,7 @@ beforeEach(() => {
   actMock.mockResolvedValue(true);
   snoozeMock.mockResolvedValue(true);
   unsubscribeMock.mockClear();
+  resetShortcutHints();
 });
 
 describe('ThreadView — onSnooze contract (mirrors onArchive)', () => {
@@ -222,5 +224,39 @@ describe('ThreadView — single unsubscribe (handleUnsubscribe)', () => {
     expect(toastSuccess).not.toHaveBeenCalledWith('Unsubscribed — the sender has been asked to stop');
 
     windowOpenMock.mockRestore();
+  });
+});
+
+describe('ThreadView — shortcut teaching', () => {
+  it('teaches Archive shortcut when header Archive button is clicked', async () => {
+    const user = userEvent.setup();
+    renderThreadView();
+
+    await user.click(screen.getByRole('button', { name: 'Archive' }));
+
+    expect(toastMessage).toHaveBeenCalledWith('Tip: press E to Archive');
+
+    // Second click should NOT re-toast (dedup)
+    toastMessage.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Archive' }));
+    expect(toastMessage).not.toHaveBeenCalled();
+  });
+
+  it('teaches Snooze shortcut when header Snooze button is clicked', async () => {
+    const user = userEvent.setup();
+    renderThreadView();
+
+    await user.click(screen.getByRole('button', { name: 'Snooze' }));
+
+    expect(toastMessage).toHaveBeenCalledWith('Tip: press H to Snooze');
+  });
+
+  it('teaches Remind shortcut when header Remind button is clicked', async () => {
+    const user = userEvent.setup();
+    renderThreadView();
+
+    await user.click(screen.getByRole('button', { name: 'Set reminder' }));
+
+    expect(toastMessage).toHaveBeenCalledWith('Tip: press ⇧H to Set follow-up reminder');
   });
 });

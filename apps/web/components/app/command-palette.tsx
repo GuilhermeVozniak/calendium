@@ -176,7 +176,7 @@ export function CommandPalette() {
               H
             </Kbd>
           </CommandItem>
-          <CommandItem onSelect={() => runMailCommand('reminder')}>
+          <CommandItem onSelect={() => { teachShortcut('remind', '⇧H', 'Set follow-up reminder'); runMailCommand('reminder'); }}>
             <BellRing />
             Set follow-up reminder…
             <KbdGroup size="sm" keys={['⇧', 'H']} className="ml-auto" />

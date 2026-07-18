@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CommandPalette } from '@/components/app/command-palette';
 import { onMailCommand, takePendingMailCommand, type MailCommand } from '@/lib/mail-utils';
+import { resetShortcutHints } from '@/lib/shortcut-hints';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -39,6 +40,13 @@ vi.mock('@/lib/search-data', () => ({
   fetchSearch: (q: string) => fetchSearchMock(q),
 }));
 
+const toastMessage = vi.fn();
+vi.mock('sonner', () => ({
+  toast: {
+    message: (...args: unknown[]) => toastMessage(...args),
+  },
+}));
+
 /** The palette fetches live search results, so it needs a QueryClient. */
 function renderPalette() {
   const queryClient = new QueryClient({
@@ -62,6 +70,7 @@ beforeEach(() => {
   currentPathname = '/mail';
   themeState = { resolvedTheme: 'light', setTheme: vi.fn() };
   fetchSearchMock.mockResolvedValue({ threads: [], events: [] });
+  resetShortcutHints();
 });
 
 describe('CommandPalette — opening', () => {
@@ -277,5 +286,41 @@ describe('CommandPalette — account', () => {
     await user.click(screen.getByText('Sign out'));
     await waitFor(() => expect(signOutMock).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(replaceMock).toHaveBeenCalledWith('/signin'));
+  });
+});
+
+describe('CommandPalette — shortcut teaching', () => {
+  it('teaches Archive shortcut when Archive conversation item is clicked', async () => {
+    currentPathname = '/mail';
+    const received: MailCommand[] = [];
+    const unsubscribe = onMailCommand((command) => received.push(command));
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+
+    await user.click(screen.getByText('Archive conversation'));
+
+    expect(toastMessage).toHaveBeenCalledWith('Tip: press E to Archive');
+    expect(received).toEqual(['archive']);
+
+    // Second click should NOT re-toast (dedup)
+    toastMessage.mockClear();
+    unsubscribe();
+  });
+
+  it('teaches Undo shortcut when Undo last action item is clicked', async () => {
+    currentPathname = '/mail';
+    const received: MailCommand[] = [];
+    const unsubscribe = onMailCommand((command) => received.push(command));
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+
+    await user.click(screen.getByText('Undo last action'));
+
+    expect(toastMessage).toHaveBeenCalledWith('Tip: press Z to Undo');
+    expect(received).toEqual(['undo']);
+
+    unsubscribe();
   });
 });

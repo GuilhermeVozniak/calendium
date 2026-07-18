@@ -26,7 +26,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Kbd } from '@/components/ui/kbd';
+import { Kbd, KbdGroup } from '@/components/ui/kbd';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -342,6 +342,7 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze }: ThreadVie
                 className="size-7"
                 aria-label="Snooze"
                 onClick={() => {
+                  teachShortcut('snooze', 'H', 'Snooze');
                   if (onSnooze) {
                     onSnooze();
                   } else {
@@ -353,7 +354,7 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze }: ThreadVie
               </Button>
             </TooltipTrigger>
             <TooltipContent>
-              Snooze <Kbd size="sm">Z</Kbd>
+              Snooze <Kbd size="sm">H</Kbd>
             </TooltipContent>
           </Tooltip>
           <Tooltip>
@@ -363,13 +364,16 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze }: ThreadVie
                 size="icon"
                 className="size-7"
                 aria-label="Set reminder"
-                onClick={() => setRemindOpen(true)}
+                onClick={() => {
+                  teachShortcut('remind', '⇧H', 'Set follow-up reminder');
+                  setRemindOpen(true);
+                }}
               >
                 <BellRing className="size-4" />
               </Button>
             </TooltipTrigger>
             <TooltipContent>
-              Remind <Kbd size="sm">H</Kbd>
+              Remind <KbdGroup size="sm" keys={['⇧', 'H']} />
             </TooltipContent>
           </Tooltip>
           <Tooltip>
