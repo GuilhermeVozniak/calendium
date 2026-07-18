@@ -203,6 +203,48 @@ func TestAccountRepoUpdate(t *testing.T) {
 	}
 }
 
+func TestAccountRepoSignatureAndAutoBcc(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	a, err := st.Accounts().Create(ctx, domain.ConnectedAccount{
+		UserID: "u1", Provider: domain.ProviderGoogle, Email: "sig@example.com", Status: domain.AccountActive,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Defaults on a freshly created (old-shape) row: empty string / empty slice.
+	got, err := st.Accounts().GetByID(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.SignatureHTML != "" {
+		t.Fatalf("SignatureHTML default = %q, want \"\"", got.SignatureHTML)
+	}
+	if got.AutoBcc == nil || len(got.AutoBcc) != 0 {
+		t.Fatalf("AutoBcc default = %+v, want empty slice", got.AutoBcc)
+	}
+
+	// Round-trip through Update.
+	got.SignatureHTML = "<p>— Gui</p>"
+	got.AutoBcc = []string{"crm@log.example"}
+	if err := st.Accounts().Update(ctx, got); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	updated, err := st.Accounts().GetByID(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("GetByID after update: %v", err)
+	}
+	if updated.SignatureHTML != "<p>— Gui</p>" {
+		t.Fatalf("SignatureHTML = %q, want <p>— Gui</p>", updated.SignatureHTML)
+	}
+	if len(updated.AutoBcc) != 1 || updated.AutoBcc[0] != "crm@log.example" {
+		t.Fatalf("AutoBcc = %+v, want [crm@log.example]", updated.AutoBcc)
+	}
+}
+
 func TestAccountRepoUpdateMissing(t *testing.T) {
 	st, _ := newTestStore(t)
 	err := st.Accounts().Update(context.Background(), domain.ConnectedAccount{ID: "nope", Email: "x@example.com"})

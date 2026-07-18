@@ -145,3 +145,25 @@ func decodeThreadCursor(cursor string) (time.Time, string, error) {
 	}
 	return time.Unix(0, n).UTC(), id, nil
 }
+
+// encodeOpensCursor/decodeOpensCursor encode the Recent Opens keyset
+// position (opened_at, id) as base64url("unixMicro:id").
+func encodeOpensCursor(t time.Time, id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%d:%s", t.UnixMicro(), id)))
+}
+
+func decodeOpensCursor(s string) (time.Time, string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("%w: bad cursor", domain.ErrValidation)
+	}
+	micros, id, ok := strings.Cut(string(raw), ":")
+	if !ok {
+		return time.Time{}, "", fmt.Errorf("%w: bad cursor", domain.ErrValidation)
+	}
+	n, err := strconv.ParseInt(micros, 10, 64)
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("%w: bad cursor", domain.ErrValidation)
+	}
+	return time.UnixMicro(n).UTC(), id, nil
+}

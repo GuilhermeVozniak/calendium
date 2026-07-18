@@ -12,14 +12,16 @@ import (
 // --- port.AccountRepo --------------------------------------------------------
 
 const accountCols = `id, user_id, provider, email, status,
-	array_to_json(scopes)::text, array_to_json(vip_senders)::text, last_synced_at, created_at`
+	array_to_json(scopes)::text, array_to_json(vip_senders)::text, last_synced_at, created_at,
+	signature_html, array_to_json(auto_bcc)::text`
 
 func scanAccount(r rowScanner) (domain.ConnectedAccount, error) {
 	var a domain.ConnectedAccount
-	var scopes, vipSenders string
+	var scopes, vipSenders, autoBcc string
 	var lastSynced sql.NullTime
 	if err := r.Scan(&a.ID, &a.UserID, &a.Provider, &a.Email, &a.Status,
-		&scopes, &vipSenders, &lastSynced, &a.CreatedAt); err != nil {
+		&scopes, &vipSenders, &lastSynced, &a.CreatedAt,
+		&a.SignatureHTML, &autoBcc); err != nil {
 		return domain.ConnectedAccount{}, notFound(err)
 	}
 	if err := unmarshalInto([]byte(scopes), &a.Scopes); err != nil {
@@ -28,11 +30,17 @@ func scanAccount(r rowScanner) (domain.ConnectedAccount, error) {
 	if err := unmarshalInto([]byte(vipSenders), &a.VIPSenders); err != nil {
 		return domain.ConnectedAccount{}, err
 	}
+	if err := unmarshalInto([]byte(autoBcc), &a.AutoBcc); err != nil {
+		return domain.ConnectedAccount{}, err
+	}
 	if a.Scopes == nil {
 		a.Scopes = []string{}
 	}
 	if a.VIPSenders == nil {
 		a.VIPSenders = []string{}
+	}
+	if a.AutoBcc == nil {
+		a.AutoBcc = []string{}
 	}
 	a.LastSyncedAt = timePtr(lastSynced)
 	return a, nil
@@ -65,6 +73,9 @@ func (r accountRepo) Create(ctx context.Context, a domain.ConnectedAccount) (dom
 	}
 	if a.VIPSenders == nil {
 		a.VIPSenders = []string{}
+	}
+	if a.AutoBcc == nil {
+		a.AutoBcc = []string{}
 	}
 	return a, nil
 }
@@ -111,15 +122,21 @@ func (r accountRepo) Update(ctx context.Context, a domain.ConnectedAccount) erro
 	if err != nil {
 		return err
 	}
+	autoBcc, err := jsonArray(a.AutoBcc)
+	if err != nil {
+		return err
+	}
 	return mustAffect(r.q(ctx).ExecContext(ctx, `
 		UPDATE connected_accounts SET
 			email          = $2,
 			status         = $3,
 			scopes         = (SELECT coalesce(array_agg(x), '{}'::text[]) FROM jsonb_array_elements_text($4::jsonb) x),
 			last_synced_at = $5,
-			vip_senders    = (SELECT coalesce(array_agg(x), '{}'::text[]) FROM jsonb_array_elements_text($6::jsonb) x)
+			vip_senders    = (SELECT coalesce(array_agg(x), '{}'::text[]) FROM jsonb_array_elements_text($6::jsonb) x),
+			signature_html = $7,
+			auto_bcc       = (SELECT coalesce(array_agg(x), '{}'::text[]) FROM jsonb_array_elements_text($8::jsonb) x)
 		WHERE id = $1`,
-		a.ID, a.Email, string(a.Status), scopes, nullTimePtr(a.LastSyncedAt), vip))
+		a.ID, a.Email, string(a.Status), scopes, nullTimePtr(a.LastSyncedAt), vip, a.SignatureHTML, autoBcc))
 }
 
 func (r accountRepo) Delete(ctx context.Context, id string) error {
