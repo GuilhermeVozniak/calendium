@@ -145,6 +145,7 @@ func run(logger *slog.Logger) error {
 		Threads:       store.Threads(),
 		Messages:      store.Messages(),
 		Drafts:        store.Drafts(),
+		VoiceProfiles: store.VoiceProfiles(),
 		AI:            ai,
 		Clock:         clock,
 		SelfHosted:    cfg.Instance.SelfHosted,

@@ -384,6 +384,56 @@ func reminderHasInboundReplyAfter(msgs []domain.Message, ownerEmail string, sent
 // correctness bug. If duplicate-job volume becomes a problem, the fix
 // belongs on the enqueue side (a cheap "does a voice_profile job already
 // exist for this user" check before Enqueue), not here.
-func (s *AIJobService) runVoiceProfile(_ context.Context, _ domain.AiJob) error {
-	return nil
+//
+// Idempotency: VoiceProfileRepo.Upsert overwrites the single per-user row,
+// so re-running this handler for an account that already has a profile (a
+// re-enqueued or duplicated job) just refreshes it cleanly — no error, no
+// duplicate rows.
+func (s *AIJobService) runVoiceProfile(ctx context.Context, j domain.AiJob) error {
+	acct, err := s.d.Accounts.GetByID(ctx, j.AccountID)
+	if err != nil {
+		return err // domain.ErrNotFound (account deleted) drops the job
+	}
+	msgs, err := s.d.Messages.ListSentByAccount(ctx, j.AccountID, acct.Email, voiceSampleCount)
+	if err != nil {
+		return err
+	}
+	if len(msgs) < voiceMinSamples {
+		// Not enough sent mail yet to learn a style from. The self
+		// re-enqueue only happens after a successful profile generation, so
+		// this relies on the 30-day re-enqueue scheduled at first sync (or
+		// the next duplicate job) to retry later.
+		return nil
+	}
+
+	var b strings.Builder
+	for _, m := range msgs {
+		fmt.Fprintf(&b, "---\n%s\n", firstNonEmpty(m.BodyText, m.BodyHTML))
+	}
+
+	var out voiceProfileOut
+	model, err := s.completeJSONBudgeted(ctx, j.UserID, voiceProfileSystem, b.String(), &out)
+	if err != nil {
+		return err
+	}
+
+	if err := s.d.VoiceProfiles.Upsert(ctx, domain.VoiceProfile{
+		UserID:      j.UserID,
+		Profile:     out.Profile,
+		SampleCount: len(msgs),
+		Model:       model,
+		UpdatedAt:   s.d.Clock.Now(),
+	}); err != nil {
+		return err
+	}
+
+	return s.d.Jobs.Enqueue(ctx, domain.AiJob{
+		ID:        newID(),
+		UserID:    j.UserID,
+		AccountID: j.AccountID,
+		Kind:      domain.AiJobVoiceProfile,
+		ThreadID:  nil,
+		Payload:   map[string]string{},
+		RunAfter:  s.d.Clock.Now().Add(30 * 24 * time.Hour),
+	})
 }
