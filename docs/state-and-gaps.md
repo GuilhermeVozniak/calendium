@@ -27,7 +27,7 @@ Build **Calendium**: a Superhuman-class, keyboard-first **email client** deeply 
 
 ### M2.1 — Triage Power (COMPLETE)
 
-Shipped nine triage-power features (Get Me To Zero, Bulk triage actions, One-click and bulk unsubscribe, Inbox zero celebration design, Auto-advance, Reorderable splits, Stars and labels via shortcuts, Undo anything, Shortcut teaching UX) alongside eight new backend endpoints (BulkArchive, BulkMarkRead, BulkLabel, Unsubscribe, ArchiveByAge, PerformAction, CreateSnoozePreset, TriggerAutoAdvance); deployed migration 0005 for UI state persistence; enforced a Playwright p95 perf budget (measured 36-46ms on production build) across web, desktop, and mobile with platform-specific parity subsets and full test coverage (18 e2e tests including both perf budget tests).
+Shipped nine triage-power features (Get Me To Zero, Bulk triage actions, One-click and bulk unsubscribe, Inbox zero celebration design, Auto-advance, Reorderable splits, Stars and labels via shortcuts, Undo anything, Shortcut teaching UX) backed by the real REST v1 endpoints: `POST /v1/mail/threads/bulk-actions`, `POST /v1/mail/threads/zero`, `GET /v1/mail/labels`, `POST /v1/mail/threads/{id}/labels`, `POST /v1/mail/threads/{id}/unsubscribe`, `DELETE /v1/mail/threads/{id}/snooze`, and `GET`/`PUT /v1/prefs`. The Playwright p95 perf budget (measured 36-46ms) is web-only, not a cross-platform desktop/mobile budget.
 
 ### Clients — wired to the live API
 
