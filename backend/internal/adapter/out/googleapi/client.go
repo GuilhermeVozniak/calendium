@@ -70,9 +70,33 @@ func (e *httpError) Unwrap() error {
 	}
 }
 
+// defaultJSONBodyLimit caps ordinary JSON responses (thread/message
+// metadata, profile, labels, ...). It is not sized for attachment
+// downloads — see maxAttachmentBytes and doJSONLimit.
+const defaultJSONBodyLimit = 8 << 20
+
+// maxAttachmentBytes caps the JSON envelope returned by Gmail's
+// users.messages.attachments.get, which carries the attachment bytes as a
+// base64url string that inflates the original size by ~33%. Matches the
+// dedicated attachment cap on the msgraph adapter (see
+// msgraph/client.go's maxAttachmentBytes) rather than defaultJSONBodyLimit,
+// which is sized for small metadata payloads and would silently truncate
+// any attachment whose encoded form exceeds ~6MB raw.
+const maxAttachmentBytes = 64 << 20
+
 // doJSON performs an authenticated JSON request. body and out may be nil;
-// non-2xx responses are returned as *httpError.
+// non-2xx responses are returned as *httpError. The response body is
+// capped at defaultJSONBodyLimit; use doJSONLimit for endpoints that can
+// legitimately return larger payloads (attachments).
 func (c *Client) doJSON(ctx context.Context, method, url, accessToken string, body, out any) error {
+	return c.doJSONLimit(ctx, method, url, accessToken, body, out, defaultJSONBodyLimit)
+}
+
+// doJSONLimit is doJSON parameterized by the maximum response size. If the
+// (2xx) response body reaches maxBytes+1, it is treated as exceeding the
+// limit and reported as a clean domain.ErrValidation-wrapped error rather
+// than being silently truncated into an opaque JSON decode failure.
+func (c *Client) doJSONLimit(ctx context.Context, method, url, accessToken string, body, out any, maxBytes int64) error {
 	var rd io.Reader
 	if body != nil {
 		buf, err := json.Marshal(body)
@@ -97,7 +121,9 @@ func (c *Client) doJSON(ctx context.Context, method, url, accessToken string, bo
 	}
 	defer func() { _ = res.Body.Close() }()
 
-	raw, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+	// Read one byte past the limit so an oversized body can be
+	// distinguished from one that exactly fits.
+	raw, err := io.ReadAll(io.LimitReader(res.Body, maxBytes+1))
 	if err != nil {
 		return fmt.Errorf("googleapi: read response: %w", err)
 	}
@@ -109,6 +135,9 @@ func (c *Client) doJSON(ctx context.Context, method, url, accessToken string, bo
 			msg = truncate(string(raw), 200)
 		}
 		return &httpError{StatusCode: res.StatusCode, Message: msg}
+	}
+	if int64(len(raw)) > maxBytes {
+		return fmt.Errorf("%w: googleapi: response exceeds %d byte limit", domain.ErrValidation, maxBytes)
 	}
 	if out != nil && len(raw) > 0 {
 		if err := json.Unmarshal(raw, out); err != nil {

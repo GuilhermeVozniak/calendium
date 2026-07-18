@@ -207,7 +207,9 @@ func (c *Client) ModifyLabels(ctx context.Context, accessToken, providerThreadID
 // users.messages.attachments.get. The response envelope carries the size
 // and a base64url-encoded payload but no mime type, so mimeType is always
 // returned empty — callers fall back to the mime type mirrored from
-// message metadata at ingest time.
+// message metadata at ingest time. Uses maxAttachmentBytes (64MB) rather
+// than doJSON's default 8MB cap, since the base64url payload inflates the
+// original attachment size by ~33%.
 func (c *Client) FetchAttachment(ctx context.Context, accessToken, providerMessageID, providerAttachmentID string) ([]byte, string, error) {
 	endpoint := gmailBase + "/messages/" + url.PathEscape(providerMessageID) +
 		"/attachments/" + url.PathEscape(providerAttachmentID)
@@ -215,7 +217,7 @@ func (c *Client) FetchAttachment(ctx context.Context, accessToken, providerMessa
 		Size int64  `json:"size"`
 		Data string `json:"data"`
 	}
-	if err := c.doJSON(ctx, http.MethodGet, endpoint, accessToken, nil, &res); err != nil {
+	if err := c.doJSONLimit(ctx, http.MethodGet, endpoint, accessToken, nil, &res, maxAttachmentBytes); err != nil {
 		return nil, "", err
 	}
 	data, err := base64.URLEncoding.WithPadding(base64.NoPadding).DecodeString(strings.TrimRight(res.Data, "="))

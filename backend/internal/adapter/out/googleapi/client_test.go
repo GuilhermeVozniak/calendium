@@ -1,7 +1,11 @@
 package googleapi
 
 import (
+	"context"
+	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"calendium/backend/internal/domain"
@@ -35,6 +39,31 @@ func TestHTTPError_Unwrap(t *testing.T) {
 				t.Errorf("Unwrap() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestClient_DoJSONLimit_ExceedsCapReturnsValidationError exercises the
+// size-limit-exceeded path cheaply (a tiny maxBytes rather than the real
+// 64MB attachment cap) to confirm an oversized 2xx body is reported as a
+// clean domain.ErrValidation-wrapped error instead of a truncated,
+// opaque JSON decode failure.
+func TestClient_DoJSONLimit_ExceedsCapReturnsValidationError(t *testing.T) {
+	const maxBytes = 16
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Well over maxBytes; a legitimate small response would never
+		// trip this.
+		io.WriteString(w, `{"data":"`+string(make([]byte, maxBytes*4))+`"}`)
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient("cid", "secret", rewriteClient(t, srv.URL))
+
+	var out struct {
+		Data string `json:"data"`
+	}
+	err := c.doJSONLimit(context.Background(), http.MethodGet, srv.URL, "tok", nil, &out, maxBytes)
+	if !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("err = %v, want wrapped domain.ErrValidation", err)
 	}
 }
 

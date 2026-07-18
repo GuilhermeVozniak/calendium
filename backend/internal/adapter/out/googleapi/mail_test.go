@@ -3,6 +3,7 @@ package googleapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -476,31 +477,90 @@ func TestHtmlToText(t *testing.T) {
 	}
 }
 
+// TestClient_FetchAttachment_DecodesBase64URL covers all three base64
+// padding remainders (len%3 == 0, 1, 2 -> 0, 2, 1 '=' padding characters
+// respectively) since the decode path trims trailing '=' before decoding
+// unpadded, and a payload whose length is a multiple of 3 alone would
+// never exercise the trim.
 func TestClient_FetchAttachment_DecodesBase64URL(t *testing.T) {
 	const wantToken = "tok-attach"
-	original := []byte("hello attachment bytes \x00\x01\xffdone")
 
-	var gotPath string
-	_, c := newGoogleServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer "+wantToken {
-			t.Errorf("Authorization = %q, want Bearer %s", got, wantToken)
+	cases := []struct {
+		name     string
+		mod      int // len(original) % 3, the expected base64 padding class
+		original []byte
+	}{
+		{"length % 3 == 0, no padding", 0, []byte("hello attachment bytes \x00\x01\xffdone")},         // len 30
+		{"length % 3 == 1, two padding chars", 1, []byte("hello attachment bytes \x00\x01\xffdone!")}, // len 31
+		{"length % 3 == 2, one padding char", 2, []byte("hello attachment bytes \x00\x01\xffdone!!")}, // len 32
+	}
+	for _, tc := range cases {
+		if mod := len(tc.original) % 3; mod != tc.mod {
+			t.Fatalf("test fixture %q has len %d %% 3 == %d, want %d", tc.name, len(tc.original), mod, tc.mod)
 		}
-		gotPath = r.URL.Path
-		fmt.Fprintf(w, `{"size":%d,"data":%q}`, len(original), b64url(string(original)))
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath string
+			_, c := newGoogleServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get("Authorization"); got != "Bearer "+wantToken {
+					t.Errorf("Authorization = %q, want Bearer %s", got, wantToken)
+				}
+				gotPath = r.URL.Path
+				fmt.Fprintf(w, `{"size":%d,"data":%q}`, len(tc.original), b64url(string(tc.original)))
+			})
+
+			data, mimeType, err := c.FetchAttachment(context.Background(), wantToken, "m1", "att1")
+			if err != nil {
+				t.Fatalf("FetchAttachment: %v", err)
+			}
+			if !strings.HasSuffix(gotPath, "/messages/m1/attachments/att1") {
+				t.Errorf("path = %q, want suffix /messages/m1/attachments/att1", gotPath)
+			}
+			if !bytes.Equal(data, tc.original) {
+				t.Errorf("data = %q, want %q", data, tc.original)
+			}
+			if mimeType != "" {
+				t.Errorf("mimeType = %q, want empty (caller falls back to mirrored mime type)", mimeType)
+			}
+		})
+	}
+}
+
+// TestClient_FetchAttachment_LargePayloadUnderNewCap exercises a payload
+// whose base64url encoding exceeds doJSON's old 8MB response cap (the one
+// sized for message metadata) but stays comfortably under
+// maxAttachmentBytes (64MB). Before the dedicated cap, this would have
+// been truncated mid-JSON-envelope and surfaced as an opaque decode error.
+func TestClient_FetchAttachment_LargePayloadUnderNewCap(t *testing.T) {
+	const rawSize = 9 * 1024 * 1024 // 9MB raw; base64 inflates to ~12MB, over the old 8MB cap.
+
+	original := make([]byte, rawSize)
+	for i := range original {
+		original[i] = byte(i * 2654435761 >> 3) // cheap deterministic filler, not all-zero
+	}
+	wantHash := sha256.Sum256(original)
+
+	encoded := base64.URLEncoding.EncodeToString(original)
+	if encLen := len(encoded); encLen <= 8<<20 {
+		t.Fatalf("test fixture too small: encoded len %d must exceed the old 8MB cap", encLen)
+	}
+
+	_, c := newGoogleServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"size":`+fmt.Sprint(rawSize)+`,"data":`+fmt.Sprintf("%q", encoded)+`}`)
 	})
 
-	data, mimeType, err := c.FetchAttachment(context.Background(), wantToken, "m1", "att1")
+	data, _, err := c.FetchAttachment(context.Background(), "tok", "m1", "att1")
 	if err != nil {
 		t.Fatalf("FetchAttachment: %v", err)
 	}
-	if !strings.HasSuffix(gotPath, "/messages/m1/attachments/att1") {
-		t.Errorf("path = %q, want suffix /messages/m1/attachments/att1", gotPath)
+	if len(data) != rawSize {
+		t.Fatalf("len(data) = %d, want %d", len(data), rawSize)
 	}
-	if !bytes.Equal(data, original) {
-		t.Errorf("data = %q, want %q", data, original)
-	}
-	if mimeType != "" {
-		t.Errorf("mimeType = %q, want empty (caller falls back to mirrored mime type)", mimeType)
+	if gotHash := sha256.Sum256(data); gotHash != wantHash {
+		t.Errorf("decoded content hash mismatch: got %x, want %x", gotHash, wantHash)
 	}
 }
 
