@@ -84,6 +84,33 @@ func TestListThreadsParsing(t *testing.T) {
 	}
 }
 
+func TestHandleListThreadsIncludesAiSummary(t *testing.T) {
+	// Task 6 (live auto-summarize): Thread.Summary carries json:"summary" so
+	// once the worker job persists a value via ThreadRepo.SetSummary, it
+	// must flow through the existing list-threads response unchanged — no
+	// handler code paths needed to be added for this, but it's worth a test
+	// asserting the field isn't dropped/renamed anywhere in the response
+	// pipeline.
+	h := newHarness(t)
+	h.mail.listPage = domain.Page[domain.Thread]{
+		Items: []domain.Thread{{ID: "th1", Subject: "Q3 planning", Summary: "Discussing Q3 roadmap, waiting on budget sign-off"}},
+	}
+	rec := h.authed(http.MethodGet, "/v1/mail/threads", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	var got domain.Page[domain.Thread]
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Items) != 1 || got.Items[0].Summary != "Discussing Q3 roadmap, waiting on budget sign-off" {
+		t.Fatalf("items = %+v, want summary to flow through from the repo", got.Items)
+	}
+	if !strings.Contains(rec.Body.String(), `"summary":"Discussing Q3 roadmap`) {
+		t.Fatalf("body missing raw \"summary\" JSON field: %s", rec.Body.String())
+	}
+}
+
 func TestHandleListThreadsPaywall(t *testing.T) {
 	h := newHarness(t)
 	h.mail.listErr = domain.ErrPaymentRequired

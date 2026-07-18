@@ -224,12 +224,42 @@ func (s *AIJobService) threadFor(ctx context.Context, j domain.AiJob) (domain.Th
 	return s.d.Threads.GetByID(ctx, *j.ThreadID)
 }
 
-// runThreadSummary is a stub in this task (Task 6 fills in real summary
-// generation + Threads.SetSummary); it only performs the existence guard so
-// ProcessDueAiJobs already drops jobs for since-deleted threads.
+// summaryMaxLen caps the persisted thread summary length. The prompt asks
+// for <=120 chars, but the model isn't a reliable enforcer of its own
+// instructions, so this is a hard backstop before persistence.
+const summaryMaxLen = 200
+
+// runThreadSummary generates (or refreshes) a thread's live summary: guard-
+// fetch the thread (dropping the job via ErrNotFound if it's gone), load its
+// messages, ask the model for a single-line summary via
+// completeJSONBudgeted, validate it's non-empty (an empty summary is a
+// model/prompt defect worth retrying, not a reason to persist blank text),
+// clamp it to summaryMaxLen, and persist via Threads.SetSummary. Because
+// ingest re-enqueues this job kind on every new inbound message and the
+// ai_jobs dedup index collapses bursts, the summary stays live as messages
+// arrive.
 func (s *AIJobService) runThreadSummary(ctx context.Context, j domain.AiJob) error {
-	_, err := s.threadFor(ctx, j)
-	return err
+	t, err := s.threadFor(ctx, j)
+	if err != nil {
+		return err
+	}
+	msgs, err := s.d.Messages.ListByThread(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+
+	var out summaryOut
+	if _, err := s.completeJSONBudgeted(ctx, j.UserID, summarySystem, threadContext(t, msgs), &out); err != nil {
+		return err
+	}
+
+	summary := strings.TrimSpace(out.Summary)
+	if summary == "" {
+		return fmt.Errorf("%w: thread_summary: model returned an empty summary", domain.ErrAIOutput)
+	}
+	summary = truncate(summary, summaryMaxLen)
+
+	return s.d.Threads.SetSummary(ctx, t.ID, summary, s.d.Clock.Now())
 }
 
 // runInstantReplies is a stub in this task; Task 7 fills in real generation.
