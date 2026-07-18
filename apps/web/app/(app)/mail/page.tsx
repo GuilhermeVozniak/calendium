@@ -172,7 +172,7 @@ function MailClient() {
   const closeThread = React.useCallback(() => navigate({ t: null }), [navigate]);
 
   // --- Actions -------------------------------------------------------------
-  const { act, snooze, remind, undoLast, bulkAct, setLabel } = useMailActions();
+  const { act, snooze, remind, undoLast, bulkAct, setLabel, unsubscribe } = useMailActions();
   const [snoozeOpen, setSnoozeOpen] = React.useState(false);
   const [remindOpen, setRemindOpen] = React.useState(false);
   const [zeroOpen, setZeroOpen] = React.useState(false);
@@ -265,6 +265,23 @@ function MailClient() {
     void bulkAct(ids, 'read');
     toast.success(`Marked ${ids.length} read`);
   }, [selectedIds, bulkAct]);
+
+  const bulkUnsubscribe = React.useCallback(async () => {
+    const targets = threads.filter(
+      (t) => selection.ids.has(t.id) && (t.unsubscribeMailto || t.unsubscribeUrl)
+    );
+    if (targets.length === 0) {
+      toast.message('No unsubscribe links in the selection');
+      return;
+    }
+    const ids = targets.map((t) => t.id);
+    setSelection(clearSelection());
+    await Promise.allSettled(ids.map((id) => unsubscribe(id)));
+    void bulkAct(ids, 'archive');
+    toast.success(`Unsubscribed from ${ids.length} sender${ids.length === 1 ? '' : 's'}`, {
+      action: { label: 'Undo', onClick: () => void undoLast() },
+    });
+  }, [threads, selection, unsubscribe, bulkAct, undoLast]);
 
   const focusSearch = React.useCallback(() => searchRef.current?.focus(), []);
 
@@ -547,7 +564,7 @@ function MailClient() {
           onArchive={bulkArchive}
           onMarkRead={bulkMarkRead}
           onLabel={() => setLabelPickerOpen(true)}
-          onUnsubscribe={() => {}}
+          onUnsubscribe={() => void bulkUnsubscribe()}
           onClear={() => setSelection(clearSelection())}
         />
 

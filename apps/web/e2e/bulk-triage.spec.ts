@@ -61,4 +61,29 @@ test.describe('Bulk triage', () => {
     await page.getByText('Updates', { exact: true }).click();
     await expect(page.getByText(/Labeled “Updates”/)).toBeVisible();
   });
+
+  test('unsubscribe button appears on newsletter threads and confirms', async ({ page }) => {
+    await page.goto('/mail?split=news');
+    const newsletter = page.getByRole('button', { name: /The Batch/ }).first();
+    await expect(newsletter).toBeVisible();
+    await newsletter.click();
+    // Wait for thread view to load
+    await page.waitForURL(/\?.*t=/);
+    // Wait for the Unsubscribe button to appear anywhere on the page
+    const unsubBtn = page.locator('button[aria-label="Unsubscribe"]');
+    await unsubBtn.waitFor({ timeout: 5000 });
+    await unsubBtn.click();
+    await expect(page.getByText(/Unsubscribed|unsubscribe page/)).toBeVisible();
+  });
+
+  test('bulk unsubscribe archives the selected newsletters', async ({ page }) => {
+    await page.goto('/mail?split=news');
+    const first = page.getByRole('button', { name: /The Batch/ });
+    await first.hover();
+    await page.keyboard.press('x');
+    await page.keyboard.press('Shift+j');
+    await page.getByRole('button', { name: 'Unsubscribe' }).click();
+    await expect(page.getByText(/Unsubscribed from 2 senders/)).toBeVisible();
+    await expect(page.getByRole('button', { name: /The Batch/ })).toHaveCount(0);
+  });
 });

@@ -10,6 +10,7 @@ import {
   Clock,
   Forward,
   Loader2,
+  MailX,
   Reply,
   ReplyAll,
   Send,
@@ -182,7 +183,7 @@ interface ThreadViewProps {
  */
 export function ThreadView({ threadId, onClose, onArchive, onSnooze }: ThreadViewProps) {
   const { data, isLoading } = useThreadDetail(threadId);
-  const { act, snooze, remind, markOpened } = useMailActions();
+  const { act, snooze, remind, markOpened, unsubscribe } = useMailActions();
   const { openCompose } = useCompose();
   const selfEmails = useSelfEmails();
   const isMe = React.useCallback<IsMe>(
@@ -244,6 +245,21 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze }: ThreadVie
     },
     [thread, lastMessage, openCompose, replyRecipients, isMe]
   );
+
+  const handleUnsubscribe = React.useCallback(async () => {
+    if (!thread) return;
+    try {
+      const res = await unsubscribe(thread.id);
+      if (res.method === 'link' && res.url) {
+        window.open(res.url, '_blank', 'noopener,noreferrer');
+        toast.message('Opened the unsubscribe page in a new tab');
+      } else {
+        toast.success('Unsubscribed — the sender has been asked to stop');
+      }
+    } catch {
+      toast.error('Could not unsubscribe.');
+    }
+  }, [thread, unsubscribe]);
 
   useShortcuts([
     { keys: 'r', description: 'Reply', handler: () => openReply('reply') },
@@ -375,6 +391,22 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze }: ThreadVie
               Star <Kbd size="sm">S</Kbd>
             </TooltipContent>
           </Tooltip>
+          {(thread.unsubscribeMailto || thread.unsubscribeUrl) && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  aria-label="Unsubscribe"
+                  onClick={() => void handleUnsubscribe()}
+                >
+                  <MailX className="size-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Unsubscribe</TooltipContent>
+            </Tooltip>
+          )}
         </div>
       </div>
 
