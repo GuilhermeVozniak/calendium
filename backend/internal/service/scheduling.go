@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/mail"
 	"sort"
 	"strings"
@@ -46,6 +47,10 @@ type SchedulingServiceDeps struct {
 	SelfHosted        bool
 	// PublicWebURL builds booking/poll URLs in emails (config.PublicWebURL).
 	PublicWebURL string
+	// Logger receives best-effort operational logging (confirmation/
+	// cancellation email failures, ExpireHolds sweep counts). Defaults to
+	// slog.Default() when nil.
+	Logger *slog.Logger
 }
 
 // SchedulingService implements the booking-link surface of
@@ -66,9 +71,19 @@ type SchedulingService struct {
 	mail      map[domain.Provider]port.MailProvider
 	tokens    tokenSource
 	clock     port.Clock
+	// tx wraps the booking pipeline's confirm step (event upsert + hold
+	// promotion) in a single transaction (scheduling_booking.go).
+	tx port.TxRunner
+	// logger receives best-effort operational logging; never nil (see
+	// NewSchedulingService).
+	logger *slog.Logger
 }
 
 func NewSchedulingService(d SchedulingServiceDeps) *SchedulingService {
+	logger := d.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &SchedulingService{
 		ent:       entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
 		users:     d.Users,
@@ -83,6 +98,8 @@ func NewSchedulingService(d SchedulingServiceDeps) *SchedulingService {
 		mail:      d.MailProviders,
 		tokens:    tokenSource{accounts: d.Accounts, oauth: d.OAuth, clock: d.Clock},
 		clock:     d.Clock,
+		tx:        d.Tx,
+		logger:    logger,
 	}
 }
 
