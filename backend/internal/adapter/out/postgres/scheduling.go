@@ -395,10 +395,25 @@ func (r pollRepo) Delete(ctx context.Context, id string) error {
 
 // UpsertVotes replaces each voter's ballot, keyed poll_id+option_id+lower(email)
 // via poll_votes_unique_idx — the ON CONFLICT target expression must match
-// that index exactly for Postgres to use it as the arbiter.
+// that index exactly for Postgres to use it as the arbiter. All votes are
+// committed atomically: if any vote fails, the entire operation rolls back.
 func (r pollRepo) UpsertVotes(ctx context.Context, votes []domain.PollVote) error {
+	if len(votes) == 0 {
+		return nil
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("postgres: begin tx: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
 	for _, v := range votes {
-		_, err := r.q(ctx).ExecContext(ctx, `
+		_, err = tx.ExecContext(ctx, `
 			INSERT INTO poll_votes (poll_id, option_id, voter_email, voter_name, choice)
 			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (poll_id, option_id, lower(voter_email)) DO UPDATE SET
@@ -409,6 +424,10 @@ func (r pollRepo) UpsertVotes(ctx context.Context, votes []domain.PollVote) erro
 		if err != nil {
 			return fmt.Errorf("postgres: upsert poll vote: %w", err)
 		}
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("postgres: commit tx: %w", err)
 	}
 	return nil
 }

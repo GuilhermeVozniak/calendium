@@ -472,4 +472,43 @@ func TestUserSettingsGetReturnsDefaultAndUpsert(t *testing.T) {
 	}
 }
 
+func TestUpsertVotesAtomicity(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	acct := seedAccount(t, st, "u1")
+	cal := seedCalendar(t, st, acct.ID)
+
+	base := time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC)
+	p, err := st.Polls().Create(ctx, domain.MeetingPoll{
+		UserID: "u1", Title: "Sync", CalendarID: cal.ID, DurationMinutes: 30,
+		Options: []domain.PollOption{
+			{ID: "opt1", Start: base, End: base.Add(30 * time.Minute)},
+			{ID: "opt2", Start: base.Add(time.Hour), End: base.Add(90 * time.Minute)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create poll: %v", err)
+	}
+
+	// Attempt to upsert votes where the second vote references a nonexistent poll.
+	// This should fail mid-loop, and with transactionality, all votes should be rolled back.
+	err = st.Polls().UpsertVotes(ctx, []domain.PollVote{
+		{PollID: p.ID, OptionID: "opt1", VoterEmail: "alice@example.com", VoterName: "Alice", Choice: domain.VoteYes},
+		{PollID: "nonexistent-poll", OptionID: "opt1", VoterEmail: "bob@example.com", VoterName: "Bob", Choice: domain.VoteYes},
+	})
+	if err == nil {
+		t.Fatalf("UpsertVotes should have failed due to FK constraint")
+	}
+
+	// Verify that the first vote was NOT committed (proving atomicity).
+	votes, err := st.Polls().ListVotes(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListVotes: %v", err)
+	}
+	if len(votes) != 0 {
+		t.Fatalf("ListVotes = %d votes, want 0 (all should be rolled back); got %+v", len(votes), votes)
+	}
+}
+
 func ptr(s string) *string { return &s }
