@@ -12,6 +12,8 @@
       "**/*.js",
       "**/*.jsx",
       "!**/node_modules",
+      "!**/.claude",
+      "!**/.superpowers",
       "!**/.next",
       "!**/dist",
       "!**/build",

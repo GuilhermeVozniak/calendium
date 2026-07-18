@@ -48,6 +48,10 @@ npm-debug.*
 yarn-debug.*
 yarn-error.*
 
+# agent worktrees & scratch (session tooling)
+.claude/worktrees/
+.superpowers/
+
 # macOS
 .DS_Store
 
