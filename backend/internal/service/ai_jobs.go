@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"calendium/backend/internal/domain"
@@ -237,10 +238,167 @@ func (s *AIJobService) runInstantReplies(ctx context.Context, j domain.AiJob) er
 	return err
 }
 
-// runAutoDraft is a stub in this task; Task 8 fills in real generation.
+// autoDraftAvailabilityWindow / autoDraftSlotDuration / autoDraftMaxSlots
+// bound the scheduling-draft availability lookup: the next 5 days, in
+// 30-minute slots, offering at most the first 6 free windows to the model.
+const (
+	autoDraftAvailabilityWindow = 5 * 24 * time.Hour
+	autoDraftSlotDuration       = 30 * time.Minute
+	autoDraftMaxSlots           = 6
+)
+
+// runAutoDraft drafts (or refreshes) a provisional reply to a thread awaiting
+// a response from the owner. It never sends: the draft it writes always has
+// a nil ScheduledAt, and a user who has already touched the draft (MailService
+// .UpdateDraft clears AiGenerated on any manual save) is never overwritten —
+// GetAiGeneratedByThread only surfaces drafts still owned by the AI.
 func (s *AIJobService) runAutoDraft(ctx context.Context, j domain.AiJob) error {
-	_, err := s.threadFor(ctx, j)
-	return err
+	th, err := s.threadFor(ctx, j)
+	if err != nil {
+		return err
+	}
+	acct, err := s.d.Accounts.GetByID(ctx, j.AccountID)
+	if err != nil {
+		return err
+	}
+	msgs, err := s.d.Messages.ListByThread(ctx, th.ID)
+	if err != nil {
+		return err
+	}
+	if len(msgs) == 0 {
+		return nil // nothing to reply to
+	}
+	newest := msgs[0]
+	for _, m := range msgs[1:] {
+		if m.SentAt.After(newest.SentAt) {
+			newest = m
+		}
+	}
+	if strings.EqualFold(newest.From.Email, acct.Email) {
+		return nil // the owner sent the newest message; nothing awaits a reply
+	}
+	if last, ok := j.Payload["lastMessageId"]; ok && last == newest.ID {
+		return nil // this exact message was already drafted against
+	}
+
+	var out autoDraftOut
+	if _, err := s.completeJSONBudgeted(ctx, j.UserID, autoDraftSystem, autoDraftUserPrompt(th, msgs, ""), &out); err != nil {
+		return err
+	}
+	if !out.ShouldDraft {
+		return nil // no reply expected from the owner
+	}
+	if out.IsMeetingRequest {
+		avail := s.renderAvailability(ctx, j.UserID)
+		if _, err := s.completeJSONBudgeted(ctx, j.UserID, autoDraftSystem, autoDraftUserPrompt(th, msgs, avail), &out); err != nil {
+			return err
+		}
+	}
+
+	subject := out.Subject
+	if th.Subject != "" {
+		subject = "Re: " + th.Subject
+	}
+
+	existing, err := s.d.Drafts.GetAiGeneratedByThread(ctx, th.ID)
+	switch {
+	case err == nil:
+		// Refresh the still-AI-owned draft for the new message; a
+		// user-touched draft never reaches here (GetAiGeneratedByThread
+		// only returns drafts where ai_generated is still true).
+		existing.To = []domain.EmailAddress{newest.From}
+		existing.Subject = subject
+		existing.BodyHTML = out.BodyHTML
+		existing.AiGenerated = true
+		existing.UpdatedAt = s.d.Clock.Now()
+		return s.d.Drafts.Update(ctx, existing)
+	case errors.Is(err, domain.ErrNotFound):
+		_, cerr := s.d.Drafts.Create(ctx, domain.Draft{
+			ID:          newID(),
+			AccountID:   j.AccountID,
+			ThreadID:    &th.ID,
+			To:          []domain.EmailAddress{newest.From},
+			Subject:     subject,
+			BodyHTML:    out.BodyHTML,
+			AiGenerated: true,
+			UpdatedAt:   s.d.Clock.Now(),
+		})
+		return cerr
+	default:
+		return err
+	}
+}
+
+// autoDraftUserPrompt renders the conversation (subject + last
+// aiContextMessages messages, same context budget as AIService.Compose) plus
+// an optional trailing AVAILABILITY block for the CompleteJSON user turn.
+func autoDraftUserPrompt(t domain.Thread, msgs []domain.Message, availability string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Conversation subject: %s\n\n", t.Subject)
+	start := 0
+	if len(msgs) > aiContextMessages {
+		start = len(msgs) - aiContextMessages
+	}
+	for _, m := range msgs[start:] {
+		body := m.BodyText
+		if body == "" {
+			body = m.BodyHTML
+		}
+		fmt.Fprintf(&b, "From %s at %s:\n%s\n\n", m.From.Email, m.SentAt.Format(time.RFC3339), truncate(body, aiContextBodyMax))
+	}
+	if availability != "" {
+		b.WriteString(availability)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// renderAvailability computes the owner's next-5-days availability and
+// formats up to the first 6 slots, in the account's primary-calendar time
+// zone, as an "AVAILABILITY:" block. Any failure (no Calendar wired, repo
+// error, unknown zone) degrades to an empty string rather than failing the
+// job — a scheduling draft without offered times still gets drafted.
+func (s *AIJobService) renderAvailability(ctx context.Context, userID string) string {
+	if s.d.Calendar == nil {
+		return ""
+	}
+	now := s.d.Clock.Now()
+	slots, err := s.d.Calendar.Availability(ctx, userID, now, now.Add(autoDraftAvailabilityWindow), autoDraftSlotDuration)
+	if err != nil || len(slots) == 0 {
+		return ""
+	}
+	loc := s.accountZone(ctx, userID)
+	n := len(slots)
+	if n > autoDraftMaxSlots {
+		n = autoDraftMaxSlots
+	}
+	var b strings.Builder
+	b.WriteString("AVAILABILITY:\n")
+	for _, sl := range slots[:n] {
+		fmt.Fprintf(&b, "- %s to %s\n", sl.Start.In(loc).Format(time.RFC1123), sl.End.In(loc).Format(time.RFC1123))
+	}
+	return b.String()
+}
+
+// accountZone resolves the user's primary-calendar time zone (falling back
+// to the first calendar, then UTC) for rendering availability slots in local
+// time. Never errors: any failure degrades to time.UTC.
+func (s *AIJobService) accountZone(ctx context.Context, userID string) *time.Location {
+	cals, err := s.d.Calendar.ListCalendars(ctx, userID)
+	if err != nil || len(cals) == 0 {
+		return time.UTC
+	}
+	zone := cals[0].TimeZone
+	for _, c := range cals {
+		if c.IsPrimary {
+			zone = c.TimeZone
+			break
+		}
+	}
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
 }
 
 // runClassify is a stub in this task; Task 9 fills in real classification.

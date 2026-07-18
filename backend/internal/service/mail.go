@@ -397,6 +397,10 @@ func (s *MailService) UpdateDraft(ctx context.Context, userID, draftID string, i
 	d.Subject = in.Subject
 	d.BodyHTML = in.BodyHTML
 	d.ScheduledAt = in.ScheduledAt // clearing before the grace elapses = undo send
+	// A manual save means the owner is now authoring this draft: clear
+	// AiGenerated so a later auto_draft job (Task 8) never overwrites it
+	// (GetAiGeneratedByThread only surfaces drafts still flagged AI-owned).
+	d.AiGenerated = false
 	d.UpdatedAt = s.clock.Now()
 	if err := s.drafts.Update(ctx, d); err != nil {
 		return domain.Draft{}, err
