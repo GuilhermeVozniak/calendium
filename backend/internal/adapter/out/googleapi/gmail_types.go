@@ -160,6 +160,12 @@ func extractParts(p gmailPart, m *domain.Message) {
 			Filename:  p.Filename,
 			MimeType:  p.MimeType,
 			SizeBytes: p.Body.Size,
+			// ProviderAttachmentID is the same Gmail id as ID above; ID is
+			// the (pre-existing) provider-id-as-local-id convention this
+			// package used before the local mirror row id landed, so it is
+			// left untouched — this field is the one downstream code
+			// (FetchAttachment callers) is contracted to read.
+			ProviderAttachmentID: p.Body.AttachmentID,
 		})
 	} else if p.Body.Data != "" {
 		switch {

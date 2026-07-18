@@ -1,6 +1,7 @@
 package googleapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -472,6 +473,104 @@ func TestHtmlToText(t *testing.T) {
 				t.Errorf("htmlToText(%q) = %q, want %q", tc.html, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestClient_FetchAttachment_DecodesBase64URL(t *testing.T) {
+	const wantToken = "tok-attach"
+	original := []byte("hello attachment bytes \x00\x01\xffdone")
+
+	var gotPath string
+	_, c := newGoogleServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+wantToken {
+			t.Errorf("Authorization = %q, want Bearer %s", got, wantToken)
+		}
+		gotPath = r.URL.Path
+		fmt.Fprintf(w, `{"size":%d,"data":%q}`, len(original), b64url(string(original)))
+	})
+
+	data, mimeType, err := c.FetchAttachment(context.Background(), wantToken, "m1", "att1")
+	if err != nil {
+		t.Fatalf("FetchAttachment: %v", err)
+	}
+	if !strings.HasSuffix(gotPath, "/messages/m1/attachments/att1") {
+		t.Errorf("path = %q, want suffix /messages/m1/attachments/att1", gotPath)
+	}
+	if !bytes.Equal(data, original) {
+		t.Errorf("data = %q, want %q", data, original)
+	}
+	if mimeType != "" {
+		t.Errorf("mimeType = %q, want empty (caller falls back to mirrored mime type)", mimeType)
+	}
+}
+
+func TestClient_FetchAttachment_NotFound(t *testing.T) {
+	_, c := newGoogleServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, `{"error":{"code":404,"message":"not found"}}`)
+	})
+
+	_, _, err := c.FetchAttachment(context.Background(), "tok", "m1", "att1")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestClient_FetchAttachment_BadDataErrors(t *testing.T) {
+	_, c := newGoogleServer(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"size":3,"data":"not valid base64!!"}`)
+	})
+
+	_, _, err := c.FetchAttachment(context.Background(), "tok", "m1", "att1")
+	if err == nil {
+		t.Fatal("expected a decode error, got nil")
+	}
+}
+
+func TestClient_SyncMail_AttachmentProviderID(t *testing.T) {
+	threadJSON := `{"id":"t5","messages":[{"id":"m1","threadId":"t5","labelIds":["INBOX"],
+		"snippet":"s","internalDate":"1704067200000",
+		"payload":{"mimeType":"multipart/mixed",
+			"headers":[{"name":"From","value":"a@x.com"}],
+			"parts":[
+				{"mimeType":"text/plain","body":{"data":""}},
+				{"mimeType":"application/pdf","filename":"report.pdf",
+				 "body":{"attachmentId":"att-xyz","size":2048}}
+			]}}]}`
+
+	_, c := newGoogleServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch p := r.URL.Path; {
+		case strings.HasSuffix(p, "/profile"):
+			io.WriteString(w, `{"historyId":"1"}`)
+		case strings.HasSuffix(p, "/labels"):
+			io.WriteString(w, `{"labels":[]}`)
+		case strings.HasSuffix(p, "/threads"):
+			io.WriteString(w, `{"threads":[{"id":"t5"}]}`)
+		case strings.Contains(p, "/threads/"):
+			io.WriteString(w, threadJSON)
+		default:
+			t.Errorf("unexpected path %q", p)
+			http.NotFound(w, r)
+		}
+	})
+
+	page, err := c.SyncMail(context.Background(), "tok", "")
+	if err != nil {
+		t.Fatalf("SyncMail: %v", err)
+	}
+	if len(page.Messages) != 1 {
+		t.Fatalf("Messages len = %d, want 1", len(page.Messages))
+	}
+	atts := page.Messages[0].Message.Attachments
+	if len(atts) != 1 {
+		t.Fatalf("Attachments = %+v, want 1", atts)
+	}
+	att := atts[0]
+	if att.Filename != "report.pdf" || att.MimeType != "application/pdf" || att.SizeBytes != 2048 {
+		t.Errorf("attachment metadata wrong: %+v", att)
+	}
+	if att.ProviderAttachmentID != "att-xyz" {
+		t.Errorf("ProviderAttachmentID = %q, want att-xyz", att.ProviderAttachmentID)
 	}
 }
 

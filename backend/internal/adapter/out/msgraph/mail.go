@@ -17,7 +17,11 @@ import (
 // deltaSelect keeps delta payloads lean while still carrying everything the
 // mirror and the split-inbox classifier need.
 const deltaSelect = "id,conversationId,subject,bodyPreview,body,from,toRecipients,ccRecipients,bccRecipients," +
-	"receivedDateTime,isRead,isDraft,flag,internetMessageId,parentFolderId,internetMessageHeaders"
+	"receivedDateTime,isRead,isDraft,flag,internetMessageId,parentFolderId,internetMessageHeaders,hasAttachments"
+
+// attachmentMetaSelect keeps the per-message attachment lookup to metadata
+// only (no contentBytes) — bodies are fetched on demand via FetchAttachment.
+const attachmentMetaSelect = "id,name,contentType,size"
 
 // SyncMail runs a Microsoft Graph delta query over the inbox. The cursor is
 // the opaque @odata.nextLink / @odata.deltaLink URL; "" starts a fresh delta
@@ -55,6 +59,13 @@ func (c *Client) SyncMail(ctx context.Context, accessToken, cursor string) (port
 			continue // tombstone; Graph mail removals age out of the mirror via folder moves
 		}
 		im := mapGraphMessage(gm)
+		if gm.HasAttachments {
+			atts, err := c.fetchAttachmentMeta(ctx, accessToken, gm.ID)
+			if err != nil {
+				return page, err
+			}
+			im.Message.Attachments = atts
+		}
 		page.Messages = append(page.Messages, im)
 
 		th, ok := threads[gm.ConversationID]
@@ -101,6 +112,35 @@ func (c *Client) SyncMail(ctx context.Context, accessToken, cursor string) (port
 		page.NextCursor = res.DeltaLink
 	}
 	return page, nil
+}
+
+// fetchAttachmentMeta fetches attachment metadata (never content) for a
+// message flagged hasAttachments, populating ProviderAttachmentID so the
+// body can be downloaded on demand via FetchAttachment.
+func (c *Client) fetchAttachmentMeta(ctx context.Context, accessToken, messageID string) ([]domain.Attachment, error) {
+	endpoint := graphBase + "/me/messages/" + url.PathEscape(messageID) +
+		"/attachments?$select=" + url.QueryEscape(attachmentMetaSelect)
+	var res struct {
+		Value []struct {
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			ContentType string `json:"contentType"`
+			Size        int64  `json:"size"`
+		} `json:"value"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, accessToken, nil, &res); err != nil {
+		return nil, err
+	}
+	out := make([]domain.Attachment, 0, len(res.Value))
+	for _, a := range res.Value {
+		out = append(out, domain.Attachment{
+			Filename:             a.Name,
+			MimeType:             a.ContentType,
+			SizeBytes:            a.Size,
+			ProviderAttachmentID: a.ID,
+		})
+	}
+	return out, nil
 }
 
 // syncFolders mirrors mail folders as labels (ProviderLabelID = folder id).
@@ -162,12 +202,12 @@ func (c *Client) Send(ctx context.Context, accessToken string, msg port.Outgoing
 	}, nil
 }
 
-// FetchAttachment satisfies the widened port.MailProvider interface so the
-// backend compiles once ports/domain land (this task). The real Graph
-// attachment download is implemented in M2.5 Task 6
-// (docs/superpowers/plans/2026-07-17-m2-5-compose-contact.md).
+// FetchAttachment downloads one attachment's raw bytes via the Graph
+// $value endpoint; the response Content-Type header is the mime type.
 func (c *Client) FetchAttachment(ctx context.Context, accessToken, providerMessageID, providerAttachmentID string) ([]byte, string, error) {
-	return nil, "", errors.New("not implemented")
+	endpoint := graphBase + "/me/messages/" + url.PathEscape(providerMessageID) +
+		"/attachments/" + url.PathEscape(providerAttachmentID) + "/$value"
+	return c.doRaw(ctx, http.MethodGet, endpoint, accessToken)
 }
 
 // ModifyLabels applies canonical label keys to every message of the
@@ -284,6 +324,7 @@ type graphMessage struct {
 	BodyPreview       string         `json:"bodyPreview"`
 	InternetMessageID string         `json:"internetMessageId"`
 	ParentFolderID    string         `json:"parentFolderId"`
+	HasAttachments    bool           `json:"hasAttachments"`
 	From              *graphAddress  `json:"from"`
 	ToRecipients      []graphAddress `json:"toRecipients"`
 	CcRecipients      []graphAddress `json:"ccRecipients"`

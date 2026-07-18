@@ -203,12 +203,26 @@ func (c *Client) ModifyLabels(ctx context.Context, accessToken, providerThreadID
 	return c.doJSON(ctx, http.MethodPost, endpoint, accessToken, body, nil)
 }
 
-// FetchAttachment satisfies the widened port.MailProvider interface so the
-// backend compiles once ports/domain land (this task). The real Gmail
-// body.attachmentId download is implemented in M2.5 Task 6
-// (docs/superpowers/plans/2026-07-17-m2-5-compose-contact.md).
+// FetchAttachment downloads one attachment body via
+// users.messages.attachments.get. The response envelope carries the size
+// and a base64url-encoded payload but no mime type, so mimeType is always
+// returned empty — callers fall back to the mime type mirrored from
+// message metadata at ingest time.
 func (c *Client) FetchAttachment(ctx context.Context, accessToken, providerMessageID, providerAttachmentID string) ([]byte, string, error) {
-	return nil, "", errors.New("not implemented")
+	endpoint := gmailBase + "/messages/" + url.PathEscape(providerMessageID) +
+		"/attachments/" + url.PathEscape(providerAttachmentID)
+	var res struct {
+		Size int64  `json:"size"`
+		Data string `json:"data"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, accessToken, nil, &res); err != nil {
+		return nil, "", err
+	}
+	data, err := base64.URLEncoding.WithPadding(base64.NoPadding).DecodeString(strings.TrimRight(res.Data, "="))
+	if err != nil {
+		return nil, "", fmt.Errorf("googleapi: decode attachment data: %w", err)
+	}
+	return data, "", nil
 }
 
 // buildRFC2822 assembles a multipart/alternative MIME message.
