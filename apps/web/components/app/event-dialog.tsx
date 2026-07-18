@@ -7,7 +7,6 @@ import {
   AlignLeft,
   Bell,
   BookmarkPlus,
-  ExternalLink,
   LayoutTemplate,
   MapPin,
   Plus,
@@ -27,8 +26,10 @@ import type {
   EventTemplateInput,
   RsvpStatus,
 } from '@calendium/shared';
+import { detectConference } from '@calendium/shared';
 
 import { ConflictWarning } from '@/components/app/calendar/conflict-warning';
+import { JoinButton } from '@/components/app/calendar/join-button';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -57,6 +58,7 @@ import {
   updateEventApi,
 } from '@/lib/calendar-data';
 import { nextHalfHour } from '@/lib/quick-add';
+import { fetchAccounts } from '@/lib/settings-data';
 import {
   applyTemplate,
   createEventTemplateApi,
@@ -162,6 +164,13 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
     queryFn: fetchEventTemplates,
     enabled: open && !event,
   });
+  // Backs the create-mode conferencing helper text: the backend attaches a
+  // Meet or Teams link depending on which provider owns the target calendar's
+  // account (Google -> conferenceData.createRequest, Microsoft ->
+  // isOnlineMeeting/teamsForBusiness), so the copy has to follow calendarId.
+  const accountsQuery = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts });
+  const selectedCalendarAccount = calendars.find((c) => c.id === calendarId)?.accountId;
+  const selectedProvider = accountsQuery.data?.find((a) => a.id === selectedCalendarAccount)?.provider;
   const organizer = event?.attendees.find((a) => a.organizer);
   const isInvite =
     !!event &&
@@ -612,22 +621,31 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
           </FieldRow>
 
           <FieldRow icon={Video}>
-            <div className="flex h-8 items-center justify-between">
-              <Label htmlFor="event-meet" className="font-normal">
-                Add Google Meet
-              </Label>
-              <Switch id="event-meet" checked={meet} onCheckedChange={setMeet} />
-            </div>
-            {event?.conferencing && (
-              <a
-                href={event.conferencing.url}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:underline"
-              >
-                <ExternalLink className="size-3" />
-                {event.conferencing.url}
-              </a>
+            {!event ? (
+              <div className="flex flex-col gap-1">
+                <div className="flex h-8 items-center justify-between">
+                  <Label htmlFor="event-meet" className="font-normal">
+                    Add video conferencing
+                  </Label>
+                  <Switch id="event-meet" checked={meet} onCheckedChange={setMeet} />
+                </div>
+                {meet && (
+                  <span className="text-xs text-muted-foreground">
+                    {selectedProvider === 'microsoft'
+                      ? 'Teams meeting will be added'
+                      : 'Google Meet link will be added'}
+                  </span>
+                )}
+              </div>
+            ) : detectConference(event) ? (
+              <div className="flex h-8 items-center">
+                <JoinButton event={event} size="sm" />
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Video conferencing can only be added when creating an event — the backend
+                attaches it once, at creation time.
+              </p>
             )}
           </FieldRow>
 

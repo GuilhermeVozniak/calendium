@@ -1,8 +1,7 @@
 'use client';
 
-import * as React from 'react';
 import { addDays, format, isToday } from 'date-fns';
-import { MapPin, Video } from 'lucide-react';
+import { MapPin } from 'lucide-react';
 
 import type { Calendar as CalendarModel, Event } from '@calendium/shared';
 
@@ -10,6 +9,7 @@ import { cn } from '@/lib/utils';
 
 import { eventTouchesDay } from './time-grid';
 import { FALLBACK_COLOR } from './event-render';
+import { JoinButton } from './join-button';
 
 const AGENDA_DAYS = 14;
 
@@ -60,12 +60,21 @@ export function DayGroupList({ groups, calendarById, onEventClick, sectionRef, c
               {items.map((event, i) => {
                 const color = calendarById.get(event.calendarId)?.color ?? FALLBACK_COLOR;
                 return (
-                  <button
+                  // biome-ignore lint/a11y/useSemanticElements: hosts a real <button> (JoinButton) inline — nesting a button inside a button is invalid HTML, so this outer element is a div with button semantics instead.
+                  <div
                     key={event.id}
-                    type="button"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={event.title}
                     onClick={() => onEventClick(event)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onEventClick(event);
+                      }
+                    }}
                     className={cn(
-                      'flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm hover:bg-accent',
+                      'flex w-full cursor-pointer items-center gap-3 px-4 py-2.5 text-left text-sm hover:bg-accent',
                       i > 0 && 'border-t'
                     )}
                   >
@@ -87,10 +96,8 @@ export function DayGroupList({ groups, calendarById, onEventClick, sectionRef, c
                         </span>
                       )}
                     </span>
-                    {event.conferencing && (
-                      <Video className="size-4 shrink-0 text-muted-foreground" />
-                    )}
-                  </button>
+                    <JoinButton event={event} size="sm" />
+                  </div>
                 );
               })}
             </div>

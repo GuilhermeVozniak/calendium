@@ -1,4 +1,4 @@
-import type { Attendee, Calendar, Event, EventTemplate } from '@calendium/shared';
+import type { Attendee, Calendar, ConnectedAccount, Event, EventTemplate } from '@calendium/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -32,6 +32,11 @@ vi.mock('@/lib/quick-add', () => ({
 const useSelfEmailsMock = vi.fn();
 vi.mock('@/lib/use-identity', () => ({
   useSelfEmails: () => useSelfEmailsMock(),
+}));
+
+const fetchAccountsMock = vi.fn();
+vi.mock('@/lib/settings-data', () => ({
+  fetchAccounts: (...args: unknown[]) => fetchAccountsMock(...args),
 }));
 
 const fetchEventTemplatesMock = vi.fn();
@@ -77,6 +82,17 @@ const CAL_PERSONAL: Calendar = {
   accountId: 'acc1',
   name: 'Personal',
   color: '#22c55e',
+  timeZone: 'UTC',
+  isPrimary: false,
+  isVisible: true,
+  canWrite: true,
+};
+
+const CAL_MS: Calendar = {
+  id: 'cal-ms',
+  accountId: 'acc2',
+  name: 'Outlook',
+  color: '#0ea5e9',
   timeZone: 'UTC',
   isPrimary: false,
   isVisible: true,
@@ -135,6 +151,28 @@ const TEMPLATE_1: EventTemplate = {
   usageCount: 3,
 };
 
+const ACCOUNT_GOOGLE: ConnectedAccount = {
+  id: 'acc1',
+  provider: 'google',
+  email: 'me@example.com',
+  status: 'active',
+  scopes: [],
+  vipSenders: [],
+  lastSyncedAt: null,
+  createdAt: new Date(2026, 0, 1).toISOString(),
+};
+
+const ACCOUNT_MICROSOFT: ConnectedAccount = {
+  id: 'acc2',
+  provider: 'microsoft',
+  email: 'me@outlook.com',
+  status: 'active',
+  scopes: [],
+  vipSenders: [],
+  lastSyncedAt: null,
+  createdAt: new Date(2026, 0, 1).toISOString(),
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   useSelfEmailsMock.mockReturnValue(new Set<string>(['me@example.com']));
@@ -144,6 +182,7 @@ beforeEach(() => {
   updateEventApiMock.mockResolvedValue({ id: 'ev1' });
   deleteEventApiMock.mockResolvedValue(undefined);
   sendRsvpApiMock.mockResolvedValue({ id: 'ev1' });
+  fetchAccountsMock.mockResolvedValue([ACCOUNT_GOOGLE, ACCOUNT_MICROSOFT]);
 });
 
 // ---------------------------------------------------------------------------
@@ -472,6 +511,89 @@ describe('EventDialog — reminders', () => {
     await screen.findByText('10 min before');
     await user.click(screen.getByRole('button', { name: 'Remove reminder 10 min before' }));
     expect(screen.queryByText('10 min before')).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Conferencing (Task 13 — add-conferencing switch on create, Join row on edit)
+// ---------------------------------------------------------------------------
+
+describe('EventDialog — conferencing', () => {
+  it('shows an "Add video conferencing" switch in create mode', async () => {
+    renderDialog();
+    expect(await screen.findByLabelText('Add video conferencing')).toBeInTheDocument();
+  });
+
+  it('shows Google Meet helper text when the selected calendar belongs to a Google account', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    const toggle = await screen.findByLabelText('Add video conferencing');
+    await user.click(toggle);
+    expect(await screen.findByText(/Google Meet link will be added/i)).toBeInTheDocument();
+  });
+
+  it('shows Teams helper text when the selected calendar belongs to a Microsoft account', async () => {
+    const user = userEvent.setup();
+    renderDialog({ calendars: [CAL_WORK, CAL_PERSONAL, CAL_MS], defaults: { calendarId: 'cal-ms' } });
+    const toggle = await screen.findByLabelText('Add video conferencing');
+    await user.click(toggle);
+    expect(await screen.findByText(/Teams meeting will be added/i)).toBeInTheDocument();
+  });
+
+  it('submits addConferencing: true when the switch is toggled on and the event is created', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    const toggle = await screen.findByLabelText('Add video conferencing');
+    await user.click(toggle);
+    await user.click(screen.getByRole('button', { name: /create event/i }));
+    await waitFor(() => expect(createEventApiMock).toHaveBeenCalledTimes(1));
+    expect(createEventApiMock.mock.calls[0]![0].addConferencing).toBe(true);
+  });
+
+  function baseEvent(overrides: Partial<Event> = {}): Event {
+    return {
+      id: 'ev1',
+      calendarId: 'cal-work',
+      title: 'Standup',
+      description: null,
+      location: null,
+      start: new Date(2026, 6, 8, 9, 0, 0, 0).toISOString(),
+      end: new Date(2026, 6, 8, 9, 30, 0, 0).toISOString(),
+      allDay: false,
+      recurrenceRule: null,
+      attendees: [],
+      conferencing: null,
+      status: 'confirmed',
+      visibility: 'default',
+      reminderMinutes: [],
+      ...overrides,
+    };
+  }
+
+  it('does not show the "Add video conferencing" switch in edit mode', async () => {
+    renderDialog({ event: baseEvent() });
+    await screen.findByLabelText('Event title');
+    expect(screen.queryByLabelText('Add video conferencing')).not.toBeInTheDocument();
+  });
+
+  it('shows a Join row in edit mode when the event has a detected conference', async () => {
+    const event = baseEvent({
+      conferencing: { provider: 'meet', url: 'https://meet.google.com/abc-defg-hij' },
+    });
+    renderDialog({ event });
+    expect(await screen.findByRole('button', { name: /join meet/i })).toBeInTheDocument();
+  });
+
+  it('shows no Join row in edit mode when the event has no detected conference', async () => {
+    renderDialog({ event: baseEvent() });
+    await screen.findByLabelText('Event title');
+    expect(screen.queryByRole('button', { name: /join/i })).not.toBeInTheDocument();
+  });
+
+  it('notes in edit mode that conferencing can only be added at creation time', async () => {
+    renderDialog({ event: baseEvent() });
+    await screen.findByLabelText('Event title');
+    expect(screen.getByText(/only be added when creating an event/i)).toBeInTheDocument();
   });
 });
 

@@ -156,4 +156,42 @@ describe('MonthView', () => {
     expect(onEventClick).toHaveBeenCalledWith(event);
     expect(onDayClick).not.toHaveBeenCalled();
   });
+
+  describe('conference join affordance in the overflow popover', () => {
+    it('shows a Join button next to an overflow event with a detected conference link', async () => {
+      const user = userEvent.setup();
+      const events = Array.from({ length: 5 }, (_, i) =>
+        makeEvent({
+          id: `evt-${i}`,
+          title: `Meeting ${i}`,
+          start: new Date(2026, 0, 14, i, 0, 0).toISOString(),
+          end: new Date(2026, 0, 14, i, 30, 0).toISOString(),
+          location: i === 4 ? 'https://meet.google.com/abc-defg-hij' : null,
+        })
+      );
+      renderMonth({ events });
+      await user.click(screen.getByText('+2 more'));
+      expect(screen.getByRole('button', { name: /join meet/i })).toBeInTheDocument();
+    });
+
+    it('clicking the overflow Join button does not also fire onEventClick', async () => {
+      const user = userEvent.setup();
+      const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+      const events = Array.from({ length: 5 }, (_, i) =>
+        makeEvent({
+          id: `evt-${i}`,
+          title: `Meeting ${i}`,
+          start: new Date(2026, 0, 14, i, 0, 0).toISOString(),
+          end: new Date(2026, 0, 14, i, 30, 0).toISOString(),
+          location: i === 4 ? 'https://meet.google.com/abc-defg-hij' : null,
+        })
+      );
+      const { onEventClick } = renderMonth({ events });
+      await user.click(screen.getByText('+2 more'));
+      await user.click(screen.getByRole('button', { name: /join meet/i }));
+      expect(openSpy).toHaveBeenCalled();
+      expect(onEventClick).not.toHaveBeenCalled();
+      openSpy.mockRestore();
+    });
+  });
 });
