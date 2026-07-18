@@ -10,6 +10,7 @@ import {
   CreditCard,
   Crown,
   ExternalLink,
+  LayoutTemplate,
   Loader2,
   Monitor,
   Moon,
@@ -29,6 +30,7 @@ import type {
   Subscription,
 } from '@calendium/shared';
 
+import { TemplateManager } from '@/components/app/calendar/template-manager';
 import {
   PaywallBanner,
   useBillingPortalMutation,
@@ -83,11 +85,19 @@ import { cn } from '@/lib/utils';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-type SettingsTab = 'accounts' | 'snippets' | 'appearance' | 'mailbox' | 'notifications' | 'billing';
+type SettingsTab =
+  | 'accounts'
+  | 'snippets'
+  | 'templates'
+  | 'appearance'
+  | 'mailbox'
+  | 'notifications'
+  | 'billing';
 
 const KNOWN_TABS: SettingsTab[] = [
   'accounts',
   'snippets',
+  'templates',
   'appearance',
   'mailbox',
   'notifications',
@@ -104,6 +114,7 @@ export default function SettingsPage() {
     () => [
       'accounts',
       'snippets',
+      'templates',
       'appearance',
       'mailbox',
       ...(pushEnabled ? (['notifications'] as SettingsTab[]) : []),
@@ -150,7 +161,8 @@ export default function SettingsPage() {
       <div className="mx-auto max-w-3xl px-6 py-8">
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Accounts, snippets, appearance, mailbox{pushEnabled ? ', notifications' : ''}
+          Accounts, snippets, templates, appearance, mailbox
+          {pushEnabled ? ', notifications' : ''}
           {billingEnabled ? ', and billing' : ''}.
         </p>
 
@@ -162,6 +174,7 @@ export default function SettingsPage() {
           <TabsList>
             <TabsTrigger value="accounts">Accounts</TabsTrigger>
             <TabsTrigger value="snippets">Snippets</TabsTrigger>
+            <TabsTrigger value="templates">Templates</TabsTrigger>
             <TabsTrigger value="appearance">Appearance</TabsTrigger>
             <TabsTrigger value="mailbox">Mailbox</TabsTrigger>
             {pushEnabled && <TabsTrigger value="notifications">Notifications</TabsTrigger>}
@@ -172,6 +185,9 @@ export default function SettingsPage() {
           </TabsContent>
           <TabsContent value="snippets" className="mt-4">
             <SnippetsSection />
+          </TabsContent>
+          <TabsContent value="templates" className="mt-4">
+            <TemplatesSection />
           </TabsContent>
           <TabsContent value="appearance" className="mt-4">
             <AppearanceSection />
@@ -594,6 +610,33 @@ function SnippetsSection() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Templates
+// ---------------------------------------------------------------------------
+
+function TemplatesSection() {
+  const [managerOpen, setManagerOpen] = React.useState(false);
+  return (
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle>Event templates</CardTitle>
+          <CardDescription>
+            Saved defaults ("1:1", "Focus block") you can apply when creating an event.
+          </CardDescription>
+          <CardAction>
+            <Button size="sm" onClick={() => setManagerOpen(true)}>
+              <LayoutTemplate />
+              Manage templates
+            </Button>
+          </CardAction>
+        </CardHeader>
+      </Card>
+      <TemplateManager open={managerOpen} onOpenChange={setManagerOpen} />
     </>
   );
 }

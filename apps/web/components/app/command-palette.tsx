@@ -9,6 +9,7 @@ import {
   Clock,
   FileText,
   Inbox,
+  LayoutTemplate,
   LogOut,
   MailOpen,
   Monitor,
@@ -42,6 +43,7 @@ import { signOut } from '@/lib/auth-client';
 import { fetchSearch } from '@/lib/search-data';
 import { MOD_KEY, useShortcuts } from '@/lib/shortcuts';
 import { teachShortcut } from '@/lib/shortcut-hints';
+import { fetchEventTemplates } from '@/lib/template-data';
 
 /** ⌘K command palette — every Calendium action, one keystroke away. */
 export function CommandPalette() {
@@ -69,6 +71,12 @@ export function CommandPalette() {
     queryKey: ['palette-search', debounced],
     enabled: open && debounced.length >= 2,
     queryFn: () => fetchSearch(debounced),
+  });
+
+  const { data: templates } = useQuery({
+    queryKey: ['event-templates'],
+    enabled: open,
+    queryFn: fetchEventTemplates,
   });
 
   useShortcuts([
@@ -247,6 +255,26 @@ export function CommandPalette() {
             Go to Settings
           </CommandItem>
         </CommandGroup>
+
+        {templates && templates.length > 0 && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Templates">
+              {templates.slice(0, 5).map((template) => (
+                <CommandItem
+                  key={template.id}
+                  value={`template ${template.name} ${template.title}`}
+                  onSelect={() =>
+                    run(() => router.push(`/calendar?template=${template.id}`))
+                  }
+                >
+                  <LayoutTemplate />
+                  <span className="truncate">Use template: {template.name}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </>
+        )}
 
         <CommandSeparator />
 

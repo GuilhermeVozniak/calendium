@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Clock,
   Globe,
+  LayoutTemplate,
   Plus,
   X,
 } from 'lucide-react';
@@ -21,6 +22,7 @@ import { MiniMonth } from '@/components/app/calendar/mini-month';
 import { MonthView } from '@/components/app/calendar/month-view';
 import { QuarterView } from '@/components/app/calendar/quarter-view';
 import { QuickAddBar } from '@/components/app/calendar/quick-add-bar';
+import { TemplateManager } from '@/components/app/calendar/template-manager';
 import { TimeGrid } from '@/components/app/calendar/time-grid';
 import { YearView } from '@/components/app/calendar/year-view';
 import { EventDialog } from '@/components/app/event-dialog';
@@ -42,7 +44,9 @@ import { groupCalendarsByAccount } from '@/lib/calendar-accounts';
 import { fetchBusyEvents, fetchCalendars, fetchEvents, patchCalendar } from '@/lib/calendar-data';
 import type { CalendarView } from '@/lib/calendar-views';
 import { rangeLabel, stepAnchor, viewRange } from '@/lib/calendar-views';
+import { nextHalfHour } from '@/lib/quick-add';
 import { fetchAccounts } from '@/lib/settings-data';
+import { applyTemplate, fetchEventTemplates, recordTemplateUsage } from '@/lib/template-data';
 import { getPinnedTimeZones, setPinnedTimeZones, zoneCaption } from '@/lib/timezones';
 
 interface EventDialogState {
@@ -63,6 +67,7 @@ export default function CalendarPage() {
     defaults: null,
   });
   const [availabilityOpen, setAvailabilityOpen] = React.useState(false);
+  const [templateManagerOpen, setTemplateManagerOpen] = React.useState(false);
 
   // Pinned world-clock timezones for the day/week grid gutters. Persisted to
   // localStorage (lib/timezones.ts) rather than /v1/prefs, which today only
@@ -193,6 +198,27 @@ export default function CalendarPage() {
     },
     [defaultCalendarId]
   );
+
+  // Command palette "Templates" entries deep-link here via
+  // /calendar?template=<id> (mirrors the existing ?d= day deep-link). Wait for
+  // calendars to load first so openCreate's "primary writable calendar"
+  // fallback is resolved by the time it fires.
+  const processedTemplateRef = React.useRef(false);
+  React.useEffect(() => {
+    if (processedTemplateRef.current || calendars.length === 0) return;
+    const templateId = new URLSearchParams(window.location.search).get('template');
+    if (!templateId) return;
+    processedTemplateRef.current = true;
+    fetchEventTemplates()
+      .then((templates) => {
+        const template = templates.find((t) => t.id === templateId);
+        if (!template) return;
+        recordTemplateUsage(template.id);
+        openCreate(applyTemplate(template, nextHalfHour()));
+      })
+      .catch(() => {});
+    window.history.replaceState(null, '', window.location.pathname + window.location.hash);
+  }, [calendars, openCreate]);
 
   const handleSlotClick = React.useCallback(
     (slotStart: Date) => {
@@ -468,6 +494,15 @@ export default function CalendarPage() {
               ))}
             </div>
           </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="justify-start gap-2 px-2 text-muted-foreground"
+            onClick={() => setTemplateManagerOpen(true)}
+          >
+            <LayoutTemplate className="size-4" />
+            Templates
+          </Button>
           <div className="mt-auto flex items-center gap-2 border-t pt-3 text-xs text-muted-foreground">
             <Globe className="size-3.5 shrink-0" />
             <span className="truncate" title={timeZone}>
@@ -542,6 +577,7 @@ export default function CalendarPage() {
         defaults={dialog.defaults}
       />
       <AvailabilityDialog open={availabilityOpen} onOpenChange={setAvailabilityOpen} />
+      <TemplateManager open={templateManagerOpen} onOpenChange={setTemplateManagerOpen} />
     </div>
   );
 }

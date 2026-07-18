@@ -1,4 +1,4 @@
-import type { Attendee, Calendar, Event } from '@calendium/shared';
+import type { Attendee, Calendar, Event, EventTemplate } from '@calendium/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -33,6 +33,19 @@ const useSelfEmailsMock = vi.fn();
 vi.mock('@/lib/use-identity', () => ({
   useSelfEmails: () => useSelfEmailsMock(),
 }));
+
+const fetchEventTemplatesMock = vi.fn();
+const createEventTemplateApiMock = vi.fn();
+const recordTemplateUsageMock = vi.fn();
+vi.mock('@/lib/template-data', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/template-data')>();
+  return {
+    ...actual,
+    fetchEventTemplates: (...args: unknown[]) => fetchEventTemplatesMock(...args),
+    createEventTemplateApi: (...args: unknown[]) => createEventTemplateApiMock(...args),
+    recordTemplateUsage: (...args: unknown[]) => recordTemplateUsageMock(...args),
+  };
+});
 
 const toastSuccess = vi.fn();
 const toastError = vi.fn();
@@ -101,9 +114,27 @@ function fmt(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+const TEMPLATE_1: EventTemplate = {
+  id: 'tpl-1',
+  name: '1:1',
+  title: '1:1 with teammate',
+  description: 'Weekly sync',
+  location: 'Zoom',
+  durationMinutes: 45,
+  allDay: false,
+  calendarId: 'cal-personal',
+  attendeeEmails: ['teammate@example.com'],
+  addConferencing: true,
+  reminderMinutes: [10, 60],
+  recurrenceRule: 'FREQ=WEEKLY',
+  usageCount: 3,
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   useSelfEmailsMock.mockReturnValue(new Set<string>(['me@example.com']));
+  fetchEventTemplatesMock.mockResolvedValue([TEMPLATE_1]);
+  createEventTemplateApiMock.mockResolvedValue({ ...TEMPLATE_1, id: 'tpl-new' });
   createEventApiMock.mockResolvedValue({ id: 'ev-new' });
   updateEventApiMock.mockResolvedValue({ id: 'ev1' });
   deleteEventApiMock.mockResolvedValue(undefined);
@@ -503,5 +534,125 @@ describe('EventDialog — RSVP', () => {
     await user.click(screen.getByRole('button', { name: 'Yes' }));
     await waitFor(() => expect(sendRsvpApiMock).toHaveBeenCalledWith('ev1', 'accepted'));
     expect(toastSuccess).toHaveBeenCalledWith('RSVP sent');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Start from template (create mode only)
+// ---------------------------------------------------------------------------
+
+describe('EventDialog — start from template', () => {
+  it('does not show the template select in edit mode', async () => {
+    const event: Event = {
+      id: 'ev1',
+      calendarId: 'cal-work',
+      title: 'Standup',
+      description: null,
+      location: null,
+      start: new Date(2026, 6, 8, 9, 0, 0, 0).toISOString(),
+      end: new Date(2026, 6, 8, 9, 30, 0, 0).toISOString(),
+      allDay: false,
+      recurrenceRule: null,
+      attendees: [],
+      conferencing: null,
+      status: 'confirmed',
+      visibility: 'default',
+      reminderMinutes: [],
+    };
+    renderDialog({ event });
+    await screen.findByLabelText('Event title');
+    expect(
+      screen.queryByRole('combobox', { name: 'Start from template' })
+    ).not.toBeInTheDocument();
+  });
+
+  it('prefills all fields from the selected template, anchored at the dialog\'s pending slot time', async () => {
+    const user = userEvent.setup();
+    const slotStart = new Date(2026, 6, 10, 15, 0, 0, 0);
+    renderDialog({
+      defaults: {
+        start: slotStart.toISOString(),
+        end: new Date(slotStart.getTime() + 30 * 60_000).toISOString(),
+      },
+    });
+
+    const select = await screen.findByRole('combobox', { name: 'Start from template' });
+    await user.click(select);
+    await user.click(await screen.findByRole('option', { name: '1:1' }));
+
+    await user.click(screen.getByRole('button', { name: /create event/i }));
+    await waitFor(() => expect(createEventApiMock).toHaveBeenCalledTimes(1));
+    const payload = createEventApiMock.mock.calls[0]![0];
+
+    expect(payload.title).toBe('1:1 with teammate');
+    expect(payload.location).toBe('Zoom');
+    expect(payload.description).toBe('Weekly sync');
+    expect(payload.start).toBe(slotStart.toISOString());
+    expect(payload.end).toBe(new Date(slotStart.getTime() + 45 * 60_000).toISOString());
+    expect(payload.attendeeEmails).toEqual(['teammate@example.com']);
+    expect(payload.addConferencing).toBe(true);
+    expect(payload.reminderMinutes).toEqual([10, 60]);
+    expect(payload.recurrenceRule).toBe('FREQ=WEEKLY');
+    expect(payload.calendarId).toBe('cal-personal');
+
+    expect(recordTemplateUsageMock).toHaveBeenCalledWith('tpl-1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Save as template
+// ---------------------------------------------------------------------------
+
+describe('EventDialog — save as template', () => {
+  it('posts the current form as an EventTemplateInput with durationMinutes derived from start/end', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    const titleInput = await screen.findByLabelText('Event title');
+    await user.type(titleInput, 'Focus block');
+    await user.type(screen.getByLabelText('Location'), 'Home office');
+
+    await user.click(screen.getByRole('button', { name: /save as template/i }));
+
+    await waitFor(() => expect(createEventTemplateApiMock).toHaveBeenCalledTimes(1));
+    const input = createEventTemplateApiMock.mock.calls[0]![0];
+    expect(input.name).toBe('Focus block');
+    expect(input.title).toBe('Focus block');
+    expect(input.location).toBe('Home office');
+    expect(input.durationMinutes).toBe(30);
+    expect(input.calendarId).toBe('cal-work');
+    expect(toastSuccess).toHaveBeenCalledWith('Saved as template');
+  });
+
+  it('is available in edit mode too', async () => {
+    const event: Event = {
+      id: 'ev1',
+      calendarId: 'cal-work',
+      title: 'Standup',
+      description: null,
+      location: null,
+      start: new Date(2026, 6, 8, 9, 0, 0, 0).toISOString(),
+      end: new Date(2026, 6, 8, 9, 30, 0, 0).toISOString(),
+      allDay: false,
+      recurrenceRule: null,
+      attendees: [],
+      conferencing: null,
+      status: 'confirmed',
+      visibility: 'default',
+      reminderMinutes: [],
+    };
+    renderDialog({ event });
+    await screen.findByLabelText('Event title');
+    expect(screen.getByRole('button', { name: /save as template/i })).toBeInTheDocument();
+  });
+
+  it('surfaces a save-as-template failure via a toast without silently succeeding', async () => {
+    createEventTemplateApiMock.mockRejectedValue(new Error('network down'));
+    const user = userEvent.setup();
+    renderDialog();
+    await screen.findByLabelText('Event title');
+    await user.click(screen.getByRole('button', { name: /save as template/i }));
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith('Could not save the template')
+    );
   });
 });
