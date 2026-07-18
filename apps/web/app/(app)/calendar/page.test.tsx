@@ -41,10 +41,11 @@ vi.mock('@/components/app/calendar/template-manager', () => ({
   TemplateManager: () => null,
 }));
 vi.mock('@/components/app/event-dialog', () => ({
-  EventDialog: ({ open }: { open: boolean }) =>
+  EventDialog: ({ open, defaults }: { open: boolean; defaults: { title?: string } | null }) =>
     open ? (
       <div role="dialog" data-state="open" data-testid="event-dialog">
         Event dialog
+        {defaults?.title && <span data-testid="event-dialog-title">{defaults.title}</span>}
       </div>
     ) : null,
 }));
@@ -95,6 +96,13 @@ vi.mock('@/lib/template-data', () => ({
   fetchEventTemplates: (...args: unknown[]) => fetchEventTemplatesMock(...args),
   applyTemplate: (...args: unknown[]) => applyTemplateMock(...args),
   recordTemplateUsage: (...args: unknown[]) => recordTemplateUsageMock(...args),
+}));
+
+const toastErrorMock = vi.fn();
+vi.mock('sonner', () => ({
+  toast: {
+    error: (...args: unknown[]) => toastErrorMock(...args),
+  },
 }));
 
 const CALENDAR_A = {
@@ -267,20 +275,111 @@ describe('CalendarPage — cross-route palette commands', () => {
     await waitFor(() => expect(screen.getByTestId('availability-dialog')).toBeInTheDocument());
   });
 
-  it('toggles every calendar in the set off, then back on, for a "toggle-set" command', async () => {
-    fetchCalendarSetsMock.mockResolvedValue([
-      { id: 'set-1', name: 'Work', calendarIds: ['cal-a', 'cal-b'], position: 0 },
-    ]);
-    patchCalendarMock.mockImplementation((id: string, patch: { isVisible: boolean }) =>
-      Promise.resolve({ ...(id === 'cal-a' ? CALENDAR_A : CALENDAR_B), ...patch })
-    );
+  it('applies a set via activateSet (exclusive activation, not an additive toggle) for a "toggle-set" command', async () => {
+    const SET = { id: 'set-1', name: 'Work', calendarIds: ['cal-a', 'cal-b'], position: 0 };
+    fetchCalendarSetsMock.mockResolvedValue([SET]);
     await renderReady();
 
     dispatchCalendarCommand({ type: 'toggle-set', setId: 'set-1' });
 
     await waitFor(() => {
-      expect(patchCalendarMock).toHaveBeenCalledWith('cal-a', { isVisible: false });
-      expect(patchCalendarMock).toHaveBeenCalledWith('cal-b', { isVisible: false });
+      expect(activateSetMock).toHaveBeenCalledWith(SET, [CALENDAR_A, CALENDAR_B]);
     });
+  });
+
+  it('ignores an unknown set id without throwing', async () => {
+    fetchCalendarSetsMock.mockResolvedValue([
+      { id: 'set-1', name: 'Work', calendarIds: ['cal-a'], position: 0 },
+    ]);
+    await renderReady();
+
+    dispatchCalendarCommand({ type: 'toggle-set', setId: 'does-not-exist' });
+
+    await waitFor(() => expect(fetchCalendarSetsMock).toHaveBeenCalled());
+    expect(activateSetMock).not.toHaveBeenCalled();
+  });
+
+  it('toasts an error and does not crash when applying a set fails', async () => {
+    fetchCalendarSetsMock.mockResolvedValue([
+      { id: 'set-1', name: 'Work', calendarIds: ['cal-a'], position: 0 },
+    ]);
+    activateSetMock.mockRejectedValueOnce(new Error('network'));
+    await renderReady();
+
+    dispatchCalendarCommand({ type: 'toggle-set', setId: 'set-1' });
+
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith('Could not apply the set'));
+  });
+
+  it('toasts an error when loading a template for a "new-from-template" command fails', async () => {
+    fetchEventTemplatesMock.mockRejectedValueOnce(new Error('network'));
+    await renderReady();
+
+    dispatchCalendarCommand({ type: 'new-from-template', templateId: 'tpl-1' });
+
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith('Could not load templates'));
+    expect(screen.queryByTestId('event-dialog')).not.toBeInTheDocument();
+  });
+});
+
+describe('CalendarPage — ?template= deep link', () => {
+  const TEMPLATE = {
+    id: 'tpl-1',
+    name: '1:1',
+    title: '1:1 with teammate',
+    description: '',
+    location: '',
+    durationMinutes: 30,
+    allDay: false,
+    calendarId: null,
+    attendeeEmails: [],
+    addConferencing: false,
+    reminderMinutes: [],
+    recurrenceRule: null,
+    usageCount: 0,
+  };
+
+  afterEach(() => {
+    window.history.pushState({}, '', '/calendar');
+  });
+
+  it('mounts with a known ?template= id: opens the dialog prefilled and strips the param', async () => {
+    window.history.pushState({}, '', '/calendar?template=tpl-1');
+    fetchEventTemplatesMock.mockResolvedValue([TEMPLATE]);
+    applyTemplateMock.mockReturnValue({ title: TEMPLATE.title });
+
+    await renderReady();
+
+    await waitFor(() => expect(screen.getByTestId('event-dialog')).toBeInTheDocument());
+    expect(screen.getByTestId('event-dialog-title')).toHaveTextContent(TEMPLATE.title);
+    expect(recordTemplateUsageMock).toHaveBeenCalledWith('tpl-1');
+    expect(window.location.search).toBe('');
+  });
+
+  it('mounts with an unknown ?template= id: no dialog opens, the param is stripped, and it does not crash', async () => {
+    window.history.pushState({}, '', '/calendar?template=does-not-exist');
+    fetchEventTemplatesMock.mockResolvedValue([TEMPLATE]);
+
+    await renderReady();
+
+    await waitFor(() => expect(window.location.search).toBe(''));
+    expect(screen.queryByTestId('event-dialog')).not.toBeInTheDocument();
+  });
+
+  it('does not refire the ?template= effect on rerender (once-guard)', async () => {
+    window.history.pushState({}, '', '/calendar?template=tpl-1');
+    fetchEventTemplatesMock.mockResolvedValue([TEMPLATE]);
+
+    await renderReady();
+    await waitFor(() => expect(fetchEventTemplatesMock).toHaveBeenCalledTimes(1));
+
+    // A rerender-causing state update (view switch, dispatched via the
+    // command bus rather than a raw keydown - the event dialog opened above
+    // suppresses keyboard shortcuts while open) must not refire the
+    // mount-once ?template= effect.
+    dispatchCalendarCommand({ type: 'view', view: 'month' });
+    await waitFor(() => expect(screen.getByTestId('view-month')).toBeInTheDocument());
+
+    expect(fetchEventTemplatesMock).toHaveBeenCalledTimes(1);
   });
 });

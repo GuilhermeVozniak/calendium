@@ -40,13 +40,11 @@ test.describe('Calendar', () => {
     // Wait for the event dialog to open.
     await page.waitForTimeout(500);
 
-    // Verify the dialog opened.
+    // Verify the dialog opened and create the event.
     const titleInput = page.getByLabel('Event title');
-    if (await titleInput.isVisible({ timeout: 3000 }).catch(() => false)) {
-      // Create the event if dialog opened.
-      await page.getByRole('button', { name: 'Create event' }).click();
-      await expect(page.getByText('Event created')).toBeVisible({ timeout: 3000 });
-    }
+    await expect(titleInput).toBeVisible({ timeout: 3000 });
+    await page.getByRole('button', { name: 'Create event' }).click();
+    await expect(page.getByText('Event created')).toBeVisible({ timeout: 3000 });
   });
 
   test('view switching with d/w/m/q/y/a keys', async ({ page }) => {
@@ -101,46 +99,34 @@ test.describe('Calendar', () => {
     await page.goto('/calendar');
     await expect(page.getByRole('button', { name: 'New event' })).toBeVisible();
 
-    // The mock data has "Daily standup" on Monday at 9:30 AM for 15 minutes.
-    // Use the quick-add to create an overlapping event.
-    const quickAddInput = page.getByLabel('Quick add event');
-    await quickAddInput.fill('conflict meeting tomorrow 9:30am');
+    // New events default to "next half hour from now" (lib/quick-add.ts's
+    // nextHalfHour), which always falls inside the deterministic "Live team
+    // sync" seed's now -> now+2h window (lib/calendar-mock.ts) - so opening
+    // the New event dialog is guaranteed to conflict, regardless of what
+    // day/time the suite runs.
+    await page.getByRole('button', { name: 'New event' }).click();
 
-    // Check if a conflict warning appears in the preview or after submission.
-    // For now, just verify we can create it and submission works.
-    await quickAddInput.press('Enter');
-
-    // The dialog should open; the conflict detection happens at the backend.
     const titleInput = page.getByLabel('Event title');
-    await expect(titleInput).toBeVisible({ timeout: 5000 });
+    await expect(titleInput).toBeVisible();
 
-    // Submit the event
-    await page.getByRole('button', { name: 'Create event' }).click();
-    await page.waitForTimeout(500);
+    const conflictAlert = page.getByRole('alert');
+    await expect(conflictAlert).toBeVisible({ timeout: 5000 });
+    await expect(conflictAlert).toContainText('Live team sync');
   });
 
   test('join button appears on conference event', async ({ page }) => {
     await page.goto('/calendar');
 
-    // The mock data has "Daily standup" with Google Meet on Monday at 9:30 AM.
-    const standupEvent = page.getByText('Daily standup').first();
-    await expect(standupEvent).toBeVisible({ timeout: 3000 });
+    // "Live team sync" is a deterministic, always-in-progress seed
+    // (lib/calendar-mock.ts's now -> now+2h event) so this assertion doesn't
+    // depend on what day/time the suite runs.
+    const liveSyncEvent = page.getByText('Live team sync').first();
+    await expect(liveSyncEvent).toBeVisible({ timeout: 3000 });
+    await liveSyncEvent.click();
 
-    // Click on the event to open its details.
-    await standupEvent.click();
-
-    // The event detail should appear with conferencing information.
-    // Look for the Google Meet link or any join affordance.
-    await page.waitForTimeout(300);
-    const meetLink = page.locator('a[href*="meet.google.com"]').first();
-    const joinVisible = await meetLink.isVisible().catch(() => false);
-
-    // If the meet link is visible, the test passes.
-    // Otherwise, verify the event dialog is at least open showing the conference info.
-    if (!joinVisible) {
-      const dialogContent = page.locator('[role="dialog"]').first();
-      await expect(dialogContent).toBeVisible({ timeout: 3000 });
-    }
+    const joinButton = page.getByRole('button', { name: /join/i });
+    await expect(joinButton).toBeVisible({ timeout: 3000 });
+    await expect(joinButton).toHaveAttribute('data-joinable', 'true');
   });
 
   test('apply event template via keyboard shortcut', async ({ page }) => {
@@ -155,47 +141,35 @@ test.describe('Calendar', () => {
 
     // Search for "1:1" template which is seeded in the mock data.
     await input.fill('1:1');
-    await page.waitForTimeout(300);
+    await expect(page.getByText('New event from template: 1:1')).toBeVisible();
 
     // Use keyboard to select and activate the template (press Enter after search appears).
     await input.press('Enter');
-    await page.waitForTimeout(500);
 
-    // Verify the event dialog opened with template values applied.
+    // The event dialog must open with the template's title prefilled.
     const titleInput = page.getByLabel('Event title');
-    const isOpen = await titleInput.isVisible({ timeout: 5000 }).catch(() => false);
-    if (isOpen) {
-      // Calendar page is working and template can be applied.
-      await page.keyboard.press('Escape');
-    }
+    await expect(titleInput).toBeVisible({ timeout: 5000 });
+    await expect(titleInput).toHaveValue('1:1 with teammate');
   });
 
   test('toggle calendar peek from mail page with mod+shift+k', async ({ page }) => {
-    // Navigate to mail page first.
+    // The peek panel is only shown at the xl breakpoint (Tailwind's
+    // "hidden ... xl:flex" on CalendarPeek) - a viewport below that renders
+    // it present-but-hidden, which would make this assertion pass vacuously.
+    await page.setViewportSize({ width: 1440, height: 900 });
+
     await page.goto('/mail');
     await expect(page.getByRole('button', { name: /Compose/i })).toBeVisible();
 
-    // Press Mod+Shift+K to toggle calendar peek open.
     const isMac = await page.evaluate(() => /Mac|iPhone|iPad|iPod/.test(navigator.platform));
-    if (isMac) {
-      await page.keyboard.press('Meta+Shift+k');
-    } else {
-      await page.keyboard.press('Control+Shift+k');
-    }
+    const shortcut = isMac ? 'Meta+Shift+k' : 'Control+Shift+k';
 
-    // The calendar peek panel should appear (look for the time-grid or day indicators).
-    await page.waitForTimeout(300);
-    const peekContainer = page.locator('[class*="peek"]').first();
-    const isOpen = await peekContainer.isVisible().catch(() => false);
+    await page.keyboard.press(shortcut);
 
-    if (isOpen) {
-      // Press Mod+Shift+K again to close the peek.
-      if (isMac) {
-        await page.keyboard.press('Meta+Shift+k');
-      } else {
-        await page.keyboard.press('Control+Shift+k');
-      }
-      await page.waitForTimeout(300);
-    }
+    const peek = page.getByTestId('calendar-peek');
+    await expect(peek).toBeVisible();
+
+    await page.keyboard.press(shortcut);
+    await expect(peek).not.toBeVisible();
   });
 });

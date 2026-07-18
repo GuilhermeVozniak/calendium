@@ -327,6 +327,28 @@ function seed(): MockStore {
     };
   });
 
+  // Deterministic "in progress" meeting so e2e specs can assert the Join
+  // button / conflict-warning reliably regardless of what day or time the
+  // suite runs - the day/hour-based seeds above only guarantee an event
+  // exists somewhere in the current week, not that any of them are
+  // happening (or overlap a freshly created event) right now.
+  events.push({
+    id: 'evt-mock-live-sync',
+    calendarId: 'cal-work',
+    title: 'Live team sync',
+    description: null,
+    location: null,
+    start: new Date().toISOString(),
+    end: addMinutes(new Date(), 120).toISOString(),
+    allDay: false,
+    recurrenceRule: null,
+    attendees: [],
+    conferencing: { provider: 'meet', url: 'https://meet.google.com/mock-demo' },
+    status: 'confirmed',
+    visibility: 'default',
+    reminderMinutes: [10],
+  });
+
   const templates: EventTemplate[] = [
     {
       id: 'tpl-1-1',

@@ -331,22 +331,20 @@ describe('CommandPalette — templates', () => {
     usageCount: 1,
   };
 
-  it('does not show a Templates group when there are no templates', async () => {
-    renderPalette();
-    await openPalette();
-    expect(screen.queryByText(/Use template:/)).not.toBeInTheDocument();
-  });
-
-  it('lists templates and navigates to /calendar?template=<id> on selection', async () => {
+  // The old "Templates" group's "Use template: <name>" rows deep-linked via
+  // a bare router.push('/calendar?template=<id>') - dead on /calendar (the
+  // page's mount-once effect never re-fires) and a URL landmine (the param
+  // stuck around, replayed on reload). It was deleted outright: the
+  // "Calendar" group's bus-based "New event from template: <name>" rows
+  // (see the 'calendar templates & sets' describe below) already cover the
+  // feature cross-route via runCalendarCommand/dispatchCalendarCommand.
+  it('never renders the old "Use template:" rows, even when templates exist', async () => {
     fetchEventTemplatesMock.mockResolvedValue([TEMPLATE]);
-    const user = userEvent.setup();
     renderPalette();
     await openPalette();
-
-    const item = await screen.findByText('Use template: 1:1');
-    await user.click(item);
-
-    expect(pushMock).toHaveBeenCalledWith('/calendar?template=tpl-1');
+    await screen.findByText('New event from template: 1:1');
+    expect(screen.queryByText(/^Use template:/)).not.toBeInTheDocument();
+    expect(pushMock).not.toHaveBeenCalledWith(expect.stringContaining('?template='));
   });
 });
 
@@ -447,7 +445,7 @@ describe('CommandPalette — calendar templates & sets', () => {
     renderPalette();
     await openPalette();
     expect(screen.queryByText(/New event from template:/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Calendar set:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Apply calendar set:/)).not.toBeInTheDocument();
   });
 
   it('lists a "New event from template" row per template and dispatches new-from-template', async () => {
@@ -466,7 +464,7 @@ describe('CommandPalette — calendar templates & sets', () => {
     unsubscribe();
   });
 
-  it('lists a "Calendar set" row per set and dispatches toggle-set', async () => {
+  it('lists an "Apply calendar set" row per set and dispatches toggle-set', async () => {
     fetchCalendarSetsMock.mockResolvedValue([SET]);
     currentPathname = '/calendar';
     const received: CalendarCommand[] = [];
@@ -475,7 +473,7 @@ describe('CommandPalette — calendar templates & sets', () => {
     renderPalette();
     await openPalette();
 
-    const item = await screen.findByText('Calendar set: Work');
+    const item = await screen.findByText('Apply calendar set: Work');
     await user.click(item);
 
     expect(received).toEqual([{ type: 'toggle-set', setId: 'set-1' }]);
