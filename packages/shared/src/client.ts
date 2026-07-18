@@ -77,10 +77,6 @@ export class ApiRequestError extends Error {
  * Typed client for the Calendium REST API (see docs/architecture.md).
  * Used by web, desktop, and mobile apps.
  */
-/**
- * Typed client for the Calendium REST API (see docs/architecture.md).
- * Used by web, desktop, and mobile apps.
- */
 export class ApiClient {
   constructor(private readonly opts: ApiClientOptions) {}
 
