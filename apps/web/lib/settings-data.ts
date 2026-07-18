@@ -53,6 +53,36 @@ export async function setVipSendersApi(
   }
 }
 
+/** Replaces the account's rich signature, appended at send (PUT .../signature). */
+export async function setSignatureApi(
+  accountId: string,
+  signatureHtml: string
+): Promise<ConnectedAccount> {
+  try {
+    return await getApiClient().setSignature(accountId, signatureHtml);
+  } catch (err) {
+    if (DEMO_MODE) return settingsMock.setSignature(accountId, signatureHtml);
+    throw err;
+  }
+}
+
+/**
+ * Replaces the account's auto-BCC list, applied on every send (PUT
+ * .../auto-bcc). Outside demo mode a 400 (invalid address) propagates as an
+ * ApiRequestError so the UI can surface it inline next to the chip input.
+ */
+export async function setAutoBccApi(
+  accountId: string,
+  autoBcc: string[]
+): Promise<ConnectedAccount> {
+  try {
+    return await getApiClient().setAutoBcc(accountId, autoBcc);
+  } catch (err) {
+    if (DEMO_MODE) return settingsMock.setAutoBcc(accountId, autoBcc);
+    throw err;
+  }
+}
+
 export async function fetchSnippets(): Promise<Snippet[]> {
   try {
     return await getApiClient().listSnippets();
