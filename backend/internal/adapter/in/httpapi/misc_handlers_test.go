@@ -76,6 +76,48 @@ func TestHandleAiCompose(t *testing.T) {
 			t.Fatalf("status = %d, want 400", rec.Code)
 		}
 	})
+
+	t.Run("editing action forwards draftId", func(t *testing.T) {
+		h := newHarness(t)
+		h.ai.ret = domain.AiComposeResponse{Text: "shortened", Model: "m1"}
+		rec := h.authed(http.MethodPost, "/v1/ai/compose", jsonBody(t, map[string]string{"action": "shorten", "draftId": "d1"}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.ai.gotReq.Action != domain.AiShorten {
+			t.Fatalf("gotReq.Action = %q, want shorten", h.ai.gotReq.Action)
+		}
+		if h.ai.gotReq.DraftID != "d1" {
+			t.Fatalf("gotReq.DraftID = %q, want d1", h.ai.gotReq.DraftID)
+		}
+	})
+
+	t.Run("change_tone forwards tone", func(t *testing.T) {
+		h := newHarness(t)
+		h.ai.ret = domain.AiComposeResponse{Text: "retoned", Model: "m1"}
+		rec := h.authed(http.MethodPost, "/v1/ai/compose", jsonBody(t, map[string]string{"action": "change_tone", "draftId": "d1", "tone": "more formal"}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.ai.gotReq.Action != domain.AiChangeTone {
+			t.Fatalf("gotReq.Action = %q, want change_tone", h.ai.gotReq.Action)
+		}
+		if h.ai.gotReq.Tone != "more formal" {
+			t.Fatalf("gotReq.Tone = %q, want %q", h.ai.gotReq.Tone, "more formal")
+		}
+	})
+
+	t.Run("editing action validation error mapped to 400", func(t *testing.T) {
+		h := newHarness(t)
+		h.ai.err = domain.ErrValidation
+		rec := h.authed(http.MethodPost, "/v1/ai/compose", jsonBody(t, map[string]string{"action": "shorten"}))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if got := decodeErr(t, rec); got.Code != "validation_failed" {
+			t.Fatalf("code = %q, want validation_failed", got.Code)
+		}
+	})
 }
 
 func TestHandleRegisterDevice(t *testing.T) {
