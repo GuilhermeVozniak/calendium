@@ -9,6 +9,7 @@ const mockUpdateDraft = jest.fn();
 const mockSendDraft = jest.fn();
 const mockAiCompose = jest.fn();
 const mockAiEditDraft = jest.fn();
+const mockGetSendSuggestion = jest.fn();
 jest.mock('@/lib/api', () => ({
   api: {
     listAccounts: (...args: unknown[]) => mockListAccounts(...args),
@@ -17,6 +18,7 @@ jest.mock('@/lib/api', () => ({
     sendDraft: (...args: unknown[]) => mockSendDraft(...args),
     aiCompose: (...args: unknown[]) => mockAiCompose(...args),
     aiEditDraft: (...args: unknown[]) => mockAiEditDraft(...args),
+    getSendSuggestion: (...args: unknown[]) => mockGetSendSuggestion(...args),
   },
 }));
 
@@ -71,7 +73,15 @@ async function pressAlertOption(label: string) {
 beforeEach(() => {
   jest.clearAllMocks();
   mockUseServerConfig.mockReturnValue({ config: AI_ENABLED_CONFIG });
-  mockListAccounts.mockResolvedValue([{ id: 'acct_1', email: 'you@example.com' }]);
+  mockListAccounts.mockResolvedValue([
+    { id: 'acct_1', email: 'you@example.com', signatureHtml: '', autoBcc: [] },
+  ]);
+  // Default: no Smart Send suggestion (thin/no open history) — the honest
+  // "not enough data yet" outcome most recipients hit; individual tests
+  // override this to exercise the suggestion line itself.
+  mockGetSendSuggestion.mockRejectedValue(
+    new ApiRequestError(404, 'not_found', 'Not enough open history yet.')
+  );
   lastAlertButtons = undefined;
   alertSpy = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
     lastAlertButtons = buttons as typeof lastAlertButtons;
@@ -190,5 +200,90 @@ describe('ComposeScreen — AI edit action sheet', () => {
       "You've used today's AI budget — try again tomorrow."
     );
     expect(screen.getByDisplayValue('Thanks for the update.')).toBeTruthy();
+  });
+});
+
+describe('ComposeScreen — signature auto-append', () => {
+  it("appends the account's plain-text signature to the body once the account resolves", async () => {
+    mockListAccounts.mockResolvedValue([
+      { id: 'acct_1', email: 'you@example.com', signatureHtml: '<p>Best,<br/>Jordan</p>', autoBcc: [] },
+    ]);
+
+    await renderScreen();
+    await flush();
+
+    expect(screen.getByDisplayValue('Best,\nJordan')).toBeTruthy();
+  });
+
+  it('does not re-append the signature on later body edits (fires once only)', async () => {
+    mockListAccounts.mockResolvedValue([
+      { id: 'acct_1', email: 'you@example.com', signatureHtml: '<p>Best,<br/>Jordan</p>', autoBcc: [] },
+    ]);
+    mockAiCompose.mockResolvedValue({ text: 'Hello there!', model: 'gpt-mock' });
+
+    await renderScreen();
+    await flush();
+
+    expect(screen.getByDisplayValue('Best,\nJordan')).toBeTruthy();
+
+    await fireEvent.press(screen.getByText('AI draft'));
+    await flush();
+
+    // The AI response replaces the body outright; the signature-append effect
+    // must not fire a second time and re-add the signature underneath it.
+    expect(screen.getByDisplayValue('Hello there!')).toBeTruthy();
+  });
+
+  it('does not append anything when the account has no signature set', async () => {
+    await renderScreen();
+    await flush();
+
+    expect(screen.getByPlaceholderText('Write your message…').props.value).toBe('');
+  });
+});
+
+describe('ComposeScreen — Smart Send suggestion', () => {
+  it('shows a resolution-gated Smart Send line once a recipient with open history is entered', async () => {
+    mockGetSendSuggestion.mockResolvedValue({
+      email: 'sarah@acme.com',
+      suggestedAt: new Date('2026-07-20T14:00:00Z').toISOString(),
+      utcOffsetHours: -5,
+      confidence: 0.8,
+      sampleSize: 12,
+    });
+
+    await renderScreen();
+    await flush();
+
+    expect(screen.queryByText(/Smart Send/)).toBeNull();
+
+    await fireEvent.changeText(screen.getByPlaceholderText('To'), 'sarah@acme.com');
+    await flush();
+
+    expect(mockGetSendSuggestion).toHaveBeenCalledWith('sarah@acme.com');
+    expect(screen.getByText(/Smart Send/)).toBeTruthy();
+    expect(screen.getByText(/12 past opens/)).toBeTruthy();
+  });
+
+  it('shows no suggestion (no error alert) for a recipient with too little history (404)', async () => {
+    await renderScreen();
+    await flush();
+
+    await fireEvent.changeText(screen.getByPlaceholderText('To'), 'newperson@example.com');
+    await flush();
+
+    expect(mockGetSendSuggestion).toHaveBeenCalledWith('newperson@example.com');
+    expect(screen.queryByText(/Smart Send/)).toBeNull();
+    expect(alertSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not query until the recipient looks like a well-formed email address', async () => {
+    await renderScreen();
+    await flush();
+
+    await fireEvent.changeText(screen.getByPlaceholderText('To'), 'sarah');
+    await flush();
+
+    expect(mockGetSendSuggestion).not.toHaveBeenCalled();
   });
 });

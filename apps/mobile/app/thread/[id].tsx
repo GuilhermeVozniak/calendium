@@ -5,7 +5,14 @@ import { Input } from '@/components/ui/input';
 import { Text } from '@/components/ui/text';
 import { api } from '@/lib/api';
 import { relativeTime } from '@/lib/format';
-import { isDemoMode, mockInstantReplies, mockThreadDetail, withMockFallback } from '@/lib/mock';
+import {
+  isDemoMode,
+  mockInstantReplies,
+  mockReactToMessage,
+  mockThreadDetail,
+  withMockFallback,
+} from '@/lib/mock';
+import { REACTION_EMOJIS } from '@/lib/mail-extras';
 import { useServerConfig } from '@/lib/server-config';
 import type { Message, Page, Thread, UnsubscribeResult } from '@calendium/shared';
 import {
@@ -15,7 +22,14 @@ import {
   type InfiniteData,
 } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ArchiveIcon, ChevronLeftIcon, ClockIcon, MailXIcon, SendIcon } from 'lucide-react-native';
+import {
+  ArchiveIcon,
+  ChevronLeftIcon,
+  ClockIcon,
+  MailXIcon,
+  SendHorizonalIcon,
+  SendIcon,
+} from 'lucide-react-native';
 import * as React from 'react';
 import {
   ActivityIndicator,
@@ -264,6 +278,7 @@ export default function ThreadScreen() {
           sentAt: new Date().toISOString(),
           isDraft: false,
           openedAt: null,
+          reactions: [],
         });
         setReply('');
       } else {
@@ -272,6 +287,44 @@ export default function ThreadScreen() {
       }
     },
   });
+
+  // Emoji reactions (M2.5): long-press a message to react. sendReply also
+  // queues a tiny threaded reply; the backend decides the OBSERVED delivery
+  // outcome ('local' vs 'sent') rather than us assuming success, so the
+  // "sent" indicator below is only ever driven by that response — never
+  // optimistically set.
+  const reactMutation = useMutation({
+    mutationFn: ({ messageId, emoji }: { messageId: string; emoji: string }) =>
+      withMockFallback(
+        () => api.reactToMessage(messageId, emoji, true),
+        () => mockReactToMessage(messageId, emoji, true)
+      ),
+    onSuccess: (result, { messageId }) => {
+      queryClient.setQueryData<ThreadDetail>(['thread', threadId], (data) =>
+        data
+          ? {
+              ...data,
+              messages: data.messages.map((m) =>
+                m.id === messageId ? { ...m, reactions: [...m.reactions, result.reaction] } : m
+              ),
+            }
+          : data
+      );
+    },
+    onError: (error) => {
+      Alert.alert('Could not react', error instanceof Error ? error.message : 'Please try again.');
+    },
+  });
+
+  const promptReaction = (messageId: string) => {
+    Alert.alert('React', undefined, [
+      ...REACTION_EMOJIS.map((emoji) => ({
+        text: emoji,
+        onPress: () => reactMutation.mutate({ messageId, emoji }),
+      })),
+      { text: 'Cancel', style: 'cancel' as const },
+    ]);
+  };
 
   const thread = detailQuery.data?.thread;
   const messages = detailQuery.data?.messages ?? [];
@@ -351,7 +404,11 @@ export default function ThreadScreen() {
         ) : (
           <ScrollView contentContainerClassName="gap-3 p-4">
             {messages.map((message) => (
-              <View key={message.id} className="gap-2 rounded-lg border border-border bg-card p-4">
+              <Pressable
+                key={message.id}
+                testID={`message-${message.id}`}
+                onLongPress={() => promptReaction(message.id)}
+                className="gap-2 rounded-lg border border-border bg-card p-4">
                 <View className="flex-row items-baseline justify-between gap-2">
                   <Text className="flex-1 text-sm font-semibold" numberOfLines={1}>
                     {message.from.name ?? message.from.email}
@@ -364,7 +421,24 @@ export default function ThreadScreen() {
                   to {message.to.map((t) => t.name ?? t.email).join(', ') || 'you'}
                 </Text>
                 <Text className="text-sm leading-6">{message.bodyText}</Text>
-              </View>
+                {message.reactions.length > 0 && (
+                  <View className="flex-row flex-wrap gap-1.5 pt-1">
+                    {message.reactions.map((r) => (
+                      <View
+                        key={r.id}
+                        testID={`reaction-${r.id}`}
+                        className="flex-row items-center gap-1 rounded-full bg-secondary px-2 py-0.5">
+                        <Text className="text-xs">{r.emoji}</Text>
+                        {r.delivery === 'sent' && (
+                          <View testID={`reaction-sent-${r.id}`}>
+                            <Icon as={SendHorizonalIcon} className="size-3 text-muted-foreground" />
+                          </View>
+                        )}
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </Pressable>
             ))}
           </ScrollView>
         )}
