@@ -28,7 +28,16 @@ export function createIndexedDbKv(
       request.onupgradeneeded = () => {
         request.result.createObjectStore(storeName);
       };
-      request.onsuccess = () => resolve(request.result);
+      request.onsuccess = () => {
+        const db = request.result;
+        // Another tab is upgrading the schema: close so its upgrade isn't
+        // blocked; the next call reopens.
+        db.onversionchange = () => {
+          db.close();
+          dbPromise = null;
+        };
+        resolve(db);
+      };
       request.onerror = () => {
         dbPromise = null; // allow a retry on the next call
         reject(request.error ?? new Error(`IndexedDB open failed: ${dbName}`));
@@ -42,7 +51,20 @@ export function createIndexedDbKv(
     op: (store: IDBObjectStore) => IDBRequest<T>
   ): Promise<T> => {
     const db = await open();
-    return promisify(op(db.transaction(storeName, mode).objectStore(storeName)));
+    const tx = db.transaction(storeName, mode);
+    const request = op(tx.objectStore(storeName));
+    if (mode === 'readonly') return promisify(request);
+    // Writes must not report success until the transaction commits: request
+    // onsuccess fires BEFORE commit, and a commit-phase abort (the common
+    // quota-exceeded path in some browsers) surfaces only on tx.onabort —
+    // resolving early would report success for a write that never persisted.
+    return new Promise<T>((resolve, reject) => {
+      tx.oncomplete = () => resolve(request.result);
+      tx.onabort = () =>
+        reject(tx.error ?? request.error ?? new Error('IndexedDB transaction aborted'));
+      tx.onerror = () =>
+        reject(tx.error ?? request.error ?? new Error('IndexedDB transaction failed'));
+    });
   };
 
   return {

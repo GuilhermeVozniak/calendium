@@ -118,6 +118,40 @@ describe('createKvOutboxStorage', () => {
 // createIndexedDbKv (fake-indexeddb)
 // ---------------------------------------------------------------------------
 
+/**
+ * Simulates a commit-phase abort (e.g. quota exceeded surfacing only on
+ * transaction.onabort): each write request succeeds at the request level,
+ * then the transaction is aborted before it can commit. fake-indexeddb has
+ * no quota to exhaust, so tx.abort() after request success is the closest
+ * spec-accurate stand-in. Returns a restore function.
+ */
+function abortWritesAfterRequestSuccess(): () => void {
+  const original = IDBDatabase.prototype.transaction;
+  IDBDatabase.prototype.transaction = function (
+    this: IDBDatabase,
+    ...args: Parameters<IDBDatabase['transaction']>
+  ): IDBTransaction {
+    const tx = original.apply(this, args);
+    const originalObjectStore = tx.objectStore.bind(tx);
+    tx.objectStore = (name: string): IDBObjectStore => {
+      const store = originalObjectStore(name);
+      for (const method of ['put', 'delete'] as const) {
+        const fn = (store[method] as (...a: unknown[]) => IDBRequest).bind(store);
+        (store as unknown as Record<string, unknown>)[method] = (...a: unknown[]) => {
+          const request = fn(...a);
+          request.addEventListener('success', () => tx.abort());
+          return request;
+        };
+      }
+      return store;
+    };
+    return tx;
+  };
+  return () => {
+    IDBDatabase.prototype.transaction = original;
+  };
+}
+
 describe('createIndexedDbKv', () => {
   it('returns null for a missing key', async () => {
     const kv = createIndexedDbKv('kv-test-missing');
@@ -155,6 +189,69 @@ describe('createIndexedDbKv', () => {
     );
     await expect(kv.getItem('k7')).resolves.toBe('v7');
     await expect(kv.getItem('k19')).resolves.toBe('v19');
+  });
+
+  it('rejects setItem when the transaction aborts after request success, and does not persist', async () => {
+    const kv = createIndexedDbKv('kv-test-abort-set');
+    await kv.setItem('warm', 'up'); // open the db before installing the hook
+    const restore = abortWritesAfterRequestSuccess();
+    try {
+      await expect(kv.setItem('k', 'v')).rejects.toThrow(/abort/i);
+    } finally {
+      restore();
+    }
+    await expect(kv.getItem('k')).resolves.toBeNull();
+  });
+
+  it('rejects removeItem when the transaction aborts, leaving the value intact', async () => {
+    const kv = createIndexedDbKv('kv-test-abort-remove');
+    await kv.setItem('keep', 'me');
+    const restore = abortWritesAfterRequestSuccess();
+    try {
+      await expect(kv.removeItem('keep')).rejects.toThrow(/abort/i);
+    } finally {
+      restore();
+    }
+    await expect(kv.getItem('keep')).resolves.toBe('me');
+  });
+
+  it('does not resolve setItem before the transaction commit event fires', async () => {
+    const kv = createIndexedDbKv('kv-test-commit-order');
+    await kv.setItem('warm', 'up');
+    let committed = false;
+    const original = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function (
+      this: IDBDatabase,
+      ...args: Parameters<IDBDatabase['transaction']>
+    ): IDBTransaction {
+      const tx = original.apply(this, args);
+      // Registered before kv.ts assigns tx.oncomplete, so it fires first.
+      tx.addEventListener('complete', () => {
+        committed = true;
+      });
+      return tx;
+    };
+    try {
+      await kv.setItem('k', 'v');
+      expect(committed).toBe(true);
+    } finally {
+      IDBDatabase.prototype.transaction = original;
+    }
+  });
+
+  it('closes its connection on versionchange so another tab can upgrade', async () => {
+    const dbName = 'kv-test-versionchange';
+    const kv = createIndexedDbKv(dbName);
+    await kv.setItem('k', 'v');
+    // A version-2 open only completes if the kv connection closes itself;
+    // otherwise this open stays blocked and the test times out.
+    const upgraded = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(dbName, 2);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error('open failed'));
+    });
+    expect(upgraded.version).toBe(2);
+    upgraded.close();
   });
 
   it('works as backing store for the outbox storage adapter', async () => {
