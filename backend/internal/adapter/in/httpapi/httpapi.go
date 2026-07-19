@@ -214,6 +214,12 @@ func New(deps Deps) http.Handler {
 	authed("GET /v1/prefs", s.handleGetPrefs)
 	authed("PUT /v1/prefs", s.handleUpdatePrefs)
 
+	// M2.8 Task 5: calendar automation preferences (FocusGuard, buffers,
+	// OOO, travel, weather) — the settings the Wave-2 automation engine
+	// fans out over.
+	authed("GET /v1/prefs/calendar", s.handleGetCalendarPrefs)
+	authed("PATCH /v1/prefs/calendar", s.handleUpdateCalendarPrefs)
+
 	// Scheduling: owner-authenticated surface (booking links, bookings,
 	// meeting polls, propose-new-time, guest free/busy, settings). The
 	// public booking/poll routes are registered separately, in the

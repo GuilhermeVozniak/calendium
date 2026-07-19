@@ -296,10 +296,18 @@ type DeviceService interface {
 	Unregister(ctx context.Context, userID, deviceID string) error
 }
 
-// PrefsService covers user preferences like split reordering.
+// PrefsService covers user preferences: split reordering (layout, no
+// paywall) and the calendar automation preference document (M2.8 Task 5,
+// entitlement-gated — the prefs unlock the automation engine).
 type PrefsService interface {
 	GetPrefs(ctx context.Context, userID string) (domain.UserPrefs, error)
 	UpdatePrefs(ctx context.Context, userID string, p domain.UserPrefs) (domain.UserPrefs, error)
+	// GetCalendarPrefs returns the user's calendar automation preferences,
+	// DefaultCalendarPrefs when never saved.
+	GetCalendarPrefs(ctx context.Context, userID string) (domain.CalendarPrefs, error)
+	// UpdateCalendarPrefs applies a nil-means-unchanged patch to the current
+	// document, validates the result, and persists it.
+	UpdateCalendarPrefs(ctx context.Context, userID string, patch domain.CalendarPrefsPatch) (domain.CalendarPrefs, error)
 }
 
 // SyncService is consumed by cmd/worker: provider polling plus scheduled

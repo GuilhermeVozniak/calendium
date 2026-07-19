@@ -15,6 +15,8 @@ import type {
   AiComposeRequest,
   BookingLinkInput,
   BookingRequest,
+  CalendarPrefs,
+  CalendarPrefsPatch,
   CalendarSetInput,
   ClassifierInput,
   CommentInput,
@@ -1967,6 +1969,7 @@ describe('calendar shares & team availability', () => {
 });
 
 // ---------------------------------------------------------------------------
+<<<<<<< HEAD
 // Event notes (M2.8 Task 4)
 // ---------------------------------------------------------------------------
 
@@ -2014,8 +2017,74 @@ describe('event notes', () => {
       ],
     });
     await expect(client.putEventNote('ev1', 'x', ['javascript:alert(1)'])).rejects.toMatchObject({
+=======
+// Calendar automation preferences (M2.8 Task 5)
+// ---------------------------------------------------------------------------
+
+describe('calendar automation preferences', () => {
+  const PREFS: CalendarPrefs = {
+    timeZone: 'Europe/Amsterdam',
+    workDays: [1, 2, 3, 4, 5],
+    workdayStartMinutes: 540,
+    workdayEndMinutes: 1020,
+    focusGoalMinutesPerWeek: 600,
+    focusAutoDecline: true,
+    focusDeclineMessage: 'Deep work — back later.',
+    autoBufferMinutes: 10,
+    oooAutoDecline: false,
+    oooDeclineMessage: '',
+    travelBuffers: true,
+    travelMode: 'transit',
+    leaveAlerts: true,
+    homeLat: 52.37,
+    homeLon: 4.89,
+    weatherEnabled: true,
+  };
+
+  it('getCalendarPrefs GETs /v1/prefs/calendar and returns the document', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: PREFS }] });
+    const result = await client.getCalendarPrefs();
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/prefs/calendar`);
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(result).toEqual(PREFS);
+  });
+
+  it('updateCalendarPrefs PATCHes only the provided fields', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: PREFS }] });
+    const patch: CalendarPrefsPatch = { autoBufferMinutes: 10, travelMode: 'transit' };
+    const result = await client.updateCalendarPrefs(patch);
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/prefs/calendar`);
+    expect(calls[0]!.method).toBe('PATCH');
+    expect(calls[0]!.body).toEqual({ autoBufferMinutes: 10, travelMode: 'transit' });
+    expect(result).toEqual(PREFS);
+  });
+
+  it('maps a 400 validation response to ApiRequestError(400)', async () => {
+    const { client } = makeClient({
+      responses: [
+        { status: 400, body: { error: { code: 'validation_failed', message: 'validation failed' } } },
+      ],
+    });
+    await expect(client.updateCalendarPrefs({ autoBufferMinutes: 3 })).rejects.toMatchObject({
+>>>>>>> worktree-agent-task5-prefs
       status: 400,
       code: 'validation_failed',
     });
   });
+<<<<<<< HEAD
+=======
+
+  it('maps a 402 paywall response to ApiRequestError(402)', async () => {
+    const { client } = makeClient({
+      responses: [
+        { status: 402, body: { error: { code: 'payment_required', message: 'payment required' } } },
+      ],
+    });
+    await expect(client.getCalendarPrefs()).rejects.toMatchObject({
+      status: 402,
+      code: 'payment_required',
+    });
+  });
+>>>>>>> worktree-agent-task5-prefs
 });

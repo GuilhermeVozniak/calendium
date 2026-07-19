@@ -28,3 +28,28 @@ func (s *server) handleUpdatePrefs(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, prefs)
 }
+
+// --- Calendar automation preferences (M2.8 Task 5) ---------------------------
+
+func (s *server) handleGetCalendarPrefs(w http.ResponseWriter, r *http.Request) {
+	prefs, err := s.deps.Prefs.GetCalendarPrefs(r.Context(), userFrom(r).ID)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, prefs)
+}
+
+func (s *server) handleUpdateCalendarPrefs(w http.ResponseWriter, r *http.Request) {
+	var patch domain.CalendarPrefsPatch
+	if err := decodeJSON(w, r, &patch); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	prefs, err := s.deps.Prefs.UpdateCalendarPrefs(r.Context(), userFrom(r).ID, patch)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, prefs)
+}

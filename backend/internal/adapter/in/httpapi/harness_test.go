@@ -798,6 +798,14 @@ type fakePrefsService struct {
 	updateRet      domain.UserPrefs
 	updateErr      error
 	gotUpdatePrefs domain.UserPrefs
+
+	// Calendar automation preferences (M2.8 Task 5).
+	getCalendarRet    domain.CalendarPrefs
+	getCalendarErr    error
+	updateCalendarRet domain.CalendarPrefs
+	updateCalendarErr error
+	gotCalendarUserID string
+	gotCalendarPatch  domain.CalendarPrefsPatch
 }
 
 func (f *fakePrefsService) GetPrefs(ctx context.Context, userID string) (domain.UserPrefs, error) {
@@ -806,6 +814,15 @@ func (f *fakePrefsService) GetPrefs(ctx context.Context, userID string) (domain.
 func (f *fakePrefsService) UpdatePrefs(ctx context.Context, userID string, p domain.UserPrefs) (domain.UserPrefs, error) {
 	f.gotUpdatePrefs = p
 	return f.updateRet, f.updateErr
+}
+func (f *fakePrefsService) GetCalendarPrefs(ctx context.Context, userID string) (domain.CalendarPrefs, error) {
+	f.gotCalendarUserID = userID
+	return f.getCalendarRet, f.getCalendarErr
+}
+func (f *fakePrefsService) UpdateCalendarPrefs(ctx context.Context, userID string, patch domain.CalendarPrefsPatch) (domain.CalendarPrefs, error) {
+	f.gotCalendarUserID = userID
+	f.gotCalendarPatch = patch
+	return f.updateCalendarRet, f.updateCalendarErr
 }
 
 // --- SchedulingService --------------------------------------------------------

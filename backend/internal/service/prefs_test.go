@@ -5,13 +5,14 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"calendium/backend/internal/domain"
 )
 
 func TestPrefsRoundTripAndValidation(t *testing.T) {
 	ctx := context.Background()
-	svc := NewPrefsService(newPrefsRepo())
+	svc := NewPrefsService(newPrefsRepo(), newCalendarPrefsRepo(), newSubscriptionRepo(), newClock(time.Now()), true)
 
 	// Absent prefs come back as the zero value, not an error.
 	got, err := svc.GetPrefs(ctx, "u1")
