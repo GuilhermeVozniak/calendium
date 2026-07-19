@@ -18,6 +18,7 @@ import type { AttachmentHit } from '@calendium/shared';
 import { ApiRequestError } from '@calendium/shared';
 import { toast } from 'sonner';
 
+import { CONTACT_SEARCH_ATTACHMENTS_EVENT } from '@/components/app/contact-pane';
 import { useCheckoutMutation } from '@/components/app/paywall';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -79,8 +80,8 @@ export function AttachmentsPaneProvider({ children }: { children: React.ReactNod
       const contact = (e as CustomEvent<{ contact?: string }>).detail?.contact;
       if (contact) open({ contact });
     };
-    window.addEventListener('calendium:search-attachments-from', onSearchFrom);
-    return () => window.removeEventListener('calendium:search-attachments-from', onSearchFrom);
+    window.addEventListener(CONTACT_SEARCH_ATTACHMENTS_EVENT, onSearchFrom);
+    return () => window.removeEventListener(CONTACT_SEARCH_ATTACHMENTS_EVENT, onSearchFrom);
   }, [open]);
 
   const value = React.useMemo(() => ({ open }), [open]);
@@ -176,6 +177,26 @@ export function AttachmentsPane({ initialFilter = {} }: { initialFilter?: Attach
     const t = setTimeout(() => setDebounced(query.trim()), 250);
     return () => clearTimeout(t);
   }, [query]);
+
+  // Revokes an in-flight preview's blob URL on unmount (dialog closed via the
+  // parent's own unmount/session remount rather than closePreview() below —
+  // e.g. AttachmentsPaneProvider's `key={session}` swap, or navigating away
+  // mid-preview). Without this, a 'ready' preview's object URL leaks for the
+  // life of the page since closePreview() never runs in that path. A ref
+  // (kept in sync every render) rather than `preview` itself in the deps
+  // array so this cleanup fires only on true unmount, not on every preview
+  // state change.
+  const previewRef = React.useRef<PreviewState | null>(null);
+  React.useEffect(() => {
+    previewRef.current = preview;
+  }, [preview]);
+  React.useEffect(() => {
+    return () => {
+      if (previewRef.current?.status === 'ready') {
+        URL.revokeObjectURL(previewRef.current.blobUrl);
+      }
+    };
+  }, []);
 
   const { data, isLoading, isError, error, fetchNextPage, hasNextPage, isFetchingNextPage } =
     useAttachmentSearch({ q: debounced || undefined, contact, threadId });
@@ -400,7 +421,16 @@ export function AttachmentsPane({ initialFilter = {} }: { initialFilter?: Attach
             <p className="text-muted-foreground p-8 text-center text-sm">{preview.message}</p>
           )}
           {preview?.status === 'ready' && isPdf(preview.mimeType) && (
-            <iframe title={preview.filename} src={preview.blobUrl} className="h-[80vh] w-full" />
+            // sandbox="" (all permissions denied — no scripts, forms, popups,
+            // same-origin) is the tightest possible setting; the browser's
+            // native PDF viewer renders the blob independently of the iframe
+            // document's script permissions, so preview still works.
+            <iframe
+              title={preview.filename}
+              src={preview.blobUrl}
+              sandbox=""
+              className="h-[80vh] w-full"
+            />
           )}
           {preview?.status === 'ready' && isImage(preview.mimeType) && (
             // biome-ignore lint/performance/noImgElement: inline preview of an in-memory blob URL, not an optimizable remote asset next/image could handle.

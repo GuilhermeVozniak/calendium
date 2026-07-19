@@ -419,6 +419,10 @@ func (s *server) handleSearchAttachments(w http.ResponseWriter, r *http.Request)
 // handleGetAttachmentContent streams the raw attachment bytes (no JSON
 // envelope): Content-Type from the provider's reported mime type and an
 // inline Content-Disposition so browsers preview rather than force-download.
+// X-Content-Type-Options: nosniff stops the browser from MIME-sniffing an
+// attachment's actual bytes into something more dangerous than the reported
+// Content-Type (e.g. sniffing a mislabeled upload as text/html and executing
+// it) — this endpoint serves arbitrary user-supplied attachment content.
 func (s *server) handleGetAttachmentContent(w http.ResponseWriter, r *http.Request) {
 	data, mimeType, filename, err := s.deps.Mail.GetAttachmentContent(r.Context(), userFrom(r).ID, r.PathValue("id"))
 	if err != nil {
@@ -430,6 +434,7 @@ func (s *server) handleGetAttachmentContent(w http.ResponseWriter, r *http.Reque
 	}
 	w.Header().Set("Content-Type", mimeType)
 	w.Header().Set("Content-Disposition", `inline; filename="`+escapeQuotedString(filename)+`"`)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
 }

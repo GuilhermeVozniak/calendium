@@ -667,6 +667,13 @@ func TestHandleGetAttachmentContent(t *testing.T) {
 		if cd := rec.Header().Get("Content-Disposition"); cd != `inline; filename="invoice.pdf"` {
 			t.Fatalf("Content-Disposition = %q, want inline; filename=\"invoice.pdf\"", cd)
 		}
+		// M2.5 review fix (MINOR e): this endpoint serves arbitrary
+		// user-supplied attachment content — nosniff stops the browser from
+		// MIME-sniffing it into something more dangerous than the reported
+		// Content-Type.
+		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+		}
 		if rec.Body.String() != "%PDF-1.4 fake pdf bytes" {
 			t.Fatalf("body = %q, want raw bytes (no JSON envelope)", rec.Body.String())
 		}

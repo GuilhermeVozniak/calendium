@@ -155,11 +155,46 @@ describe('AttachmentsPane — row click routing', () => {
     expect(fetchAttachmentBlobMock).toHaveBeenCalledWith('att_pdf');
     const iframe = await screen.findByTitle('Renewal-Summary.pdf');
     expect(iframe).toHaveAttribute('src', 'blob:mock-pdf');
+    // M2.5 review fix (MINOR e): the preview iframe is fully sandboxed (no
+    // scripts/forms/popups/same-origin) since it renders untrusted, arbitrary
+    // attachment content — the browser's native PDF viewer doesn't need any
+    // of those permissions.
+    expect(iframe).toHaveAttribute('sandbox', '');
 
     // Closing the dialog revokes the object URL (no leaked blob: refs).
     await user.keyboard('{Escape}');
     await waitFor(() => expect(revokeMock).toHaveBeenCalledWith('blob:mock-pdf'));
 
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * M2.5 review fix (MINOR b): closePreview() only fires when the dialog is
+   * dismissed through its own onOpenChange handler. If the whole component
+   * unmounts while a preview is still 'ready' (e.g. the parent
+   * AttachmentsPaneProvider swaps its `key={session}` and remounts, or the
+   * user navigates away mid-preview), that path never ran and the blob URL
+   * leaked for the life of the page. A dedicated unmount effect must revoke
+   * it too.
+   */
+  it('revokes the preview blob URL on unmount even when closePreview() never ran', async () => {
+    const user = userEvent.setup();
+    const revokeMock = vi.fn();
+    vi.stubGlobal('URL', { ...URL, revokeObjectURL: revokeMock });
+    fetchAttachmentBlobMock.mockResolvedValue({
+      blobUrl: 'blob:mock-pdf-unmount',
+      filename: 'Renewal-Summary.pdf',
+      mimeType: 'application/pdf',
+    });
+
+    const view = render(<AttachmentsPane />);
+    await user.click(screen.getByText('Renewal-Summary.pdf'));
+    await screen.findByTitle('Renewal-Summary.pdf');
+
+    expect(revokeMock).not.toHaveBeenCalled();
+    view.unmount();
+
+    expect(revokeMock).toHaveBeenCalledWith('blob:mock-pdf-unmount');
     vi.unstubAllGlobals();
   });
 
