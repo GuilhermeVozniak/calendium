@@ -818,3 +818,80 @@ export interface InstanceInfo {
   vapidPublicKey?: string;
   features: InstanceFeatures;
 }
+
+// ---------------------------------------------------------------------------
+// Shared conversations & team comments (M2.7) — mirrors
+// backend/internal/domain/threadshare.go, backend/internal/domain/collab.go
+// and port.ShareThreadInput / port.SharedThreadView / port.CommentInput.
+// ---------------------------------------------------------------------------
+
+/** Who may open a thread-share link: team members only, or anyone holding it. */
+export type ShareAudience = 'team' | 'external';
+
+/**
+ * A tokenized live link to a mail thread. The raw token appears exactly once,
+ * in the create response (ThreadShareCreated.token); the API never returns it
+ * again — only its hash is stored server-side.
+ */
+export interface ThreadShare {
+  id: string;
+  threadId: string;
+  createdBy: string;
+  audience: ShareAudience;
+  /** Scopes a team-audience share; null for external shares. */
+  teamId: string | null;
+  revokedAt: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+/** Create-share payload; mirrors port.ShareThreadInput. */
+export interface ShareThreadInput {
+  audience: ShareAudience;
+  /** Required when audience is 'team'. */
+  teamId?: string;
+  /** Optional link expiry (RFC 3339); omitted/null = until revoked. */
+  expiresAt?: string | null;
+}
+
+/**
+ * POST /v1/mail/threads/{id}/share response: the stored share plus the raw
+ * link token. SECRET: the token appears here exactly once — surface it to the
+ * user immediately and never log it or send it to analytics.
+ */
+export interface ThreadShareCreated {
+  share: ThreadShare;
+  token: string;
+}
+
+/**
+ * The read-only projection served to share viewers (GET
+ * /v1/shared/threads/{token}): thread metadata + messages with recipients'
+ * Bcc stripped and no labels/split/snooze state. Unknown, revoked, and
+ * expired tokens are uniformly 404 (no oracle).
+ */
+export interface SharedThreadView {
+  subject: string;
+  audience: ShareAudience;
+  messages: Message[];
+  updatedAt: string;
+}
+
+/** A team comment on a mail thread; bodies are plain user text (escaped render-side). */
+export interface Comment {
+  id: string;
+  threadId: string;
+  teamId: string;
+  authorId: string;
+  body: string;
+  /** Team-member user IDs resolved from @email tokens at write time. */
+  mentions: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Add-comment payload; mirrors port.CommentInput. */
+export interface CommentInput {
+  teamId: string;
+  body: string;
+}

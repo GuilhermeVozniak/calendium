@@ -19,6 +19,8 @@ import type {
   CalendarSet,
   CalendarSetInput,
   ClassifierInput,
+  Comment,
+  CommentInput,
   ConnectedAccount,
   ContactSummary,
   DevicePlatform,
@@ -44,6 +46,8 @@ import type {
   ReactionResult,
   RsvpStatus,
   SendSuggestion,
+  SharedThreadView,
+  ShareThreadInput,
   Snippet,
   Subscription,
   Team,
@@ -52,6 +56,8 @@ import type {
   TeamRole,
   Thread,
   ThreadAction,
+  ThreadShare,
+  ThreadShareCreated,
   TimeProposal,
   TimeProposalInput,
   UnsubscribeResult,
@@ -616,6 +622,70 @@ export class ApiClient {
    */
   acceptInvitation(token: string) {
     return this.request<Team>('POST', '/v1/invitations/accept', { token });
+  }
+
+  // --- Shared conversations & team comments (M2.7) ---
+  /**
+   * Creates a live share link for a thread. The response carries the raw
+   * link token exactly once — show it to the user immediately; it is never
+   * returned again (and must never be logged or sent to analytics).
+   */
+  shareThread(threadId: string, input: ShareThreadInput) {
+    return this.request<ThreadShareCreated>(
+      'POST',
+      `/v1/mail/threads/${encodeURIComponent(threadId)}/share`,
+      input
+    );
+  }
+  listThreadShares(threadId: string) {
+    return this.request<ThreadShare[]>(
+      'GET',
+      `/v1/mail/threads/${encodeURIComponent(threadId)}/shares`
+    );
+  }
+  /** Revokes a share link; viewers holding it see a uniform 404 afterwards. */
+  revokeThreadShare(threadId: string, shareId: string) {
+    return this.request<void>(
+      'DELETE',
+      `/v1/mail/threads/${encodeURIComponent(threadId)}/shares/${encodeURIComponent(shareId)}`
+    );
+  }
+  /**
+   * The read-only share view for a raw link token. Works signed out (external
+   * shares); when a session exists the bearer identifies the viewer for
+   * team-audience membership checks. Unknown/revoked/expired tokens throw
+   * ApiRequestError(404, 'not_found') — indistinguishable by design.
+   */
+  getSharedThread(token: string) {
+    return this.request<SharedThreadView>(
+      'GET',
+      `/v1/shared/threads/${encodeURIComponent(token)}`
+    );
+  }
+  /** Team comments on a thread; caller must be a member of teamId. */
+  listComments(threadId: string, teamId: string) {
+    const qs = new URLSearchParams({ teamId });
+    return this.request<{ comments: Comment[] }>(
+      'GET',
+      `/v1/mail/threads/${encodeURIComponent(threadId)}/comments?${qs}`
+    );
+  }
+  addComment(threadId: string, input: CommentInput) {
+    return this.request<Comment>(
+      'POST',
+      `/v1/mail/threads/${encodeURIComponent(threadId)}/comments`,
+      input
+    );
+  }
+  /** Author only (team admins may delete, not edit). */
+  updateComment(commentId: string, body: string) {
+    return this.request<Comment>('PATCH', `/v1/comments/${encodeURIComponent(commentId)}`, {
+      body,
+    });
+  }
+  /** The author, or a team admin+ (soft delete). */
+  deleteComment(commentId: string) {
+    return this.request<void>('DELETE', `/v1/comments/${encodeURIComponent(commentId)}`);
   }
 }
 

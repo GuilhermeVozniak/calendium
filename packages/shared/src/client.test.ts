@@ -16,6 +16,8 @@ import type {
   BookingRequest,
   CalendarSetInput,
   ClassifierInput,
+  CommentInput,
+  ShareThreadInput,
   DraftInput,
   EventInput,
   EventPatch,
@@ -1553,6 +1555,143 @@ describe('teams (M2.7)', () => {
     await expect(client.removeMember('team_1', 'user_1')).rejects.toMatchObject({
       status: 409,
       code: 'conflict',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shared conversations (M2.7) — thread share links + the public share view
+// ---------------------------------------------------------------------------
+
+describe('thread shares', () => {
+  it('shareThread POSTs the audience payload and returns the share + one-time token', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 201, body: { share: { id: 'sh1', threadId: 't1' }, token: 'raw-once' } }],
+    });
+    const input: ShareThreadInput = {
+      audience: 'team',
+      teamId: 'team1',
+      expiresAt: '2026-08-01T00:00:00Z',
+    };
+    const result = await client.shareThread('t1', input);
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/mail/threads/t1/share`);
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].body).toEqual(input);
+    expect(result).toEqual({ share: { id: 'sh1', threadId: 't1' }, token: 'raw-once' });
+  });
+
+  it('percent-encodes the thread id in share paths', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 201, body: { share: {}, token: 't' } }] });
+    await client.shareThread('t/1 x', { audience: 'external' });
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/mail/threads/t%2F1%20x/share`);
+  });
+
+  it('listThreadShares GETs the share list for a thread', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: [{ id: 'sh1', audience: 'external' }] }],
+    });
+    const shares = await client.listThreadShares('t1');
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/mail/threads/t1/shares`);
+    expect(calls[0].method).toBe('GET');
+    expect(shares).toEqual([{ id: 'sh1', audience: 'external' }]);
+  });
+
+  it('revokeThreadShare DELETEs the share by id (encoded) and resolves on 204', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    await client.revokeThreadShare('t1', 'sh 1');
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/mail/threads/t1/shares/sh%201`);
+    expect(calls[0].method).toBe('DELETE');
+  });
+
+  it('getSharedThread GETs the public view with the token percent-encoded', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { subject: 'Launch plan', audience: 'external', messages: [] } }],
+    });
+    const view = await client.getSharedThread('tok/123');
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/shared/threads/tok%2F123`);
+    expect(view.subject).toBe('Launch plan');
+  });
+
+  it('getSharedThread omits Authorization when signed out (anonymous external viewer)', async () => {
+    const { client, calls } = makeClient({
+      token: null,
+      responses: [{ status: 200, body: { subject: 's', audience: 'external', messages: [] } }],
+    });
+    await client.getSharedThread('tok123');
+    expect(calls[0].headers.Authorization).toBeUndefined();
+  });
+
+  it('getSharedThread sends the bearer when signed in (team-audience viewer)', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { subject: 's', audience: 'team', messages: [] } }],
+    });
+    await client.getSharedThread('tok123');
+    expect(calls[0].headers.Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it('maps unknown/revoked tokens to ApiRequestError(404, "not_found")', async () => {
+    const { client } = makeClient({
+      responses: [{ status: 404, body: { error: { code: 'not_found', message: 'not found' } } }],
+    });
+    await expect(client.getSharedThread('nope')).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Team comments (M2.7)
+// ---------------------------------------------------------------------------
+
+describe('team comments', () => {
+  it('listComments GETs the comments with teamId as a query parameter', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { comments: [{ id: 'c1', body: 'hello' }] } }],
+    });
+    const result = await client.listComments('t1', 'team 1');
+    const [path, query] = calls[0].url.split('?');
+    expect(path).toBe(`${BASE_URL}/v1/mail/threads/t1/comments`);
+    expect(searchParamsToObject(new URLSearchParams(query))).toEqual({ teamId: 'team 1' });
+    expect(result.comments).toEqual([{ id: 'c1', body: 'hello' }]);
+  });
+
+  it('addComment POSTs the teamId + body payload', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 201, body: { id: 'c9', body: 'hi @ada@example.com' } }],
+    });
+    const input: CommentInput = { teamId: 'team1', body: 'hi @ada@example.com' };
+    const comment = await client.addComment('t1', input);
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/mail/threads/t1/comments`);
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].body).toEqual(input);
+    expect(comment.id).toBe('c9');
+  });
+
+  it('updateComment PATCHes the body by comment id', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { id: 'c1', body: 'edited' } }],
+    });
+    await client.updateComment('c1', 'edited');
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/comments/c1`);
+    expect(calls[0].method).toBe('PATCH');
+    expect(calls[0].body).toEqual({ body: 'edited' });
+  });
+
+  it('deleteComment DELETEs by comment id and resolves on 204', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    await client.deleteComment('c 1');
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/comments/c%201`);
+    expect(calls[0].method).toBe('DELETE');
+  });
+
+  it('maps a non-member 404 without leaking existence', async () => {
+    const { client } = makeClient({
+      responses: [{ status: 404, body: { error: { code: 'not_found', message: 'not found' } } }],
+    });
+    await expect(client.listComments('t1', 'ghost')).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
     });
   });
 });

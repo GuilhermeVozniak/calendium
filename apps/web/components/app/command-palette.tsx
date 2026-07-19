@@ -30,6 +30,7 @@ import {
   Search,
   Send,
   Settings,
+  Share2,
   Sparkles,
   Star,
   Sun,
@@ -46,6 +47,7 @@ import { toast } from 'sonner';
 import { useAskSidebar } from '@/components/ai/ask-sidebar';
 import { useAttachmentsPane } from '@/components/app/attachments-pane';
 import { useCompose } from '@/components/app/compose';
+import { dispatchShareThread } from '@/components/app/share-dialog';
 import { useTheme } from '@/components/theme-provider';
 import { dispatchAiEditCommand } from '@/components/compose/ai-edit-menu';
 import {
@@ -266,6 +268,12 @@ export function CommandPalette() {
             >
               <UserPlus />
               Instant Intro
+            </CommandItem>
+          )}
+          {openThreadDetail?.thread && (
+            <CommandItem onSelect={() => run(() => dispatchShareThread())}>
+              <Share2 />
+              Share conversation
             </CommandItem>
           )}
           <CommandItem onSelect={() => { teachShortcut('search', '/', 'Search'); runMailCommand('search'); }}>
