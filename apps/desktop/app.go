@@ -28,6 +28,9 @@ type App struct {
 	// --- Task 9: global shortcuts (hotkeys.go) ---
 	hotkeys *hotkeyManager
 	// --- end Task 9 ---
+	// Menu-bar tray + auto-join (M2.6 Tasks 10-11; tray.go / scheduler.go).
+	tray     *trayManager
+	autoJoin *autoJoinScheduler
 }
 
 // NewApp creates a new App application struct.
@@ -38,6 +41,7 @@ func NewApp() *App {
 	// nothing touches the OS until Start().
 	a.hotkeys = newHotkeyManager(a.emitGlobalShortcut)
 	// --- end Task 9 ---
+	a.initDesktopExtras()
 	return a
 }
 

@@ -13,6 +13,10 @@ export interface DesktopBindings {
   GetAppVersion(): Promise<string>;
   /** Registers/unregisters the system-wide hotkeys in the Go host (Task 9). */
   SetGlobalShortcutsEnabled(enabled: boolean): Promise<void>;
+  /** Pushes the upcoming-events tray feed (JSON TrayEvent[]; lib/tray.ts). */
+  SetUpcomingEvents(eventsJson: string): Promise<void>;
+  /** Pushes the user's auto-join setting (Task 11; lib/tray.ts). */
+  SetAutoJoin(enabled: boolean, leadSeconds: number): Promise<void>;
 }
 
 /** Subset of the Wails runtime API the app uses. */
@@ -44,6 +48,9 @@ const browserFallback: DesktopBindings = {
   async SetGlobalShortcutsEnabled() {
     // No host to register system-wide hotkeys in a plain browser.
   },
+  // Tray + auto-join only exist in the Wails host; browser no-ops.
+  async SetUpcomingEvents() {},
+  async SetAutoJoin() {},
 };
 
 const runtimeFallback: DesktopRuntime = {

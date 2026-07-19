@@ -47,6 +47,12 @@ import {
   onDeepLink,
   setGlobalShortcutsEnabled,
 } from '@/lib/wails';
+import {
+  type AutoJoinLeadSeconds,
+  type AutoJoinSettings,
+  loadAutoJoinSettings,
+  saveAutoJoinSettings,
+} from '@/lib/tray';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
@@ -343,6 +349,55 @@ function AccountPreferences({ account }: { account: ConnectedAccount }) {
   );
 }
 
+/**
+ * Auto-join meetings (M2.6 Task 11): persisted in localStorage and pushed to
+ * the Go host (SetAutoJoin) on every change; App.tsx re-pushes it on startup.
+ * The host only ever auto-joins while this real setting is enabled.
+ */
+function MeetingsSection() {
+  const [settings, setSettings] = useState<AutoJoinSettings>(loadAutoJoinSettings);
+
+  function update(next: AutoJoinSettings) {
+    setSettings(next);
+    saveAutoJoinSettings(next);
+  }
+
+  return (
+    <Section title="Meetings">
+      <div className="flex items-center gap-3 p-3">
+        <div className="min-w-0 flex-1">
+          <label className="text-sm font-medium" htmlFor="auto-join-toggle">
+            Auto-join meetings
+          </label>
+          <p className="text-xs text-muted-foreground">
+            Opens the call link of your next meeting automatically at start time.
+          </p>
+        </div>
+        <select
+          value={String(settings.leadSeconds)}
+          disabled={!settings.enabled}
+          onChange={(e) =>
+            update({ ...settings, leadSeconds: Number(e.target.value) as AutoJoinLeadSeconds })
+          }
+          aria-label="Auto-join lead time"
+          className="h-8 rounded-md border border-input bg-transparent px-2.5 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+        >
+          <option value="0">At start</option>
+          <option value="30">30s before</option>
+          <option value="60">1m before</option>
+        </select>
+        <input
+          id="auto-join-toggle"
+          type="checkbox"
+          checked={settings.enabled}
+          onChange={() => update({ ...settings, enabled: !settings.enabled })}
+          aria-label="Auto-join meetings"
+        />
+      </div>
+    </Section>
+  );
+}
+
 const STATUS_BADGE: Record<SubscriptionStatus, { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {
   active: { label: 'Active', variant: 'default' },
   trialing: { label: 'Trial', variant: 'secondary' },
@@ -582,6 +637,8 @@ export function SettingsView() {
         </Section>
 
         {config?.features?.ai && <ClassifiersSection />}
+
+        <MeetingsSection />
 
         <Section title="Server">
           <div className="flex flex-col gap-3 p-3">

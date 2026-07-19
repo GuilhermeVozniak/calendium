@@ -3,6 +3,7 @@ module calendium/desktop
 go 1.26
 
 require (
+	github.com/energye/systray v1.0.3
 	github.com/wailsapp/wails/v2 v2.12.0
 	golang.design/x/hotkey v0.6.1
 )
