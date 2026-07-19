@@ -2,7 +2,7 @@
 
 Calendium is a keyboard-first email + calendar manager targeting **full feature parity with Superhuman** for email, fused with a **best-of-breed calendar** that borrows the strongest ideas from Fantastical, Notion Calendar, Vimcal, Amie, Rise, Apple Calendar, and Google Calendar. The bet: Superhuman proved that speed (sub-100ms interactions), a command palette, and opinionated triage make email feel effortless — but its calendar is an accessory. Calendium makes the calendar a first-class peer of the inbox, sharing one design language (shadcn new-york, neutral, light+dark), one Go backend, and one `@calendium/shared` contract across web, desktop, and mobile — all unlocked by a single $50/yr Stripe subscription (Spotify model, no IAP). This document is the parity checklist and the roadmap for getting there.
 
-**Status legend** — `scaffolded`: the model, API contract, and/or UI for the feature exists in this codebase today (M0, mock/local data where sync is not yet live). `planned`: not yet in the codebase; targeted at the milestone noted in the roadmap.
+**Status legend** — `shipped`: implemented end-to-end in this codebase (real data path, tested). `scaffolded`: the model, API contract, and/or UI for the feature exists in this codebase today (M0, mock/local data where sync is not yet live). `planned`: not yet in the codebase; targeted at the milestone noted in the roadmap.
 
 ## Superhuman email parity
 
@@ -64,17 +64,17 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | Command palette (Cmd+K) | Search and execute any action from the keyboard, with each action's shortcut displayed to teach it | P0 | scaffolded | web, desktop |
 | Comprehensive keyboard shortcuts | 100+ vim-inspired shortcuts covering every action (core j/k navigate + e archive set exists today; full coverage lands through M2) | P0 | scaffolded | web, desktop |
 | Instant search | Locally indexed, as-you-type search over the mirror; `GET /v1/search` unified over threads + events | P0 | scaffolded | web, desktop, mobile |
-| Offline mode | Read, search, and compose offline; queued messages send automatically when back online | P1 | planned | web, desktop, mobile |
-| Preloading architecture | Threads, images, and searches prefetched and cached before they're needed for zero perceived latency | P2 | planned | web, desktop, mobile |
+| Offline mode | Read, search, and compose offline; queued messages send automatically when back online | P1 | shipped | web, desktop, mobile |
+| Preloading architecture | Threads, images, and searches prefetched and cached before they're needed for zero perceived latency | P2 | shipped (web, desktop); mobile planned | web, desktop, mobile |
 | Undo anything (Z) | Reverse nearly any action (archive, move, label) instantly, encouraging fearless fast triage | P2 | scaffolded | web, desktop, mobile |
 | Shortcut teaching UX | UI surfaces the shortcut for every action taken via palette or mouse | P2 | scaffolded | web, desktop |
-| Global desktop shortcuts | System-wide hotkeys open compose or search even when the app is in the background (Wails host) | P2 | planned | desktop |
+| Global desktop shortcuts | System-wide hotkeys open compose or search even when the app is in the background (Wails host) | P2 | shipped | desktop |
 | **Platform** | | | | |
 | Gmail and Outlook support | Full client on Gmail/Google Workspace and Outlook/Microsoft 365 (OAuth connect endpoints + provider ports modeled; live sync is M1) | P0 | planned | web, desktop, mobile |
 | macOS and Windows desktop apps | Native-feeling Wails v2 desktop apps with the flagship keyboard-driven experience | P1 | planned | desktop |
 | iOS app | Full-featured iPhone app with AI drafts, summaries, splits, swipe triage (Expo shell + Better Auth exists; product surface planned) | P1 | planned | mobile |
 | Android app | Android app with splits, AI features, and fast triage (same Expo codebase) | P1 | planned | mobile |
-| Multiple account switching | Connect several accounts and jump between them instantly with shortcuts (`ConnectedAccount` model supports many) | P1 | planned | web, desktop, mobile |
+| Multiple account switching | Connect several accounts and jump between them instantly with shortcuts (`ConnectedAccount` model supports many) | P1 | shipped | web, desktop, mobile |
 | Concierge onboarding | White-glove 1:1 coaching session teaching shortcuts and reaching inbox zero | P1 | planned | web, desktop |
 | CRM integrations | HubSpot / Salesforce / Pipedrive records shown and updated from the inbox, auto-logged emails | P1 | planned | web, desktop |
 | Attachment previews | PDFs preview inline; other file types open with system previews without leaving the inbox; web renders PDFs via a native `<iframe>` and images via `<img>` from the fetched attachment bytes, everything else downloads | P2 | scaffolded | web, desktop, mobile |
