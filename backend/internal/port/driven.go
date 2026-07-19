@@ -255,6 +255,40 @@ type EventRepo interface {
 	Search(ctx context.Context, userID, query string, limit int) ([]domain.Event, error)
 }
 
+// --- Tasks (M2.8) ---
+
+// TaskQuery filters task lists. UserID is mandatory; zero values mean "no
+// filter". Completed tasks are excluded unless IncludeCompleted is set.
+// ScheduledFrom/ScheduledTo select tasks whose scheduled block overlaps
+// [ScheduledFrom, ScheduledTo) — the calendar-grid query. DueFrom/DueTo
+// select by due date — the rail's "due today" grouping.
+type TaskQuery struct {
+	UserID           string
+	Source           domain.TaskSource
+	IncludeCompleted bool
+	ScheduledFrom    time.Time
+	ScheduledTo      time.Time
+	DueFrom          time.Time
+	DueTo            time.Time
+	UnscheduledOnly  bool
+	Limit            int
+}
+
+// TaskRepo persists first-class tasks (local and mirrored external todos).
+type TaskRepo interface {
+	Create(ctx context.Context, t domain.Task) (domain.Task, error)
+	GetByID(ctx context.Context, id string) (domain.Task, error)
+	// GetByExternalID resolves a mirrored provider todo; domain.ErrNotFound
+	// when the task was never synced.
+	GetByExternalID(ctx context.Context, userID string, source domain.TaskSource, externalID string) (domain.Task, error)
+	List(ctx context.Context, q TaskQuery) ([]domain.Task, error)
+	Update(ctx context.Context, t domain.Task) error
+	Delete(ctx context.Context, id string) error
+	// DeleteBySource removes every mirrored task of one source for a user
+	// (integration disconnect).
+	DeleteBySource(ctx context.Context, userID string, source domain.TaskSource) error
+}
+
 // EventTemplateRepo persists per-user saved event defaults.
 type EventTemplateRepo interface {
 	Create(ctx context.Context, userID string, t domain.EventTemplate) (domain.EventTemplate, error)
