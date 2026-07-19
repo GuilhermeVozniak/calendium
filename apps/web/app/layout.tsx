@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
 
 import { Providers } from '@/components/providers';
@@ -17,6 +17,22 @@ export const metadata: Metadata = {
     template: '%s · Calendium',
   },
   description: 'The fastest email and calendar experience. One inbox, one calendar, zero friction.',
+  manifest: '/manifest.webmanifest',
+  icons: {
+    icon: [
+      { url: '/icon.svg', type: 'image/svg+xml' },
+      { url: '/icon-192.png', type: 'image/png', sizes: '192x192' },
+    ],
+    apple: '/icon-192.png',
+  },
+};
+
+// Matches the light/dark --background tokens in globals.css.
+export const viewport: Viewport = {
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: '#ffffff' },
+    { media: '(prefers-color-scheme: dark)', color: '#0a0a0a' },
+  ],
 };
 
 /**

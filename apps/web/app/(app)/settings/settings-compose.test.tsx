@@ -37,7 +37,7 @@ vi.mock('sonner', () => ({
   },
 }));
 
-import { AccountsSection } from './page';
+import { AccountsSection } from './settings-page';
 
 const ACCOUNT: ConnectedAccount = {
   id: 'acc1',
