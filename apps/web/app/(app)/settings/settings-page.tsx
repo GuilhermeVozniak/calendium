@@ -37,12 +37,14 @@ import type {
   Provider,
   Snippet,
   Subscription,
+  TeamRole,
   UserSettings,
 } from '@calendium/shared';
 import { ApiRequestError } from '@calendium/shared';
 
 import { BookingLinks, localTimeZone, WindowsEditor } from '@/components/app/booking-links';
 import { ChipsRow } from '@/components/app/chips-row';
+import { DelegationSection } from '@/components/app/delegation';
 import { SetSwitcher } from '@/components/app/calendar/set-switcher';
 import { TemplateManager } from '@/components/app/calendar/template-manager';
 import { MeetingPolls } from '@/components/app/meeting-polls';
@@ -74,6 +76,13 @@ import {
 import { Input } from '@/components/ui/input';
 import { Kbd } from '@/components/ui/kbd';
 import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
@@ -90,6 +99,7 @@ import {
   startConnect,
 } from '@/lib/settings-data';
 import { fetchSettings, updateSettingsApi } from '@/lib/scheduling-data';
+import { getApiClient } from '@/lib/api';
 import { DEFAULT_SPLITS, orderSplits } from '@/lib/mail-utils';
 import { usePrefs, useUpdatePrefs } from '@/lib/prefs-data';
 import { useInstance } from '@/lib/use-instance';
@@ -109,6 +119,7 @@ type SettingsTab =
   | 'templates'
   | 'sets'
   | 'scheduling'
+  | 'delegation'
   | 'appearance'
   | 'mailbox'
   | 'ai'
@@ -121,6 +132,7 @@ const KNOWN_TABS: SettingsTab[] = [
   'templates',
   'sets',
   'scheduling',
+  'delegation',
   'appearance',
   'mailbox',
   'ai',
@@ -142,6 +154,7 @@ export default function SettingsPage() {
       'templates',
       'sets',
       'scheduling',
+      'delegation',
       'appearance',
       'mailbox',
       ...(aiEnabled ? (['ai'] as SettingsTab[]) : []),
@@ -189,7 +202,7 @@ export default function SettingsPage() {
       <div className="mx-auto max-w-3xl px-6 py-8">
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Accounts, snippets, templates, sets, scheduling, appearance, mailbox
+          Accounts, snippets, templates, sets, scheduling, delegation, appearance, mailbox
           {pushEnabled ? ', notifications' : ''}
           {billingEnabled ? ', and billing' : ''}.
         </p>
@@ -205,6 +218,7 @@ export default function SettingsPage() {
             <TabsTrigger value="templates">Templates</TabsTrigger>
             <TabsTrigger value="sets">Sets</TabsTrigger>
             <TabsTrigger value="scheduling">Scheduling</TabsTrigger>
+            <TabsTrigger value="delegation">Delegation</TabsTrigger>
             <TabsTrigger value="appearance">Appearance</TabsTrigger>
             <TabsTrigger value="mailbox">Mailbox</TabsTrigger>
             {aiEnabled && <TabsTrigger value="ai">AI</TabsTrigger>}
@@ -225,6 +239,9 @@ export default function SettingsPage() {
           </TabsContent>
           <TabsContent value="scheduling" className="mt-4">
             <SchedulingSection />
+          </TabsContent>
+          <TabsContent value="delegation" className="mt-4">
+            <DelegationSection />
           </TabsContent>
           <TabsContent value="appearance" className="mt-4">
             <AppearanceSection />
@@ -719,14 +736,42 @@ function htmlToText(html: string): string {
     .trim();
 }
 
-function SnippetsSection() {
+export function SnippetsSection() {
   const queryClient = useQueryClient();
   const snippetsQuery = useQuery({ queryKey: ['snippets'], queryFn: fetchSnippets });
+
+  // Teams for the create dialog's scope selector + role-aware delete on team
+  // snippets (M2.7 Task 11). Server-side authz stays authoritative — roles are
+  // only used to hide controls the server would reject.
+  const teamsQuery = useQuery({ queryKey: ['teams'], queryFn: () => getApiClient().listTeams() });
+  const teams = React.useMemo(() => teamsQuery.data ?? [], [teamsQuery.data]);
+  const meQuery = useQuery({
+    queryKey: ['me'],
+    queryFn: () => getApiClient().getMe(),
+    enabled: teams.length > 0,
+  });
+  const meId = meQuery.data?.id;
+  const teamIdsKey = teams.map((t) => t.id).join(',');
+  const rolesQuery = useQuery({
+    queryKey: ['team-roles', meId, teamIdsKey],
+    enabled: !!meId && teams.length > 0,
+    queryFn: async () => {
+      const api = getApiClient();
+      const details = await Promise.all(teams.map((t) => api.getTeam(t.id)));
+      const roles: Record<string, TeamRole> = {};
+      for (const { team, members } of details) {
+        const mine = members.find((m) => m.userId === meId);
+        if (mine) roles[team.id] = mine.role;
+      }
+      return roles;
+    },
+  });
 
   const [createOpen, setCreateOpen] = React.useState(false);
   const [name, setName] = React.useState('');
   const [shortcut, setShortcut] = React.useState('');
   const [body, setBody] = React.useState('');
+  const [teamId, setTeamId] = React.useState<string | null>(null);
 
   const create = useMutation({
     mutationFn: () =>
@@ -734,6 +779,7 @@ function SnippetsSection() {
         name: name.trim(),
         shortcut: shortcut.trim() || null,
         bodyHtml: textToHtml(body.trim()),
+        teamId,
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['snippets'] });
@@ -742,6 +788,7 @@ function SnippetsSection() {
       setName('');
       setShortcut('');
       setBody('');
+      setTeamId(null);
     },
     onError: () => toast.error('Could not create the snippet'),
   });
@@ -762,13 +809,28 @@ function SnippetsSection() {
   const personalSnippets = snippets.filter((s) => !s.teamId);
   const teamSnippets = snippets.filter((s) => Boolean(s.teamId));
 
+  // The server allows deleting a team snippet for its author or a team
+  // admin+. Authorship is not exposed over the API, so the UI hides delete on
+  // team snippets for plain members (Task 11 review); unknown roles fail open
+  // and let the server decide.
+  const canDelete = (snippet: Snippet): boolean => {
+    if (!snippet.teamId) return true;
+    const role = rolesQuery.data?.[snippet.teamId];
+    if (!role) return true;
+    return role === 'admin' || role === 'owner';
+  };
+
   const renderSnippetRow = (snippet: Snippet) => (
     <div key={snippet.id} className="flex items-center gap-3 rounded-lg border p-3">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium">{snippet.name}</span>
           {snippet.shortcut && <Kbd className="normal-case">{snippet.shortcut}</Kbd>}
-          {snippet.teamId && <Badge variant="secondary">Team</Badge>}
+          {snippet.teamId && (
+            <Badge variant="secondary">
+              {teams.find((t) => t.id === snippet.teamId)?.name ?? 'Team'}
+            </Badge>
+          )}
         </div>
         <p className="mt-0.5 truncate text-xs text-muted-foreground">
           {htmlToText(snippet.bodyHtml)}
@@ -777,16 +839,18 @@ function SnippetsSection() {
       <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
         used {snippet.usageCount}x
       </span>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-8 text-muted-foreground hover:text-destructive"
-        onClick={() => remove.mutate(snippet.id)}
-        disabled={remove.isPending}
-        aria-label={`Delete snippet ${snippet.name}`}
-      >
-        <Trash2 />
-      </Button>
+      {canDelete(snippet) && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8 text-muted-foreground hover:text-destructive"
+          onClick={() => remove.mutate(snippet.id)}
+          disabled={remove.isPending}
+          aria-label={`Delete snippet ${snippet.name}`}
+        >
+          <Trash2 />
+        </Button>
+      )}
     </div>
   );
 
@@ -864,6 +928,30 @@ function SnippetsSection() {
                 placeholder="Hi - great to meet you!"
               />
             </div>
+            {teams.length > 0 && (
+              <div className="grid gap-1.5">
+                <Label htmlFor="snippet-team">Share with</Label>
+                <Select
+                  value={teamId ?? 'personal'}
+                  onValueChange={(value) => setTeamId(value === 'personal' ? null : value)}
+                >
+                  <SelectTrigger id="snippet-team" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="personal">Personal — only you</SelectItem>
+                    {teams.map((team) => (
+                      <SelectItem key={team.id} value={team.id}>
+                        {team.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Team snippets are shared with every member; the scope is fixed at creation.
+                </p>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>

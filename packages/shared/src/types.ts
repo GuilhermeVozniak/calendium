@@ -895,3 +895,66 @@ export interface CommentInput {
   teamId: string;
   body: string;
 }
+
+// ---------------------------------------------------------------------------
+// EA delegation (M2.7 Task 15) — mirrors backend/internal/domain/delegation.go
+// and audit.go field-for-field.
+// ---------------------------------------------------------------------------
+
+/**
+ * One unit of access an assistant may exercise on behalf of a principal.
+ * Scopes are explicit and enumerated — no wildcard, no implied scope.
+ */
+export type DelegationScope = 'mail_read' | 'mail_write' | 'calendar_read' | 'calendar_write';
+
+/** Every delegation scope, for grant-dialog pickers. */
+export const DELEGATION_SCOPES: readonly DelegationScope[] = [
+  'mail_read',
+  'mail_write',
+  'calendar_read',
+  'calendar_write',
+];
+
+/**
+ * Grant lifecycle: a grant authorizes nothing until the assistant accepts it
+ * (pending → active) and nothing again once either party revokes it (terminal).
+ */
+export type DelegationStatus = 'pending' | 'active' | 'revoked';
+
+/** An explicit principal→assistant grant, limited to `scopes`. */
+export interface Delegation {
+  id: string;
+  principalId: string;
+  assistantId: string;
+  scopes: DelegationScope[];
+  status: DelegationStatus;
+  createdAt: string;
+  acceptedAt: string | null;
+  revokedAt: string | null;
+}
+
+/** GET /v1/delegations — the caller's grants, split by side. */
+export interface DelegationList {
+  /** Grants the caller gave (they are the principal). */
+  asPrincipal: Delegation[];
+  /** Grants the caller received (they are the assistant). */
+  asAssistant: Delegation[];
+}
+
+/**
+ * One append-only audit-log row: a mutation one user performed on another
+ * user's resources (every delegated mutation is recorded).
+ */
+export interface AuditEntry {
+  id: string;
+  /** Who really acted — the assistant on delegated requests. */
+  actorId: string;
+  /** Whose account was acted upon. */
+  principalId: string;
+  /** e.g. "POST /v1/mail/threads/{id}/actions". */
+  action: string;
+  resourceType: string;
+  resourceId: string;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+}
