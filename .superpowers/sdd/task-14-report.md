@@ -1,136 +1,37 @@
-# Task 14: Web compose — signature auto-apply, Smart Send nudge, Instant Intro (M2.5)
+# Task 14 Report — backend/internal/ics (minimal RFC 5545 parser, stdlib-only)
 
-## Status: Complete
+## Status: COMPLETE
 
-Branch: `worktree-agent-abdfb2284f791a670` (based on `main`, merged `feat/m2-5-compose`)
+Branch: `worktree-task-14-ics` (worktree `.claude/worktrees/task-14-ics`, based on main; `git merge feat/m2-8-integrations` reported already up to date — main contains the integrations merge; `backend/internal/domain/team.go` verified present).
 
-## Setup
+Note: this agent was killed twice mid-task (spend limit, stream stall). No prior worktree existed on reorientation, so the task was executed cleanly from scratch in a fresh isolated worktree.
 
-- `git merge feat/m2-5-compose --no-edit` — clean merge, no conflicts (50 files,
-  +4952/-36). Confirmed `packages/shared/src/mail-transforms.ts` has
-  `buildInstantIntro` and `packages/shared/src/types.ts` has `SendSuggestion`
-  (both from `58f280c`); `suggestSendTime` itself lives server-side
-  (`backend/internal/service/smartsend.go`'s `suggestFromHistogram`) and is
-  exposed to the web client as `ApiClient#getSendSuggestion` /
-  `GET /v1/mail/send-suggestion`.
-- `bun install` — 1145 packages (fresh worktree, no prior `node_modules`).
+## Produces (matches brief verbatim)
 
-## Files changed
+- `Calendar{Name, Events}` / `Event{UID, Summary, Description, Location, Start, End, AllDay, RRule, Status, LastModified}`
+- `func Parse(r io.Reader) (Calendar, error)` — tolerant; malformed VEVENTs dropped with UID via `errors.Join`
+- `func Expand(ev Event, from, to time.Time) []Event` — bounded (1000-occurrence safety valve), DAILY/WEEKLY/MONTHLY/YEARLY with INTERVAL/COUNT/UNTIL and weekly BYDAY
 
-- `apps/web/lib/use-mail.ts` — added `useSendSuggestion(email)`: a
-  React Query hook (`staleTime: 5min`, `retry: false`) that resolves to
-  `SendSuggestion | null`, treating a 404 (insufficient history — the normal
-  case) and any other failure identically as "quietly absent," never
-  inventing a time. Falls back to `mockSendSuggestion` only in `DEMO_MODE`.
-- `apps/web/lib/mail-mock.ts` — added `mockSendSuggestion(email)`: only two
-  seeded demo contacts (Sofia, Daniel) have "enough history," mirroring the
-  real 404-when-thin-data behavior; everyone else gets `null`. Also fixed a
-  pre-existing tsc break in this file (missing `reactions: []` on mock
-  `Message`s, required by the M2.5 shared-types merge) since it's in my
-  exclusive ownership.
-- `apps/web/components/app/compose.tsx` (my exclusive file):
-  - **Signature auto-apply**: a ref-tracked plain-text signature block
-    (`\n\n--\n` + `htmlToText(signatureHtml)`) is appended/swapped on
-    account selection/switch via a `useEffect` keyed on
-    `fromAccount?.signatureHtml`. `buildBodyHtml()` strips that placeholder
-    at send/draft time and appends the real rich `signatureHtml` instead
-    (`<p>--</p>${signatureHtml}`), used in both `ensureDraftId` and
-    `handleSend`.
-  - **Smart Send nudge**: `to[0]?.email` debounced 500ms into
-    `useSendSuggestion`; a dismissible chip next to Send Later reads "Best
-    time: {time} — their {morning|afternoon|evening}" (bucketed via new
-    `localTimeBucket` helper) when `confidence >= 0.3` and no `scheduledAt`
-    is set; click sets `scheduledAt`.
-- `apps/web/components/app/command-palette.tsx` — small, self-contained
-  "Instant Intro" entry in the Mail group (icon + one `CommandItem`, ~35
-  lines). Given the ownership boundary forbids touching `thread-view.tsx` /
-  the mail page, this reads the open thread itself: `useSearchParams().get('t')`
-  gated on `pathname === '/mail'`, feeds `useThreadDetail` (existing,
-  unmodified hook) and `useSelfEmails()` (existing, unmodified), calls
-  `buildInstantIntro` and either `openCompose(...)` or a "doesn't look like
-  an intro thread" toast. No thread-view keyboard shortcut was added (that
-  half of the brief belongs to whichever task owns `thread-view.tsx`).
-- `apps/web/components/app/compose.test.tsx` — fixed the `ACCOUNT` fixture
-  (missing `signatureHtml`/`autoBcc`, a pre-existing tsc break from the
-  shared-types merge) and added two new describe blocks (13 tests): account
-  signature apply/swap/absent, rich-HTML-at-send, nudge debounce, chip
-  render/click/dismiss, and confidence-below-0.3 / null (404) silence.
-- `apps/web/components/app/command-palette.test.tsx` — added mocks for
-  `next/navigation`'s `useSearchParams`, `@/lib/use-mail`'s `useThreadDetail`,
-  `@/lib/use-identity`'s `useSelfEmails`, extended the `sonner` mock with
-  `toast.error`, and a new "Instant Intro" describe block (4 tests): hidden
-  off-thread, hidden off `/mail` even with a stray thread id, dispatches a
-  prefilled compose, toasts on a non-intro thread.
+## Files
 
-## A real bug caught by TDD
-
-The first draft of the signature-swap logic set
-`appliedSignatureRef.current = nextBlock` *after* calling `setBody(prev => ...)`.
-The updater closure read `appliedSignatureRef.current` for "what to strip,"
-but by the time React actually invoked that updater, the ref had already been
-overwritten to `nextBlock` — so the strip check compared the body against the
-*new* block instead of the *old* one, silently stacking both signatures on
-every account switch. The "swaps the previous signature" test caught this
-immediately; fixed by capturing `prevBlock` in a local `const` before mutating
-the ref.
-
-## Honesty-policy notes
-
-- `useSendSuggestion` never fabricates a time: 404 and any other failure both
-  resolve to `null`; the chip only renders on a real, resolved suggestion
-  with `confidence >= 0.3`.
-- Signature text comes from the real `signatureHtml` on the selected
-  account (whatever the backend/settings surface has stored — none of it is
-  invented here); the sent body uses that same rich value, not a
-  reconstruction.
-- Instant Intro only opens a prefilled compose when `buildInstantIntro`
-  (pure, already-tested shared transform) returns non-null; otherwise a toast
-  says so plainly instead of composing a bad draft.
+- `backend/internal/ics/ics.go` — lexer: unfolding (linear-time even for pathological folds), content-line parsing (quote-aware colon/semicolon split), TEXT unescaping. Imports `_ "time/tzdata"` (stdlib) so TZID resolution works on hosts without system zoneinfo.
+- `backend/internal/ics/parse.go` — component stack (VALARM/VTIMEZONE props cannot leak into events), DATE/DATE-TIME with TZID→LoadLocation and UTC fallback, DTEND→DURATION→AllDay+1d end resolution, ISO-8601 duration subset.
+- `backend/internal/ics/rrule.go` — tolerant RRULE parse (INTERVAL clamped ≥1, bad COUNT/UNTIL/BYDAY tokens skipped, unsupported FREQ degrades to non-recurring), monthly/yearly skip normalized overflow days (Jan 31 → no Feb), UNTIL compared in UTC inclusive of equal starts, COUNT consumed from DTSTART inclusive, 200k iteration guard.
+- Tests: `ics_test.go`, `parse_test.go`, `rrule_test.go` — table-driven; fixtures `testdata/{google,outlook,holidays,folded,weekly,malformed}.ics` (Google export w/ TZID+escapes+DURATION, Outlook w/ VTIMEZONE+VALARM+unknown Windows TZID, all-day holidays w/ yearly RRULE + UTF-8, folded lines, weekly BYDAY+UNTIL, malformed feed). Hostile-input battery: binary garbage, truncated files/lines, unterminated quotes, orphan/huge folds (20k parts), 1MB lines, BEGIN floods, nested VEVENTs, bad escapes, hostile RRULEs (INTERVAL=0/negative/1e9, garbage parts) — no panics, no hangs.
 
 ## Verification (explicit exit codes)
 
-- `cd apps/web && bunx tsc --noEmit` — exit 2, but **zero errors in any file
-  this task touches**. All remaining errors are pre-existing (confirmed via
-  `git diff --stat feat/m2-5-compose -- <file>`) in files outside this task's
-  ownership boundary (`lib/settings-mock.ts`, `lib/calendar-accounts.test.ts`,
-  `components/app/calendar/conflict-warning.test.tsx`,
-  `components/app/event-dialog.test.tsx`, `components/app/thread-view.test.tsx`)
-  — the same M2.5 shared-types fallout (`ConnectedAccount` gained required
-  `signatureHtml`/`autoBcc`; `Message` gained required `reactions`) that
-  other parallel tasks own.
-- `cd apps/web && bunx vitest run` — **53 files / 719 tests passed**, exit 0
-  (91 of those in `compose.test.tsx` + `command-palette.test.tsx`, all new or
-  touched by this task). One `components/public/booking-page.test.tsx` test
-  flaked once mid-session on a `waitFor` timeout; reran 4x in isolation both
-  with and without this diff — passes every time either way, confirmed
-  unrelated (that file isn't imported by, and doesn't import, anything this
-  task touches).
-- `bunx biome check <6 touched files>` — exit 0. Fixed the one lint finding
-  introduced by my new code (unused `err` binding in `useSendSuggestion`'s
-  catch). The remaining 7 warnings biome reports in `compose.tsx`/
-  `compose.test.tsx` (autofocus, static-element-interaction, missing effect
-  deps in a pre-existing test harness) are pre-existing, confirmed via
-  `git diff feat/m2-5-compose -- apps/web/components/app/compose.tsx`.
+- `go test ./internal/ics/...` — 95 passed, exit 0 (red-first confirmed before implementation)
+- `gofmt -l internal/ics` — clean, exit 0; `go vet ./internal/ics/...` — exit 0; `golangci-lint run ./internal/ics/...` — "No issues found", exit 0
+- Full `go build ./... && go test ./...` — 2,190 passed in 19 packages, exit 0
 
-## Ownership-boundary compliance
+## Constraints honored
 
-- Did not touch `thread-view.tsx`, the mail page, settings, or any
-  `ConnectedAccount`/`Message` literal owned by other parallel tasks.
-- `command-palette.tsx` gets one small, distinct hunk (new imports + one
-  `CommandItem` + local state), as explicitly permitted by the brief's
-  "(a palette entry for Instant Intro is OK if briefed — small distinct
-  hunk)" carve-out.
-- `use-mail.ts` gets one new exported hook (`useSendSuggestion`) plus its
-  import wiring — no changes to any existing hook.
+Pure stdlib (only `time/tzdata` blank import, which is stdlib). No network, no migration, no service wiring, no files outside `backend/internal/ics/**` (plus this report). Merge into feat/m2-8-integrations will be trivially clean.
 
 ## Concerns
 
-- The brief also describes a thread-view keyboard shortcut for Instant
-  Intro; per the explicit ownership boundary ("Do NOT touch ... thread
-  view") this was intentionally not implemented here. The command-palette
-  entry covers the same user-facing action end-to-end (visible only on an
-  open thread, builds and opens the same prefilled compose), so the feature
-  is reachable, just not bound to a bare keystroke from `thread-view.tsx`.
-- Whole-repo `tsc`/`biome` won't be fully green until the other parallel
-  tasks land their own fixes to the shared-types fallout listed above — not
-  a regression from this commit.
+- Floating (no-TZID, no-Z) DATE-TIMEs are treated as UTC — acceptable for public feeds; Task 15 can revisit if a feed-local default zone is ever wanted.
+- Weekly BYDAY expansion assumes DTSTART's weekday is in the BYDAY set (true for real feeds); a DTSTART outside the set is simply not emitted rather than force-included per strict RFC reading.
+- The 1000-occurrence cap applies to *returned* occurrences; pre-window occurrences still consume COUNT correctly.
+- This file previously held a stale M2.5 Task 14 report; overwritten intentionally per brief (worktree copy).
