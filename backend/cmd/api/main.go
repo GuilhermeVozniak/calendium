@@ -24,6 +24,7 @@ import (
 	"calendium/backend/internal/adapter/out/msgraph"
 	"calendium/backend/internal/adapter/out/openrouter"
 	"calendium/backend/internal/adapter/out/postgres"
+	"calendium/backend/internal/adapter/out/push"
 	"calendium/backend/internal/adapter/out/stripeapi"
 	"calendium/backend/internal/adapter/out/unsubscribe"
 	"calendium/backend/internal/config"
@@ -205,13 +206,30 @@ func run(logger *slog.Logger) error {
 		AppBaseURL:  cfg.Instance.AppBaseURL,
 	})
 
-	// M2.7 Task 7: shared conversations (tokenized live thread shares).
+	// Realtime collaboration bus (M2.7): one in-process bus shared by the
+	// SSE stream and the collab service so comment/share events reach
+	// subscribers.
+	bus := eventbus.New()
+	// Mention pushes reuse the worker's dispatcher; unconfigured push
+	// degrades to nil (mention pushes silently disabled).
+	var pushSender port.PushSender
+	if cfg.Push != (config.Push{}) {
+		pushSender = push.NewDispatcher(cfg.Push, hc)
+	}
+
+	// M2.7 collaboration: shared conversations (Task 7) + team comments
+	// with @mentions (Task 9), one service behind port.CollabService.
 	collab := service.NewCollabService(service.CollabServiceDeps{
 		Shares:   postgres.NewThreadShareRepo(store),
+		Comments: postgres.NewCommentRepo(store),
 		Teams:    postgres.NewTeamRepo(store),
 		Threads:  store.Threads(),
 		Messages: store.Messages(),
 		Accounts: store.Accounts(),
+		Users:    store.Users(),
+		Devices:  store.Devices(),
+		Push:     pushSender,
+		Bus:      bus,
 		Subs:     store.Subscriptions(),
 		Clock:    clock,
 		SelfHost: cfg.Instance.SelfHosted,
@@ -283,7 +301,7 @@ func run(logger *slog.Logger) error {
 		// stream scopes each subscriber to user:<id> plus the caller's real
 		// team:<id> memberships resolved through Teams.
 		Teams:              teams,
-		Events:             eventbus.New(),
+		Events:             bus,
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 	})

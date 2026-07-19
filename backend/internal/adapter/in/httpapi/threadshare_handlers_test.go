@@ -43,6 +43,25 @@ type fakeCollabService struct {
 	resolveErr       error
 	gotResolveToken  string
 	gotResolveViewer *string
+
+	// --- comment side (Task 9) ---
+	commentListRet []domain.Comment
+	commentListErr error
+	gotList        struct{ userID, threadID, teamID string }
+
+	addRet      domain.Comment
+	addErr      error
+	gotAddUser  string
+	gotThreadID string
+	gotAddInput port.CommentInput
+
+	updateRet    domain.Comment
+	updateErr    error
+	gotUpdateID  string
+	gotUpdateStr string
+
+	deleteErr error
+	gotDelete struct{ userID, commentID string }
 }
 
 var _ port.CollabService = (*fakeCollabService)(nil)

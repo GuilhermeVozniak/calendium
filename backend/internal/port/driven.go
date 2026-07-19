@@ -505,6 +505,21 @@ type ThreadShareRepo interface {
 	Revoke(ctx context.Context, id string, at time.Time) error
 }
 
+// --- Team comments (M2.7 Task 9) ---
+
+// CommentRepo persists team comments on mail threads. Soft-deleted rows
+// (deleted_at set) are invisible to every read: a soft-deleted id is
+// indistinguishable from a missing one (ErrNotFound).
+type CommentRepo interface {
+	Create(ctx context.Context, c domain.Comment) (domain.Comment, error)
+	GetByID(ctx context.Context, id string) (domain.Comment, error)
+	// ListByThreadTeam returns the live comments one team sees on one
+	// thread, oldest first.
+	ListByThreadTeam(ctx context.Context, threadID, teamID string) ([]domain.Comment, error)
+	Update(ctx context.Context, c domain.Comment) error
+	SoftDelete(ctx context.Context, id string, at time.Time) error
+}
+
 // ---------------------------------------------------------------------------
 // Gateways (implemented by internal/adapter/out/{googleapi,msgraph,stripeapi,openrouter,push,authjwt})
 // ---------------------------------------------------------------------------

@@ -11,49 +11,8 @@ import (
 	"calendium/backend/internal/port"
 )
 
-// CollabServiceDeps wires a CollabService (M2.7 Task 7: shared
-// conversations; grown by comments/activity in Tasks 9-10).
-type CollabServiceDeps struct {
-	Shares   port.ThreadShareRepo
-	Teams    port.TeamRepo
-	Threads  port.ThreadRepo
-	Messages port.MessageRepo
-	Accounts port.AccountRepo
-	Subs     port.SubscriptionRepo
-	Clock    port.Clock
-	// SelfHost unlocks the paywall (open-core self-hosted mode).
-	SelfHost bool
-}
-
-// CollabService implements port.CollabService. Authorization doctrine:
-// sharing/listing/revoking require thread ownership (foreign threads are
-// indistinguishable from missing ones — 404, never 403); team shares
-// require the sharer's membership of the target team (non-members get
-// ErrNotFound so team existence never leaks); viewers of unknown, revoked,
-// or expired tokens uniformly get ErrNotFound (no oracle).
-type CollabService struct {
-	ent      entitlement
-	shares   port.ThreadShareRepo
-	teams    port.TeamRepo
-	threads  port.ThreadRepo
-	messages port.MessageRepo
-	accounts port.AccountRepo
-	clock    port.Clock
-}
-
-var _ port.CollabService = (*CollabService)(nil)
-
-func NewCollabService(d CollabServiceDeps) *CollabService {
-	return &CollabService{
-		ent:      entitlement{subs: d.Subs, clock: d.Clock, selfHost: d.SelfHost},
-		shares:   d.Shares,
-		teams:    d.Teams,
-		threads:  d.Threads,
-		messages: d.Messages,
-		accounts: d.Accounts,
-		clock:    d.Clock,
-	}
-}
+// The CollabService struct, deps, and constructor live in collab.go; this
+// file holds the share-side methods (M2.7 Task 7: shared conversations).
 
 // shareTokenBytes sizes the raw link token (32 random bytes, 64 hex chars —
 // the team-invitation precedent).

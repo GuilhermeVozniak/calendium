@@ -47,8 +47,8 @@ type Deps struct {
 	// resolves the caller's memberships so the SSE stream subscribes to the
 	// caller's team topics.
 	Teams port.TeamService
-	// Collab is the M2.7 shared-conversations surface (tokenized live
-	// thread shares; comments/activity grow it in later tasks).
+	// Collab is the M2.7 collaboration surface (tokenized live thread
+	// shares + team thread-comments). When nil those routes answer 501.
 	Collab port.CollabService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
@@ -244,8 +244,12 @@ func New(deps Deps) http.Handler {
 	authed("DELETE /v1/teams/{id}/invitations/{invitationId}", s.handleRevokeInvitation)
 	authed("POST /v1/invitations/accept", s.handleAcceptInvitation)
 
-	// M2.7: realtime collaboration stream (SSE).
+	// M2.7: realtime collaboration stream (SSE) and team thread-comments.
 	authed("GET /v1/collab/stream", s.handleCollabStream)
+	authed("GET /v1/mail/threads/{id}/comments", s.handleListComments)
+	authed("POST /v1/mail/threads/{id}/comments", s.handleAddComment)
+	authed("PATCH /v1/comments/{id}", s.handleUpdateComment)
+	authed("DELETE /v1/comments/{id}", s.handleDeleteComment)
 
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins)

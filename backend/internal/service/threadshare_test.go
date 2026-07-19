@@ -91,11 +91,11 @@ func (b *fakeCollabBus) Subscribe([]string) (<-chan port.CollabEvent, func()) {
 
 // --- fixture ------------------------------------------------------------------
 
-// collabFixture wires a CollabService over the shared package fakes:
+// threadShareFixture wires a CollabService over the shared package fakes:
 // thread t1 (account a1, user u1, one normal + one Bcc-carrying + one draft
 // message), foreign thread t2 (account a2, user u2), and team team1 whose
 // members are u1 (owner) and u3 (member) — u2 is NOT a member.
-type collabFixture struct {
+type threadShareFixture struct {
 	svc      *CollabService
 	shares   *fakeThreadShareRepo
 	teams    *fakeTeamRepo
@@ -106,7 +106,7 @@ type collabFixture struct {
 	base     time.Time
 }
 
-func newCollabFixture(t *testing.T) *collabFixture {
+func newThreadShareFixture(t *testing.T) *threadShareFixture {
 	t.Helper()
 	ctx := context.Background()
 	base := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
@@ -171,11 +171,11 @@ func newCollabFixture(t *testing.T) *collabFixture {
 		Clock:    clock,
 		SelfHost: true, // paywall exercised in its own test
 	})
-	return &collabFixture{svc: svc, shares: shares, teams: teams, threads: threads,
+	return &threadShareFixture{svc: svc, shares: shares, teams: teams, threads: threads,
 		messages: messages, accounts: accounts, clock: clock, base: base}
 }
 
-func (f *collabFixture) share(t *testing.T, userID, threadID string, in port.ShareThreadInput) (domain.ThreadShare, string) {
+func (f *threadShareFixture) share(t *testing.T, userID, threadID string, in port.ShareThreadInput) (domain.ThreadShare, string) {
 	t.Helper()
 	sh, raw, err := f.svc.ShareThread(context.Background(), userID, threadID, in)
 	if err != nil {
@@ -187,7 +187,7 @@ func (f *collabFixture) share(t *testing.T, userID, threadID string, in port.Sha
 // --- tests -------------------------------------------------------------------
 
 func TestCollabShareOwnThread(t *testing.T) {
-	f := newCollabFixture(t)
+	f := newThreadShareFixture(t)
 	ctx := context.Background()
 
 	sh, raw := f.share(t, "u1", "t1", port.ShareThreadInput{Audience: domain.ShareAudienceExternal})
@@ -218,7 +218,7 @@ func TestCollabShareOwnThread(t *testing.T) {
 }
 
 func TestCollabShareForeignOrMissingThreadNotFound(t *testing.T) {
-	f := newCollabFixture(t)
+	f := newThreadShareFixture(t)
 	ctx := context.Background()
 	in := port.ShareThreadInput{Audience: domain.ShareAudienceExternal}
 
@@ -231,7 +231,7 @@ func TestCollabShareForeignOrMissingThreadNotFound(t *testing.T) {
 }
 
 func TestCollabShareValidation(t *testing.T) {
-	f := newCollabFixture(t)
+	f := newThreadShareFixture(t)
 	ctx := context.Background()
 
 	if _, _, err := f.svc.ShareThread(ctx, "u1", "t1", port.ShareThreadInput{Audience: "everyone"}); !errors.Is(err, domain.ErrValidation) {
@@ -250,7 +250,7 @@ func TestCollabShareValidation(t *testing.T) {
 }
 
 func TestCollabShareTeamRequiresMembership(t *testing.T) {
-	f := newCollabFixture(t)
+	f := newThreadShareFixture(t)
 	ctx := context.Background()
 
 	// u2 owns t2 but is not a member of team1: existence never leaks.
@@ -267,7 +267,7 @@ func TestCollabShareTeamRequiresMembership(t *testing.T) {
 }
 
 func TestCollabSharePaywalled(t *testing.T) {
-	f := newCollabFixture(t)
+	f := newThreadShareFixture(t)
 	gated := NewCollabService(CollabServiceDeps{
 		Shares: f.shares, Teams: f.teams, Threads: f.threads,
 		Messages: f.messages, Accounts: f.accounts,
@@ -280,7 +280,7 @@ func TestCollabSharePaywalled(t *testing.T) {
 }
 
 func TestCollabShareExternalViewStripsPrivateData(t *testing.T) {
-	f := newCollabFixture(t)
+	f := newThreadShareFixture(t)
 	ctx := context.Background()
 	_, raw := f.share(t, "u1", "t1", port.ShareThreadInput{Audience: domain.ShareAudienceExternal})
 
@@ -317,7 +317,7 @@ func TestCollabShareExternalViewStripsPrivateData(t *testing.T) {
 }
 
 func TestCollabShareTeamViewMembership(t *testing.T) {
-	f := newCollabFixture(t)
+	f := newThreadShareFixture(t)
 	ctx := context.Background()
 	_, raw := f.share(t, "u1", "t1", port.ShareThreadInput{Audience: domain.ShareAudienceTeam, TeamID: "team1"})
 
@@ -337,7 +337,7 @@ func TestCollabShareTeamViewMembership(t *testing.T) {
 }
 
 func TestCollabShareRevokedExpiredUnknownAreUniform404(t *testing.T) {
-	f := newCollabFixture(t)
+	f := newThreadShareFixture(t)
 	ctx := context.Background()
 
 	if _, err := f.svc.GetSharedThread(ctx, "no-such-token", nil); !errors.Is(err, domain.ErrNotFound) {
@@ -364,7 +364,7 @@ func TestCollabShareRevokedExpiredUnknownAreUniform404(t *testing.T) {
 }
 
 func TestCollabShareListAndRevokeRequireOwnership(t *testing.T) {
-	f := newCollabFixture(t)
+	f := newThreadShareFixture(t)
 	ctx := context.Background()
 	sh, _ := f.share(t, "u1", "t1", port.ShareThreadInput{Audience: domain.ShareAudienceExternal})
 
@@ -394,7 +394,7 @@ func TestCollabShareListAndRevokeRequireOwnership(t *testing.T) {
 }
 
 func TestCollabShareResolveShare(t *testing.T) {
-	f := newCollabFixture(t)
+	f := newThreadShareFixture(t)
 	ctx := context.Background()
 	sh, raw := f.share(t, "u1", "t1", port.ShareThreadInput{Audience: domain.ShareAudienceTeam, TeamID: "team1"})
 
