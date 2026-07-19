@@ -231,6 +231,55 @@ describe('removeForDraft', () => {
     await outbox.removeForDraft('d1');
     expect(outbox.pending.map((e) => e.action.kind)).toEqual(['draft_send', 'thread_open']);
   });
+
+  it('also removes the queued thread_reminder paired with the send when given its thread', async () => {
+    const outbox = await initOutbox();
+    await outbox.enqueue({ kind: 'draft_save', draftId: 'd1', accountId: 'acc1', input: DRAFT_INPUT });
+    await outbox.enqueue({ kind: 'draft_send', draftId: 'd1' });
+    await outbox.enqueue({ kind: 'thread_reminder', threadId: 't1', remindAt: '2026-07-21T09:00:00Z' });
+    await outbox.enqueue({ kind: 'thread_reminder', threadId: 't-other', remindAt: '2026-07-22T09:00:00Z' });
+
+    await outbox.removeForDraft('d1', 't1');
+    expect(outbox.pending).toHaveLength(1);
+    expect(outbox.pending[0]?.action).toMatchObject({ kind: 'thread_reminder', threadId: 't-other' });
+  });
+
+  it('leaves reminders untouched when no paired thread is given', async () => {
+    const outbox = await initOutbox();
+    await outbox.enqueue({ kind: 'draft_send', draftId: 'd1' });
+    await outbox.enqueue({ kind: 'thread_reminder', threadId: 't1', remindAt: '2026-07-21T09:00:00Z' });
+
+    await outbox.removeForDraft('d1');
+    expect(outbox.pending.map((e) => e.action.kind)).toEqual(['thread_reminder']);
+  });
+});
+
+describe('clear', () => {
+  it('drops every entry, persists the empty queue, and notifies subscribers', async () => {
+    const storage = new MemStorage();
+    const outbox = await initOutbox(storage);
+    await outbox.enqueue({ kind: 'thread_action', threadId: 't1', action: 'archive' });
+    await outbox.enqueue({ kind: 'thread_open', threadId: 't2' });
+    const seen: number[] = [];
+    outbox.subscribe((entries) => seen.push(entries.length));
+
+    await outbox.clear();
+    expect(outbox.pending).toHaveLength(0);
+    expect(outbox.queuedCount).toBe(0);
+    expect(storage.data).toEqual([]);
+    expect(seen).toEqual([0]);
+  });
+
+  it('a replay after clear sends nothing (sign-out safety)', async () => {
+    const outbox = await initOutbox();
+    await outbox.enqueue({ kind: 'thread_action', threadId: 't1', action: 'archive' });
+    await outbox.clear();
+
+    const { methods, client } = fakeClient();
+    const report = await outbox.replay(client);
+    expect(report.replayed).toHaveLength(0);
+    expect(methods.actOnThread).not.toHaveBeenCalled();
+  });
 });
 
 describe('dismiss', () => {

@@ -10,7 +10,7 @@ import { Loader2 } from 'lucide-react';
 import App from './App';
 import { useSession } from './lib/auth';
 import { initNamedTheme } from './lib/named-theme';
-import { startOutboxReplay } from './lib/offline';
+import { QUERY_CACHE_STORAGE_KEY, startOutboxReplay } from './lib/offline';
 import { ServerConfigProvider, useServerConfig } from './lib/server-config';
 import { ConnectView } from './views/ConnectView';
 import { SignInView } from './views/SignInView';
@@ -53,7 +53,7 @@ const queryClient = new QueryClient({
 // same KV that backs the outbox also backs the query-cache persister.
 const persister = createAsyncStoragePersister({
   storage: createIndexedDbKv(),
-  key: 'calendium-query-cache',
+  key: QUERY_CACHE_STORAGE_KEY,
 });
 
 // Replays queued offline actions now (if online) and on every reconnect.

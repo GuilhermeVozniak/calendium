@@ -37,6 +37,7 @@ import { ApiRequestError } from '@calendium/shared';
 import { QueryClient } from '@tanstack/react-query';
 import { Alert, AppState } from 'react-native';
 import {
+  clearOfflineState,
   generateOutboxId,
   getOutbox,
   isNetworkError,
@@ -321,5 +322,43 @@ describe('startOutboxReplay', () => {
 
     expect(mockActOnThread).not.toHaveBeenCalled();
     expect(getOutbox().queuedCount).toBe(1);
+  });
+});
+
+describe('clearOfflineState (sign-out)', () => {
+  it('wipes the persisted outbox key and empties the in-memory queue', async () => {
+    await queueIfOffline(networkFailure(), {
+      kind: 'thread_action',
+      threadId: 'thr_20',
+      action: 'archive',
+    });
+    expect(getOutbox().queuedCount).toBe(1);
+    expect(await AsyncStorage.getItem(OUTBOX_KEY)).not.toBeNull();
+
+    await clearOfflineState();
+
+    expect(getOutbox().queuedCount).toBe(0);
+    expect(await AsyncStorage.getItem(OUTBOX_KEY)).toBeNull();
+  });
+
+  it('a replay trigger after sign-out sends nothing', async () => {
+    mockActOnThread.mockResolvedValue({});
+    await queueIfOffline(networkFailure(), {
+      kind: 'thread_action',
+      threadId: 'thr_21',
+      action: 'archive',
+    });
+    await clearOfflineState();
+
+    const client = new QueryClient();
+    const invalidateSpy = jest.spyOn(client, 'invalidateQueries').mockResolvedValue();
+    const stop = startOutboxReplay(client);
+    await flush();
+    networkListeners[0]?.({ isConnected: true, isInternetReachable: true });
+    await flush();
+
+    expect(mockActOnThread).not.toHaveBeenCalled();
+    expect(invalidateSpy).not.toHaveBeenCalled();
+    stop();
   });
 });

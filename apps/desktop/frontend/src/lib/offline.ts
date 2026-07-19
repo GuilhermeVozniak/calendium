@@ -9,6 +9,7 @@ import type { OutboxAction, OutboxEntry } from '@calendium/shared';
 import {
   ApiRequestError,
   LOCAL_DRAFT_PREFIX,
+  OUTBOX_STORAGE_KEY,
   Outbox,
   createIndexedDbKv,
   createKvOutboxStorage,
@@ -43,6 +44,38 @@ export function isNetworkError(err: unknown): boolean {
 /** Client-side id for a draft created while offline; replay swaps in the server id. */
 export function newLocalDraftId(): string {
   return `${LOCAL_DRAFT_PREFIX}${crypto.randomUUID()}`;
+}
+
+/** IndexedDB key the react-query persister writes under (main.tsx). */
+export const QUERY_CACHE_STORAGE_KEY = 'calendium-query-cache';
+
+/** localStorage key backing the persisted active-account selection (InboxView). */
+const ACTIVE_ACCOUNT_STORAGE_KEY = 'calendium.activeAccountId';
+
+/**
+ * Sign-out hygiene: wipe the previous user's offline state from this device —
+ * the durable outbox and persisted query cache in IndexedDB, the
+ * active-account selection in localStorage, and the in-memory outbox (so a
+ * replay firing mid-sign-out has nothing left to send). Best-effort by
+ * design: a broken storage layer must never block sign-out.
+ */
+export async function clearOfflineState(): Promise<void> {
+  try {
+    if (initPromise) {
+      const outbox = await initPromise;
+      await outbox.clear();
+    }
+    const kv = createIndexedDbKv();
+    await kv.removeItem(OUTBOX_STORAGE_KEY);
+    await kv.removeItem(QUERY_CACHE_STORAGE_KEY);
+  } catch (err) {
+    console.warn('calendium: failed to clear offline storage on sign-out', err);
+  }
+  try {
+    window.localStorage.removeItem(ACTIVE_ACCOUNT_STORAGE_KEY);
+  } catch {
+    // localStorage unavailable — nothing persisted there to clear.
+  }
 }
 
 // ---------------------------------------------------------------------------

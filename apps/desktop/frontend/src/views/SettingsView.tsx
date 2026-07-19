@@ -26,6 +26,7 @@ import { type ReactNode, useEffect, useState } from 'react';
 
 import { api, apiConfigured, orMock } from '@/lib/api';
 import { clearStoredToken, signOut } from '@/lib/auth';
+import { clearOfflineState } from '@/lib/offline';
 import { htmlToText, toHtml } from '@/lib/compose';
 import {
   createMockClassifier,
@@ -601,7 +602,9 @@ export function SettingsView() {
 
   function handleSignOut() {
     if (demoMode) exitDemo();
-    else void signOut();
+    // Clear the previous user's cached mail + queued outbox regardless of
+    // whether the server-side sign-out call succeeded.
+    else void signOut().finally(() => void clearOfflineState());
   }
 
   function handleSwitchServer() {

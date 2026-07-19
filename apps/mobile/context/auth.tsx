@@ -2,6 +2,7 @@ import type React from 'react';
 import { createContext, useCallback, useEffect, useState } from 'react';
 import { unregisterPushDevice } from '@/hooks/use-push-registration';
 import type { AuthUser } from '@/lib/auth-client';
+import { clearOfflineState } from '@/lib/offline';
 import { queryClient } from '@/lib/query-client';
 import { useServerConfig } from '@/lib/server-config';
 import { Alert } from 'react-native';
@@ -146,8 +147,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setUser(null);
       // Drop the previous account's cached mail/calendar so the next sign-in
-      // on this device never briefly renders someone else's data.
+      // on this device never briefly renders someone else's data — and the
+      // durable offline outbox, so queued actions never replay as the next user.
       queryClient.clear();
+      await clearOfflineState();
     }
   };
 

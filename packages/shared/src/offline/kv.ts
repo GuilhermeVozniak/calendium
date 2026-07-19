@@ -97,7 +97,9 @@ export function createMemoryKv(): AsyncKeyValueStore {
   };
 }
 
-const OUTBOX_KEY = 'outbox:v1';
+/** The KV key the outbox persists under — exported so sign-out flows can
+ *  remove the previous user's queue from disk. */
+export const OUTBOX_STORAGE_KEY = 'outbox:v1';
 
 /** OutboxStorage over any KV: JSON array under key 'outbox:v1'.
  *  Corrupt/unparseable payloads load as [] (never crash the app over cache);
@@ -105,7 +107,7 @@ const OUTBOX_KEY = 'outbox:v1';
 export function createKvOutboxStorage(kv: AsyncKeyValueStore): OutboxStorage {
   return {
     async load() {
-      const raw = await kv.getItem(OUTBOX_KEY);
+      const raw = await kv.getItem(OUTBOX_STORAGE_KEY);
       if (raw === null) return [];
       try {
         const parsed: unknown = JSON.parse(raw);
@@ -115,7 +117,7 @@ export function createKvOutboxStorage(kv: AsyncKeyValueStore): OutboxStorage {
       }
     },
     save(entries) {
-      return kv.setItem(OUTBOX_KEY, JSON.stringify(entries));
+      return kv.setItem(OUTBOX_STORAGE_KEY, JSON.stringify(entries));
     },
   };
 }

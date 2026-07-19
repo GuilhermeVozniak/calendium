@@ -3,6 +3,7 @@
 import {
   ApiRequestError,
   LOCAL_DRAFT_PREFIX,
+  OUTBOX_STORAGE_KEY,
   Outbox,
   createIndexedDbKv,
   createKvOutboxStorage,
@@ -14,6 +15,10 @@ import { toast } from 'sonner';
 
 import { getApiClient } from '@/lib/api';
 import { isOnline, subscribeOnline } from '@/lib/offline/connectivity';
+import { ACTIVE_ACCOUNT_STORAGE_KEY } from '@/lib/use-accounts';
+
+/** IndexedDB key the react-query persister writes under (components/providers). */
+export const QUERY_CACHE_STORAGE_KEY = 'rq:v1';
 
 /**
  * App-level outbox wiring (M2.6 Task 4): a durable, IndexedDB-backed queue of
@@ -72,8 +77,36 @@ export async function queueAction(
   opts?: { silent?: boolean }
 ): Promise<void> {
   const outbox = await ready();
-  await outbox.enqueue(action);
-  if (!opts?.silent) toast('Offline — action queued');
+  const entry = await outbox.enqueue(action);
+  // enqueue() returns null when the action coalesced away (e.g. star then
+  // unstar cancel out) — nothing is queued, so saying "queued" would be a lie.
+  if (entry !== null && !opts?.silent) toast('Offline — action queued');
+}
+
+/**
+ * Sign-out hygiene: wipe every piece of the previous user's offline state on
+ * this device — the durable outbox and persisted query cache in IndexedDB,
+ * the active-account selection in localStorage, and the in-memory outbox
+ * (so a replay trigger racing sign-out has nothing left to send).
+ * Best-effort by design: a broken storage layer must never block sign-out.
+ */
+export async function clearOfflineState(): Promise<void> {
+  try {
+    if (outboxInstance) {
+      await outboxReady;
+      await outboxInstance.clear();
+    }
+    const kv = createIndexedDbKv();
+    await kv.removeItem(OUTBOX_STORAGE_KEY);
+    await kv.removeItem(QUERY_CACHE_STORAGE_KEY);
+  } catch (err) {
+    console.warn('calendium: failed to clear offline storage on sign-out', err);
+  }
+  try {
+    window.localStorage.removeItem(ACTIVE_ACCOUNT_STORAGE_KEY);
+  } catch {
+    // localStorage unavailable — nothing persisted there to clear.
+  }
 }
 
 /** Client-generated id for drafts created offline; replay swaps in the server id. */
@@ -120,7 +153,9 @@ export function startOutboxReplay(queryClient: QueryClient): () => void {
       const outbox = await ready();
       if (outbox.queuedCount === 0) return;
       const report = await outbox.replay(getApiClient());
-      if (report.replayed.length > 0 || report.conflicts.length > 0) {
+      // Failed entries count too: their optimistic patch is stale and must
+      // roll back to server truth even though nothing was accepted.
+      if (report.replayed.length > 0 || report.conflicts.length > 0 || report.failed.length > 0) {
         void queryClient.invalidateQueries({ queryKey: ['threads'] });
         void queryClient.invalidateQueries({ queryKey: ['thread'] });
         void queryClient.invalidateQueries({ queryKey: ['drafts'] });

@@ -147,16 +147,40 @@ export class Outbox {
     return entry;
   }
 
-  /** Drop queued save/send entries for a draft (undo of a queued send). */
-  async removeForDraft(draftId: string): Promise<void> {
-    this.entries = this.entries.filter(
-      (e) =>
-        !(
-          (e.action.kind === 'draft_save' || e.action.kind === 'draft_send') &&
-          e.action.draftId === draftId &&
-          e.status === 'queued'
-        )
-    );
+  /**
+   * Drop queued save/send entries for a draft (undo of a queued send). When
+   * the send was queued together with a reply reminder (compose's offline
+   * pairing), pass that thread's id so the queued thread_reminder is undone
+   * with it — mirroring what an online send-undo rolls back.
+   */
+  async removeForDraft(draftId: string, pairedReminderThreadId?: string): Promise<void> {
+    this.entries = this.entries.filter((e) => {
+      if (e.status !== 'queued') return true;
+      if (
+        (e.action.kind === 'draft_save' || e.action.kind === 'draft_send') &&
+        e.action.draftId === draftId
+      ) {
+        return false;
+      }
+      if (
+        pairedReminderThreadId !== undefined &&
+        e.action.kind === 'thread_reminder' &&
+        e.action.threadId === pairedReminderThreadId
+      ) {
+        return false;
+      }
+      return true;
+    });
+    await this.persist();
+  }
+
+  /**
+   * Sign-out: drop every entry (any status) and persist the empty queue so
+   * nothing queued by the previous user can replay for — or leak to — the
+   * next sign-in on this device.
+   */
+  async clear(): Promise<void> {
+    this.entries = [];
     await this.persist();
   }
 

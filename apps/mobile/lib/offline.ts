@@ -1,6 +1,7 @@
 import { api } from '@/lib/api';
 import {
   ApiRequestError,
+  OUTBOX_STORAGE_KEY,
   Outbox,
   createKvOutboxStorage,
   type OutboxAction,
@@ -54,6 +55,24 @@ export function outboxReady(): Promise<void> {
 export function resetOutboxForTests(): void {
   outbox = null;
   ready = null;
+}
+
+/**
+ * Sign-out hygiene: empty the in-memory outbox (so a replay trigger racing
+ * sign-out has nothing left to send for the previous user) and remove its
+ * persisted AsyncStorage key. Best-effort by design — a broken storage layer
+ * must never block sign-out.
+ */
+export async function clearOfflineState(): Promise<void> {
+  try {
+    if (outbox) {
+      await outboxReady();
+      await outbox.clear();
+    }
+    await AsyncStorage.removeItem(OUTBOX_STORAGE_KEY);
+  } catch (err) {
+    console.warn('calendium: failed to clear offline outbox on sign-out', err);
+  }
 }
 
 /**

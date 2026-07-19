@@ -414,16 +414,20 @@ function ComposeForm({
    */
   async function queueOfflineSend(input: DraftInput): Promise<void> {
     const draftId = liveDraftId ?? newLocalDraftId();
+    // When a reply reminder rides along with the send, remember its thread so
+    // undo removes the paired queued thread_reminder too — an undone send
+    // must not leave its reminder behind.
+    const reminderThreadId = remindAt && initial?.threadId ? initial.threadId : undefined;
     await queueAction(
       { kind: 'draft_save', draftId, accountId: fromAccountId, input },
       { silent: true }
     );
     await queueAction({ kind: 'draft_send', draftId }, { silent: true });
-    if (remindAt && initial?.threadId) {
+    if (reminderThreadId && remindAt) {
       await queueAction(
         {
           kind: 'thread_reminder',
-          threadId: initial.threadId,
+          threadId: reminderThreadId,
           remindAt: remindAt.when.toISOString(),
         },
         { silent: true }
@@ -435,7 +439,7 @@ function ComposeForm({
         label: 'Undo',
         onClick: () =>
           void getOutbox()
-            .removeForDraft(draftId)
+            .removeForDraft(draftId, reminderThreadId)
             .then(() => toast.success('Queued send cancelled.')),
       },
     });

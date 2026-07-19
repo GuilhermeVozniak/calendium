@@ -193,6 +193,50 @@ describe('startOutboxReplay', () => {
   });
 });
 
+describe('clearOfflineState', () => {
+  it('sign-out wipes the outbox + query-cache keys, active account, and the in-memory queue', async () => {
+    const offline = await loadOffline();
+    const kv = createIndexedDbKv();
+    await kv.setItem(offline.QUERY_CACHE_STORAGE_KEY, '{"cached":"prior-user-mail"}');
+    window.localStorage.setItem('calendium.activeAccountId', 'acc1');
+    const outbox = await offline.getOutbox();
+    await outbox.enqueue({ kind: 'thread_action', threadId: 't1', action: 'archive' });
+    expect(outbox.queuedCount).toBe(1);
+
+    await offline.clearOfflineState();
+
+    expect(outbox.queuedCount).toBe(0);
+    expect(await kv.getItem('outbox:v1')).toBeNull();
+    expect(await kv.getItem(offline.QUERY_CACHE_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem('calendium.activeAccountId')).toBeNull();
+  });
+
+  it('a replay trigger after sign-out sends nothing', async () => {
+    const offline = await loadOffline();
+    const outbox = await offline.getOutbox();
+    await outbox.enqueue({ kind: 'thread_action', threadId: 't1', action: 'archive' });
+    await offline.clearOfflineState();
+
+    const queryClient = stubQueryClient();
+    const stop = offline.startOutboxReplay(queryClient as never);
+    window.dispatchEvent(new Event('online'));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(mocks.actOnThread).not.toHaveBeenCalled();
+    expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it('never throws when storage is unavailable (sign-out must still complete)', async () => {
+    const offline = await loadOffline();
+    globalThis.indexedDB = {
+      open() {
+        throw new Error('storage gone');
+      },
+    } as unknown as IDBFactory;
+    await expect(offline.clearOfflineState()).resolves.toBeUndefined();
+  });
+});
+
 describe('persistence across reloads', () => {
   it('queued triage survives a simulated reload (new Outbox over the same storage)', async () => {
     const offline = await loadOffline();

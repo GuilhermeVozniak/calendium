@@ -56,7 +56,7 @@ import { Kbd } from '@/components/ui/kbd';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { authClient, signOut } from '@/lib/auth-client';
 import { DEMO_MODE } from '@/lib/demo';
-import { startOutboxReplay } from '@/lib/offline/queue';
+import { clearOfflineState, startOutboxReplay } from '@/lib/offline/queue';
 import { accountSwitchShortcuts, useChords, useShortcuts } from '@/lib/shortcuts';
 import { ActiveAccountProvider, useActiveAccount } from '@/lib/use-accounts';
 import { useApiOnline } from '@/lib/use-mail';
@@ -396,6 +396,8 @@ function UserMenu({ user }: { user: SessionUser | null }) {
             className="gap-2"
             onSelect={async () => {
               await signOut();
+              // Never leave the previous user's mail/outbox on this device.
+              await clearOfflineState();
               router.replace('/signin');
             }}
           >

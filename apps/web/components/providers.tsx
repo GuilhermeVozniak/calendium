@@ -8,6 +8,7 @@ import { createIndexedDbKv, createMemoryKv, type AsyncKeyValueStore } from '@cal
 
 import { ThemeProvider } from '@/components/theme-provider';
 import { Toaster } from '@/components/ui/sonner';
+import { QUERY_CACHE_STORAGE_KEY } from '@/lib/offline/queue';
 
 /** Bump on breaking query-shape changes — invalidates every persisted entry. */
 const CACHE_BUSTER = 'calendium-cache-v1';
@@ -79,7 +80,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
   const [persister] = React.useState(() =>
     createAsyncStoragePersister({
       storage: createPersistKv(),
-      key: 'rq:v1',
+      key: QUERY_CACHE_STORAGE_KEY,
       throttleTime: 1000,
     })
   );

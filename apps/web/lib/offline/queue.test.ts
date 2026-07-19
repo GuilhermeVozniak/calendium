@@ -83,6 +83,15 @@ describe('queueAction', () => {
     expect(queue.getOutbox().queuedCount).toBe(1);
     expect(toastMock).not.toHaveBeenCalled();
   });
+
+  it('skips the "queued" toast when the action coalesced away (nothing was queued)', async () => {
+    await queue.queueAction({ kind: 'thread_action', threadId: 't1', action: 'star' });
+    toastMock.mockClear();
+    // The opposite action cancels BOTH entries — enqueue returns null.
+    await queue.queueAction({ kind: 'thread_action', threadId: 't1', action: 'unstar' });
+    expect(queue.getOutbox().queuedCount).toBe(0);
+    expect(toastMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('newLocalDraftId', () => {
@@ -156,6 +165,37 @@ describe('startOutboxReplay', () => {
     expect(queue.getOutbox().queuedCount).toBe(0);
   });
 
+  it('invalidates queries when an entry exhausts retries and lands as failed', async () => {
+    // Seed storage with an entry one attempt away from MAX_ATTEMPTS so a
+    // single 5xx replay marks it failed — its optimistic patch is now stale
+    // and must be invalidated back to server truth.
+    const { createIndexedDbKv, OUTBOX_STORAGE_KEY } = await import('@calendium/shared');
+    const kv = createIndexedDbKv();
+    await kv.setItem(
+      OUTBOX_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: 'e1',
+          seq: 1,
+          createdAt: new Date().toISOString(),
+          attempts: 4,
+          status: 'queued',
+          lastError: null,
+          action: { kind: 'thread_action', threadId: 't1', action: 'archive' },
+        },
+      ])
+    );
+    apiMock.actOnThread.mockRejectedValue(new ApiRequestError(500, 'internal', 'boom'));
+
+    const { client, invalidateQueries } = stubQueryClient();
+    cleanups.push(queue.startOutboxReplay(client));
+    await vi.waitFor(() => {
+      const pending = [...queue.getOutbox().pending];
+      expect(pending[0]?.status).toBe('failed');
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['threads'] });
+  });
+
   it('cleanup stops the online/focus triggers', async () => {
     window.dispatchEvent(new Event('offline'));
     await queue.queueAction({ kind: 'thread_action', threadId: 't1', action: 'archive' });
@@ -165,6 +205,42 @@ describe('startOutboxReplay', () => {
     const stop = queue.startOutboxReplay(client);
     stop();
 
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new Event('focus'));
+    await sleep(30);
+    expect(apiMock.actOnThread).not.toHaveBeenCalled();
+  });
+});
+
+describe('clearOfflineState', () => {
+  it('sign-out wipes the outbox + query-cache keys, active account, and the in-memory queue', async () => {
+    const { createIndexedDbKv, OUTBOX_STORAGE_KEY } = await import('@calendium/shared');
+    const kv = createIndexedDbKv();
+    await kv.setItem(queue.QUERY_CACHE_STORAGE_KEY, '{"cached":"prior-user-mail"}');
+    window.localStorage.setItem('calendium.activeAccountId', 'acc1');
+    await queue.queueAction(
+      { kind: 'thread_action', threadId: 't1', action: 'archive' },
+      { silent: true }
+    );
+    expect(queue.getOutbox().queuedCount).toBe(1);
+
+    await queue.clearOfflineState();
+
+    expect(queue.getOutbox().queuedCount).toBe(0);
+    expect(await kv.getItem(OUTBOX_STORAGE_KEY)).toBeNull();
+    expect(await kv.getItem(queue.QUERY_CACHE_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem('calendium.activeAccountId')).toBeNull();
+  });
+
+  it('a replay trigger after sign-out sends nothing', async () => {
+    await queue.queueAction(
+      { kind: 'thread_action', threadId: 't1', action: 'archive' },
+      { silent: true }
+    );
+    await queue.clearOfflineState();
+
+    const { client } = stubQueryClient();
+    cleanups.push(queue.startOutboxReplay(client));
     window.dispatchEvent(new Event('online'));
     window.dispatchEvent(new Event('focus'));
     await sleep(30);
