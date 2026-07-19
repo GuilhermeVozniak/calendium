@@ -24,6 +24,7 @@ type mailFixture struct {
 	messages  *fakeMessageRepo
 	drafts    *fakeDraftRepo
 	snippets  *fakeSnippetRepo
+	teams     *fakeTeamRepo
 	labels    *fakeLabelRepo
 	reactions *fakeReactionRepo
 	provider  *fakeMailProvider
@@ -44,6 +45,7 @@ func newMailFixture(t *testing.T) *mailFixture {
 		messages:  newMessageRepo(),
 		drafts:    newDraftRepo(accounts),
 		snippets:  newSnippetRepo(),
+		teams:     newTeamRepo(),
 		labels:    labels,
 		reactions: newReactionRepo(),
 		provider:  newMailProvider(),
@@ -57,6 +59,7 @@ func newMailFixture(t *testing.T) *mailFixture {
 		Messages:      f.messages,
 		Drafts:        f.drafts,
 		Snippets:      f.snippets,
+		Teams:         f.teams,
 		Labels:        f.labels,
 		Reactions:     f.reactions,
 		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: f.provider},

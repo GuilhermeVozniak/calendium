@@ -758,6 +758,37 @@ function SnippetsSection() {
   });
 
   const snippets = snippetsQuery.data ?? [];
+  // Team snippets (M2.7) are grouped after personal ones and badged.
+  const personalSnippets = snippets.filter((s) => !s.teamId);
+  const teamSnippets = snippets.filter((s) => Boolean(s.teamId));
+
+  const renderSnippetRow = (snippet: Snippet) => (
+    <div key={snippet.id} className="flex items-center gap-3 rounded-lg border p-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">{snippet.name}</span>
+          {snippet.shortcut && <Kbd className="normal-case">{snippet.shortcut}</Kbd>}
+          {snippet.teamId && <Badge variant="secondary">Team</Badge>}
+        </div>
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">
+          {htmlToText(snippet.bodyHtml)}
+        </p>
+      </div>
+      <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+        used {snippet.usageCount}x
+      </span>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-8 text-muted-foreground hover:text-destructive"
+        onClick={() => remove.mutate(snippet.id)}
+        disabled={remove.isPending}
+        aria-label={`Delete snippet ${snippet.name}`}
+      >
+        <Trash2 />
+      </Button>
+    </div>
+  );
 
   return (
     <>
@@ -786,32 +817,13 @@ function SnippetsSection() {
               No snippets yet. Create one to reply faster.
             </p>
           )}
-          {snippets.map((snippet) => (
-            <div key={snippet.id} className="flex items-center gap-3 rounded-lg border p-3">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium">{snippet.name}</span>
-                  {snippet.shortcut && <Kbd className="normal-case">{snippet.shortcut}</Kbd>}
-                </div>
-                <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                  {htmlToText(snippet.bodyHtml)}
-                </p>
-              </div>
-              <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                used {snippet.usageCount}x
-              </span>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-8 text-muted-foreground hover:text-destructive"
-                onClick={() => remove.mutate(snippet.id)}
-                disabled={remove.isPending}
-                aria-label={`Delete snippet ${snippet.name}`}
-              >
-                <Trash2 />
-              </Button>
-            </div>
-          ))}
+          {personalSnippets.map(renderSnippetRow)}
+          {teamSnippets.length > 0 && (
+            <p className="mt-2 text-xs font-medium text-muted-foreground">
+              Team snippets — shared with your teams
+            </p>
+          )}
+          {teamSnippets.map(renderSnippetRow)}
         </CardContent>
       </Card>
 

@@ -259,7 +259,8 @@ export class ApiClient {
   listSnippets() {
     return this.request<Snippet[]>('GET', '/v1/mail/snippets');
   }
-  createSnippet(snippet: Pick<Snippet, 'name' | 'shortcut' | 'bodyHtml'>) {
+  /** teamId scopes the new snippet to a team (create only — scope is immutable afterwards). */
+  createSnippet(snippet: Pick<Snippet, 'name' | 'shortcut' | 'bodyHtml' | 'teamId'>) {
     return this.request<Snippet>('POST', '/v1/mail/snippets', snippet);
   }
   updateSnippet(snippetId: string, patch: Pick<Snippet, 'name' | 'shortcut' | 'bodyHtml'>) {

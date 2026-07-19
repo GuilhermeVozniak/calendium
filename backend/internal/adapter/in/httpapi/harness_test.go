@@ -284,7 +284,8 @@ type fakeMailService struct {
 	unsendDraftRet domain.Draft
 	unsendDraftErr error
 
-	// snippets
+	// snippets (gotSnippetInput records the last create/update payload the
+	// handler forwarded — team snippets M2.7 assert sanitization + teamId)
 	listSnippetsRet []domain.Snippet
 	listSnippetsErr error
 	createSnippet   domain.Snippet
@@ -292,6 +293,7 @@ type fakeMailService struct {
 	updateSnippet   domain.Snippet
 	updateSnipErr   error
 	deleteSnipErr   error
+	gotSnippetInput port.SnippetInput
 
 	// ListLabels
 	listLabelsRet []domain.Label
@@ -425,9 +427,11 @@ func (f *fakeMailService) ListSnippets(ctx context.Context, userID string) ([]do
 	return f.listSnippetsRet, f.listSnippetsErr
 }
 func (f *fakeMailService) CreateSnippet(ctx context.Context, userID string, in port.SnippetInput) (domain.Snippet, error) {
+	f.gotSnippetInput = in
 	return f.createSnippet, f.createSnipErr
 }
 func (f *fakeMailService) UpdateSnippet(ctx context.Context, userID, snippetID string, in port.SnippetInput) (domain.Snippet, error) {
+	f.gotSnippetInput = in
 	return f.updateSnippet, f.updateSnipErr
 }
 func (f *fakeMailService) DeleteSnippet(ctx context.Context, userID, snippetID string) error {

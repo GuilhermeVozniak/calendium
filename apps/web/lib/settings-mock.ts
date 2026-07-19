@@ -127,8 +127,13 @@ export const settingsMock = {
     return getStore().snippets.map((s) => ({ ...s }));
   },
 
-  createSnippet(input: Pick<Snippet, 'name' | 'shortcut' | 'bodyHtml'>): Snippet {
-    const snippet: Snippet = { id: `snip-local-${nextId++}`, usageCount: 0, ...input };
+  createSnippet(input: Pick<Snippet, 'name' | 'shortcut' | 'bodyHtml' | 'teamId'>): Snippet {
+    const snippet: Snippet = {
+      id: `snip-local-${nextId++}`,
+      usageCount: 0,
+      ...input,
+      teamId: input.teamId ?? null,
+    };
     getStore().snippets.unshift(snippet);
     return { ...snippet };
   },

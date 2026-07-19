@@ -418,6 +418,31 @@ describe('ComposeForm — snippets', () => {
     await user.type(bodyInput, ';than');
     expect(await screen.findByText('Thanks')).toBeInTheDocument();
   });
+
+  it('badges team snippets (M2.7) in the picker and inserts them like any other', async () => {
+    const teamSnippet: Snippet = {
+      id: 's2',
+      name: 'Team intro',
+      shortcut: 'ti',
+      bodyHtml: '<p>Hello from the team!</p>',
+      usageCount: 0,
+      teamId: 'team1',
+    };
+    useSnippetsMock.mockReturnValue({ data: [SNIPPET, teamSnippet] });
+    const user = userEvent.setup();
+    renderCompose();
+    const bodyInput = await screen.findByPlaceholderText(/Write your message/);
+    await user.click(bodyInput);
+    await user.type(bodyInput, ';ti');
+
+    const option = await screen.findByText('Team intro');
+    expect(screen.getByText('Team')).toBeInTheDocument();
+    // The personal snippet shows no badge when listed alone.
+    expect(screen.queryByText('Thanks')).not.toBeInTheDocument();
+
+    await user.click(option);
+    await waitFor(() => expect(bodyInput).toHaveValue('Hello from the team!'));
+  });
 });
 
 // ---------------------------------------------------------------------------

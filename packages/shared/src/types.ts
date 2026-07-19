@@ -183,6 +183,8 @@ export interface Snippet {
   shortcut: string | null;
   bodyHtml: string;
   usageCount: number;
+  /** Team scope (M2.7 team snippets): set = shared with that team's members; null/absent = personal. */
+  teamId?: string | null;
 }
 
 export type ThreadAction =

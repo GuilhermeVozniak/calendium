@@ -651,7 +651,14 @@ function ComposeForm({
               onMouseEnter={() => setSnippetIndex(index)}
               onClick={() => insertSnippet(snippet)}
             >
-              <span className="truncate">{snippet.name}</span>
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className="truncate">{snippet.name}</span>
+                {snippet.teamId && (
+                  <Badge variant="secondary" className="h-4 shrink-0 px-1 text-[10px]">
+                    Team
+                  </Badge>
+                )}
+              </span>
               {snippet.shortcut && <Kbd size="sm">;{snippet.shortcut}</Kbd>}
             </button>
           ))}
