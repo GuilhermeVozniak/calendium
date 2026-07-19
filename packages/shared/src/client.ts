@@ -7,6 +7,10 @@ import type {
   AiEditAction,
   AiEventProposal,
   AttachmentHit,
+  AuditEntry,
+  Delegation,
+  DelegationList,
+  DelegationScope,
   AvailabilitySlot,
   Booking,
   BookingLink,
@@ -617,6 +621,68 @@ export class ApiClient {
   acceptInvitation(token: string) {
     return this.request<Team>('POST', '/v1/invitations/accept', { token });
   }
+
+  // --- EA delegation (M2.7 Task 15) ---
+  // A principal grants an assistant scoped access to their mail/calendar; the
+  // assistant then acts as the principal via `actAs`. Authorization is decided
+  // server-side on EVERY request (fail closed — revocation is immediate), and
+  // every delegated mutation is audit-logged with the real actor.
+
+  /** Grants `assistantEmail` (an existing user) the given scopes; starts pending. */
+  createDelegation(assistantEmail: string, scopes: DelegationScope[]) {
+    return this.request<Delegation>('POST', '/v1/delegations', { assistantEmail, scopes });
+  }
+  listDelegations() {
+    return this.request<DelegationList>('GET', '/v1/delegations');
+  }
+  /** Assistant accepts a pending grant (pending → active). */
+  acceptDelegation(delegationId: string) {
+    return this.request<Delegation>(
+      'POST',
+      `/v1/delegations/${encodeURIComponent(delegationId)}/accept`
+    );
+  }
+  /** Either party revokes; the grant stops authorizing immediately. */
+  revokeDelegation(delegationId: string) {
+    return this.request<void>('DELETE', `/v1/delegations/${encodeURIComponent(delegationId)}`);
+  }
+  /** The caller's delegated-mutation audit log (principal-only server-side), newest first. */
+  listDelegationAudit(limit?: number) {
+    const qs = limit !== undefined ? `?limit=${limit}` : '';
+    return this.request<{ entries: AuditEntry[] }>('GET', `/v1/delegations/audit${qs}`);
+  }
+
+  /**
+   * Returns a NEW client that acts as `principalUserId`: every request to a
+   * delegable route (mail, search, events, calendars, availability — mirroring
+   * the backend's delegationScopeForRoute map) carries the X-Calendium-Act-As
+   * header. Non-delegable routes (teams, billing, accounts, devices,
+   * delegations, …) are sent WITHOUT the header — the backend rejects act-as
+   * on them outright. The original client is untouched and never sends the
+   * header, so acting is always an explicit, per-instance choice.
+   */
+  actAs(principalUserId: string): ApiClient {
+    const innerFetch = this.opts.fetch;
+    const wrapped = (async (input: string | URL | Request, init?: RequestInit) => {
+      const doFetch = innerFetch ?? fetch;
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      let pathname: string;
+      try {
+        pathname = new URL(url, 'http://relative.invalid').pathname;
+      } catch {
+        pathname = url;
+      }
+      if (!isDelegablePath(pathname)) return doFetch(input as string, init);
+      return doFetch(input as string, {
+        ...init,
+        headers: {
+          ...((init?.headers ?? {}) as Record<string, string>),
+          [ACT_AS_HEADER]: principalUserId,
+        },
+      });
+    }) as typeof fetch;
+    return new ApiClient({ ...this.opts, fetch: wrapped });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -703,4 +769,35 @@ export function votePublicPoll(
   fetchImpl?: typeof fetch
 ): Promise<PublicPoll> {
   return publicRequest(baseUrl, 'POST', `/v1/public/polls/${token}/votes`, ballot, fetchImpl);
+}
+
+// ---------------------------------------------------------------------------
+// EA delegation (M2.7 Task 15) — act-as plumbing shared by ApiClient#actAs and
+// app-side wrappers.
+// ---------------------------------------------------------------------------
+
+/**
+ * Request header carrying the principal user id an assistant acts for. MUST
+ * match `actAsHeader` in backend/internal/adapter/in/httpapi/delegation.go.
+ */
+export const ACT_AS_HEADER = 'X-Calendium-Act-As';
+
+/**
+ * Whether a request path may carry the act-as header — the client-side mirror
+ * of the backend's delegationScopeForRoute route groups. Anything else
+ * (teams, billing, accounts, devices, delegations, …) rejects act-as outright
+ * server-side, so the header must never be attached there.
+ */
+export function isDelegablePath(pathname: string): boolean {
+  const path = pathname.split('?')[0];
+  return (
+    path === '/v1/search' ||
+    path === '/v1/mail' ||
+    path.startsWith('/v1/mail/') ||
+    path === '/v1/events' ||
+    path.startsWith('/v1/events/') ||
+    path === '/v1/calendars' ||
+    path.startsWith('/v1/calendars/') ||
+    path === '/v1/availability'
+  );
 }

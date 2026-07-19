@@ -4,6 +4,7 @@ import {
   ApiRequestError,
   createPublicBooking,
   fetchInstance,
+  isDelegablePath,
   fetchPublicBookingPage,
   fetchPublicPoll,
   fetchPublicSlots,
@@ -1554,5 +1555,139 @@ describe('teams (M2.7)', () => {
       status: 409,
       code: 'conflict',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EA delegation (M2.7 Task 15) — grants, audit, and act-as
+// ---------------------------------------------------------------------------
+
+describe('ApiClient delegation endpoints', () => {
+  it('createDelegation POSTs /v1/delegations with assistantEmail and scopes', async () => {
+    const { client, calls } = makeClient();
+    await client.createDelegation('ea@example.com', ['mail_read', 'calendar_write']);
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/delegations`);
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].body).toEqual({
+      assistantEmail: 'ea@example.com',
+      scopes: ['mail_read', 'calendar_write'],
+    });
+  });
+
+  it('listDelegations GETs /v1/delegations and returns both sides', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { asPrincipal: [], asAssistant: [] } }],
+    });
+    const result = await client.listDelegations();
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/delegations`);
+    expect(calls[0].method).toBe('GET');
+    expect(result).toEqual({ asPrincipal: [], asAssistant: [] });
+  });
+
+  it('acceptDelegation POSTs to a percent-encoded id path', async () => {
+    const { client, calls } = makeClient();
+    await client.acceptDelegation('del/1?x');
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/delegations/${encodeURIComponent('del/1?x')}/accept`);
+    expect(calls[0].method).toBe('POST');
+  });
+
+  it('revokeDelegation DELETEs the percent-encoded id path', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    await client.revokeDelegation('del 2');
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/delegations/${encodeURIComponent('del 2')}`);
+    expect(calls[0].method).toBe('DELETE');
+  });
+
+  it('listDelegationAudit GETs /v1/delegations/audit without a limit by default', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: { entries: [] } }] });
+    const result = await client.listDelegationAudit();
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/delegations/audit`);
+    expect(result.entries).toEqual([]);
+  });
+
+  it('listDelegationAudit passes an explicit limit as a query param', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: { entries: [] } }] });
+    await client.listDelegationAudit(50);
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/delegations/audit?limit=50`);
+  });
+});
+
+describe('ApiClient.actAs', () => {
+  it('adds X-Calendium-Act-As on delegable mail/calendar routes', async () => {
+    const { client, calls } = makeClient();
+    const acting = client.actAs('user_principal');
+    await acting.getThread('t1');
+    await acting.listCalendars();
+    await acting.listEvents('2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z');
+    await acting.search('hello');
+    await acting.getAvailability('2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', 30);
+    for (const call of calls) {
+      expect(call.headers['X-Calendium-Act-As']).toBe('user_principal');
+    }
+  });
+
+  it('never adds the header on non-delegable routes (backend rejects act-as there)', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { asPrincipal: [], asAssistant: [] } }],
+    });
+    const acting = client.actAs('user_principal');
+    await acting.listDelegations();
+    await acting.getMe();
+    await acting.listTeams();
+    await acting.listAccounts();
+    for (const call of calls) {
+      expect(call.headers['X-Calendium-Act-As']).toBeUndefined();
+    }
+  });
+
+  it('keeps the Authorization bearer token on delegated requests', async () => {
+    const { client, calls } = makeClient();
+    await client.actAs('user_principal').actOnThread('t1', 'archive');
+    expect(calls[0].headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(calls[0].headers['X-Calendium-Act-As']).toBe('user_principal');
+  });
+
+  it('returns a NEW client and leaves the original free of the header', async () => {
+    const { client, calls } = makeClient();
+    const acting = client.actAs('user_principal');
+    expect(acting).not.toBe(client);
+    await client.getThread('t1');
+    expect(calls[0].headers['X-Calendium-Act-As']).toBeUndefined();
+    await acting.getThread('t1');
+    expect(calls[1].headers['X-Calendium-Act-As']).toBe('user_principal');
+  });
+});
+
+describe('isDelegablePath', () => {
+  it('accepts exactly the backend delegationScopeForRoute route groups', () => {
+    const delegable = [
+      '/v1/search',
+      '/v1/mail',
+      '/v1/mail/threads',
+      '/v1/mail/threads/t1/actions',
+      '/v1/events',
+      '/v1/events/e1/rsvp',
+      '/v1/calendars',
+      '/v1/calendars/c1',
+      '/v1/availability',
+    ];
+    for (const path of delegable) {
+      expect(isDelegablePath(path), path).toBe(true);
+    }
+    const notDelegable = [
+      '/v1/teams',
+      '/v1/delegations',
+      '/v1/delegations/audit',
+      '/v1/billing/subscription',
+      '/v1/accounts',
+      '/v1/devices',
+      '/v1/me',
+      '/v1/mailbox', // prefix must not match beyond the exact segment
+      '/v1/eventsx',
+      '/v1/instance',
+    ];
+    for (const path of notDelegable) {
+      expect(isDelegablePath(path), path).toBe(false);
+    }
   });
 });
