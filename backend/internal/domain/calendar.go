@@ -192,3 +192,14 @@ type CalendarSetInput struct {
 	CalendarIDs []string `json:"calendarIds"`
 	Position    int      `json:"position"`
 }
+
+// EventNote is a doc/note attached to an event (M2.8 Task 4). Notes survive
+// provider syncs because they live only locally, keyed by our event id
+// (ON DELETE CASCADE follows mirror deletes).
+type EventNote struct {
+	EventID   string    `json:"eventId"`
+	UserID    string    `json:"-"`
+	BodyMD    string    `json:"bodyMd"` // markdown; rendered read-only outside edit
+	Links     []string  `json:"links"`  // attached doc URLs (Notion, GDoc, ...)
+	UpdatedAt time.Time `json:"updatedAt"`
+}

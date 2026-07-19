@@ -235,6 +235,12 @@ type CalendarService interface {
 	CreateCalendarSet(ctx context.Context, userID string, in domain.CalendarSetInput) (domain.CalendarSet, error)
 	UpdateCalendarSet(ctx context.Context, userID, setID string, in domain.CalendarSetInput) (domain.CalendarSet, error)
 	DeleteCalendarSet(ctx context.Context, userID, setID string) error
+
+	// Event note methods (M2.8 Task 4). Notes are local-only: GetEventNote
+	// returns an empty note (not ErrNotFound) when none is stored, and
+	// PutEventNote with an empty body and no links deletes the note.
+	GetEventNote(ctx context.Context, userID, eventID string) (domain.EventNote, error)
+	PutEventNote(ctx context.Context, userID, eventID string, bodyMD string, links []string) (domain.EventNote, error)
 }
 
 // SearchResult is the unified GET /v1/search response.

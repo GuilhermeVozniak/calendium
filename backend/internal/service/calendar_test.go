@@ -100,6 +100,180 @@ func seedEvent(f *calFixture, id string, mut func(*domain.Event)) domain.Event {
 	return ev
 }
 
+// --- CalendarService event notes (M2.8 Task 4) -------------------------------
+
+type fakeEventNoteRepo struct {
+	byEvent map[string]domain.EventNote
+}
+
+var _ port.EventNoteRepo = (*fakeEventNoteRepo)(nil)
+
+func newFakeEventNoteRepo() *fakeEventNoteRepo {
+	return &fakeEventNoteRepo{byEvent: map[string]domain.EventNote{}}
+}
+
+func (r *fakeEventNoteRepo) Upsert(_ context.Context, n domain.EventNote) (domain.EventNote, error) {
+	if n.BodyMD == "" && len(n.Links) == 0 {
+		delete(r.byEvent, n.EventID)
+		return domain.EventNote{EventID: n.EventID, UserID: n.UserID, Links: []string{}}, nil
+	}
+	if n.Links == nil {
+		n.Links = []string{}
+	}
+	n.UpdatedAt = time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	r.byEvent[n.EventID] = n
+	return n, nil
+}
+
+func (r *fakeEventNoteRepo) GetByEventID(_ context.Context, eventID string) (domain.EventNote, error) {
+	n, ok := r.byEvent[eventID]
+	if !ok {
+		return domain.EventNote{}, domain.ErrNotFound
+	}
+	return n, nil
+}
+
+// noteSvc rewires the fixture's repos into a CalendarService that also has
+// the note repo (newCalFixture predates Notes and leaves it nil).
+func noteSvc(f *calFixture, notes port.EventNoteRepo) *CalendarService {
+	return NewCalendarService(CalendarServiceDeps{
+		Accounts:   f.accounts,
+		Calendars:  f.calendars,
+		Events:     f.events,
+		Clock:      f.clock,
+		SelfHosted: true,
+		Notes:      notes,
+	})
+}
+
+func TestEventNoteGetReturnsEmptyWhenMissing(t *testing.T) {
+	ctx := context.Background()
+	f := newCalFixture(t)
+	seedEvent(f, "ev1", nil)
+	svc := noteSvc(f, newFakeEventNoteRepo())
+
+	got, err := svc.GetEventNote(ctx, "u1", "ev1")
+	if err != nil {
+		t.Fatalf("GetEventNote: %v", err)
+	}
+	if got.EventID != "ev1" || got.BodyMD != "" {
+		t.Fatalf("got = %+v, want empty note for ev1", got)
+	}
+	if got.Links == nil || len(got.Links) != 0 {
+		t.Fatalf("links = %#v, want non-nil empty slice", got.Links)
+	}
+}
+
+func TestEventNotePutThenGetRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	f := newCalFixture(t)
+	seedEvent(f, "ev1", nil)
+	notes := newFakeEventNoteRepo()
+	svc := noteSvc(f, notes)
+
+	saved, err := svc.PutEventNote(ctx, "u1", "ev1", "# Prep", []string{" https://notion.so/doc ", ""})
+	if err != nil {
+		t.Fatalf("PutEventNote: %v", err)
+	}
+	if saved.BodyMD != "# Prep" || saved.UserID != "u1" {
+		t.Fatalf("saved = %+v", saved)
+	}
+	// Links are trimmed and empties dropped before persisting.
+	if want := []string{"https://notion.so/doc"}; !reflect.DeepEqual(saved.Links, want) {
+		t.Fatalf("links = %v, want %v", saved.Links, want)
+	}
+
+	got, err := svc.GetEventNote(ctx, "u1", "ev1")
+	if err != nil {
+		t.Fatalf("GetEventNote: %v", err)
+	}
+	if got.BodyMD != "# Prep" || !reflect.DeepEqual(got.Links, []string{"https://notion.so/doc"}) {
+		t.Fatalf("got = %+v, want stored note", got)
+	}
+}
+
+func TestEventNotePutRejectsNonHTTPLinks(t *testing.T) {
+	ctx := context.Background()
+	f := newCalFixture(t)
+	seedEvent(f, "ev1", nil)
+	svc := noteSvc(f, newFakeEventNoteRepo())
+
+	for _, link := range []string{"javascript:alert(1)", "notion.so/doc", "ftp://x.test/f"} {
+		if _, err := svc.PutEventNote(ctx, "u1", "ev1", "body", []string{link}); !errors.Is(err, domain.ErrValidation) {
+			t.Fatalf("link %q: err = %v, want ErrValidation", link, err)
+		}
+	}
+}
+
+func TestEventNoteEmptyPutClears(t *testing.T) {
+	ctx := context.Background()
+	f := newCalFixture(t)
+	seedEvent(f, "ev1", nil)
+	notes := newFakeEventNoteRepo()
+	svc := noteSvc(f, notes)
+
+	if _, err := svc.PutEventNote(ctx, "u1", "ev1", "scratch", nil); err != nil {
+		t.Fatalf("seed put: %v", err)
+	}
+	if _, err := svc.PutEventNote(ctx, "u1", "ev1", "", nil); err != nil {
+		t.Fatalf("clearing put: %v", err)
+	}
+	if _, ok := notes.byEvent["ev1"]; ok {
+		t.Fatal("note still stored after empty put")
+	}
+	got, err := svc.GetEventNote(ctx, "u1", "ev1")
+	if err != nil || got.BodyMD != "" {
+		t.Fatalf("get after clear = %+v, %v; want empty note, nil", got, err)
+	}
+}
+
+func TestEventNoteOwnershipViaOwnedEvent(t *testing.T) {
+	ctx := context.Background()
+	f := newCalFixture(t)
+	seedEvent(f, "ev1", nil)
+	notes := newFakeEventNoteRepo()
+	svc := noteSvc(f, notes)
+
+	// u2 does not own ev1's calendar chain: both verbs 404, and nothing is
+	// ever written for the foreign user.
+	if _, err := svc.GetEventNote(ctx, "u2", "ev1"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("get: err = %v, want ErrNotFound", err)
+	}
+	if _, err := svc.PutEventNote(ctx, "u2", "ev1", "intruder", nil); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("put: err = %v, want ErrNotFound", err)
+	}
+	if len(notes.byEvent) != 0 {
+		t.Fatal("note stored despite foreign user")
+	}
+
+	// Unknown event id 404s for the owner too.
+	if _, err := svc.GetEventNote(ctx, "u1", "nope"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("unknown event: err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestEventNoteEntitlementGate(t *testing.T) {
+	ctx := context.Background()
+	f := newCalFixture(t)
+	seedEvent(f, "ev1", nil)
+	// Cloud mode with no subscription: every note verb is paywalled.
+	svc := NewCalendarService(CalendarServiceDeps{
+		Subscriptions: newSubscriptionRepo(),
+		Accounts:      f.accounts,
+		Calendars:     f.calendars,
+		Events:        f.events,
+		Clock:         f.clock,
+		Notes:         newFakeEventNoteRepo(),
+	})
+
+	if _, err := svc.GetEventNote(ctx, "u1", "ev1"); !errors.Is(err, domain.ErrPaymentRequired) {
+		t.Fatalf("get: err = %v, want ErrPaymentRequired", err)
+	}
+	if _, err := svc.PutEventNote(ctx, "u1", "ev1", "x", nil); !errors.Is(err, domain.ErrPaymentRequired) {
+		t.Fatalf("put: err = %v, want ErrPaymentRequired", err)
+	}
+}
+
 // --- CalendarService.CreateEvent write-through -------------------------------
 
 func TestCreateEventWritesThroughToProviderAndMirror(t *testing.T) {

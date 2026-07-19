@@ -154,6 +154,8 @@ func run(logger *slog.Logger) error {
 		Audit:  postgres.NewAuditRepo(store),
 		Teams:  postgres.NewTeamRepo(store),
 		Users:  store.Users(),
+		// Local-only event notes (M2.8 Task 4).
+		Notes: store.EventNotes(),
 	})
 	search := service.NewSearchService(store.Subscriptions(), store.Threads(), store.Events(), clock, cfg.Instance.SelfHosted)
 	aiSvc := service.NewAIService(service.AIServiceDeps{

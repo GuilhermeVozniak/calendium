@@ -1045,3 +1045,16 @@ export interface Event {
   /** True when the event was redacted for a free_busy viewer (title "Busy", details zeroed). */
   freeBusyOnly?: boolean;
 }
+
+/**
+ * Local-only doc/note attached to an event (M2.8 Task 4). Lives only in
+ * Calendium (never written to the provider), so it survives provider syncs;
+ * deleting the event deletes the note. bodyMd is markdown treated as plain
+ * text by clients; links are absolute http(s) doc URLs (Notion, GDoc, ...).
+ */
+export interface EventNote {
+  eventId: string;
+  bodyMd: string;
+  links: string[];
+  updatedAt: string;
+}

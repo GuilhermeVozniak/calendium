@@ -504,6 +504,16 @@ type fakeCalendarService struct {
 	updateEventRet domain.Event
 	updateEventErr error
 
+	getNoteRet   domain.EventNote
+	getNoteErr   error
+	gotGetNoteID string
+
+	putNoteRet      domain.EventNote
+	putNoteErr      error
+	gotPutNoteID    string
+	gotPutNoteBody  string
+	gotPutNoteLinks []string
+
 	deleteEventErr error
 	gotDeleteEvt   string
 
@@ -599,6 +609,18 @@ func (f *fakeCalendarService) TeamAvailability(ctx context.Context, userID, team
 	f.gotTeamAvailID = teamID
 	f.gotTeamAvailFrom, f.gotTeamAvailTo = from, to
 	return f.teamAvailRet, f.teamAvailErr
+}
+
+func (f *fakeCalendarService) GetEventNote(ctx context.Context, userID, eventID string) (domain.EventNote, error) {
+	f.gotGetNoteID = eventID
+	return f.getNoteRet, f.getNoteErr
+}
+
+func (f *fakeCalendarService) PutEventNote(ctx context.Context, userID, eventID string, bodyMD string, links []string) (domain.EventNote, error) {
+	f.gotPutNoteID = eventID
+	f.gotPutNoteBody = bodyMD
+	f.gotPutNoteLinks = links
+	return f.putNoteRet, f.putNoteErr
 }
 
 // --- Event Template Methods

@@ -1414,6 +1414,14 @@ type fakeCalendarService struct {
 	availCalls    int
 }
 
+func (f *fakeCalendarService) GetEventNote(ctx context.Context, userID, eventID string) (domain.EventNote, error) {
+	return domain.EventNote{EventID: eventID, Links: []string{}}, nil
+}
+
+func (f *fakeCalendarService) PutEventNote(ctx context.Context, userID, eventID string, bodyMD string, links []string) (domain.EventNote, error) {
+	return domain.EventNote{EventID: eventID, UserID: userID, BodyMD: bodyMD, Links: links}, nil
+}
+
 func newCalendarService() *fakeCalendarService { return &fakeCalendarService{} }
 
 func (c *fakeCalendarService) ListCalendars(_ context.Context, _ string) ([]domain.Calendar, error) {

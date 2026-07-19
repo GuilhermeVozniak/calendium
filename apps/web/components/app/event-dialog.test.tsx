@@ -14,11 +14,15 @@ const createEventApiMock = vi.fn();
 const updateEventApiMock = vi.fn();
 const deleteEventApiMock = vi.fn();
 const sendRsvpApiMock = vi.fn();
+const fetchEventNoteApiMock = vi.fn();
+const putEventNoteApiMock = vi.fn();
 vi.mock('@/lib/calendar-data', () => ({
   createEventApi: (...args: unknown[]) => createEventApiMock(...args),
   updateEventApi: (...args: unknown[]) => updateEventApiMock(...args),
   deleteEventApi: (...args: unknown[]) => deleteEventApiMock(...args),
   sendRsvpApi: (...args: unknown[]) => sendRsvpApiMock(...args),
+  fetchEventNoteApi: (...args: unknown[]) => fetchEventNoteApiMock(...args),
+  putEventNoteApi: (...args: unknown[]) => putEventNoteApiMock(...args),
 }));
 
 // A fixed instant so the create-flow's default start/end are deterministic
@@ -210,6 +214,18 @@ beforeEach(() => {
   deleteEventApiMock.mockResolvedValue(undefined);
   sendRsvpApiMock.mockResolvedValue({ id: 'ev1' });
   fetchAccountsMock.mockResolvedValue([ACCOUNT_GOOGLE, ACCOUNT_MICROSOFT]);
+  fetchEventNoteApiMock.mockResolvedValue({
+    eventId: 'ev-note',
+    bodyMd: '',
+    links: [],
+    updatedAt: '2026-07-20T12:00:00Z',
+  });
+  putEventNoteApiMock.mockImplementation(async (eventId: unknown, bodyMd: unknown, links: unknown) => ({
+    eventId,
+    bodyMd,
+    links,
+    updatedAt: '2026-07-20T12:00:01Z',
+  }));
 });
 
 // ---------------------------------------------------------------------------
@@ -960,5 +976,113 @@ describe('EventDialog — pending proposals (organizer view)', () => {
     renderDialog();
     await screen.findByLabelText('Event title');
     expect(screen.queryByTestId('proposals-list')).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Notes tab (M2.8 Task 4)
+// ---------------------------------------------------------------------------
+
+describe('EventDialog — notes tab', () => {
+  const NOTE_EVENT: Event = {
+    id: 'ev-note',
+    calendarId: 'cal-work',
+    title: 'Planning',
+    description: null,
+    location: null,
+    start: new Date(2026, 6, 8, 10, 0).toISOString(),
+    end: new Date(2026, 6, 8, 11, 0).toISOString(),
+    allDay: false,
+    recurrenceRule: null,
+    attendees: [],
+    conferencing: null,
+    status: 'confirmed',
+    visibility: 'default',
+    reminderMinutes: [10],
+  };
+
+  async function openNotesTab() {
+    const user = userEvent.setup();
+    renderDialog({ event: NOTE_EVENT });
+    await user.click(await screen.findByRole('tab', { name: 'Notes' }));
+    const textarea = (await screen.findByLabelText('Event notes')) as HTMLTextAreaElement;
+    // Wait until the fetched note has hydrated (textarea is disabled while loading).
+    await waitFor(() => expect(textarea).not.toBeDisabled());
+    return { user, textarea };
+  }
+
+  it('renders the Notes tab in edit mode only', async () => {
+    renderDialog({ event: NOTE_EVENT });
+    expect(await screen.findByRole('tab', { name: 'Notes' })).toBeInTheDocument();
+  });
+
+  it('has no Notes tab in create mode (no event id to key the note)', async () => {
+    renderDialog();
+    await screen.findByLabelText('Event title');
+    expect(screen.queryByRole('tab', { name: 'Notes' })).not.toBeInTheDocument();
+  });
+
+  it('loads and shows the stored note with an open affordance per link', async () => {
+    fetchEventNoteApiMock.mockResolvedValue({
+      eventId: 'ev-note',
+      bodyMd: 'prep doc',
+      links: ['https://notion.so/doc'],
+      updatedAt: '2026-07-20T12:00:00Z',
+    });
+    const { textarea } = await openNotesTab();
+    expect(fetchEventNoteApiMock).toHaveBeenCalledWith('ev-note');
+    expect(textarea).toHaveValue('prep doc');
+    const open = screen.getByLabelText('Open https://notion.so/doc');
+    expect(open).toHaveAttribute('href', 'https://notion.so/doc');
+    expect(open).toHaveAttribute('target', '_blank');
+  });
+
+  it('autosaves the typed body via a debounced PUT', async () => {
+    const { user, textarea } = await openNotesTab();
+    await user.type(textarea, 'agenda');
+    await waitFor(
+      () => expect(putEventNoteApiMock).toHaveBeenCalledWith('ev-note', 'agenda', []),
+      { timeout: 3000 }
+    );
+    // The debounce coalesces the six keystrokes into a single PUT.
+    expect(putEventNoteApiMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('adds a link chip and autosaves it', async () => {
+    const { user } = await openNotesTab();
+    const linkInput = screen.getByLabelText('Add doc link');
+    await user.type(linkInput, 'https://notion.so/spec{Enter}');
+    expect(screen.getByLabelText('Remove link https://notion.so/spec')).toBeInTheDocument();
+    expect(linkInput).toHaveValue('');
+    await waitFor(
+      () => expect(putEventNoteApiMock).toHaveBeenCalledWith('ev-note', '', ['https://notion.so/spec']),
+      { timeout: 3000 }
+    );
+  });
+
+  it('rejects a non-http(s) link without saving', async () => {
+    const { user } = await openNotesTab();
+    await user.type(screen.getByLabelText('Add doc link'), 'javascript:alert(1){Enter}');
+    expect(toastError).toHaveBeenCalledWith('Links must be full http(s) URLs');
+    expect(screen.queryByLabelText('Remove link javascript:alert(1)')).not.toBeInTheDocument();
+  });
+
+  it('removing a link autosaves the remaining set', async () => {
+    fetchEventNoteApiMock.mockResolvedValue({
+      eventId: 'ev-note',
+      bodyMd: 'body',
+      links: ['https://notion.so/doc', 'https://docs.google.com/d/1'],
+      updatedAt: '2026-07-20T12:00:00Z',
+    });
+    const { user } = await openNotesTab();
+    await user.click(screen.getByLabelText('Remove link https://notion.so/doc'));
+    expect(screen.queryByLabelText('Remove link https://notion.so/doc')).not.toBeInTheDocument();
+    await waitFor(
+      () =>
+        expect(putEventNoteApiMock).toHaveBeenCalledWith('ev-note', 'body', [
+          'https://docs.google.com/d/1',
+        ]),
+      { timeout: 3000 }
+    );
   });
 });

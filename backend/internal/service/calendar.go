@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -36,6 +37,10 @@ type CalendarServiceDeps struct {
 	Audit  port.AuditRepo
 	Teams  port.TeamRepo
 	Users  port.UserRepo
+
+	// Notes stores local-only event notes (M2.8 Task 4). Notes never reach
+	// the provider, so event write-through is untouched by them.
+	Notes port.EventNoteRepo
 }
 
 // CalendarService implements port.CalendarService. Event mutations write
@@ -55,6 +60,7 @@ type CalendarService struct {
 	audit     port.AuditRepo
 	teams     port.TeamRepo
 	users     port.UserRepo
+	notes     port.EventNoteRepo
 }
 
 var _ port.CalendarService = (*CalendarService)(nil)
@@ -75,6 +81,7 @@ func NewCalendarService(d CalendarServiceDeps) *CalendarService {
 		audit:     d.Audit,
 		teams:     d.Teams,
 		users:     d.Users,
+		notes:     d.Notes,
 	}
 }
 
@@ -792,6 +799,71 @@ func (s *CalendarService) ownedEvent(ctx context.Context, userID, eventID string
 		return domain.Event{}, domain.Calendar{}, domain.ConnectedAccount{}, err
 	}
 	return ev, c, acct, nil
+}
+
+// --- Event notes (M2.8 Task 4) ----------------------------------------------
+//
+// Notes are local-only user content: they are never written through to the
+// provider (no provider payload carries them), so they survive provider
+// syncs; the mirror row's ON DELETE CASCADE is their only lifecycle tie.
+
+func (s *CalendarService) GetEventNote(ctx context.Context, userID, eventID string) (domain.EventNote, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.EventNote{}, err
+	}
+	if _, _, _, err := s.ownedEvent(ctx, userID, eventID); err != nil {
+		return domain.EventNote{}, err
+	}
+	n, err := s.notes.GetByEventID(ctx, eventID)
+	if errors.Is(err, domain.ErrNotFound) {
+		// Missing note is an empty note, never a 404: the UI needs no
+		// special case.
+		return domain.EventNote{EventID: eventID, UserID: userID, Links: []string{}}, nil
+	}
+	if err != nil {
+		return domain.EventNote{}, err
+	}
+	if n.Links == nil {
+		n.Links = []string{}
+	}
+	return n, nil
+}
+
+func (s *CalendarService) PutEventNote(ctx context.Context, userID, eventID string, bodyMD string, links []string) (domain.EventNote, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.EventNote{}, err
+	}
+	if _, _, _, err := s.ownedEvent(ctx, userID, eventID); err != nil {
+		return domain.EventNote{}, err
+	}
+	// Links are user content rendered as clickable "open" affordances:
+	// restrict them to absolute http(s) URLs so a stored javascript: (or
+	// other scheme) link can never become an XSS vector client-side.
+	clean := make([]string, 0, len(links))
+	for _, raw := range links {
+		link := strings.TrimSpace(raw)
+		if link == "" {
+			continue
+		}
+		u, err := url.Parse(link)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return domain.EventNote{}, fmt.Errorf("%w: link %q must be an absolute http(s) URL", domain.ErrValidation, raw)
+		}
+		clean = append(clean, link)
+	}
+	n, err := s.notes.Upsert(ctx, domain.EventNote{
+		EventID: eventID,
+		UserID:  userID,
+		BodyMD:  bodyMD,
+		Links:   clean,
+	})
+	if err != nil {
+		return domain.EventNote{}, err
+	}
+	if n.Links == nil {
+		n.Links = []string{}
+	}
+	return n, nil
 }
 
 func eventFromInput(in domain.EventInput, calendarID string) domain.Event {

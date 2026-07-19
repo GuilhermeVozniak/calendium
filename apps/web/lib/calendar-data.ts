@@ -3,6 +3,7 @@ import type {
   Calendar,
   Event,
   EventInput,
+  EventNote,
   EventPatch,
   RsvpStatus,
 } from '@calendium/shared';
@@ -106,6 +107,36 @@ export async function sendRsvpApi(id: string, response: RsvpStatus): Promise<Eve
 }
 
 
+
+// --- Event notes (M2.8 Task 4) ---------------------------------------------
+// Local-only notes + doc links attached to an event. The mock has no note
+// store, so demo mode degrades to an empty note / a local echo.
+
+export async function fetchEventNoteApi(eventId: string): Promise<EventNote> {
+  try {
+    return await getApiClient().getEventNote(eventId);
+  } catch (err) {
+    if (DEMO_MODE) {
+      return { eventId, bodyMd: '', links: [], updatedAt: new Date(0).toISOString() };
+    }
+    throw err;
+  }
+}
+
+export async function putEventNoteApi(
+  eventId: string,
+  bodyMd: string,
+  links: string[]
+): Promise<EventNote> {
+  try {
+    return await getApiClient().putEventNote(eventId, bodyMd, links);
+  } catch (err) {
+    if (DEMO_MODE) {
+      return { eventId, bodyMd, links, updatedAt: new Date().toISOString() };
+    }
+    throw err;
+  }
+}
 
 export async function fetchAvailability(
   from: Date,
