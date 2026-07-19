@@ -1,6 +1,6 @@
 import type { OpenEvent, Thread } from '@calendium/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -18,6 +18,7 @@ vi.mock('@/lib/api', () => ({
   api: {
     listThreads: vi.fn(),
     listOpens: vi.fn(),
+    listAccounts: vi.fn(),
     markThreadOpened: vi.fn(),
     actOnThread: vi.fn(),
     snoozeThread: vi.fn(),
@@ -41,6 +42,32 @@ vi.mock('@/lib/api', () => ({
 vi.mock('@/lib/mock', () => ({
   mockThreads: () => fixtures.threads,
   mockOpens: () => fixtures.opens,
+  mockAccounts: [
+    {
+      id: 'acc_1',
+      provider: 'google',
+      email: 'ada@calendium.app',
+      status: 'active',
+      scopes: [],
+      vipSenders: [],
+      signatureHtml: '',
+      autoBcc: [],
+      lastSyncedAt: null,
+      createdAt: new Date().toISOString(),
+    },
+    {
+      id: 'acc_2',
+      provider: 'google',
+      email: 'work@acme.com',
+      status: 'active',
+      scopes: [],
+      vipSenders: [],
+      signatureHtml: '',
+      autoBcc: [],
+      lastSyncedAt: null,
+      createdAt: new Date().toISOString(),
+    },
+  ],
   mockThread: () => null,
   mockInstantReplies: () => [],
   mockAiAskCited: () => ({ answer: '', model: 'demo', sources: [] }),
@@ -159,5 +186,50 @@ describe('InboxView — Opens feed toggle pane', () => {
     await userEvent.click(screen.getByRole('button', { name: /back to inbox/i }));
     await screen.findByText('Q3 roadmap review — final pass');
     expect(screen.queryByText('Recent opens')).toBeNull();
+  });
+});
+
+describe('InboxView — account switching (mod+1..9)', () => {
+  beforeEach(() => {
+    fixtures.threads = [makeThread()];
+    fixtures.opens = [];
+    window.localStorage.clear();
+  });
+
+  it('defaults to All accounts, switches with mod+2, and clears with mod+0', async () => {
+    renderInbox();
+    await screen.findByText('Q3 roadmap review — final pass');
+    expect(screen.getByRole('button', { name: /all accounts/i })).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: '2', metaKey: true, ctrlKey: true });
+    expect(await screen.findByRole('button', { name: /work@acme\.com/i })).toBeTruthy();
+    expect(window.localStorage.getItem('calendium.activeAccountId')).toBe('acc_2');
+
+    fireEvent.keyDown(window, { key: '0', metaKey: true, ctrlKey: true });
+    expect(await screen.findByRole('button', { name: /all accounts/i })).toBeTruthy();
+    expect(window.localStorage.getItem('calendium.activeAccountId')).toBeNull();
+  });
+
+  it('mod+5 with two accounts is a no-op', async () => {
+    renderInbox();
+    await screen.findByText('Q3 roadmap review — final pass');
+    fireEvent.keyDown(window, { key: '5', metaKey: true, ctrlKey: true });
+    expect(screen.getByRole('button', { name: /all accounts/i })).toBeTruthy();
+  });
+
+  it('ignores mod+digits while typing in an input', async () => {
+    renderInbox();
+    await screen.findByText('Q3 roadmap review — final pass');
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    fireEvent.keyDown(input, { key: '2', metaKey: true, ctrlKey: true });
+    expect(screen.getByRole('button', { name: /all accounts/i })).toBeTruthy();
+    input.remove();
+  });
+
+  it('restores the persisted account scope', async () => {
+    window.localStorage.setItem('calendium.activeAccountId', 'acc_2');
+    renderInbox();
+    expect(await screen.findByRole('button', { name: /work@acme\.com/i })).toBeTruthy();
   });
 });

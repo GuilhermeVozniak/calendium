@@ -28,6 +28,7 @@ import { toast } from 'sonner';
 
 import { getApiClient } from '@/lib/api';
 import { getAccessToken } from '@/lib/auth-client';
+import { useActiveAccount } from '@/lib/use-accounts';
 import { DEMO_MODE } from '@/lib/demo';
 import { env } from '@/lib/env';
 import { isOnline, reportApiReachable } from '@/lib/offline/connectivity';
@@ -76,6 +77,11 @@ export interface MailListParams {
   split?: InboxSplit;
   view?: MailboxView;
   q?: string;
+  /**
+   * Scope to one connected account. When omitted, the active-account context
+   * (mod+1..9 switcher) applies; undefined/null there means all accounts.
+   */
+  accountId?: string;
   /** Skip fetching (e.g. while the Drafts pseudo-view is showing instead). */
   enabled?: boolean;
 }
@@ -161,8 +167,11 @@ export function useThreadList(params: MailListParams) {
   // 'drafts' is not a thread view — it lists drafts via useDrafts, so never
   // send it as a listThreads view.
   const view = params.view && params.view !== 'drafts' ? params.view : undefined;
+  // Explicit param wins; otherwise the active-account context scopes the list.
+  const { activeAccountId } = useActiveAccount();
+  const accountId = params.accountId ?? activeAccountId ?? undefined;
   return useQuery({
-    queryKey: ['threads', params.split ?? null, view ?? null, params.q ?? ''],
+    queryKey: ['threads', params.split ?? null, view ?? null, params.q ?? '', accountId ?? null],
     enabled: params.enabled ?? true,
     queryFn: async (): Promise<ThreadListResult> => {
       try {
@@ -171,6 +180,7 @@ export function useThreadList(params: MailListParams) {
           view,
           q: params.q || undefined,
           limit: 100,
+          accountId,
         });
         return { page, source: 'api' };
       } catch (err) {

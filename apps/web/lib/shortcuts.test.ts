@@ -1,7 +1,14 @@
 import { renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { IS_MAC, MOD_KEY, isEditableTarget, useChords, useShortcuts } from '@/lib/shortcuts';
+import {
+  IS_MAC,
+  MOD_KEY,
+  accountSwitchShortcuts,
+  isEditableTarget,
+  useChords,
+  useShortcuts,
+} from '@/lib/shortcuts';
 
 function keydown(
   target: EventTarget,
@@ -160,6 +167,57 @@ describe('useShortcuts', () => {
     keydown(document.body, { key: 'j' });
     expect(first).not.toHaveBeenCalled();
     expect(second).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('accountSwitchShortcuts', () => {
+  const IDS = ['acc1', 'acc2', 'acc3'];
+
+  it('mod+2 with three accounts selects the second', () => {
+    const setActive = vi.fn();
+    renderHook(() => useShortcuts(accountSwitchShortcuts(IDS, setActive)));
+    keydown(document.body, { key: '2', metaKey: true, ctrlKey: true });
+    expect(setActive).toHaveBeenCalledTimes(1);
+    expect(setActive).toHaveBeenCalledWith('acc2');
+  });
+
+  it('mod+5 with three accounts is a no-op', () => {
+    const setActive = vi.fn();
+    renderHook(() => useShortcuts(accountSwitchShortcuts(IDS, setActive)));
+    keydown(document.body, { key: '5', metaKey: true, ctrlKey: true });
+    expect(setActive).not.toHaveBeenCalled();
+  });
+
+  it('mod+0 clears back to all accounts', () => {
+    const setActive = vi.fn();
+    renderHook(() => useShortcuts(accountSwitchShortcuts(IDS, setActive)));
+    keydown(document.body, { key: '0', metaKey: true, ctrlKey: true });
+    expect(setActive).toHaveBeenCalledTimes(1);
+    expect(setActive).toHaveBeenCalledWith(null);
+  });
+
+  it('a bare digit without the modifier does nothing', () => {
+    const setActive = vi.fn();
+    renderHook(() => useShortcuts(accountSwitchShortcuts(IDS, setActive)));
+    keydown(document.body, { key: '1' });
+    expect(setActive).not.toHaveBeenCalled();
+  });
+
+  it('is suppressed while typing in an input', () => {
+    const setActive = vi.fn();
+    renderHook(() => useShortcuts(accountSwitchShortcuts(IDS, setActive)));
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    keydown(input, { key: '1', metaKey: true, ctrlKey: true });
+    expect(setActive).not.toHaveBeenCalled();
+  });
+
+  it('caps bindings at nine accounts', () => {
+    const setActive = vi.fn();
+    const many = Array.from({ length: 12 }, (_, i) => `acc${i + 1}`);
+    const bindings = accountSwitchShortcuts(many, setActive);
+    // 9 account bindings + mod+0.
+    expect(bindings).toHaveLength(10);
   });
 });
 

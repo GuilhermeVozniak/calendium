@@ -1,11 +1,13 @@
 const mockListThreads = jest.fn();
 const mockListOpens = jest.fn();
 const mockActOnThread = jest.fn();
+const mockListAccounts = jest.fn();
 jest.mock('@/lib/api', () => ({
   api: {
     listThreads: (...args: unknown[]) => mockListThreads(...args),
     listOpens: (...args: unknown[]) => mockListOpens(...args),
     actOnThread: (...args: unknown[]) => mockActOnThread(...args),
+    listAccounts: (...args: unknown[]) => mockListAccounts(...args),
   },
 }));
 
@@ -116,12 +118,30 @@ const THREAD: Thread = {
   unsubscribeOneClick: false,
 };
 
+const ACCOUNT_1 = {
+  id: 'acct_1',
+  provider: 'google',
+  email: 'you@gmail.com',
+  status: 'active',
+  scopes: [],
+  vipSenders: [],
+  signatureHtml: '',
+  autoBcc: [],
+  lastSyncedAt: null,
+  createdAt: new Date().toISOString(),
+};
+
+const ACCOUNT_2 = { ...ACCOUNT_1, id: 'acct_2', email: 'work@acme.com' };
+
 beforeEach(() => {
   jest.clearAllMocks();
   // No threads in any split by default — keeps the swipeable thread rows out
   // of the tree for the Opens tests; the offline-queue test below overrides
   // this with a single thread.
   mockListThreads.mockResolvedValue({ items: [], nextCursor: null });
+  // Single account by default so the account filter chips stay out of the
+  // tree for the unrelated suites below.
+  mockListAccounts.mockResolvedValue([ACCOUNT_1]);
 });
 
 describe('InboxScreen — Recent Opens sheet', () => {
@@ -162,6 +182,41 @@ describe('InboxScreen — Recent Opens sheet', () => {
     expect(screen.queryByText('Recent opens')).toBeNull();
   });
 
+});
+
+describe('InboxScreen — account filter chips', () => {
+  it('hides the chips row with a single account', async () => {
+    await renderScreen();
+    await flush();
+
+    expect(screen.queryByText('All accounts')).toBeNull();
+    expect(screen.queryByText('you@gmail.com')).toBeNull();
+  });
+
+  it('shows a chip per account and scopes listThreads to the pressed account', async () => {
+    mockListAccounts.mockResolvedValue([ACCOUNT_1, ACCOUNT_2]);
+
+    await renderScreen();
+    await flush();
+
+    expect(screen.getByText('All accounts')).toBeTruthy();
+    expect(screen.getByText('you@gmail.com')).toBeTruthy();
+    expect(screen.getByText('work@acme.com')).toBeTruthy();
+
+    await fireEvent.press(screen.getByTestId('account-chip-acct_2'));
+    await flush();
+
+    expect(mockListThreads).toHaveBeenLastCalledWith(
+      expect.objectContaining({ accountId: 'acct_2' })
+    );
+
+    await fireEvent.press(screen.getByTestId('account-chip-all'));
+    await flush();
+
+    expect(mockListThreads).toHaveBeenLastCalledWith(
+      expect.objectContaining({ accountId: undefined })
+    );
+  });
 });
 
 // Runs BEFORE the pagination suite below: that test's fetch + fetchNextPage
