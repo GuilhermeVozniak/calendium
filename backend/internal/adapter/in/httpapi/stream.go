@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,14 +16,6 @@ import (
 // and intermediaries can tell a quiet stream from a dead one. A var (not a
 // const) only so tests can shrink it.
 var keepaliveInterval = 25 * time.Second
-
-// TeamLister is the narrow slice of the team service the stream endpoint
-// needs: the caller's memberships, for event-topic scoping. Declared
-// consumer-side so this adapter does not depend on the full M2.7 team
-// service port (which satisfies it structurally once wired).
-type TeamLister interface {
-	List(ctx context.Context, userID string) ([]domain.Team, error)
-}
 
 // handleCollabStream serves GET /v1/collab/stream: a text/event-stream of
 // CollabEvents scoped to the authed caller — user:<uid> plus team:<id> for

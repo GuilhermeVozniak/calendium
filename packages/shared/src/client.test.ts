@@ -1390,3 +1390,169 @@ describe('public scheduling fetchers', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Teams (M2.7)
+// ---------------------------------------------------------------------------
+
+describe('teams (M2.7)', () => {
+  const TEAM = { id: 'team_1', name: 'Ops', createdBy: 'user_1', createdAt: '2026-07-19T00:00:00Z' };
+  const MEMBER = {
+    teamId: 'team_1',
+    userId: 'user_2',
+    role: 'admin',
+    shareReadStatuses: false,
+    joinedAt: '2026-07-19T00:00:00Z',
+  };
+  const INVITATION = {
+    id: 'inv_1',
+    teamId: 'team_1',
+    email: 'new@example.com',
+    role: 'member',
+    invitedBy: 'user_1',
+    status: 'pending',
+    expiresAt: '2026-08-02T00:00:00Z',
+    createdAt: '2026-07-19T00:00:00Z',
+  };
+
+  it('listTeams GETs /v1/teams with the bearer token', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: [TEAM] }] });
+    const result = await client.listTeams();
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams`);
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(result).toEqual([TEAM]);
+  });
+
+  it('createTeam POSTs {name} and returns the created team', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 201, body: TEAM }] });
+    const result = await client.createTeam('Ops');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams`);
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.body).toEqual({ name: 'Ops' });
+    expect(result).toEqual(TEAM);
+  });
+
+  it('getTeam GETs /v1/teams/{id} and returns team + members', async () => {
+    const payload = { team: TEAM, members: [MEMBER] };
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: payload }] });
+    const result = await client.getTeam('team_1');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1`);
+    expect(calls[0]!.method).toBe('GET');
+    expect(result).toEqual(payload);
+  });
+
+  it('renameTeam PATCHes /v1/teams/{id} with {name}', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: { ...TEAM, name: 'Platform' } }] });
+    await client.renameTeam('team_1', 'Platform');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1`);
+    expect(calls[0]!.method).toBe('PATCH');
+    expect(calls[0]!.body).toEqual({ name: 'Platform' });
+  });
+
+  it('deleteTeam DELETEs /v1/teams/{id} and resolves undefined on 204', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    const result = await client.deleteTeam('team_1');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1`);
+    expect(calls[0]!.method).toBe('DELETE');
+    expect(result).toBeUndefined();
+  });
+
+  it('setMemberRole PATCHes /v1/teams/{id}/members/{userId} with {role}', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: MEMBER }] });
+    const result = await client.setMemberRole('team_1', 'user_2', 'admin');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1/members/user_2`);
+    expect(calls[0]!.method).toBe('PATCH');
+    expect(calls[0]!.body).toEqual({ role: 'admin' });
+    expect(result).toEqual(MEMBER);
+  });
+
+  it('setShareReadStatuses PUTs /v1/teams/{id}/read-status-sharing with {share}', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { ...MEMBER, shareReadStatuses: true } }],
+    });
+    await client.setShareReadStatuses('team_1', true);
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1/read-status-sharing`);
+    expect(calls[0]!.method).toBe('PUT');
+    expect(calls[0]!.body).toEqual({ share: true });
+  });
+
+  it('removeMember DELETEs /v1/teams/{id}/members/{userId}', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    await client.removeMember('team_1', 'user_2');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1/members/user_2`);
+    expect(calls[0]!.method).toBe('DELETE');
+  });
+
+  it('invite POSTs /v1/teams/{id}/invitations with {email, role}', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 201, body: INVITATION }] });
+    const result = await client.invite('team_1', 'new@example.com', 'member');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1/invitations`);
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.body).toEqual({ email: 'new@example.com', role: 'member' });
+    expect(result).toEqual(INVITATION);
+  });
+
+  it('listInvitations GETs /v1/teams/{id}/invitations', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: [INVITATION] }] });
+    const result = await client.listInvitations('team_1');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1/invitations`);
+    expect(calls[0]!.method).toBe('GET');
+    expect(result).toEqual([INVITATION]);
+  });
+
+  it('revokeInvitation DELETEs /v1/teams/{id}/invitations/{invitationId}', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    await client.revokeInvitation('team_1', 'inv_1');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1/invitations/inv_1`);
+    expect(calls[0]!.method).toBe('DELETE');
+  });
+
+  it('acceptInvitation POSTs /v1/invitations/accept with {token}', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: TEAM }] });
+    const result = await client.acceptInvitation('raw-invite-token');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/invitations/accept`);
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.body).toEqual({ token: 'raw-invite-token' });
+    expect(result).toEqual(TEAM);
+  });
+
+  it('percent-encodes path params in team routes', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: TEAM }] });
+    await client.getTeam('team/../1?x=1');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/${encodeURIComponent('team/../1?x=1')}`);
+    const { client: client2, calls: calls2 } = makeClient({ responses: [{ status: 200, body: MEMBER }] });
+    await client2.setMemberRole('team 1', 'user#2', 'member');
+    expect(calls2[0]!.url).toBe(`${BASE_URL}/v1/teams/team%201/members/user%232`);
+  });
+
+  it('maps a 404 non-member response to ApiRequestError(404, "not_found")', async () => {
+    const { client } = makeClient({
+      responses: [{ status: 404, body: { error: { code: 'not_found', message: 'resource not found' } } }],
+    });
+    await expect(client.getTeam('team_x')).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
+    });
+  });
+
+  it('maps a 403 insufficient-role response to ApiRequestError(403, "forbidden")', async () => {
+    const { client } = makeClient({
+      responses: [{ status: 403, body: { error: { code: 'forbidden', message: 'insufficient team role' } } }],
+    });
+    await expect(client.deleteTeam('team_1')).rejects.toMatchObject({
+      status: 403,
+      code: 'forbidden',
+    });
+  });
+
+  it('maps a 409 last-owner response to ApiRequestError(409, "conflict")', async () => {
+    const { client } = makeClient({
+      responses: [{ status: 409, body: { error: { code: 'conflict', message: 'a team must keep at least one owner' } } }],
+    });
+    await expect(client.removeMember('team_1', 'user_1')).rejects.toMatchObject({
+      status: 409,
+      code: 'conflict',
+    });
+  });
+});

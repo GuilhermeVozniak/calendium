@@ -181,6 +181,21 @@ func run(logger *slog.Logger) error {
 		Logger:            logger,
 	})
 	settingsSvc := service.NewSettingsService(store.UserSettings())
+	// The Store has no accessors for the team repos; they are standalone
+	// constructors over the same *Store (shared tx plumbing).
+	teams := service.NewTeamService(service.TeamServiceDeps{
+		Teams:       postgres.NewTeamRepo(store),
+		Invitations: postgres.NewTeamInvitationRepo(store),
+		Users:       store.Users(),
+		Accounts:    store.Accounts(),
+		Mail:        mailProviders,
+		OAuth:       oauth,
+		Subs:        store.Subscriptions(),
+		Tx:          store,
+		Clock:       clock,
+		SelfHost:    cfg.Instance.SelfHosted,
+		AppBaseURL:  cfg.Instance.AppBaseURL,
+	})
 
 	// --- instance discovery document (GET /v1/instance) ---
 	mode := httpapi.ModeCloud
@@ -241,9 +256,10 @@ func run(logger *slog.Logger) error {
 		Scheduling: scheduling,
 		Settings:   settingsSvc,
 		Payments:   stripe,
-		// Realtime collaboration stream (M2.7): in-process SSE fan-out.
-		// Teams is left nil until the team service lands — the stream then
-		// carries only user:<id> events.
+		// M2.7 collaboration: team service + in-process SSE fan-out. The
+		// stream scopes each subscriber to user:<id> plus the caller's real
+		// team:<id> memberships resolved through Teams.
+		Teams:              teams,
 		Events:             eventbus.New(),
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,

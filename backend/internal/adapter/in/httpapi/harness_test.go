@@ -32,8 +32,8 @@ var (
 	_ port.SchedulingService = (*fakeSchedulingService)(nil)
 	_ port.SettingsService   = (*fakeSettingsService)(nil)
 
-	_ port.EventBus = (*fakeEventBus)(nil)
-	_ TeamLister    = (*fakeTeamLister)(nil)
+	_ port.EventBus    = (*fakeEventBus)(nil)
+	_ port.TeamService = (*fakeTeamService)(nil)
 )
 
 const (
@@ -1037,35 +1037,144 @@ func (f *fakeEventBus) subscribedTopics() [][]string {
 	return out
 }
 
-// --- TeamLister --------------------------------------------------------------
+// --- TeamService -------------------------------------------------------------
 
-type fakeTeamLister struct {
+// fakeTeamService doubles port.TeamService. The List fields are guarded by a
+// mutex because the SSE stream tests hit them from the server goroutine.
+type fakeTeamService struct {
 	mu        sync.Mutex
 	teams     []domain.Team
 	err       error
 	gotUserID string
+
+	createRet domain.Team
+	createErr error
+	gotCreate port.TeamInput
+
+	getTeamRet    domain.Team
+	getMembersRet []domain.TeamMember
+	getErr        error
+	gotGetTeamID  string
+
+	renameRet      domain.Team
+	renameErr      error
+	gotRenameID    string
+	gotRenameValue string
+
+	deleteErr   error
+	gotDeleteID string
+
+	setRoleRet      domain.TeamMember
+	setRoleErr      error
+	gotRoleTeamID   string
+	gotRoleMemberID string
+	gotRole         domain.TeamRole
+
+	shareRet       domain.TeamMember
+	shareErr       error
+	gotShareTeamID string
+	gotShare       bool
+
+	removeErr       error
+	gotRemoveTeamID string
+	gotRemoveUserID string
+
+	inviteRet       domain.TeamInvitation
+	inviteErr       error
+	gotInviteTeamID string
+	gotInviteEmail  string
+	gotInviteRole   domain.TeamRole
+
+	listInvsRet       []domain.TeamInvitation
+	listInvsErr       error
+	gotListInvsTeamID string
+
+	revokeErr       error
+	gotRevokeTeamID string
+	gotRevokeInvID  string
+
+	acceptRet       domain.Team
+	acceptErr       error
+	gotAcceptUserID string
+	gotAcceptToken  string
 }
 
-func (f *fakeTeamLister) List(ctx context.Context, userID string) ([]domain.Team, error) {
+func (f *fakeTeamService) Create(ctx context.Context, userID string, in port.TeamInput) (domain.Team, error) {
+	f.gotUserID = userID
+	f.gotCreate = in
+	return f.createRet, f.createErr
+}
+
+func (f *fakeTeamService) List(ctx context.Context, userID string) ([]domain.Team, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.gotUserID = userID
 	return f.teams, f.err
 }
 
-func (f *fakeTeamLister) setTeams(teams []domain.Team) {
+func (f *fakeTeamService) Get(ctx context.Context, userID, teamID string) (domain.Team, []domain.TeamMember, error) {
+	f.gotUserID, f.gotGetTeamID = userID, teamID
+	return f.getTeamRet, f.getMembersRet, f.getErr
+}
+
+func (f *fakeTeamService) Rename(ctx context.Context, userID, teamID, name string) (domain.Team, error) {
+	f.gotUserID, f.gotRenameID, f.gotRenameValue = userID, teamID, name
+	return f.renameRet, f.renameErr
+}
+
+func (f *fakeTeamService) Delete(ctx context.Context, userID, teamID string) error {
+	f.gotUserID, f.gotDeleteID = userID, teamID
+	return f.deleteErr
+}
+
+func (f *fakeTeamService) SetMemberRole(ctx context.Context, userID, teamID, memberUserID string, role domain.TeamRole) (domain.TeamMember, error) {
+	f.gotUserID, f.gotRoleTeamID, f.gotRoleMemberID, f.gotRole = userID, teamID, memberUserID, role
+	return f.setRoleRet, f.setRoleErr
+}
+
+func (f *fakeTeamService) SetShareReadStatuses(ctx context.Context, userID, teamID string, share bool) (domain.TeamMember, error) {
+	f.gotUserID, f.gotShareTeamID, f.gotShare = userID, teamID, share
+	return f.shareRet, f.shareErr
+}
+
+func (f *fakeTeamService) RemoveMember(ctx context.Context, userID, teamID, memberUserID string) error {
+	f.gotUserID, f.gotRemoveTeamID, f.gotRemoveUserID = userID, teamID, memberUserID
+	return f.removeErr
+}
+
+func (f *fakeTeamService) Invite(ctx context.Context, userID, teamID, email string, role domain.TeamRole) (domain.TeamInvitation, error) {
+	f.gotUserID, f.gotInviteTeamID, f.gotInviteEmail, f.gotInviteRole = userID, teamID, email, role
+	return f.inviteRet, f.inviteErr
+}
+
+func (f *fakeTeamService) ListInvitations(ctx context.Context, userID, teamID string) ([]domain.TeamInvitation, error) {
+	f.gotUserID, f.gotListInvsTeamID = userID, teamID
+	return f.listInvsRet, f.listInvsErr
+}
+
+func (f *fakeTeamService) RevokeInvitation(ctx context.Context, userID, teamID, invitationID string) error {
+	f.gotUserID, f.gotRevokeTeamID, f.gotRevokeInvID = userID, teamID, invitationID
+	return f.revokeErr
+}
+
+func (f *fakeTeamService) AcceptInvitation(ctx context.Context, userID, token string) (domain.Team, error) {
+	f.gotAcceptUserID, f.gotAcceptToken = userID, token
+	return f.acceptRet, f.acceptErr
+}
+
+func (f *fakeTeamService) setTeams(teams []domain.Team) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.teams = teams
 }
 
-func (f *fakeTeamLister) setErr(err error) {
+func (f *fakeTeamService) setErr(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.err = err
 }
 
-func (f *fakeTeamLister) listedUserID() string {
+func (f *fakeTeamService) listedUserID() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.gotUserID
@@ -1090,7 +1199,7 @@ type harness struct {
 	scheduling *fakeSchedulingService // alias of sched (public-surface tests)
 	settings   *fakeSettingsService
 	events     *fakeEventBus
-	teams      *fakeTeamLister
+	teams      *fakeTeamService
 }
 
 // newHarness wires every double into Deps with a discard logger and one
@@ -1116,7 +1225,7 @@ func newHarness(t *testing.T) *harness {
 		sched:     &fakeSchedulingService{},
 		settings:  &fakeSettingsService{},
 		events:    newFakeEventBus(),
-		teams:     &fakeTeamLister{},
+		teams:     &fakeTeamService{},
 	}
 	h.scheduling = h.sched
 	h.deps = Deps{

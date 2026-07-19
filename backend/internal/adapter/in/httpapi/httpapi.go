@@ -40,10 +40,10 @@ type Deps struct {
 	// Events fans realtime collaboration events out to SSE subscribers
 	// (GET /v1/collab/stream). When nil the stream endpoint answers 501.
 	Events port.EventBus
-	// Teams resolves the caller's memberships so the stream subscribes only
-	// to the caller's team topics. Optional until the M2.7 team service is
-	// wired: when nil the stream carries only user:<id> events.
-	Teams TeamLister
+	// Teams manages teams, membership, and invitations (M2.7); it also
+	// resolves the caller's memberships so the SSE stream subscribes to the
+	// caller's team topics.
+	Teams port.TeamService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -206,6 +206,20 @@ func New(deps Deps) http.Handler {
 
 	authed("GET /v1/settings", s.handleGetSettings)
 	authed("PUT /v1/settings", s.handleUpdateSettings)
+
+	// M2.7: teams, membership, and email invitations.
+	authed("POST /v1/teams", s.handleCreateTeam)
+	authed("GET /v1/teams", s.handleListTeams)
+	authed("GET /v1/teams/{id}", s.handleGetTeam)
+	authed("PATCH /v1/teams/{id}", s.handleRenameTeam)
+	authed("DELETE /v1/teams/{id}", s.handleDeleteTeam)
+	authed("PATCH /v1/teams/{id}/members/{userId}", s.handleSetMemberRole)
+	authed("PUT /v1/teams/{id}/read-status-sharing", s.handleSetShareReadStatuses)
+	authed("DELETE /v1/teams/{id}/members/{userId}", s.handleRemoveMember)
+	authed("POST /v1/teams/{id}/invitations", s.handleInvite)
+	authed("GET /v1/teams/{id}/invitations", s.handleListInvitations)
+	authed("DELETE /v1/teams/{id}/invitations/{invitationId}", s.handleRevokeInvitation)
+	authed("POST /v1/invitations/accept", s.handleAcceptInvitation)
 
 	// M2.7: realtime collaboration stream (SSE).
 	authed("GET /v1/collab/stream", s.handleCollabStream)

@@ -710,6 +710,56 @@ export interface ContactSummary {
 }
 
 // ---------------------------------------------------------------------------
+// Teams & collaboration (M2.7)
+// ---------------------------------------------------------------------------
+
+/** Member privileges, ordered owner > admin > member. */
+export type TeamRole = 'owner' | 'admin' | 'member';
+
+/**
+ * A collaboration group. Membership grants NOTHING by itself: every
+ * collaborative surface (shares, comments, read statuses, calendars,
+ * availability) requires its own explicit opt-in (privacy default).
+ */
+export interface Team {
+  id: string;
+  name: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+/** A user's membership in a team. */
+export interface TeamMember {
+  teamId: string;
+  userId: string;
+  role: TeamRole;
+  /**
+   * Opts this member's thread open/reply activity into the team's
+   * read-status indicators. Privacy default: false.
+   */
+  shareReadStatuses: boolean;
+  joinedAt: string;
+}
+
+/** Lifecycle of an email invitation. */
+export type TeamInvitationStatus = 'pending' | 'accepted' | 'revoked' | 'expired';
+
+/**
+ * An email invitation to join a team. The raw token appears once, inside the
+ * emailed invite link; the API never returns it.
+ */
+export interface TeamInvitation {
+  id: string;
+  teamId: string;
+  email: string;
+  role: TeamRole;
+  invitedBy: string;
+  status: TeamInvitationStatus;
+  expiresAt: string;
+  createdAt: string;
+}
+
+// ---------------------------------------------------------------------------
 // API envelopes
 // ---------------------------------------------------------------------------
 

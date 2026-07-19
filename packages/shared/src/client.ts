@@ -46,6 +46,10 @@ import type {
   SendSuggestion,
   Snippet,
   Subscription,
+  Team,
+  TeamInvitation,
+  TeamMember,
+  TeamRole,
   Thread,
   ThreadAction,
   TimeProposal,
@@ -536,6 +540,81 @@ export class ApiClient {
   }
   updateSettings(s: UserSettings) {
     return this.request<UserSettings>('PUT', '/v1/settings', s);
+  }
+
+  // --- Teams (M2.7) ---
+  // Authorization is decided server-side: a team the caller is not a member
+  // of 404s (existence is never leaked), and role-gated calls 403.
+  listTeams() {
+    return this.request<Team[]>('GET', '/v1/teams');
+  }
+  createTeam(name: string) {
+    return this.request<Team>('POST', '/v1/teams', { name });
+  }
+  /** The team plus its member list; caller must be a member. */
+  getTeam(teamId: string) {
+    return this.request<{ team: Team; members: TeamMember[] }>(
+      'GET',
+      `/v1/teams/${encodeURIComponent(teamId)}`
+    );
+  }
+  renameTeam(teamId: string, name: string) {
+    return this.request<Team>('PATCH', `/v1/teams/${encodeURIComponent(teamId)}`, { name });
+  }
+  /** Owner-only; removes the team and all memberships, shares, and comments. */
+  deleteTeam(teamId: string) {
+    return this.request<void>('DELETE', `/v1/teams/${encodeURIComponent(teamId)}`);
+  }
+  /** Admin+; only owners may grant or revoke the owner role. Demoting the last owner 409s. */
+  setMemberRole(teamId: string, userId: string, role: TeamRole) {
+    return this.request<TeamMember>(
+      'PATCH',
+      `/v1/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(userId)}`,
+      { role }
+    );
+  }
+  /** Toggles the CALLER's own read-status sharing opt-in for this team. */
+  setShareReadStatuses(teamId: string, share: boolean) {
+    return this.request<TeamMember>(
+      'PUT',
+      `/v1/teams/${encodeURIComponent(teamId)}/read-status-sharing`,
+      { share }
+    );
+  }
+  /** Admins remove members, owners remove anyone; pass your own userId to leave. */
+  removeMember(teamId: string, userId: string) {
+    return this.request<void>(
+      'DELETE',
+      `/v1/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(userId)}`
+    );
+  }
+  /** Admin+; emails an invite link through the inviter's own connected account. */
+  invite(teamId: string, email: string, role: TeamRole) {
+    return this.request<TeamInvitation>(
+      'POST',
+      `/v1/teams/${encodeURIComponent(teamId)}/invitations`,
+      { email, role }
+    );
+  }
+  listInvitations(teamId: string) {
+    return this.request<TeamInvitation[]>(
+      'GET',
+      `/v1/teams/${encodeURIComponent(teamId)}/invitations`
+    );
+  }
+  revokeInvitation(teamId: string, invitationId: string) {
+    return this.request<void>(
+      'DELETE',
+      `/v1/teams/${encodeURIComponent(teamId)}/invitations/${encodeURIComponent(invitationId)}`
+    );
+  }
+  /**
+   * Redeems the raw token from an emailed invite link for the signed-in
+   * user, returning the joined team. Unknown/expired/revoked tokens throw
+   * ApiRequestError(404, 'not_found') — they are indistinguishable.
+   */
+  acceptInvitation(token: string) {
+    return this.request<Team>('POST', '/v1/invitations/accept', { token });
   }
 }
 
