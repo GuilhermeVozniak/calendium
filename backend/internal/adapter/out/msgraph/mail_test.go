@@ -330,6 +330,25 @@ func TestClient_FetchAttachment_RawBodyAndContentType(t *testing.T) {
 	}
 }
 
+// TestClient_FetchAttachment_OversizedBodyErrors pins the M2.5 review fix
+// (RECOMMENDED 3): doRaw's io.LimitReader(maxAttachmentBytes) used to just
+// truncate an oversized body and report success with the truncated bytes —
+// a silent data-corruption bug (the caller believes it has the whole
+// attachment). It must now read one byte past the cap and fail loudly
+// instead.
+func TestClient_FetchAttachment_OversizedBodyErrors(t *testing.T) {
+	oversized := bytes.Repeat([]byte("x"), maxAttachmentBytes+1)
+	_, c := newGraphServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(oversized)
+	})
+
+	_, _, err := c.FetchAttachment(context.Background(), "tok", "m1", "att1")
+	if err == nil {
+		t.Fatal("FetchAttachment: want an error for a body exceeding maxAttachmentBytes, got nil")
+	}
+}
+
 func TestClient_FetchAttachment_NotFound(t *testing.T) {
 	_, c := newGraphServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

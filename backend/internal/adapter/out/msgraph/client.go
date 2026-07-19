@@ -145,9 +145,17 @@ func (c *Client) doRaw(ctx context.Context, method, url, accessToken string) ([]
 	}
 	defer func() { _ = res.Body.Close() }()
 
-	raw, err := io.ReadAll(io.LimitReader(res.Body, maxAttachmentBytes))
+	// Read one byte past the cap: a body that reads exactly maxAttachmentBytes
+	// is ambiguous (it might be truncated right at the boundary), but reading
+	// maxAttachmentBytes+1 and finding more than maxAttachmentBytes bytes is
+	// unambiguous proof the real body exceeds the limit — so it can be
+	// rejected outright instead of returned as a silently truncated success.
+	raw, err := io.ReadAll(io.LimitReader(res.Body, maxAttachmentBytes+1))
 	if err != nil {
 		return nil, "", fmt.Errorf("msgraph: read response: %w", err)
+	}
+	if len(raw) > maxAttachmentBytes {
+		return nil, "", fmt.Errorf("msgraph: attachment content exceeds the %d byte limit", maxAttachmentBytes)
 	}
 	if res.StatusCode < 200 || res.StatusCode > 299 {
 		var ge struct {
