@@ -166,6 +166,52 @@ describe('useReactToMessage honesty contract', () => {
     expect(unsendDraftMock).toHaveBeenCalledWith('draft-1');
   });
 
+  /**
+   * M2.5 review fix (MINOR f): a successful undo put the message back in
+   * drafts, so the reaction chip claiming delivery: 'sent' became a lie the
+   * moment undoTinyReply resolved — nothing reconciled the cached reaction
+   * back to 'local' afterward.
+   */
+  it('react(): a successful undo flips the cached reaction back to delivery: local', async () => {
+    const queryClient = new QueryClient();
+    seedThread(queryClient, makeMessage());
+    const sentReaction = reaction('👍', 'sent');
+    reactToMessageMock.mockResolvedValue({ reaction: sentReaction, draftId: 'draft-1' });
+    unsendDraftMock.mockResolvedValue(undefined);
+
+    const { result } = renderReact(queryClient);
+    await result.current.react(THREAD_ID, MESSAGE_ID, '👍', true);
+
+    expect(readMessage(queryClient).reactions).toEqual([sentReaction]);
+
+    const call = toastSuccessMock.mock.calls[0]!;
+    const opts = call[1] as { action: { onClick: () => void } };
+    opts.action.onClick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readMessage(queryClient).reactions).toEqual([{ ...sentReaction, delivery: 'local' }]);
+  });
+
+  it('react(): a failed undo (e.g. already sent) leaves the reaction chip as delivery: sent', async () => {
+    const queryClient = new QueryClient();
+    seedThread(queryClient, makeMessage());
+    const sentReaction = reaction('👍', 'sent');
+    reactToMessageMock.mockResolvedValue({ reaction: sentReaction, draftId: 'draft-1' });
+    unsendDraftMock.mockRejectedValue(new Error('too late'));
+
+    const { result } = renderReact(queryClient);
+    await result.current.react(THREAD_ID, MESSAGE_ID, '👍', true);
+
+    const call = toastSuccessMock.mock.calls[0]!;
+    const opts = call[1] as { action: { onClick: () => void } };
+    opts.action.onClick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readMessage(queryClient).reactions).toEqual([sentReaction]);
+  });
+
   it('react(): a real API rejection reverts the optimistic chip and toasts', async () => {
     const queryClient = new QueryClient();
     seedThread(queryClient, makeMessage());
