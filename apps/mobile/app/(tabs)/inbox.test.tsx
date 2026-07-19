@@ -16,6 +16,19 @@ jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
+// The screen now imports @/lib/offline (offline triage queue + queued badge),
+// which pulls in AsyncStorage and expo-network at module scope; both need
+// test fakes here.
+jest.mock('@react-native-async-storage/async-storage', () =>
+  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
+);
+jest.mock('expo-network', () => ({
+  addNetworkStateListener: jest.fn(() => ({ remove: jest.fn() })),
+  getNetworkStateAsync: jest.fn(() =>
+    Promise.resolve({ isConnected: false, isInternetReachable: false })
+  ),
+}));
+
 // The Opens sheet tests below never render a non-empty thread list, so the
 // real swipeable rows never mount — but the module import itself still runs
 // at load time, and pulling in real reanimated/gesture-handler native glue
