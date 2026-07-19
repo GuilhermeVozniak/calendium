@@ -141,6 +141,12 @@ func run(logger *slog.Logger) error {
 		Clock:             clock,
 		Settings:          store.UserSettings(),
 		SelfHosted:        cfg.Instance.SelfHosted,
+		// Shared calendars (M2.7 Task 12): grants, audit trail, and the
+		// team/user lookups behind grantee resolution.
+		Shares: postgres.NewCalendarShareRepo(store),
+		Audit:  postgres.NewAuditRepo(store),
+		Teams:  postgres.NewTeamRepo(store),
+		Users:  store.Users(),
 	})
 	search := service.NewSearchService(store.Subscriptions(), store.Threads(), store.Events(), clock, cfg.Instance.SelfHosted)
 	aiSvc := service.NewAIService(service.AIServiceDeps{
@@ -227,20 +233,22 @@ func run(logger *slog.Logger) error {
 
 	// --- HTTP server ---
 	handler := httpapi.New(httpapi.Deps{
-		Logger:     logger,
-		Verifier:   verifier,
-		Users:      users,
-		Billing:    billing,
-		Accounts:   accounts,
-		Mail:       mail,
-		Calendars:  calendars,
-		Search:     search,
-		AI:         aiSvc,
-		Devices:    devices,
-		Prefs:      prefs,
-		Scheduling: scheduling,
-		Settings:   settingsSvc,
-		Payments:   stripe,
+		Logger:    logger,
+		Verifier:  verifier,
+		Users:     users,
+		Billing:   billing,
+		Accounts:  accounts,
+		Mail:      mail,
+		Calendars: calendars,
+		// The calendar service also implements the sharing management port.
+		CalendarShares: calendars,
+		Search:         search,
+		AI:             aiSvc,
+		Devices:        devices,
+		Prefs:          prefs,
+		Scheduling:     scheduling,
+		Settings:       settingsSvc,
+		Payments:       stripe,
 		// Realtime collaboration stream (M2.7): in-process SSE fan-out.
 		// Teams is left nil until the team service lands — the stream then
 		// carries only user:<id> events.
