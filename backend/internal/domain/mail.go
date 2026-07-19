@@ -133,20 +133,24 @@ type Attachment struct {
 
 // Message is a single mail message within a thread.
 type Message struct {
-	ID                string         `json:"id"`
-	ThreadID          string         `json:"threadId"`
-	AccountID         string         `json:"accountId"`
-	ProviderMessageID string         `json:"-"`
-	From              EmailAddress   `json:"from"`
-	To                []EmailAddress `json:"to"`
-	Cc                []EmailAddress `json:"cc"`
-	Bcc               []EmailAddress `json:"bcc"`
-	Subject           string         `json:"subject"`
-	BodyHTML          string         `json:"bodyHtml"`
-	BodyText          string         `json:"bodyText"`
-	Attachments       []Attachment   `json:"attachments"`
-	SentAt            time.Time      `json:"sentAt"`
-	IsDraft           bool           `json:"isDraft"`
+	ID                string `json:"id"`
+	ThreadID          string `json:"threadId"`
+	AccountID         string `json:"accountId"`
+	ProviderMessageID string `json:"-"`
+	// RFCMessageID is the RFC 5322 Message-ID header captured at sync ingest;
+	// the thread's earliest one is the cross-account conversation key for
+	// team read statuses (M2.7). Never serialized to clients.
+	RFCMessageID string         `json:"-"`
+	From         EmailAddress   `json:"from"`
+	To           []EmailAddress `json:"to"`
+	Cc           []EmailAddress `json:"cc"`
+	Bcc          []EmailAddress `json:"bcc"`
+	Subject      string         `json:"subject"`
+	BodyHTML     string         `json:"bodyHtml"`
+	BodyText     string         `json:"bodyText"`
+	Attachments  []Attachment   `json:"attachments"`
+	SentAt       time.Time      `json:"sentAt"`
+	IsDraft      bool           `json:"isDraft"`
 	// OpenedAt is read-status tracking (Superhuman read receipts).
 	OpenedAt *time.Time `json:"openedAt"`
 	// Reactions is populated by the service on GetThread; empty slice

@@ -37,6 +37,12 @@ type MailServiceDeps struct {
 	Reactions     port.ReactionRepo
 	MailProviders map[domain.Provider]port.MailProvider
 	OAuth         map[domain.Provider]port.OAuthGateway
+	// Activity records team read-status activity (M2.7 Task 10); nil
+	// disables recording (MarkThreadOpened stays activity-free).
+	Activity port.TeamThreadActivityRepo
+	// Bus fans activity.updated collab events out to SSE subscribers; nil
+	// disables publishing.
+	Bus port.EventBus
 	// Unsubscriber performs the RFC 8058 one-click POST; nil disables the
 	// one-click path (falls back to mailto / link).
 	Unsubscriber port.UnsubscribeGateway
@@ -61,6 +67,8 @@ type MailService struct {
 	teams         port.TeamRepo // optional; see MailServiceDeps.Teams
 	labels        port.LabelRepo
 	reactions     port.ReactionRepo
+	activity      port.TeamThreadActivityRepo
+	bus           port.EventBus
 	mail          map[domain.Provider]port.MailProvider
 	tokens        tokenSource
 	unsubscriber  port.UnsubscribeGateway
@@ -90,6 +98,8 @@ func NewMailService(d MailServiceDeps) *MailService {
 		teams:         d.Teams,
 		labels:        d.Labels,
 		reactions:     d.Reactions,
+		activity:      d.Activity,
+		bus:           d.Bus,
 		mail:          d.MailProviders,
 		tokens:        tokenSource{accounts: d.Accounts, oauth: d.OAuth, clock: d.Clock},
 		unsubscriber:  d.Unsubscriber,
@@ -275,6 +285,7 @@ func (s *MailService) MarkThreadOpened(ctx context.Context, userID, threadID str
 	if err := s.threads.MarkOpened(ctx, t.ID); err != nil {
 		return err
 	}
+	s.recordOpenActivity(ctx, userID, t) // team read statuses: best-effort, never fails the open
 	if provider, ok := s.mail[acct.Provider]; ok {
 		token, err := s.tokens.accessToken(ctx, acct)
 		if err != nil {

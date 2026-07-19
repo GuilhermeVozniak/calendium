@@ -439,17 +439,19 @@ func collectThreads(rows *sql.Rows) ([]domain.Thread, error) {
 
 const messageCols = `m.id, m.thread_id, m.account_id, m.provider_message_id, m.from_addr,
 	m.to_addrs, m.cc_addrs, m.bcc_addrs, m.subject, m.body_html, m.body_text,
-	m.sent_at, m.is_draft, m.opened_at`
+	m.sent_at, m.is_draft, m.opened_at, m.rfc_message_id`
 
 func scanMessage(r rowScanner) (domain.Message, error) {
 	var m domain.Message
 	var from, to, cc, bcc []byte
 	var opened sql.NullTime
+	var rfcID sql.NullString
 	if err := r.Scan(&m.ID, &m.ThreadID, &m.AccountID, &m.ProviderMessageID, &from,
 		&to, &cc, &bcc, &m.Subject, &m.BodyHTML, &m.BodyText,
-		&m.SentAt, &m.IsDraft, &opened); err != nil {
+		&m.SentAt, &m.IsDraft, &opened, &rfcID); err != nil {
 		return domain.Message{}, notFound(err)
 	}
+	m.RFCMessageID = rfcID.String
 	for _, pair := range []struct {
 		src []byte
 		dst any
@@ -498,8 +500,8 @@ func (r messageRepo) Upsert(ctx context.Context, m domain.Message) (domain.Messa
 	}
 	err = r.q(ctx).QueryRowContext(ctx, `
 		INSERT INTO messages (id, thread_id, account_id, provider_message_id, from_addr,
-			to_addrs, cc_addrs, bcc_addrs, subject, body_html, body_text, sent_at, is_draft, opened_at)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13, $14)
+			to_addrs, cc_addrs, bcc_addrs, subject, body_html, body_text, sent_at, is_draft, opened_at, rfc_message_id)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13, $14, $15)
 		ON CONFLICT `+conflict+` DO UPDATE SET
 			thread_id = EXCLUDED.thread_id,
 			from_addr = EXCLUDED.from_addr,
@@ -511,10 +513,11 @@ func (r messageRepo) Upsert(ctx context.Context, m domain.Message) (domain.Messa
 			body_text = EXCLUDED.body_text,
 			sent_at   = EXCLUDED.sent_at,
 			is_draft  = EXCLUDED.is_draft,
-			opened_at = COALESCE(EXCLUDED.opened_at, messages.opened_at)
+			opened_at = COALESCE(EXCLUDED.opened_at, messages.opened_at),
+			rfc_message_id = COALESCE(EXCLUDED.rfc_message_id, messages.rfc_message_id)
 		RETURNING id`,
 		m.ID, m.ThreadID, m.AccountID, m.ProviderMessageID, from, to, cc, bcc,
-		m.Subject, m.BodyHTML, m.BodyText, m.SentAt, m.IsDraft, nullTimePtr(m.OpenedAt)).Scan(&m.ID)
+		m.Subject, m.BodyHTML, m.BodyText, m.SentAt, m.IsDraft, nullTimePtr(m.OpenedAt), nullStr(m.RFCMessageID)).Scan(&m.ID)
 	if err != nil {
 		return domain.Message{}, err
 	}

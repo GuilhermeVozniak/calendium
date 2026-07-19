@@ -54,6 +54,9 @@ type Deps struct {
 	// delegated requests (M2.7 Task 15). When nil the delegation routes
 	// answer 501 and any act-as request is rejected (fail closed).
 	Delegations port.DelegationService
+	// TeamActivity serves teammate read/reply indicators (M2.7 Task 10);
+	// when nil the team-activity route answers 501.
+	TeamActivity port.TeamActivityService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -131,6 +134,7 @@ func New(deps Deps) http.Handler {
 	authed("POST /v1/mail/threads/{id}/reminder", s.handleThreadReminder)
 	authed("POST /v1/mail/threads/{id}/unsubscribe", s.handleUnsubscribeThread)
 	authed("GET /v1/mail/threads/{id}/instant-replies", s.handleInstantReplies)
+	authed("GET /v1/mail/threads/{id}/team-activity", s.handleTeamThreadActivity)
 	authed("POST /v1/mail/threads/zero", s.handleGetMeToZero)
 
 	authed("GET /v1/mail/labels", s.handleListLabels)

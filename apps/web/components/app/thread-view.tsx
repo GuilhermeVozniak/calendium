@@ -29,6 +29,7 @@ import { useCompose } from '@/components/app/compose';
 import { ContactPane } from '@/components/app/contact-pane';
 import { SHARE_THREAD_EVENT, ShareDialog } from '@/components/app/share-dialog';
 import { TimePickerDialog } from '@/components/app/snooze-menu';
+import { TeamActivityChips } from '@/components/app/team-activity-chips';
 import { InstantReplies } from '@/components/mail/instant-replies';
 import { MessageReactions } from '@/components/mail/message-reactions';
 import { ThreadSummary } from '@/components/mail/thread-summary';
@@ -631,6 +632,9 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
           })}
         </div>
       </ScrollArea>
+
+      {/* Teammate read/reply indicators (M2.7 team read statuses) */}
+      <TeamActivityChips threadId={thread.id} />
 
       {/* AI instant reply chips */}
       {aiEnabled && (

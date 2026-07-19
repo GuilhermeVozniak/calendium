@@ -62,6 +62,7 @@ import type {
   TeamInvitation,
   TeamMember,
   TeamRole,
+  TeamThreadActivity,
   Thread,
   ThreadAction,
   ThreadShare,
@@ -235,6 +236,10 @@ export class ApiClient {
   /** Records that the owner opened the thread (sets real read state); idempotent. */
   markThreadOpened(threadId: string) {
     return this.request<void>('POST', `/v1/mail/threads/${threadId}/open`);
+  }
+  /** Teammate read/reply indicators for the thread's conversation (M2.7; opted-in members only). */
+  teamThreadActivity(threadId: string) {
+    return this.request<TeamThreadActivity[]>('GET', `/v1/mail/threads/${threadId}/team-activity`);
   }
   snoozeThread(threadId: string, until: string) {
     return this.request<Thread>('POST', `/v1/mail/threads/${threadId}/snooze`, { until });

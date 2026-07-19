@@ -109,6 +109,8 @@ func run(logger *slog.Logger) error {
 
 	// --- services ---
 	clock := service.SystemClock{}
+	bus := eventbus.New()
+	activityRepo := postgres.NewTeamThreadActivityRepo(store)
 
 	users := service.NewUserService(store.Users(), store.UserPreferences(), clock)
 	billing := service.NewBillingService(store.Users(), store.Subscriptions(), store.StripeEvents(), stripe, clock, store, cfg.Instance.SelfHosted)
@@ -124,6 +126,8 @@ func run(logger *slog.Logger) error {
 		Teams:         postgres.NewTeamRepo(store),
 		Labels:        store.Labels(),
 		Reactions:     store.Reactions(),
+		Activity:      activityRepo,
+		Bus:           bus,
 		MailProviders: mailProviders,
 		OAuth:         oauth,
 		Unsubscriber:  unsubscribe.New(),
@@ -208,10 +212,6 @@ func run(logger *slog.Logger) error {
 		AppBaseURL:  cfg.Instance.AppBaseURL,
 	})
 
-	// Realtime collaboration bus (M2.7): one in-process bus shared by the
-	// SSE stream and the collab service so comment/share events reach
-	// subscribers.
-	bus := eventbus.New()
 	// Mention pushes reuse the worker's dispatcher; unconfigured push
 	// degrades to nil (mention pushes silently disabled).
 	var pushSender port.PushSender
@@ -245,6 +245,17 @@ func run(logger *slog.Logger) error {
 		Audit:       postgres.NewAuditRepo(store),
 		Users:       postgres.NewUserDirectory(store),
 		Clock:       clock,
+	})
+
+	// M2.7 Task 10: teammate read/reply indicators.
+	teamActivitySvc := service.NewTeamActivityService(service.TeamActivityServiceDeps{
+		Subscriptions: store.Subscriptions(),
+		Accounts:      store.Accounts(),
+		Threads:       store.Threads(),
+		Teams:         postgres.NewTeamRepo(store),
+		Activity:      activityRepo,
+		Clock:         clock,
+		SelfHosted:    cfg.Instance.SelfHosted,
 	})
 
 	// --- instance discovery document (GET /v1/instance) ---
@@ -315,7 +326,9 @@ func run(logger *slog.Logger) error {
 		Teams:  teams,
 		Events: bus,
 		// M2.7 Task 15: EA delegation grants + act-as + audit surface.
-		Delegations:        delegations,
+		Delegations: delegations,
+		// M2.7 Task 10: teammate read/reply indicators.
+		TeamActivity:       teamActivitySvc,
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 	})

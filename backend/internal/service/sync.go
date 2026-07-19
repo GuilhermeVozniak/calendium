@@ -32,16 +32,19 @@ type SyncServiceDeps struct {
 	OAuth             map[domain.Provider]port.OAuthGateway
 	Push              port.PushSender // optional; nil disables notifications
 	AiJobs            port.AiJobRepo  // optional; nil disables AI enqueueing
+	// Activity records team replied_at indicators on delivered sends (M2.7
+	// Task 10); nil disables recording.
+	Activity port.TeamThreadActivityRepo
 	// Classifiers is optional (nil when AI is not configured); when set, it
 	// gates the classify job kind at enqueue time so a user with no enabled
 	// classifiers never pays a job-queue/budget cost for evaluating an empty
 	// rule set (see hasClassifiers in applyMailPage).
 	Classifiers port.ClassifierRepo
 	Clock       port.Clock
-	// Shares + Bus are optional (M2.7 Task 7): when both are set, a thread
-	// that receives new messages fans {Topic: "share:<id>", Type:
-	// "share.updated"} out for each of its live shares (ids only, never
-	// content). Nil disables the hook entirely.
+	// Shares + Bus are optional (M2.7): when set, new messages fan
+	// share.updated events out per live share (Task 7) and Bus also carries
+	// activity.updated events (Task 10) — ids only, never content. Nil
+	// disables each hook.
 	Shares port.ThreadShareRepo
 	Bus    port.EventBus
 }
@@ -64,10 +67,11 @@ type SyncService struct {
 	tokens      tokenSource
 	push        port.PushSender
 	aiJobs      port.AiJobRepo
+	activity    port.TeamThreadActivityRepo
 	classifiers port.ClassifierRepo
 	clock       port.Clock
 	shares      port.ThreadShareRepo // optional (M2.7 share fan-out)
-	bus         port.EventBus        // optional (M2.7 share fan-out)
+	bus         port.EventBus        // optional (M2.7 share + activity fan-out)
 }
 
 var _ port.SyncService = (*SyncService)(nil)
@@ -88,6 +92,7 @@ func NewSyncService(d SyncServiceDeps) *SyncService {
 		tokens:      tokenSource{accounts: d.Accounts, oauth: d.OAuth, clock: d.Clock},
 		push:        d.Push,
 		aiJobs:      d.AiJobs,
+		activity:    d.Activity,
 		classifiers: d.Classifiers,
 		clock:       d.Clock,
 		shares:      d.Shares,
@@ -298,6 +303,7 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 	for _, im := range page.Messages {
 		m := im.Message
 		m.AccountID = acct.ID
+		m.RFCMessageID = rfcMessageIDFromHeaders(im.Headers) // conversation key for team read statuses
 		providerThreadID := m.ThreadID
 		if local, ok := localThreadByProvider[providerThreadID]; ok {
 			m.ThreadID = local.ID
@@ -617,6 +623,7 @@ func (s *SyncService) deliverDraft(ctx context.Context, d domain.Draft) error {
 			})
 		}
 		s.publishShareUpdates(ctx, map[string]struct{}{msg.ThreadID: {}})
+		s.recordReplyActivity(ctx, acct.UserID, msg.ThreadID, sentAt) // team reply indicators: best-effort
 	}
 	// New standalone threads are picked up by the next provider sync.
 	return s.drafts.Delete(ctx, d.ID)
