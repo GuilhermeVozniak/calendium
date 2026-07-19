@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { ApiRequestError, type Thread } from '@calendium/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { renderHook } from '@testing-library/react';
+import { renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ---------------------------------------------------------------------------
@@ -16,10 +16,11 @@ vi.mock('@/lib/demo', () => ({
 }));
 
 const onlineState = vi.hoisted(() => ({ value: true }));
+const reportApiReachableMock = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/offline/connectivity', () => ({
   isOnline: () => onlineState.value,
   subscribeOnline: () => () => {},
-  reportApiReachable: vi.fn(),
+  reportApiReachable: (...args: unknown[]) => reportApiReachableMock(...args),
   useOnline: () => onlineState.value,
 }));
 
@@ -36,11 +37,13 @@ vi.mock('@/lib/offline/queue', () => ({
 const actOnThreadMock = vi.fn();
 const snoozeThreadMock = vi.fn();
 const markThreadOpenedMock = vi.fn();
+const getMeMock = vi.fn();
 vi.mock('@/lib/api', () => ({
   getApiClient: () => ({
     actOnThread: (...args: unknown[]) => actOnThreadMock(...args),
     snoozeThread: (...args: unknown[]) => snoozeThreadMock(...args),
     markThreadOpened: (...args: unknown[]) => markThreadOpenedMock(...args),
+    getMe: (...args: unknown[]) => getMeMock(...args),
   }),
 }));
 
@@ -70,7 +73,7 @@ vi.mock('sonner', () => ({
 }));
 
 // Imported after the mocks above so use-mail.ts picks them up.
-import { mailUndo, useMailActions, type ThreadListData } from '@/lib/use-mail';
+import { mailUndo, useApiOnline, useMailActions, type ThreadListData } from '@/lib/use-mail';
 
 // ---------------------------------------------------------------------------
 // Fixtures / helpers
@@ -223,5 +226,29 @@ describe('useMailActions offline queueing', () => {
     await result.current.markOpened('t1');
 
     expect(queueActionMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('useApiOnline reachability reporting', () => {
+  it('a 401 response proves the API is reachable — connectivity stays online', async () => {
+    getMeMock.mockRejectedValueOnce(new ApiRequestError(401, 'unauthorized', 'session expired'));
+    const queryClient = new QueryClient();
+    const { result } = renderHook(() => useApiOnline(), { wrapper: createWrapper(queryClient) });
+
+    // The probe itself reports the API as errored (banner state)…
+    await waitFor(() => expect(result.current).toBe(false));
+    // …but the server ANSWERED, so reachability must be true: mutations
+    // error honestly instead of queueing into the outbox.
+    expect(reportApiReachableMock).toHaveBeenCalledWith(true);
+    expect(reportApiReachableMock).not.toHaveBeenCalledWith(false);
+  });
+
+  it('a transport failure reports the API unreachable (offline for queueing)', async () => {
+    getMeMock.mockRejectedValueOnce(new TypeError('fetch failed'));
+    const queryClient = new QueryClient();
+    const { result } = renderHook(() => useApiOnline(), { wrapper: createWrapper(queryClient) });
+
+    await waitFor(() => expect(result.current).toBe(false));
+    expect(reportApiReachableMock).toHaveBeenCalledWith(false);
   });
 });

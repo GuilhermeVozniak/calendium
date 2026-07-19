@@ -165,8 +165,11 @@ export function useApiOnline(): boolean {
         // served locally (see lib/offline/connectivity.ts).
         if (!DEMO_MODE) reportApiReachable(true);
         return true;
-      } catch {
-        if (!DEMO_MODE) reportApiReachable(false);
+      } catch (err) {
+        // Only a transport failure means unreachable — a 401/5xx response IS
+        // the server answering, so reachability stays true and mutations fail
+        // honestly instead of queueing into the offline outbox.
+        if (!DEMO_MODE) reportApiReachable(!isNetworkError(err));
         return false;
       }
     },
