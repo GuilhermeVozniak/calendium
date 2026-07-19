@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"log"
 
@@ -25,7 +26,14 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		OnStartup: app.startup,
+		OnStartup: func(ctx context.Context) {
+			app.startup(ctx)
+			// Menu-bar tray + auto-join (tray.go / scheduler.go). Started here
+			// rather than inside startup so unit tests exercising startup never
+			// touch the native systray loop.
+			app.startDesktopExtras(ctx)
+		},
+		OnShutdown: app.shutdown,
 		Bind: []interface{}{
 			app,
 		},

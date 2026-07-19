@@ -11,6 +11,10 @@ export interface DesktopBindings {
   /** Opens a URL in the system default browser (Stripe checkout et al.). */
   OpenExternal(url: string): Promise<void>;
   GetAppVersion(): Promise<string>;
+  /** Pushes the upcoming-events tray feed (JSON TrayEvent[]; lib/tray.ts). */
+  SetUpcomingEvents(eventsJson: string): Promise<void>;
+  /** Pushes the user's auto-join setting (Task 11; lib/tray.ts). */
+  SetAutoJoin(enabled: boolean, leadSeconds: number): Promise<void>;
 }
 
 /** Subset of the Wails runtime API the app uses. */
@@ -38,6 +42,9 @@ const browserFallback: DesktopBindings = {
   async GetAppVersion() {
     return 'dev (browser)';
   },
+  // Tray + auto-join only exist in the Wails host; browser no-ops.
+  async SetUpcomingEvents() {},
+  async SetAutoJoin() {},
 };
 
 const runtimeFallback: DesktopRuntime = {

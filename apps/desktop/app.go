@@ -23,11 +23,17 @@ type App struct {
 
 	mu         sync.Mutex
 	pendingURL string
+
+	// Menu-bar tray + auto-join (M2.6 Tasks 10-11; tray.go / scheduler.go).
+	tray     *trayManager
+	autoJoin *autoJoinScheduler
 }
 
 // NewApp creates a new App application struct.
 func NewApp() *App {
-	return &App{}
+	a := &App{}
+	a.initDesktopExtras()
+	return a
 }
 
 // startup is called when the app starts; the context is saved so runtime
