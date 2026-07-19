@@ -25,10 +25,10 @@ test.describe('M2.5 compose extras & contact context', () => {
 
     // components/app/compose.tsx appends the resolved account's
     // signatureHtml ("<p>Guilherme Vozniak<br/>Calendium</p>") as a plain-text
-    // block under a "--" delimiter as soon as the from-account resolves —
-    // no typing required.
+    // block under an RFC-3676 "-- " delimiter as soon as the from-account
+    // resolves — no typing required.
     await expect(page.getByPlaceholder(/Write your message/)).toHaveValue(
-      /--\nGuilherme Vozniak\nCalendium/
+      /-- \nGuilherme Vozniak\nCalendium/
     );
   });
 

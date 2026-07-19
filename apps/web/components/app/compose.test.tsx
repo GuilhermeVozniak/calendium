@@ -77,7 +77,7 @@ const ACCOUNT: ConnectedAccount = {
   createdAt: new Date().toISOString(),
 };
 
-const SIGNATURE_BLOCK = '\n\n--\nJane Doe\nAcme Inc';
+const SIGNATURE_BLOCK = '\n\n-- \nJane Doe\nAcme Inc';
 
 const ACCOUNT_WITH_SIGNATURE: ConnectedAccount = {
   ...ACCOUNT,
@@ -523,7 +523,7 @@ describe('ComposeForm — signature auto-apply', () => {
     await user.click(screen.getByRole('button', { name: ACCOUNT_WITH_SIGNATURE.email }));
     await user.click(screen.getByText(ACCOUNT_WITH_SIGNATURE_2.email));
 
-    await waitFor(() => expect(bodyInput).toHaveValue('\n\n--\nBob Smith'));
+    await waitFor(() => expect(bodyInput).toHaveValue('\n\n-- \nBob Smith'));
   });
 
   it('does not append anything when the account has no signature', async () => {

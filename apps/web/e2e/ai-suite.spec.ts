@@ -36,7 +36,7 @@ test.describe('AI suite', () => {
     // replies included — so the instant-reply text is the prefix, not the
     // whole value.
     await expect(page.getByPlaceholder(/Write your message/)).toHaveValue(
-      /^Thanks for the update — looks resolved\.\n\n--\nGuilherme Vozniak\nCalendium$/
+      /^Thanks for the update — looks resolved\.\n\n-- \nGuilherme Vozniak\nCalendium$/
     );
   });
 

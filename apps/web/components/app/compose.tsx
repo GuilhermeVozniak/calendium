@@ -195,14 +195,15 @@ function ComposeForm({
 
   // --- Signature auto-apply -------------------------------------------------
   // Tracks the plain-text signature block currently appended to `body` (the
-  // "\n\n--\n" + htmlToText(signatureHtml) placeholder shown in the editor) so
+  // RFC-3676 "\n\n-- \n" + htmlToText(signatureHtml) placeholder shown in the
+  // editor, matching the desktop app's SIGNATURE_DELIMITER) so
   // switching accounts replaces it instead of stacking signatures, and so
   // send-time can strip it back off before appending the rich HTML version.
   const appliedSignatureRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
     const signatureHtml = fromAccount?.signatureHtml?.trim();
-    const nextBlock = signatureHtml ? `\n\n--\n${htmlToText(signatureHtml)}` : null;
+    const nextBlock = signatureHtml ? `\n\n-- \n${htmlToText(signatureHtml)}` : null;
     if (nextBlock === appliedSignatureRef.current) return;
     // Capture the outgoing block before mutating the ref: the setBody
     // updater below may run after this line (e.g. React defers the
