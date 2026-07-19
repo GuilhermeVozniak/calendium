@@ -702,6 +702,19 @@ type CollabEvent struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
+// --- Calendar automation preferences (M2.8 Task 5) ---------------------------
+
+// CalendarPrefsRepo persists the per-user calendar automation preference
+// document (table calendar_prefs, one JSONB row per user).
+type CalendarPrefsRepo interface {
+	// Get returns DefaultCalendarPrefs(userID) when no row exists.
+	Get(ctx context.Context, userID string) (domain.CalendarPrefs, error)
+	Upsert(ctx context.Context, p domain.CalendarPrefs) error
+	// ListAutomated returns prefs rows with any automation enabled — the
+	// worker's fan-out set (no full-user table scan of defaults).
+	ListAutomated(ctx context.Context) ([]domain.CalendarPrefs, error)
+}
+
 // EventBus fans CollabEvents out to in-process subscribers. Publish never
 // blocks (slow subscribers drop events — SSE clients re-sync on reconnect).
 // Single-process today; the multi-instance path is a Postgres LISTEN/NOTIFY

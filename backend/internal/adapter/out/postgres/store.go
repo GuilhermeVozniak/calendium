@@ -157,3 +157,12 @@ func (s *Store) RunInTx(ctx context.Context, fn func(ctx context.Context) error)
 	}
 	return nil
 }
+
+// --- Calendar automation preferences (M2.8 Task 5) ---------------------------
+
+type calendarPrefsRepo struct{ *Store }
+
+var _ port.CalendarPrefsRepo = calendarPrefsRepo{}
+
+// CalendarPrefs returns the calendar automation preferences repo.
+func (s *Store) CalendarPrefs() port.CalendarPrefsRepo { return calendarPrefsRepo{s} }

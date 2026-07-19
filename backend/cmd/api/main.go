@@ -172,7 +172,7 @@ func run(logger *slog.Logger) error {
 		SelfHosted:    cfg.Instance.SelfHosted,
 	})
 	devices := service.NewDeviceService(store.Devices(), clock)
-	prefs := service.NewPrefsService(store.Prefs())
+	prefs := service.NewPrefsService(store.Prefs(), store.CalendarPrefs(), store.Subscriptions(), clock, cfg.Instance.SelfHosted)
 	scheduling := service.NewSchedulingService(service.SchedulingServiceDeps{
 		Subscriptions:     store.Subscriptions(),
 		Users:             store.Users(),

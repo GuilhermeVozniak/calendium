@@ -21,6 +21,8 @@ import type {
   BusyInterval,
   Calendar,
   CalendarPermission,
+  CalendarPrefs,
+  CalendarPrefsPatch,
   CalendarSet,
   CalendarSetInput,
   CalendarShare,
@@ -327,6 +329,14 @@ export class ApiClient {
   }
   updatePreferences(prefs: UserPreferences) {
     return this.request<UserPreferences>('PUT', '/v1/me/preferences', prefs);
+  }
+  /** Calendar automation preferences (M2.8): FocusGuard, buffers, OOO, travel, weather. */
+  getCalendarPrefs() {
+    return this.request<CalendarPrefs>('GET', '/v1/prefs/calendar');
+  }
+  /** Partial update; omitted fields are unchanged. Returns the merged document. */
+  updateCalendarPrefs(patch: CalendarPrefsPatch) {
+    return this.request<CalendarPrefs>('PATCH', '/v1/prefs/calendar', patch);
   }
 
   // --- Mail (M2.5) — Recent Opens, Smart Send, attachments, contacts, reactions ---

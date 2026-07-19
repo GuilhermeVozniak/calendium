@@ -99,6 +99,7 @@ import {
   startConnect,
 } from '@/lib/settings-data';
 import { fetchSettings, updateSettingsApi } from '@/lib/scheduling-data';
+import { CalendarAutomationSection } from './calendar-automation';
 import { getApiClient } from '@/lib/api';
 import { DEFAULT_SPLITS, orderSplits } from '@/lib/mail-utils';
 import { usePrefs, useUpdatePrefs } from '@/lib/prefs-data';
@@ -1147,6 +1148,8 @@ function SchedulingSection() {
           </Button>
         </CardFooter>
       </Card>
+
+      <CalendarAutomationSection />
 
       <BookingLinks />
       <MeetingPolls />

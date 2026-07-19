@@ -1045,3 +1045,48 @@ export interface Event {
   /** True when the event was redacted for a free_busy viewer (title "Busy", details zeroed). */
   freeBusyOnly?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// M2.8 Task 5 — Calendar automation preferences
+// (mirrors backend/internal/domain/prefs.go CalendarPrefs field-for-field).
+// ---------------------------------------------------------------------------
+
+/** Routing profile for travel buffers and leave-by alerts. */
+export type TravelMode = 'driving' | 'walking' | 'transit';
+
+/**
+ * Per-user calendar automation preferences (GET/PATCH /v1/prefs/calendar):
+ * FocusGuard, auto buffers, OOO auto-decline, travel buffers / leave alerts,
+ * and weather. Defaults (UTC, Mon–Fri 09:00–17:00, everything off) are
+ * served when the user never saved the document.
+ */
+export interface CalendarPrefs {
+  timeZone: string;
+  /** Working days, 0=Sunday … 6=Saturday. */
+  workDays: number[];
+  /** Minutes after midnight in timeZone; default 540 (09:00). */
+  workdayStartMinutes: number;
+  /** Minutes after midnight in timeZone; default 1020 (17:00). */
+  workdayEndMinutes: number;
+  /** Weekly focus-time goal in minutes; 0 = FocusGuard off. */
+  focusGoalMinutesPerWeek: number;
+  focusAutoDecline: boolean;
+  focusDeclineMessage: string;
+  /** Buffer added around meetings; 0 = off, otherwise 5..30. */
+  autoBufferMinutes: number;
+  oooAutoDecline: boolean;
+  oooDeclineMessage: string;
+  travelBuffers: boolean;
+  travelMode: TravelMode;
+  leaveAlerts: boolean;
+  homeLat: number | null;
+  homeLon: number | null;
+  weatherEnabled: boolean;
+}
+
+/**
+ * PATCH /v1/prefs/calendar payload — omitted fields are unchanged
+ * (server-side nil-means-unchanged). Sending null for homeLat/homeLon is
+ * treated as omitted, not as clearing.
+ */
+export type CalendarPrefsPatch = Partial<CalendarPrefs>;
