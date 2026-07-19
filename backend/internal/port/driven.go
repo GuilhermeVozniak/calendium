@@ -2,6 +2,7 @@ package port
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"calendium/backend/internal/domain"
@@ -652,4 +653,27 @@ type PushSender interface {
 // against a sender-provided URL.
 type UnsubscribeGateway interface {
 	PostOneClick(ctx context.Context, url string) error
+}
+
+// ---------------------------------------------------------------------------
+// Realtime event bus (M2.7, implemented by internal/adapter/out/eventbus)
+// ---------------------------------------------------------------------------
+
+// CollabEvent is a realtime collaboration notification fanned out over SSE.
+type CollabEvent struct {
+	// Topic scopes delivery: "team:<teamID>" | "share:<shareID>" | "user:<userID>".
+	Topic   string          `json:"topic"`
+	Type    string          `json:"type"` // "comment.created" | "comment.deleted" | "activity.updated" | "share.updated" | "mention"
+	Payload json.RawMessage `json:"payload"`
+}
+
+// EventBus fans CollabEvents out to in-process subscribers. Publish never
+// blocks (slow subscribers drop events — SSE clients re-sync on reconnect).
+// Single-process today; the multi-instance path is a Postgres LISTEN/NOTIFY
+// implementation behind this same port.
+type EventBus interface {
+	Publish(ev CollabEvent)
+	// Subscribe returns a channel of events for the given topics and a
+	// cancel func. The channel closes on cancel.
+	Subscribe(topics []string) (<-chan CollabEvent, func())
 }

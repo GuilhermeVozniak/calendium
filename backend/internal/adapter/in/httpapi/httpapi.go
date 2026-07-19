@@ -37,6 +37,13 @@ type Deps struct {
 	// applies events through Billing; the port is part of Deps so the
 	// composition surface matches the adapter contract.
 	Payments port.Payments
+	// Events fans realtime collaboration events out to SSE subscribers
+	// (GET /v1/collab/stream). When nil the stream endpoint answers 501.
+	Events port.EventBus
+	// Teams resolves the caller's memberships so the stream subscribes only
+	// to the caller's team topics. Optional until the M2.7 team service is
+	// wired: when nil the stream carries only user:<id> events.
+	Teams TeamLister
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -199,6 +206,9 @@ func New(deps Deps) http.Handler {
 
 	authed("GET /v1/settings", s.handleGetSettings)
 	authed("PUT /v1/settings", s.handleUpdateSettings)
+
+	// M2.7: realtime collaboration stream (SSE).
+	authed("GET /v1/collab/stream", s.handleCollabStream)
 
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins)
