@@ -1448,6 +1448,10 @@ func (c *fakeCalendarService) Availability(_ context.Context, _ string, from, to
 	return c.slots, c.availErr
 }
 
+func (c *fakeCalendarService) TeamAvailability(_ context.Context, _, _ string, _, _ time.Time) ([]port.MemberAvailability, error) {
+	return nil, nil
+}
+
 func (c *fakeCalendarService) ListEventTemplates(_ context.Context, _ string) ([]domain.EventTemplate, error) {
 	return nil, nil
 }

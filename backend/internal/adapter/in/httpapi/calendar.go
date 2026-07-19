@@ -135,6 +135,25 @@ func (s *server) handleAvailability(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, slots)
 }
 
+// handleTeamAvailability serves GET /v1/teams/{id}/availability?from&to —
+// each team member's opaque busy blocks (M2.7 Task 13). Membership, the
+// per-member sharing opt-in, and the 35-day range cap are all enforced in
+// the service; this handler only parses the range.
+func (s *server) handleTeamAvailability(w http.ResponseWriter, r *http.Request) {
+	qs := r.URL.Query()
+	from, to, err := timeRange(qs.Get("from"), qs.Get("to"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	rows, err := s.deps.Calendars.TeamAvailability(r.Context(), userFrom(r).ID, r.PathValue("id"), from, to)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
 // timeRange parses the from/to RFC 3339 query parameters.
 func timeRange(fromRaw, toRaw string) (from, to time.Time, err error) {
 	if from, err = time.Parse(time.RFC3339, fromRaw); err != nil {

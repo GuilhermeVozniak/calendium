@@ -20,8 +20,11 @@ import type {
   BulkActionResult,
   BusyInterval,
   Calendar,
+  CalendarPermission,
   CalendarSet,
   CalendarSetInput,
+  CalendarShare,
+  CalendarShareInput,
   ClassifierInput,
   Comment,
   CommentInput,
@@ -38,6 +41,7 @@ import type {
   InstanceInfo,
   Label,
   MeetingPoll,
+  MemberAvailability,
   Message,
   NotificationDevice,
   OpenEvent,
@@ -752,6 +756,52 @@ export class ApiClient {
       });
     }) as typeof fetch;
     return new ApiClient({ ...this.opts, fetch: wrapped });
+  }
+
+  // --- Shared calendars & team availability (M2.7 Tasks 12–13) ---
+  // Share management is owner-only server-side (non-owners 404 — existence
+  // is never leaked). Shared-calendar reads themselves arrive through the
+  // existing listCalendars/listEvents (annotated with `sharedPermission` /
+  // redacted `freeBusyOnly` events); there is no separate listing endpoint.
+  listCalendarShares(calendarId: string) {
+    return this.request<CalendarShare[]>(
+      'GET',
+      `/v1/calendars/${encodeURIComponent(calendarId)}/shares`
+    );
+  }
+  /** Grants a user or a whole team access to one of the caller's calendars. */
+  shareCalendar(calendarId: string, input: CalendarShareInput) {
+    return this.request<CalendarShare>(
+      'POST',
+      `/v1/calendars/${encodeURIComponent(calendarId)}/shares`,
+      input
+    );
+  }
+  updateCalendarShare(calendarId: string, shareId: string, permission: CalendarPermission) {
+    return this.request<CalendarShare>(
+      'PATCH',
+      `/v1/calendars/${encodeURIComponent(calendarId)}/shares/${encodeURIComponent(shareId)}`,
+      { permission }
+    );
+  }
+  revokeCalendarShare(calendarId: string, shareId: string) {
+    return this.request<void>(
+      'DELETE',
+      `/v1/calendars/${encodeURIComponent(calendarId)}/shares/${encodeURIComponent(shareId)}`
+    );
+  }
+  /**
+   * Per-member opaque busy blocks for a team in [from, to) (RFC 3339, span
+   * ≤ 35 days). Caller must be a member (404 otherwise); members who have
+   * not shared a calendar with the team come back `shared: false` with an
+   * empty list — busy blocks never carry titles or details.
+   */
+  teamAvailability(teamId: string, from: string, to: string) {
+    const qs = new URLSearchParams({ from, to });
+    return this.request<MemberAvailability[]>(
+      'GET',
+      `/v1/teams/${encodeURIComponent(teamId)}/availability?${qs}`
+    );
   }
 }
 

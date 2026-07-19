@@ -12,6 +12,7 @@ import {
   Layers,
   LayoutTemplate,
   Plus,
+  Users,
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -19,6 +20,7 @@ import { toast } from 'sonner';
 import type { Calendar as CalendarModel, Event, EventInput } from '@calendium/shared';
 
 import { AvailabilityDialog } from '@/components/app/availability';
+import { TeamAvailabilityDialog } from '@/components/calendar/team-availability';
 import { DayTicker } from '@/components/app/calendar/day-ticker';
 import { TimeTravelPicker, getStoredTimeTravelZone, setStoredTimeTravelZone } from '@/components/app/time-travel';
 import { MiniMonth } from '@/components/app/calendar/mini-month';
@@ -79,6 +81,7 @@ export default function CalendarPage() {
     defaults: null,
   });
   const [availabilityOpen, setAvailabilityOpen] = React.useState(false);
+  const [teamAvailabilityOpen, setTeamAvailabilityOpen] = React.useState(false);
   const [templateManagerOpen, setTemplateManagerOpen] = React.useState(false);
   const [setSwitcherOpen, setSetSwitcherOpen] = React.useState(false);
 
@@ -537,6 +540,10 @@ export default function CalendarPage() {
             <Clock />
             Share availability
           </Button>
+          <Button variant="outline" size="sm" onClick={() => setTeamAvailabilityOpen(true)}>
+            <Users />
+            Team
+          </Button>
           <Button size="sm" onClick={() => openCreate()}>
             <Plus />
             New event
@@ -698,6 +705,10 @@ export default function CalendarPage() {
         defaults={dialog.defaults}
       />
       <AvailabilityDialog open={availabilityOpen} onOpenChange={setAvailabilityOpen} />
+      <TeamAvailabilityDialog
+        open={teamAvailabilityOpen}
+        onOpenChange={setTeamAvailabilityOpen}
+      />
       <TemplateManager open={templateManagerOpen} onOpenChange={setTemplateManagerOpen} />
       <SetSwitcher open={setSwitcherOpen} onOpenChange={setSetSwitcherOpen} />
     </div>

@@ -248,6 +248,10 @@ func New(deps Deps) http.Handler {
 	authed("DELETE /v1/teams/{id}/invitations/{invitationId}", s.handleRevokeInvitation)
 	authed("POST /v1/invitations/accept", s.handleAcceptInvitation)
 
+	// M2.7 Task 13: team availability overview (per-member opaque busy
+	// blocks; membership + opt-in enforced in the calendar service).
+	authed("GET /v1/teams/{id}/availability", s.handleTeamAvailability)
+
 	// M2.7: realtime collaboration stream (SSE) and team thread-comments.
 	authed("GET /v1/collab/stream", s.handleCollabStream)
 	authed("GET /v1/mail/threads/{id}/comments", s.handleListComments)

@@ -180,3 +180,77 @@ func TestCalendarShareRoutesUnwiredAnswer501(t *testing.T) {
 		t.Fatalf("status = %d, want 501", rec.Code)
 	}
 }
+
+// --- team availability route (M2.7 Task 13) ----------------------------------
+
+func TestTeamAvailabilityRoute(t *testing.T) {
+	h := newHarness(t)
+	h.calendars.teamAvailRet = []port.MemberAvailability{
+		{UserID: "u1", Shared: true, Busy: []domain.AvailabilitySlot{{
+			Start: time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC),
+			End:   time.Date(2026, 7, 7, 11, 0, 0, 0, time.UTC),
+		}}},
+		{UserID: "u2", Shared: false, Busy: []domain.AvailabilitySlot{}},
+	}
+
+	rec := h.authed("GET", "/v1/teams/t1/availability?from=2026-07-07T00:00:00Z&to=2026-07-08T00:00:00Z", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body=%s)", rec.Code, rec.Body.String())
+	}
+	if h.calendars.gotTeamAvailID != "t1" {
+		t.Fatalf("service got team %q", h.calendars.gotTeamAvailID)
+	}
+	if !h.calendars.gotTeamAvailFrom.Equal(time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)) ||
+		!h.calendars.gotTeamAvailTo.Equal(time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("range = %v..%v", h.calendars.gotTeamAvailFrom, h.calendars.gotTeamAvailTo)
+	}
+
+	// Wire-shape contract: camelCase keys, busy blocks carry ONLY start/end.
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got) != 2 {
+		t.Fatalf("body = %s (err %v)", rec.Body.String(), err)
+	}
+	if got[0]["userId"] != "u1" || got[0]["shared"] != true {
+		t.Fatalf("row0 = %+v", got[0])
+	}
+	busy, ok := got[0]["busy"].([]any)
+	if !ok || len(busy) != 1 {
+		t.Fatalf("row0 busy = %+v", got[0]["busy"])
+	}
+	block, _ := busy[0].(map[string]any)
+	if len(block) != 2 || block["start"] == nil || block["end"] == nil {
+		t.Fatalf("busy block must carry only start/end: %+v", block)
+	}
+	if got[1]["userId"] != "u2" || got[1]["shared"] != false {
+		t.Fatalf("row1 = %+v", got[1])
+	}
+}
+
+func TestTeamAvailabilityRouteRangeValidation(t *testing.T) {
+	h := newHarness(t)
+	for _, path := range []string{
+		"/v1/teams/t1/availability",
+		"/v1/teams/t1/availability?from=2026-07-07T00:00:00Z",
+		"/v1/teams/t1/availability?from=bogus&to=2026-07-08T00:00:00Z",
+	} {
+		if rec := h.authed("GET", path, nil); rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400", path, rec.Code)
+		}
+	}
+	if h.calendars.gotTeamAvailID != "" {
+		t.Fatalf("service reached despite an invalid range")
+	}
+}
+
+func TestTeamAvailabilityRouteErrorsAndAuth(t *testing.T) {
+	h := newHarness(t)
+	h.calendars.teamAvailErr = domain.ErrNotFound
+	if rec := h.authed("GET", "/v1/teams/nope/availability?from=2026-07-07T00:00:00Z&to=2026-07-08T00:00:00Z", nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+
+	h2 := newHarness(t)
+	if rec := h2.anon("GET", "/v1/teams/t1/availability?from=2026-07-07T00:00:00Z&to=2026-07-08T00:00:00Z", nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anon status = %d, want 401", rec.Code)
+	}
+}
