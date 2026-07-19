@@ -120,16 +120,24 @@ export default function InboxScreen() {
       }
       return { previous, split };
     },
-    onError: (error, { thread, action }, context) => {
+    onError: async (error, { thread, action }, context) => {
       // Demo mode has no backend, so the optimistic update stands; otherwise a
       // real rejection (paywall, validation, server error) must not look like
       // success — revert and tell the user. A NETWORK failure is different:
       // the action is durably queued for replay, so the optimistic state stays
       // as an honest pending change (surfaced by the header's queued badge).
+      // Queueing itself can fail (AsyncStorage rejection) — an unqueued change
+      // must not keep standing as optimistic UI, so await the result and fall
+      // through to the revert below when persistence failed (same pattern as
+      // the thread screen's archive/snooze).
       if (isDemoMode()) return;
       if (isNetworkError(error)) {
-        void queueIfOffline(error, { kind: 'thread_action', threadId: thread.id, action });
-        return;
+        const queued = await queueIfOffline(error, {
+          kind: 'thread_action',
+          threadId: thread.id,
+          action,
+        }).catch(() => false);
+        if (queued) return;
       }
       if (context?.previous) {
         queryClient.setQueryData(['threads', context.split], context.previous);
@@ -146,12 +154,17 @@ export default function InboxScreen() {
       updateList(split, (items) => items.filter((t) => t.id !== thread.id));
       return { previous, split };
     },
-    onError: (error, { thread, until }, context) => {
+    onError: async (error, { thread, until }, context) => {
       if (isDemoMode()) return;
       if (isNetworkError(error)) {
-        // Offline: keep the optimistic removal as a queued pending change.
-        void queueIfOffline(error, { kind: 'thread_snooze', threadId: thread.id, until });
-        return;
+        // Offline: keep the optimistic removal as a queued pending change —
+        // but only when the queue write actually persisted (see actMutation).
+        const queued = await queueIfOffline(error, {
+          kind: 'thread_snooze',
+          threadId: thread.id,
+          until,
+        }).catch(() => false);
+        if (queued) return;
       }
       if (context?.previous) {
         queryClient.setQueryData(['threads', context.split], context.previous);
@@ -391,6 +404,7 @@ export default function InboxScreen() {
           <Button
             size="icon"
             variant="ghost"
+            testID="triage-archive"
             onPress={() => {
               actMutation.mutate({ thread: selected, action: 'archive' });
               setSelected(null);

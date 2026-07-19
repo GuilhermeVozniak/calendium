@@ -35,7 +35,7 @@ jest.mock('@/lib/api', () => ({
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ApiRequestError } from '@calendium/shared';
 import { QueryClient } from '@tanstack/react-query';
-import { AppState } from 'react-native';
+import { Alert, AppState } from 'react-native';
 import {
   generateOutboxId,
   getOutbox,
@@ -270,6 +270,39 @@ describe('startOutboxReplay', () => {
     expect(mockActOnThread).toHaveBeenCalledWith('thr_12', 'archive');
     stop();
     appStateSpy.mockRestore();
+  });
+
+  it('invalidates mail queries and surfaces a notice when replay ends in conflicts', async () => {
+    // Server rejects the queued action with an unrecoverable 4xx → the entry
+    // becomes 'conflict' with replayed=0; the stale optimistic state must
+    // still refetch to server truth and the user must hear about it.
+    mockActOnThread.mockRejectedValue(new ApiRequestError(409, 'conflict', 'already archived'));
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    const client = new QueryClient();
+    const invalidateSpy = jest.spyOn(client, 'invalidateQueries').mockResolvedValue();
+
+    const stop = startOutboxReplay(client);
+    await flush();
+    await queueIfOffline(networkFailure(), {
+      kind: 'thread_action',
+      threadId: 'thr_14',
+      action: 'archive',
+    });
+
+    networkListeners[0]({ isConnected: true, isInternetReachable: true });
+    await flush();
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['threads'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['thread'] });
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Offline changes rejected',
+      expect.stringContaining('1 queued change was rejected')
+    );
+    // The conflict entry is surfaced state, not auto-dismissed history.
+    expect(getOutbox().queuedCount).toBe(0);
+    expect(getOutbox().pending.some((e) => e.status === 'conflict')).toBe(true);
+    stop();
+    alertSpy.mockRestore();
   });
 
   it('stops replaying after the returned cleanup runs', async () => {

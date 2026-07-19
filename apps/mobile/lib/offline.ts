@@ -9,7 +9,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { QueryClient } from '@tanstack/react-query';
 import * as Network from 'expo-network';
 import * as React from 'react';
-import { AppState } from 'react-native';
+import { Alert, AppState } from 'react-native';
 
 /**
  * Offline outbox wiring for mobile: triage actions that fail with a NETWORK
@@ -88,7 +88,10 @@ const isReachable = (state: { isConnected?: boolean; isInternetReachable?: boole
  * on entries queued in a previous session. Returns a cleanup that removes
  * both subscriptions. Replay is at-least-once and concurrency-safe (the
  * shared Outbox refuses overlapping replays); after anything actually
- * replays, mail queries are invalidated so lists reflect the server's truth.
+ * replays — or is rejected as a conflict — mail queries are invalidated so
+ * lists reflect the server's truth, and conflicts surface a notice instead of
+ * silently clearing the queued badge. Conflict entries stay in the outbox
+ * (status 'conflict') until explicitly dismissed.
  */
 export function startOutboxReplay(queryClient: QueryClient): () => void {
   const box = getOutbox();
@@ -98,9 +101,21 @@ export function startOutboxReplay(queryClient: QueryClient): () => void {
     await outboxReady();
     if (disposed) return;
     const report = await box.replay(api);
-    if (report.replayed.length > 0) {
+    // A conflict is the server's real answer to a queued change, so even with
+    // replayed=0 the optimistic state it backed is now stale — refetch to
+    // server truth in that case too.
+    if (report.replayed.length > 0 || report.conflicts.length > 0) {
       await queryClient.invalidateQueries({ queryKey: ['threads'] });
       await queryClient.invalidateQueries({ queryKey: ['thread'] });
+    }
+    if (report.conflicts.length > 0) {
+      // Never let a cleared badge read as success: say what didn't apply.
+      // Entries remain in the outbox as 'conflict' until dismissed.
+      const n = report.conflicts.length;
+      Alert.alert(
+        'Offline changes rejected',
+        `${n} queued change${n === 1 ? ' was' : 's were'} rejected by the server and not applied.`
+      );
     }
   };
 

@@ -1,9 +1,11 @@
 const mockListThreads = jest.fn();
 const mockListOpens = jest.fn();
+const mockActOnThread = jest.fn();
 jest.mock('@/lib/api', () => ({
   api: {
     listThreads: (...args: unknown[]) => mockListThreads(...args),
     listOpens: (...args: unknown[]) => mockListOpens(...args),
+    actOnThread: (...args: unknown[]) => mockActOnThread(...args),
   },
 }));
 
@@ -38,8 +40,11 @@ jest.mock('react-native-gesture-handler/ReanimatedSwipeable', () => {
   return { __esModule: true, default: View };
 });
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Alert } from 'react-native';
+import type { Thread } from '@calendium/shared';
 import InboxScreen from './inbox';
 
 // useQuery/useInfiniteQuery resolve on a real macrotask; `waitFor` is
@@ -91,10 +96,31 @@ const PAGE_2 = {
   nextCursor: null,
 };
 
+const THREAD: Thread = {
+  id: 'thr_1',
+  accountId: 'acct_1',
+  subject: 'Q3 planning — final review',
+  snippet: 'Two open questions before we lock it…',
+  participants: [{ name: 'Sarah Chen', email: 'sarah@acme.com' }],
+  labelIds: [],
+  split: 'important',
+  messageCount: 1,
+  unread: false,
+  starred: false,
+  lastMessageAt: new Date().toISOString(),
+  openedAt: new Date().toISOString(),
+  snoozedUntil: null,
+  remindAt: null,
+  unsubscribeMailto: null,
+  unsubscribeUrl: null,
+  unsubscribeOneClick: false,
+};
+
 beforeEach(() => {
   jest.clearAllMocks();
-  // No threads in any split for this suite — keeps the swipeable thread rows
-  // out of the tree entirely, since Opens is the only thing under test here.
+  // No threads in any split by default — keeps the swipeable thread rows out
+  // of the tree for the Opens tests; the offline-queue test below overrides
+  // this with a single thread.
   mockListThreads.mockResolvedValue({ items: [], nextCursor: null });
 });
 
@@ -136,10 +162,51 @@ describe('InboxScreen — Recent Opens sheet', () => {
     expect(screen.queryByText('Recent opens')).toBeNull();
   });
 
-  // Kept last in the file: this test's pagination round-trip (initial fetch
-  // + fetchNextPage) leaves more async work in flight than the others, and
-  // this ordering avoids that tail interacting with a subsequent test's own
-  // render (see the identical ordering fix in thread/[id].test.tsx).
+});
+
+// Runs BEFORE the pagination suite below: that test's fetch + fetchNextPage
+// tail corrupts a subsequent test's render (jest-expo ordering fragility —
+// M2.5 lesson; see the identical fix in thread/[id].test.tsx), so anything
+// that renders again must come first.
+describe('InboxScreen — offline queue persistence failure', () => {
+  it('reverts the optimistic archive when the offline queue cannot persist, without an unhandled rejection', async () => {
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    // Archive fails with a NETWORK error (normally → durably queued…)
+    mockListThreads.mockResolvedValue({ items: [THREAD], nextCursor: null });
+    mockActOnThread.mockRejectedValue(new TypeError('Network request failed'));
+    // …but the queue's AsyncStorage write itself rejects, so nothing was
+    // actually queued — the optimistic removal must not keep standing.
+    const setItemSpy = jest
+      .spyOn(AsyncStorage, 'setItem')
+      .mockRejectedValue(new Error('disk full'));
+
+    try {
+      await renderScreen();
+      await flush();
+      // findBy*: the FlatList's initial row batch lands a render after flush.
+      const row = await screen.findByText('Sarah');
+
+      // Long-press opens the triage action bar; archive removes optimistically.
+      await fireEvent(row, 'longPress');
+      await fireEvent.press(await screen.findByTestId('triage-archive'));
+      await flush();
+
+      // Reverted to the pre-archive list — the thread is visible again — and
+      // the failure surfaced honestly instead of as an unhandled rejection.
+      expect(await screen.findByText('Sarah')).toBeTruthy();
+      expect(alertSpy).toHaveBeenCalledWith('Action failed', expect.any(String));
+    } finally {
+      setItemSpy.mockRestore();
+      alertSpy.mockRestore();
+    }
+  });
+});
+
+// Kept LAST in the file: this test's pagination round-trip (initial fetch
+// + fetchNextPage) leaves more async work in flight than the others, and
+// this ordering avoids that tail interacting with a subsequent test's own
+// render (see the identical ordering fix in thread/[id].test.tsx).
+describe('InboxScreen — Recent Opens sheet pagination', () => {
   it('loads the next page on end-reached, using the previous page nextCursor', async () => {
     mockListOpens.mockResolvedValueOnce(PAGE_1).mockResolvedValueOnce(PAGE_2);
 
