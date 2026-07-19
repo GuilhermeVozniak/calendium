@@ -2268,3 +2268,191 @@ type fakeAttachmentRecord struct {
 func (r *fakeMessageRepo) seedAttachment(messageID string, att domain.Attachment) {
 	r.attachmentByID[att.ID] = fakeAttachmentRecord{att: att, messageID: messageID}
 }
+
+// --- team repo ---------------------------------------------------------------
+
+// fakeTeamRepo is map-backed: teams by id plus per-team member maps. It honors
+// the port contract that GetMember returns ErrNotFound for non-members (the
+// service-layer authz primitive) and that Create inserts the team and its
+// owner membership atomically, like the SQL repo.
+type fakeTeamRepo struct {
+	byID    map[string]domain.Team
+	members map[string]map[string]domain.TeamMember // teamID -> userID -> member
+}
+
+func newTeamRepo() *fakeTeamRepo {
+	return &fakeTeamRepo{
+		byID:    map[string]domain.Team{},
+		members: map[string]map[string]domain.TeamMember{},
+	}
+}
+
+func (r *fakeTeamRepo) Create(_ context.Context, t domain.Team, owner domain.TeamMember) (domain.Team, error) {
+	if _, dup := r.byID[t.ID]; dup {
+		return domain.Team{}, domain.ErrConflict
+	}
+	r.byID[t.ID] = t
+	r.members[t.ID] = map[string]domain.TeamMember{owner.UserID: owner}
+	return t, nil
+}
+
+func (r *fakeTeamRepo) GetByID(_ context.Context, id string) (domain.Team, error) {
+	t, ok := r.byID[id]
+	if !ok {
+		return domain.Team{}, domain.ErrNotFound
+	}
+	return t, nil
+}
+
+func (r *fakeTeamRepo) ListByUser(_ context.Context, userID string) ([]domain.Team, error) {
+	out := []domain.Team{}
+	for teamID, members := range r.members {
+		if _, ok := members[userID]; ok {
+			out = append(out, r.byID[teamID])
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (r *fakeTeamRepo) Update(_ context.Context, t domain.Team) error {
+	if _, ok := r.byID[t.ID]; !ok {
+		return domain.ErrNotFound
+	}
+	r.byID[t.ID] = t
+	return nil
+}
+
+func (r *fakeTeamRepo) Delete(_ context.Context, id string) error {
+	if _, ok := r.byID[id]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(r.byID, id)
+	delete(r.members, id)
+	return nil
+}
+
+func (r *fakeTeamRepo) GetMember(_ context.Context, teamID, userID string) (domain.TeamMember, error) {
+	m, ok := r.members[teamID][userID]
+	if !ok {
+		return domain.TeamMember{}, domain.ErrNotFound
+	}
+	return m, nil
+}
+
+func (r *fakeTeamRepo) ListMembers(_ context.Context, teamID string) ([]domain.TeamMember, error) {
+	out := []domain.TeamMember{}
+	for _, m := range r.members[teamID] {
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
+	return out, nil
+}
+
+func (r *fakeTeamRepo) UpsertMember(_ context.Context, m domain.TeamMember) error {
+	if r.members[m.TeamID] == nil {
+		r.members[m.TeamID] = map[string]domain.TeamMember{}
+	}
+	r.members[m.TeamID][m.UserID] = m
+	return nil
+}
+
+func (r *fakeTeamRepo) RemoveMember(_ context.Context, teamID, userID string) error {
+	if _, ok := r.members[teamID][userID]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(r.members[teamID], userID)
+	return nil
+}
+
+func (r *fakeTeamRepo) CountByRole(_ context.Context, teamID string, role domain.TeamRole) (int, error) {
+	n := 0
+	for _, m := range r.members[teamID] {
+		if m.Role == role {
+			n++
+		}
+	}
+	return n, nil
+}
+
+var _ port.TeamRepo = (*fakeTeamRepo)(nil)
+
+// --- team invitation repo -----------------------------------------------------
+
+// fakeTeamInvitationRepo mirrors the SQL repo's uniqueness semantics: a second
+// pending invitation for the same (team, lower(email)) — or a token-hash
+// collision — maps to ErrConflict, on Create and on an Update that re-opens an
+// invitation to pending.
+type fakeTeamInvitationRepo struct {
+	byID  map[string]domain.TeamInvitation
+	order []string
+}
+
+func newTeamInvitationRepo() *fakeTeamInvitationRepo {
+	return &fakeTeamInvitationRepo{byID: map[string]domain.TeamInvitation{}}
+}
+
+func (r *fakeTeamInvitationRepo) conflicts(inv domain.TeamInvitation) bool {
+	for _, other := range r.byID {
+		if other.ID == inv.ID {
+			continue
+		}
+		if other.TokenHash == inv.TokenHash {
+			return true
+		}
+		if inv.Status == domain.InvitePending && other.Status == domain.InvitePending &&
+			other.TeamID == inv.TeamID && strings.EqualFold(other.Email, inv.Email) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *fakeTeamInvitationRepo) Create(_ context.Context, inv domain.TeamInvitation) (domain.TeamInvitation, error) {
+	if _, dup := r.byID[inv.ID]; dup || r.conflicts(inv) {
+		return domain.TeamInvitation{}, fmt.Errorf("%w: a pending invitation for this address already exists", domain.ErrConflict)
+	}
+	r.byID[inv.ID] = inv
+	r.order = append(r.order, inv.ID)
+	return inv, nil
+}
+
+func (r *fakeTeamInvitationRepo) GetByID(_ context.Context, id string) (domain.TeamInvitation, error) {
+	inv, ok := r.byID[id]
+	if !ok {
+		return domain.TeamInvitation{}, domain.ErrNotFound
+	}
+	return inv, nil
+}
+
+func (r *fakeTeamInvitationRepo) GetByTokenHash(_ context.Context, tokenHash string) (domain.TeamInvitation, error) {
+	for _, id := range r.order {
+		if inv := r.byID[id]; inv.TokenHash == tokenHash {
+			return inv, nil
+		}
+	}
+	return domain.TeamInvitation{}, domain.ErrNotFound
+}
+
+func (r *fakeTeamInvitationRepo) ListByTeam(_ context.Context, teamID string) ([]domain.TeamInvitation, error) {
+	out := []domain.TeamInvitation{}
+	for _, id := range r.order {
+		if inv := r.byID[id]; inv.TeamID == teamID {
+			out = append(out, inv)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeTeamInvitationRepo) Update(_ context.Context, inv domain.TeamInvitation) error {
+	if _, ok := r.byID[inv.ID]; !ok {
+		return domain.ErrNotFound
+	}
+	if r.conflicts(inv) {
+		return fmt.Errorf("%w: a pending invitation for this address already exists", domain.ErrConflict)
+	}
+	r.byID[inv.ID] = inv
+	return nil
+}
+
+var _ port.TeamInvitationRepo = (*fakeTeamInvitationRepo)(nil)

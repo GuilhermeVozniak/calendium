@@ -429,3 +429,39 @@ type SettingsService interface {
 	Get(ctx context.Context, userID string) (domain.UserSettings, error)
 	Update(ctx context.Context, userID string, s domain.UserSettings) (domain.UserSettings, error)
 }
+
+// TeamInput is the create/rename team payload.
+type TeamInput struct {
+	Name string `json:"name"`
+}
+
+// TeamService manages teams, membership, and email invitations. All
+// role/authorization checks live here (service layer), never in adapters:
+// non-members get ErrNotFound, under-privileged members get ErrForbidden.
+type TeamService interface {
+	Create(ctx context.Context, userID string, in TeamInput) (domain.Team, error)
+	List(ctx context.Context, userID string) ([]domain.Team, error)
+	// Get returns the team and its members; callers must be members.
+	Get(ctx context.Context, userID, teamID string) (domain.Team, []domain.TeamMember, error)
+	Rename(ctx context.Context, userID, teamID, name string) (domain.Team, error)
+	// Delete requires the owner role and removes the team and all
+	// memberships, shares, and comments (DB cascades).
+	Delete(ctx context.Context, userID, teamID string) error
+	// SetMemberRole requires admin+; only owners may grant/revoke owner.
+	// Demoting or removing the last owner returns ErrConflict.
+	SetMemberRole(ctx context.Context, userID, teamID, memberUserID string, role domain.TeamRole) (domain.TeamMember, error)
+	// SetShareReadStatuses toggles the CALLER's own read-status opt-in.
+	SetShareReadStatuses(ctx context.Context, userID, teamID string, share bool) (domain.TeamMember, error)
+	// RemoveMember: admins remove members, owners remove anyone; any member
+	// may remove themselves (leave), except the last owner (ErrConflict).
+	RemoveMember(ctx context.Context, userID, teamID, memberUserID string) error
+	// Invite (admin+) creates a pending invitation and emails the invite
+	// link via the inviter's own connected account send pipeline.
+	Invite(ctx context.Context, userID, teamID, email string, role domain.TeamRole) (domain.TeamInvitation, error)
+	ListInvitations(ctx context.Context, userID, teamID string) ([]domain.TeamInvitation, error)
+	RevokeInvitation(ctx context.Context, userID, teamID, invitationID string) error
+	// AcceptInvitation redeems a raw invite token for the AUTHENTICATED
+	// user. The token is hashed and looked up; expired/revoked/used tokens
+	// return ErrNotFound (no oracle).
+	AcceptInvitation(ctx context.Context, userID, token string) (domain.Team, error)
+}
