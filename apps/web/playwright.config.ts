@@ -45,9 +45,12 @@ export default defineConfig({
     },
   ],
   webServer: {
+    // `bun x` resolves the workspace-local `next` binary whether bun hoisted
+    // it to the repo-root node_modules/.bin or left it in apps/web (the old
+    // hardcoded `node_modules/.bin/next` path broke when hoisting changed).
     command: process.env.CI
-      ? `node_modules/.bin/next build && node_modules/.bin/next start -p ${PORT}`
-      : `node_modules/.bin/next dev -p ${PORT}`,
+      ? `bun x next build && bun x next start -p ${PORT}`
+      : `bun x next dev -p ${PORT}`,
     url: BASE_URL,
     reuseExistingServer: !process.env.CI,
     timeout: 240_000,

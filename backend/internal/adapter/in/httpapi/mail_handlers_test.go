@@ -426,6 +426,57 @@ func TestHandleSnippets(t *testing.T) {
 			t.Fatalf("status = %d, want 404", rec.Code)
 		}
 	})
+
+	// --- team snippets (M2.7 Task 11) ------------------------------------
+
+	t.Run("create forwards teamId and sanitizes the body", func(t *testing.T) {
+		h := newHarness(t)
+		tid := "team1"
+		rec := h.authed(http.MethodPost, "/v1/mail/snippets", jsonBody(t, port.SnippetInput{
+			Name: "n", BodyHTML: `<p>hi</p><script>alert(1)</script>`, TeamID: &tid,
+		}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		got := h.mail.gotSnippetInput
+		if got.TeamID == nil || *got.TeamID != "team1" {
+			t.Fatalf("TeamID forwarded = %v, want team1", got.TeamID)
+		}
+		if got.BodyHTML != "<p>hi</p>" {
+			t.Fatalf("BodyHTML = %q, want sanitized \"<p>hi</p>\"", got.BodyHTML)
+		}
+	})
+
+	t.Run("update sanitizes the body", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPut, "/v1/mail/snippets/s1", jsonBody(t, port.SnippetInput{
+			Name: "n", BodyHTML: `<b>ok</b><iframe src="x"></iframe>`,
+		}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if got := h.mail.gotSnippetInput.BodyHTML; got != "<b>ok</b>" {
+			t.Fatalf("BodyHTML = %q, want sanitized \"<b>ok</b>\"", got)
+		}
+	})
+
+	t.Run("update of a team snippet without the role is 403", func(t *testing.T) {
+		h := newHarness(t)
+		h.mail.updateSnipErr = domain.ErrForbidden
+		rec := h.authed(http.MethodPut, "/v1/mail/snippets/s1", jsonBody(t, port.SnippetInput{Name: "n", BodyHTML: "b"}))
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", rec.Code)
+		}
+	})
+
+	t.Run("delete of a team snippet without the role is 403", func(t *testing.T) {
+		h := newHarness(t)
+		h.mail.deleteSnipErr = domain.ErrForbidden
+		rec := h.authed(http.MethodDelete, "/v1/mail/snippets/s1", nil)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", rec.Code)
+		}
+	})
 }
 
 func TestHandleListLabels(t *testing.T) {

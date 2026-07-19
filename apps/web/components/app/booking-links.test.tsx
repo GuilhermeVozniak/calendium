@@ -20,6 +20,9 @@ vi.mock('@/lib/scheduling-data', () => ({
   createBookingLinkApi: (...args: unknown[]) => createBookingLinkApiMock(...args),
   updateBookingLinkApi: (...args: unknown[]) => updateBookingLinkApiMock(...args),
   deleteBookingLinkApi: (...args: unknown[]) => deleteBookingLinkApiMock(...args),
+  // Team booking links (Task 14): no teams in these personal-link tests.
+  fetchSchedulingTeams: () => Promise.resolve([]),
+  fetchTeamMembers: () => Promise.resolve([]),
 }));
 
 const fetchCalendarsMock = vi.fn();

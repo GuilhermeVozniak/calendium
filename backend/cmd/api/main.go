@@ -19,10 +19,12 @@ import (
 
 	"calendium/backend/internal/adapter/in/httpapi"
 	"calendium/backend/internal/adapter/out/authjwt"
+	"calendium/backend/internal/adapter/out/eventbus"
 	"calendium/backend/internal/adapter/out/googleapi"
 	"calendium/backend/internal/adapter/out/msgraph"
 	"calendium/backend/internal/adapter/out/openrouter"
 	"calendium/backend/internal/adapter/out/postgres"
+	"calendium/backend/internal/adapter/out/push"
 	"calendium/backend/internal/adapter/out/stripeapi"
 	"calendium/backend/internal/adapter/out/unsubscribe"
 	"calendium/backend/internal/config"
@@ -107,6 +109,8 @@ func run(logger *slog.Logger) error {
 
 	// --- services ---
 	clock := service.SystemClock{}
+	bus := eventbus.New()
+	activityRepo := postgres.NewTeamThreadActivityRepo(store)
 
 	users := service.NewUserService(store.Users(), store.UserPreferences(), clock)
 	billing := service.NewBillingService(store.Users(), store.Subscriptions(), store.StripeEvents(), stripe, clock, store, cfg.Instance.SelfHosted)
@@ -118,8 +122,12 @@ func run(logger *slog.Logger) error {
 		Messages:      store.Messages(),
 		Drafts:        store.Drafts(),
 		Snippets:      store.Snippets(),
+		// Team-scoped snippets (M2.7 Task 11).
+		Teams:         postgres.NewTeamRepo(store),
 		Labels:        store.Labels(),
 		Reactions:     store.Reactions(),
+		Activity:      activityRepo,
+		Bus:           bus,
 		MailProviders: mailProviders,
 		OAuth:         oauth,
 		Unsubscriber:  unsubscribe.New(),
@@ -140,6 +148,12 @@ func run(logger *slog.Logger) error {
 		Clock:             clock,
 		Settings:          store.UserSettings(),
 		SelfHosted:        cfg.Instance.SelfHosted,
+		// Shared calendars (M2.7 Task 12): grants, audit trail, and the
+		// team/user lookups behind grantee resolution.
+		Shares: postgres.NewCalendarShareRepo(store),
+		Audit:  postgres.NewAuditRepo(store),
+		Teams:  postgres.NewTeamRepo(store),
+		Users:  store.Users(),
 	})
 	search := service.NewSearchService(store.Subscriptions(), store.Threads(), store.Events(), clock, cfg.Instance.SelfHosted)
 	aiSvc := service.NewAIService(service.AIServiceDeps{
@@ -170,6 +184,8 @@ func run(logger *slog.Logger) error {
 		Polls:             store.Polls(),
 		Proposals:         store.TimeProposals(),
 		Settings:          store.UserSettings(),
+		Teams:             postgres.NewTeamRepo(store),
+		Shares:            postgres.NewCalendarShareRepo(store),
 		Tx:                store,
 		CalendarProviders: calendarProviders,
 		MailProviders:     mailProviders,
@@ -180,6 +196,67 @@ func run(logger *slog.Logger) error {
 		Logger:            logger,
 	})
 	settingsSvc := service.NewSettingsService(store.UserSettings())
+	// The Store has no accessors for the team repos; they are standalone
+	// constructors over the same *Store (shared tx plumbing).
+	teams := service.NewTeamService(service.TeamServiceDeps{
+		Teams:       postgres.NewTeamRepo(store),
+		Invitations: postgres.NewTeamInvitationRepo(store),
+		Users:       store.Users(),
+		Accounts:    store.Accounts(),
+		Mail:        mailProviders,
+		OAuth:       oauth,
+		Subs:        store.Subscriptions(),
+		Tx:          store,
+		Clock:       clock,
+		SelfHost:    cfg.Instance.SelfHosted,
+		AppBaseURL:  cfg.Instance.AppBaseURL,
+	})
+
+	// Mention pushes reuse the worker's dispatcher; unconfigured push
+	// degrades to nil (mention pushes silently disabled).
+	var pushSender port.PushSender
+	if cfg.Push != (config.Push{}) {
+		pushSender = push.NewDispatcher(cfg.Push, hc)
+	}
+
+	// M2.7 collaboration: shared conversations (Task 7) + team comments
+	// with @mentions (Task 9), one service behind port.CollabService.
+	collab := service.NewCollabService(service.CollabServiceDeps{
+		Shares:   postgres.NewThreadShareRepo(store),
+		Comments: postgres.NewCommentRepo(store),
+		Teams:    postgres.NewTeamRepo(store),
+		Threads:  store.Threads(),
+		Messages: store.Messages(),
+		Accounts: store.Accounts(),
+		Users:    store.Users(),
+		Devices:  store.Devices(),
+		Push:     pushSender,
+		Bus:      bus,
+		Subs:     store.Subscriptions(),
+		Clock:    clock,
+		SelfHost: cfg.Instance.SelfHosted,
+	})
+
+	// EA delegation mode (M2.7 Task 15): explicit grants + fail-closed
+	// act-as authorization. Delegated mutations land in the unified
+	// audit_entries trail (Task 12's AuditRepo).
+	delegations := service.NewDelegationService(service.DelegationServiceDeps{
+		Delegations: postgres.NewDelegationRepo(store),
+		Audit:       postgres.NewAuditRepo(store),
+		Users:       postgres.NewUserDirectory(store),
+		Clock:       clock,
+	})
+
+	// M2.7 Task 10: teammate read/reply indicators.
+	teamActivitySvc := service.NewTeamActivityService(service.TeamActivityServiceDeps{
+		Subscriptions: store.Subscriptions(),
+		Accounts:      store.Accounts(),
+		Threads:       store.Threads(),
+		Teams:         postgres.NewTeamRepo(store),
+		Activity:      activityRepo,
+		Clock:         clock,
+		SelfHosted:    cfg.Instance.SelfHosted,
+	})
 
 	// --- instance discovery document (GET /v1/instance) ---
 	mode := httpapi.ModeCloud
@@ -226,20 +303,32 @@ func run(logger *slog.Logger) error {
 
 	// --- HTTP server ---
 	handler := httpapi.New(httpapi.Deps{
-		Logger:             logger,
-		Verifier:           verifier,
-		Users:              users,
-		Billing:            billing,
-		Accounts:           accounts,
-		Mail:               mail,
-		Calendars:          calendars,
-		Search:             search,
-		AI:                 aiSvc,
-		Devices:            devices,
-		Prefs:              prefs,
-		Scheduling:         scheduling,
-		Settings:           settingsSvc,
-		Payments:           stripe,
+		Logger:    logger,
+		Verifier:  verifier,
+		Users:     users,
+		Billing:   billing,
+		Accounts:  accounts,
+		Mail:      mail,
+		Calendars: calendars,
+		// The calendar service also implements the sharing management port.
+		CalendarShares: calendars,
+		Search:         search,
+		AI:             aiSvc,
+		Devices:        devices,
+		Prefs:          prefs,
+		Scheduling:     scheduling,
+		Settings:       settingsSvc,
+		Collab:         collab,
+		Payments:       stripe,
+		// M2.7 collaboration: team service + in-process SSE fan-out. The
+		// stream scopes each subscriber to user:<id> plus the caller's real
+		// team:<id> memberships resolved through Teams.
+		Teams:  teams,
+		Events: bus,
+		// M2.7 Task 15: EA delegation grants + act-as + audit surface.
+		Delegations: delegations,
+		// M2.7 Task 10: teammate read/reply indicators.
+		TeamActivity:       teamActivitySvc,
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 	})

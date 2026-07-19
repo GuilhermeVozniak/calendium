@@ -27,24 +27,82 @@ func isConflictSQLState(err error) bool {
 
 const bookingLinkCols = `id, user_id, slug, title, description, calendar_id, duration_minutes,
 	time_zone, windows, buffer_before_min, buffer_after_min, daily_limit, min_notice_min,
-	max_advance_days, respect_working_hours, add_conferencing, active, created_at`
+	max_advance_days, respect_working_hours, add_conferencing, active, team_id, created_at`
 
 func scanBookingLink(r rowScanner) (domain.BookingLink, error) {
 	var l domain.BookingLink
-	var description sql.NullString
+	var description, teamID sql.NullString
 	var windows []byte
 	if err := r.Scan(&l.ID, &l.UserID, &l.Slug, &l.Title, &description, &l.CalendarID,
 		&l.DurationMinutes, &l.TimeZone, &windows, &l.BufferBeforeMin, &l.BufferAfterMin,
 		&l.DailyLimit, &l.MinNoticeMin, &l.MaxAdvanceDays, &l.RespectWorkingHours,
-		&l.AddConferencing, &l.Active, &l.CreatedAt); err != nil {
+		&l.AddConferencing, &l.Active, &teamID, &l.CreatedAt); err != nil {
 		return domain.BookingLink{}, notFound(err)
 	}
 	l.Description = strPtr(description)
+	l.TeamID = strPtr(teamID)
+	l.MemberUserIDs = []string{}
 	if err := unmarshalInto(windows, &l.Windows); err != nil {
 		return domain.BookingLink{}, err
 	}
 	if l.Windows == nil {
 		l.Windows = []domain.AvailabilityWindow{}
+	}
+	return l, nil
+}
+
+// insertLinkMembers inserts the booking_link_members rows for linkID.
+func (r bookingLinkRepo) insertLinkMembers(ctx context.Context, linkID string, memberIDs []string) error {
+	for _, uid := range memberIDs {
+		if _, err := r.q(ctx).ExecContext(ctx, `
+			INSERT INTO booking_link_members (booking_link_id, user_id)
+			VALUES ($1, $2) ON CONFLICT DO NOTHING`, linkID, uid); err != nil {
+			return fmt.Errorf("postgres: insert booking link member: %w", err)
+		}
+	}
+	return nil
+}
+
+// loadLinkMembers returns member user IDs per booking link, ordered by
+// user_id for deterministic reads.
+func (r bookingLinkRepo) loadLinkMembers(ctx context.Context, linkIDs []string) (map[string][]string, error) {
+	out := map[string][]string{}
+	if len(linkIDs) == 0 {
+		return out, nil
+	}
+	ids, err := jsonArray(linkIDs)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.q(ctx).QueryContext(ctx, `
+		SELECT booking_link_id, user_id FROM booking_link_members
+		WHERE booking_link_id IN (SELECT jsonb_array_elements_text($1::jsonb))
+		ORDER BY booking_link_id, user_id`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var linkID, userID string
+		if err := rows.Scan(&linkID, &userID); err != nil {
+			return nil, err
+		}
+		out[linkID] = append(out[linkID], userID)
+	}
+	return out, rows.Err()
+}
+
+// withMembers attaches the member list to a single scanned link.
+func (r bookingLinkRepo) withMembers(ctx context.Context, l domain.BookingLink, err error) (domain.BookingLink, error) {
+	if err != nil {
+		return l, err
+	}
+	m, err := r.loadLinkMembers(ctx, []string{l.ID})
+	if err != nil {
+		return domain.BookingLink{}, err
+	}
+	if members := m[l.ID]; members != nil {
+		l.MemberUserIDs = members
 	}
 	return l, nil
 }
@@ -57,22 +115,32 @@ func (r bookingLinkRepo) Create(ctx context.Context, l domain.BookingLink) (doma
 	if err != nil {
 		return domain.BookingLink{}, err
 	}
-	err = r.q(ctx).QueryRowContext(ctx, `
-		INSERT INTO booking_links (id, user_id, slug, title, description, calendar_id,
-			duration_minutes, time_zone, windows, buffer_before_min, buffer_after_min,
-			daily_limit, min_notice_min, max_advance_days, respect_working_hours,
-			add_conferencing, active)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17)
-		RETURNING created_at`,
-		l.ID, l.UserID, l.Slug, l.Title, nullStrPtr(l.Description), l.CalendarID,
-		l.DurationMinutes, l.TimeZone, windows, l.BufferBeforeMin, l.BufferAfterMin,
-		l.DailyLimit, l.MinNoticeMin, l.MaxAdvanceDays, l.RespectWorkingHours,
-		l.AddConferencing, l.Active).Scan(&l.CreatedAt)
+	// Link row + member rows commit atomically (nested calls join an outer
+	// tx, so callers already inside RunInTx are unaffected).
+	err = r.RunInTx(ctx, func(ctx context.Context) error {
+		if err := r.q(ctx).QueryRowContext(ctx, `
+			INSERT INTO booking_links (id, user_id, slug, title, description, calendar_id,
+				duration_minutes, time_zone, windows, buffer_before_min, buffer_after_min,
+				daily_limit, min_notice_min, max_advance_days, respect_working_hours,
+				add_conferencing, active, team_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+			RETURNING created_at`,
+			l.ID, l.UserID, l.Slug, l.Title, nullStrPtr(l.Description), l.CalendarID,
+			l.DurationMinutes, l.TimeZone, windows, l.BufferBeforeMin, l.BufferAfterMin,
+			l.DailyLimit, l.MinNoticeMin, l.MaxAdvanceDays, l.RespectWorkingHours,
+			l.AddConferencing, l.Active, nullStrPtr(l.TeamID)).Scan(&l.CreatedAt); err != nil {
+			return err
+		}
+		return r.insertLinkMembers(ctx, l.ID, l.MemberUserIDs)
+	})
 	if err != nil {
 		if isConflictSQLState(err) {
 			return domain.BookingLink{}, fmt.Errorf("%w: slug %q is already taken", domain.ErrConflict, l.Slug)
 		}
 		return domain.BookingLink{}, fmt.Errorf("postgres: create booking link: %w", err)
+	}
+	if l.MemberUserIDs == nil {
+		l.MemberUserIDs = []string{}
 	}
 	return l, nil
 }
@@ -80,13 +148,15 @@ func (r bookingLinkRepo) Create(ctx context.Context, l domain.BookingLink) (doma
 func (r bookingLinkRepo) GetByID(ctx context.Context, id string) (domain.BookingLink, error) {
 	row := r.q(ctx).QueryRowContext(ctx,
 		`SELECT `+bookingLinkCols+` FROM booking_links WHERE id = $1`, id)
-	return scanBookingLink(row)
+	l, err := scanBookingLink(row)
+	return r.withMembers(ctx, l, err)
 }
 
 func (r bookingLinkRepo) GetBySlug(ctx context.Context, slug string) (domain.BookingLink, error) {
 	row := r.q(ctx).QueryRowContext(ctx,
 		`SELECT `+bookingLinkCols+` FROM booking_links WHERE lower(slug) = lower($1)`, slug)
-	return scanBookingLink(row)
+	l, err := scanBookingLink(row)
+	return r.withMembers(ctx, l, err)
 }
 
 func (r bookingLinkRepo) ListByUser(ctx context.Context, userID string) ([]domain.BookingLink, error) {
@@ -104,7 +174,23 @@ func (r bookingLinkRepo) ListByUser(ctx context.Context, userID string) ([]domai
 		}
 		links = append(links, l)
 	}
-	return links, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(links))
+	for i, l := range links {
+		ids[i] = l.ID
+	}
+	members, err := r.loadLinkMembers(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range links {
+		if m := members[links[i].ID]; m != nil {
+			links[i].MemberUserIDs = m
+		}
+	}
+	return links, nil
 }
 
 func (r bookingLinkRepo) Update(ctx context.Context, l domain.BookingLink) error {
@@ -112,34 +198,50 @@ func (r bookingLinkRepo) Update(ctx context.Context, l domain.BookingLink) error
 	if err != nil {
 		return err
 	}
-	res, err := r.q(ctx).ExecContext(ctx, `
-		UPDATE booking_links SET
-			slug                  = $2,
-			title                 = $3,
-			description           = $4,
-			calendar_id           = $5,
-			duration_minutes      = $6,
-			time_zone             = $7,
-			windows               = $8::jsonb,
-			buffer_before_min     = $9,
-			buffer_after_min      = $10,
-			daily_limit           = $11,
-			min_notice_min        = $12,
-			max_advance_days      = $13,
-			respect_working_hours = $14,
-			add_conferencing      = $15,
-			active                = $16
-		WHERE id = $1`,
-		l.ID, l.Slug, l.Title, nullStrPtr(l.Description), l.CalendarID, l.DurationMinutes,
-		l.TimeZone, windows, l.BufferBeforeMin, l.BufferAfterMin, l.DailyLimit,
-		l.MinNoticeMin, l.MaxAdvanceDays, l.RespectWorkingHours, l.AddConferencing, l.Active)
+	// Row update + member replacement commit atomically.
+	err = r.RunInTx(ctx, func(ctx context.Context) error {
+		res, err := r.q(ctx).ExecContext(ctx, `
+			UPDATE booking_links SET
+				slug                  = $2,
+				title                 = $3,
+				description           = $4,
+				calendar_id           = $5,
+				duration_minutes      = $6,
+				time_zone             = $7,
+				windows               = $8::jsonb,
+				buffer_before_min     = $9,
+				buffer_after_min      = $10,
+				daily_limit           = $11,
+				min_notice_min        = $12,
+				max_advance_days      = $13,
+				respect_working_hours = $14,
+				add_conferencing      = $15,
+				active                = $16,
+				team_id               = $17
+			WHERE id = $1`,
+			l.ID, l.Slug, l.Title, nullStrPtr(l.Description), l.CalendarID, l.DurationMinutes,
+			l.TimeZone, windows, l.BufferBeforeMin, l.BufferAfterMin, l.DailyLimit,
+			l.MinNoticeMin, l.MaxAdvanceDays, l.RespectWorkingHours, l.AddConferencing, l.Active,
+			nullStrPtr(l.TeamID))
+		if err != nil {
+			return err
+		}
+		if err := mustAffect(res, nil); err != nil {
+			return err
+		}
+		if _, err := r.q(ctx).ExecContext(ctx,
+			`DELETE FROM booking_link_members WHERE booking_link_id = $1`, l.ID); err != nil {
+			return err
+		}
+		return r.insertLinkMembers(ctx, l.ID, l.MemberUserIDs)
+	})
 	if err != nil {
 		if isConflictSQLState(err) {
 			return fmt.Errorf("%w: slug %q is already taken", domain.ErrConflict, l.Slug)
 		}
 		return err
 	}
-	return mustAffect(res, nil)
+	return nil
 }
 
 func (r bookingLinkRepo) Delete(ctx context.Context, id string) error {

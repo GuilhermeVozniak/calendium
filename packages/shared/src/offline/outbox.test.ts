@@ -217,6 +217,59 @@ describe('enqueue and persistence', () => {
 });
 
 // ---------------------------------------------------------------------------
+// acting identity tagging
+// ---------------------------------------------------------------------------
+
+describe('acting identity tagging', () => {
+  it('tags entries with the acting identity; untagged entries read as self', async () => {
+    const outbox = await initOutbox();
+    const self = await outbox.enqueue({ kind: 'thread_action', threadId: 't1', action: 'archive' });
+    const acted = await outbox.enqueue(
+      { kind: 'thread_action', threadId: 't2', action: 'archive' },
+      { actingAs: 'principal-1' }
+    );
+    expect(self?.actingAs).toBeNull();
+    expect(acted?.actingAs).toBe('principal-1');
+  });
+
+  it('never coalesces, dedupes, or replaces across identities', async () => {
+    const outbox = await initOutbox();
+    // star as self + unstar while acting target DIFFERENT accounts — both stay.
+    await outbox.enqueue({ kind: 'thread_action', threadId: 't1', action: 'star' });
+    await outbox.enqueue(
+      { kind: 'thread_action', threadId: 't1', action: 'unstar' },
+      { actingAs: 'p1' }
+    );
+    expect(outbox.pending).toHaveLength(2);
+    // Same-target opens under different identities are separate entries too.
+    await outbox.enqueue({ kind: 'thread_open', threadId: 't2' });
+    await outbox.enqueue({ kind: 'thread_open', threadId: 't2' }, { actingAs: 'p1' });
+    expect(outbox.pending).toHaveLength(4);
+  });
+
+  it('replay only sends entries whose tag matches the requested identity', async () => {
+    const outbox = await initOutbox();
+    await outbox.enqueue({ kind: 'thread_action', threadId: 't-self', action: 'archive' });
+    await outbox.enqueue(
+      { kind: 'thread_action', threadId: 't-p1', action: 'archive' },
+      { actingAs: 'p1' }
+    );
+
+    const { client, methods } = fakeClient();
+    const asP1 = await outbox.replay(client, { actingAs: 'p1' });
+    expect(asP1.replayed).toHaveLength(1);
+    expect(methods.actOnThread).toHaveBeenCalledTimes(1);
+    expect(methods.actOnThread).toHaveBeenCalledWith('t-p1', 'archive');
+    expect(outbox.pending.map((e) => e.action)).toMatchObject([{ threadId: 't-self' }]);
+
+    const asSelf = await outbox.replay(client); // default identity: self
+    expect(asSelf.replayed).toHaveLength(1);
+    expect(methods.actOnThread).toHaveBeenCalledWith('t-self', 'archive');
+    expect(outbox.pending).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // removeForDraft / dismiss
 // ---------------------------------------------------------------------------
 

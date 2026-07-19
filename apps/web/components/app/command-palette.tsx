@@ -30,6 +30,7 @@ import {
   Search,
   Send,
   Settings,
+  Share2,
   Sparkles,
   Star,
   Sun,
@@ -46,6 +47,7 @@ import { toast } from 'sonner';
 import { useAskSidebar } from '@/components/ai/ask-sidebar';
 import { useAttachmentsPane } from '@/components/app/attachments-pane';
 import { useCompose } from '@/components/app/compose';
+import { dispatchShareThread } from '@/components/app/share-dialog';
 import { useTheme } from '@/components/theme-provider';
 import { dispatchAiEditCommand } from '@/components/compose/ai-edit-menu';
 import {
@@ -63,8 +65,8 @@ import { fetchCalendarSets } from '@/lib/set-data';
 import type { CalendarView } from '@/lib/calendar-views';
 import { VIEW_KEYS } from '@/lib/calendar-views';
 import { dispatchMailCommand, queueMailCommand, type MailCommand } from '@/lib/mail-utils';
-import { signOut } from '@/lib/auth-client';
 import { fetchSearch } from '@/lib/search-data';
+import { performSignOut } from '@/lib/sign-out';
 import { MOD_KEY, useShortcuts } from '@/lib/shortcuts';
 import { teachShortcut } from '@/lib/shortcut-hints';
 import { fetchEventTemplates } from '@/lib/template-data';
@@ -266,6 +268,12 @@ export function CommandPalette() {
             >
               <UserPlus />
               Instant Intro
+            </CommandItem>
+          )}
+          {openThreadDetail?.thread && (
+            <CommandItem onSelect={() => run(() => dispatchShareThread())}>
+              <Share2 />
+              Share conversation
             </CommandItem>
           )}
           <CommandItem onSelect={() => { teachShortcut('search', '/', 'Search'); runMailCommand('search'); }}>
@@ -586,7 +594,9 @@ export function CommandPalette() {
           <CommandItem
             onSelect={() =>
               run(async () => {
-                await signOut();
+                // Shared routine: ends the session and scrubs acting-as +
+                // offline state (this path used to skip the offline wipe).
+                await performSignOut();
                 router.replace('/signin');
               })
             }

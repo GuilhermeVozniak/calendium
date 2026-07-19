@@ -13,6 +13,7 @@ import {
 import type { QueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 
+import { getActingAs } from '@/lib/act-as';
 import { getApiClient } from '@/lib/api';
 import { isOnline, subscribeOnline } from '@/lib/offline/connectivity';
 import { ACTIVE_ACCOUNT_STORAGE_KEY } from '@/lib/use-accounts';
@@ -77,7 +78,9 @@ export async function queueAction(
   opts?: { silent?: boolean }
 ): Promise<void> {
   const outbox = await ready();
-  const entry = await outbox.enqueue(action);
+  // Tag the entry with the acting identity in effect NOW: replay must send it
+  // through a client for the same identity, never whichever one is current.
+  const entry = await outbox.enqueue(action, { actingAs: getActingAs() });
   // enqueue() returns null when the action coalesced away (e.g. star then
   // unstar cancel out) — nothing is queued, so saying "queued" would be a lie.
   if (entry !== null && !opts?.silent) toast('Offline — action queued');
@@ -152,7 +155,10 @@ export function startOutboxReplay(queryClient: QueryClient): () => void {
     try {
       const outbox = await ready();
       if (outbox.queuedCount === 0) return;
-      const report = await outbox.replay(getApiClient());
+      // getApiClient() targets exactly getActingAs()'s identity, so passing the
+      // same value replays only entries queued under it — entries for other
+      // identities stay parked until the user switches back to them.
+      const report = await outbox.replay(getApiClient(), { actingAs: getActingAs() });
       // Failed entries count too: their optimistic patch is stale and must
       // roll back to server truth even though nothing was accepted.
       if (report.replayed.length > 0 || report.conflicts.length > 0 || report.failed.length > 0) {

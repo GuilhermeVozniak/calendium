@@ -133,20 +133,24 @@ type Attachment struct {
 
 // Message is a single mail message within a thread.
 type Message struct {
-	ID                string         `json:"id"`
-	ThreadID          string         `json:"threadId"`
-	AccountID         string         `json:"accountId"`
-	ProviderMessageID string         `json:"-"`
-	From              EmailAddress   `json:"from"`
-	To                []EmailAddress `json:"to"`
-	Cc                []EmailAddress `json:"cc"`
-	Bcc               []EmailAddress `json:"bcc"`
-	Subject           string         `json:"subject"`
-	BodyHTML          string         `json:"bodyHtml"`
-	BodyText          string         `json:"bodyText"`
-	Attachments       []Attachment   `json:"attachments"`
-	SentAt            time.Time      `json:"sentAt"`
-	IsDraft           bool           `json:"isDraft"`
+	ID                string `json:"id"`
+	ThreadID          string `json:"threadId"`
+	AccountID         string `json:"accountId"`
+	ProviderMessageID string `json:"-"`
+	// RFCMessageID is the RFC 5322 Message-ID header captured at sync ingest;
+	// the thread's earliest one is the cross-account conversation key for
+	// team read statuses (M2.7). Never serialized to clients.
+	RFCMessageID string         `json:"-"`
+	From         EmailAddress   `json:"from"`
+	To           []EmailAddress `json:"to"`
+	Cc           []EmailAddress `json:"cc"`
+	Bcc          []EmailAddress `json:"bcc"`
+	Subject      string         `json:"subject"`
+	BodyHTML     string         `json:"bodyHtml"`
+	BodyText     string         `json:"bodyText"`
+	Attachments  []Attachment   `json:"attachments"`
+	SentAt       time.Time      `json:"sentAt"`
+	IsDraft      bool           `json:"isDraft"`
 	// OpenedAt is read-status tracking (Superhuman read receipts).
 	OpenedAt *time.Time `json:"openedAt"`
 	// Reactions is populated by the service on GetThread; empty slice
@@ -233,8 +237,11 @@ type Draft struct {
 
 // Snippet is a reusable canned response with an optional keyboard shortcut.
 type Snippet struct {
-	ID         string  `json:"id"`
-	UserID     string  `json:"-"`
+	ID     string `json:"id"`
+	UserID string `json:"-"`
+	// TeamID scopes the snippet to a team (M2.7 team snippets); nil means
+	// personal. Team snippets are visible to every team member.
+	TeamID     *string `json:"teamId"`
 	Name       string  `json:"name"`
 	Shortcut   *string `json:"shortcut"`
 	BodyHTML   string  `json:"bodyHtml"`

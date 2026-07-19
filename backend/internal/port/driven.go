@@ -2,6 +2,7 @@ package port
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"calendium/backend/internal/domain"
@@ -207,11 +208,16 @@ type DraftRepo interface {
 	GetAiGeneratedByThread(ctx context.Context, threadID string) (domain.Draft, error)
 }
 
-// SnippetRepo persists per-user canned responses.
+// SnippetRepo persists canned responses, personal (team_id NULL) or
+// team-scoped (M2.7 team snippets).
 type SnippetRepo interface {
 	Create(ctx context.Context, s domain.Snippet) (domain.Snippet, error)
 	GetByID(ctx context.Context, id string) (domain.Snippet, error)
+	// ListByUser returns the user's PERSONAL (non-team) snippets; team
+	// snippets are reached through ListByTeams.
 	ListByUser(ctx context.Context, userID string) ([]domain.Snippet, error)
+	// ListByTeams returns every snippet scoped to any of teamIDs.
+	ListByTeams(ctx context.Context, teamIDs []string) ([]domain.Snippet, error)
 	Update(ctx context.Context, s domain.Snippet) error
 	Delete(ctx context.Context, id string) error
 }
@@ -454,6 +460,66 @@ type UserSettingsRepo interface {
 	Upsert(ctx context.Context, s domain.UserSettings) error
 }
 
+// --- Collaboration (M2.7) ---
+
+// TeamRepo persists teams and memberships.
+type TeamRepo interface {
+	// Create inserts the team and its owner membership atomically.
+	Create(ctx context.Context, t domain.Team, owner domain.TeamMember) (domain.Team, error)
+	GetByID(ctx context.Context, id string) (domain.Team, error)
+	ListByUser(ctx context.Context, userID string) ([]domain.Team, error)
+	Update(ctx context.Context, t domain.Team) error
+	Delete(ctx context.Context, id string) error
+	// GetMember returns domain.ErrNotFound for non-members — the authz
+	// primitive behind service-layer membership checks.
+	GetMember(ctx context.Context, teamID, userID string) (domain.TeamMember, error)
+	ListMembers(ctx context.Context, teamID string) ([]domain.TeamMember, error)
+	// UpsertMember inserts or updates role/share_read_statuses.
+	UpsertMember(ctx context.Context, m domain.TeamMember) error
+	RemoveMember(ctx context.Context, teamID, userID string) error
+	// CountByRole supports the last-owner invariant.
+	CountByRole(ctx context.Context, teamID string, role domain.TeamRole) (int, error)
+}
+
+// TeamInvitationRepo persists email invitations (token stored hashed).
+type TeamInvitationRepo interface {
+	Create(ctx context.Context, inv domain.TeamInvitation) (domain.TeamInvitation, error)
+	GetByID(ctx context.Context, id string) (domain.TeamInvitation, error)
+	GetByTokenHash(ctx context.Context, tokenHash string) (domain.TeamInvitation, error)
+	ListByTeam(ctx context.Context, teamID string) ([]domain.TeamInvitation, error)
+	Update(ctx context.Context, inv domain.TeamInvitation) error
+}
+
+// --- Shared conversations (M2.7 Task 7) --------------------------------------
+
+// ThreadShareRepo persists tokenized live thread shares (table
+// thread_shares; token stored hashed — raw tokens never cross this
+// boundary).
+type ThreadShareRepo interface {
+	Create(ctx context.Context, s domain.ThreadShare) (domain.ThreadShare, error)
+	GetByID(ctx context.Context, id string) (domain.ThreadShare, error)
+	// GetByTokenHash is the share-link lookup; domain.ErrNotFound when absent.
+	GetByTokenHash(ctx context.Context, tokenHash string) (domain.ThreadShare, error)
+	ListByThread(ctx context.Context, threadID string) ([]domain.ThreadShare, error)
+	// Revoke stamps revoked_at; domain.ErrNotFound when the share is missing.
+	Revoke(ctx context.Context, id string, at time.Time) error
+}
+
+// --- Team comments (M2.7 Task 9) ---
+
+// CommentRepo persists team comments on mail threads. Soft-deleted rows
+// (deleted_at set) are invisible to every read: a soft-deleted id is
+// indistinguishable from a missing one (ErrNotFound).
+type CommentRepo interface {
+	Create(ctx context.Context, c domain.Comment) (domain.Comment, error)
+	GetByID(ctx context.Context, id string) (domain.Comment, error)
+	// ListByThreadTeam returns the live comments one team sees on one
+	// thread, oldest first.
+	ListByThreadTeam(ctx context.Context, threadID, teamID string) ([]domain.Comment, error)
+	Update(ctx context.Context, c domain.Comment) error
+	SoftDelete(ctx context.Context, id string, at time.Time) error
+}
+
 // ---------------------------------------------------------------------------
 // Gateways (implemented by internal/adapter/out/{googleapi,msgraph,stripeapi,openrouter,push,authjwt})
 // ---------------------------------------------------------------------------
@@ -622,4 +688,27 @@ type PushSender interface {
 // against a sender-provided URL.
 type UnsubscribeGateway interface {
 	PostOneClick(ctx context.Context, url string) error
+}
+
+// ---------------------------------------------------------------------------
+// Realtime event bus (M2.7, implemented by internal/adapter/out/eventbus)
+// ---------------------------------------------------------------------------
+
+// CollabEvent is a realtime collaboration notification fanned out over SSE.
+type CollabEvent struct {
+	// Topic scopes delivery: "team:<teamID>" | "share:<shareID>" | "user:<userID>".
+	Topic   string          `json:"topic"`
+	Type    string          `json:"type"` // "comment.created" | "comment.deleted" | "activity.updated" | "share.updated" | "mention"
+	Payload json.RawMessage `json:"payload"`
+}
+
+// EventBus fans CollabEvents out to in-process subscribers. Publish never
+// blocks (slow subscribers drop events — SSE clients re-sync on reconnect).
+// Single-process today; the multi-instance path is a Postgres LISTEN/NOTIFY
+// implementation behind this same port.
+type EventBus interface {
+	Publish(ev CollabEvent)
+	// Subscribe returns a channel of events for the given topics and a
+	// cancel func. The channel closes on cancel.
+	Subscribe(topics []string) (<-chan CollabEvent, func())
 }

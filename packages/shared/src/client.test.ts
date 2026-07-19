@@ -4,6 +4,7 @@ import {
   ApiRequestError,
   createPublicBooking,
   fetchInstance,
+  isDelegablePath,
   fetchPublicBookingPage,
   fetchPublicPoll,
   fetchPublicSlots,
@@ -16,6 +17,8 @@ import type {
   BookingRequest,
   CalendarSetInput,
   ClassifierInput,
+  CommentInput,
+  ShareThreadInput,
   DraftInput,
   EventInput,
   EventPatch,
@@ -1388,5 +1391,577 @@ describe('public scheduling fetchers', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Teams (M2.7)
+// ---------------------------------------------------------------------------
+
+describe('teams (M2.7)', () => {
+  const TEAM = { id: 'team_1', name: 'Ops', createdBy: 'user_1', createdAt: '2026-07-19T00:00:00Z' };
+  const MEMBER = {
+    teamId: 'team_1',
+    userId: 'user_2',
+    role: 'admin',
+    shareReadStatuses: false,
+    joinedAt: '2026-07-19T00:00:00Z',
+  };
+  const INVITATION = {
+    id: 'inv_1',
+    teamId: 'team_1',
+    email: 'new@example.com',
+    role: 'member',
+    invitedBy: 'user_1',
+    status: 'pending',
+    expiresAt: '2026-08-02T00:00:00Z',
+    createdAt: '2026-07-19T00:00:00Z',
+  };
+
+  it('listTeams GETs /v1/teams with the bearer token', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: [TEAM] }] });
+    const result = await client.listTeams();
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams`);
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(result).toEqual([TEAM]);
+  });
+
+  it('createTeam POSTs {name} and returns the created team', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 201, body: TEAM }] });
+    const result = await client.createTeam('Ops');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams`);
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.body).toEqual({ name: 'Ops' });
+    expect(result).toEqual(TEAM);
+  });
+
+  it('getTeam GETs /v1/teams/{id} and returns team + members', async () => {
+    const payload = { team: TEAM, members: [MEMBER] };
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: payload }] });
+    const result = await client.getTeam('team_1');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1`);
+    expect(calls[0]!.method).toBe('GET');
+    expect(result).toEqual(payload);
+  });
+
+  it('renameTeam PATCHes /v1/teams/{id} with {name}', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: { ...TEAM, name: 'Platform' } }] });
+    await client.renameTeam('team_1', 'Platform');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1`);
+    expect(calls[0]!.method).toBe('PATCH');
+    expect(calls[0]!.body).toEqual({ name: 'Platform' });
+  });
+
+  it('deleteTeam DELETEs /v1/teams/{id} and resolves undefined on 204', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    const result = await client.deleteTeam('team_1');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1`);
+    expect(calls[0]!.method).toBe('DELETE');
+    expect(result).toBeUndefined();
+  });
+
+  it('setMemberRole PATCHes /v1/teams/{id}/members/{userId} with {role}', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: MEMBER }] });
+    const result = await client.setMemberRole('team_1', 'user_2', 'admin');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1/members/user_2`);
+    expect(calls[0]!.method).toBe('PATCH');
+    expect(calls[0]!.body).toEqual({ role: 'admin' });
+    expect(result).toEqual(MEMBER);
+  });
+
+  it('setShareReadStatuses PUTs /v1/teams/{id}/read-status-sharing with {share}', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { ...MEMBER, shareReadStatuses: true } }],
+    });
+    await client.setShareReadStatuses('team_1', true);
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1/read-status-sharing`);
+    expect(calls[0]!.method).toBe('PUT');
+    expect(calls[0]!.body).toEqual({ share: true });
+  });
+
+  it('removeMember DELETEs /v1/teams/{id}/members/{userId}', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    await client.removeMember('team_1', 'user_2');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1/members/user_2`);
+    expect(calls[0]!.method).toBe('DELETE');
+  });
+
+  it('invite POSTs /v1/teams/{id}/invitations with {email, role}', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 201, body: INVITATION }] });
+    const result = await client.invite('team_1', 'new@example.com', 'member');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1/invitations`);
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.body).toEqual({ email: 'new@example.com', role: 'member' });
+    expect(result).toEqual(INVITATION);
+  });
+
+  it('listInvitations GETs /v1/teams/{id}/invitations', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: [INVITATION] }] });
+    const result = await client.listInvitations('team_1');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1/invitations`);
+    expect(calls[0]!.method).toBe('GET');
+    expect(result).toEqual([INVITATION]);
+  });
+
+  it('revokeInvitation DELETEs /v1/teams/{id}/invitations/{invitationId}', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    await client.revokeInvitation('team_1', 'inv_1');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/team_1/invitations/inv_1`);
+    expect(calls[0]!.method).toBe('DELETE');
+  });
+
+  it('acceptInvitation POSTs /v1/invitations/accept with {token}', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: TEAM }] });
+    const result = await client.acceptInvitation('raw-invite-token');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/invitations/accept`);
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.body).toEqual({ token: 'raw-invite-token' });
+    expect(result).toEqual(TEAM);
+  });
+
+  it('percent-encodes path params in team routes', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: TEAM }] });
+    await client.getTeam('team/../1?x=1');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/teams/${encodeURIComponent('team/../1?x=1')}`);
+    const { client: client2, calls: calls2 } = makeClient({ responses: [{ status: 200, body: MEMBER }] });
+    await client2.setMemberRole('team 1', 'user#2', 'member');
+    expect(calls2[0]!.url).toBe(`${BASE_URL}/v1/teams/team%201/members/user%232`);
+  });
+
+  it('maps a 404 non-member response to ApiRequestError(404, "not_found")', async () => {
+    const { client } = makeClient({
+      responses: [{ status: 404, body: { error: { code: 'not_found', message: 'resource not found' } } }],
+    });
+    await expect(client.getTeam('team_x')).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
+    });
+  });
+
+  it('maps a 403 insufficient-role response to ApiRequestError(403, "forbidden")', async () => {
+    const { client } = makeClient({
+      responses: [{ status: 403, body: { error: { code: 'forbidden', message: 'insufficient team role' } } }],
+    });
+    await expect(client.deleteTeam('team_1')).rejects.toMatchObject({
+      status: 403,
+      code: 'forbidden',
+    });
+  });
+
+  it('maps a 409 last-owner response to ApiRequestError(409, "conflict")', async () => {
+    const { client } = makeClient({
+      responses: [{ status: 409, body: { error: { code: 'conflict', message: 'a team must keep at least one owner' } } }],
+    });
+    await expect(client.removeMember('team_1', 'user_1')).rejects.toMatchObject({
+      status: 409,
+      code: 'conflict',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shared conversations (M2.7) — thread share links + the public share view
+// ---------------------------------------------------------------------------
+
+describe('thread shares', () => {
+  it('shareThread POSTs the audience payload and returns the share + one-time token', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 201, body: { share: { id: 'sh1', threadId: 't1' }, token: 'raw-once' } }],
+    });
+    const input: ShareThreadInput = {
+      audience: 'team',
+      teamId: 'team1',
+      expiresAt: '2026-08-01T00:00:00Z',
+    };
+    const result = await client.shareThread('t1', input);
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/mail/threads/t1/share`);
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].body).toEqual(input);
+    expect(result).toEqual({ share: { id: 'sh1', threadId: 't1' }, token: 'raw-once' });
+  });
+
+  it('percent-encodes the thread id in share paths', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 201, body: { share: {}, token: 't' } }] });
+    await client.shareThread('t/1 x', { audience: 'external' });
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/mail/threads/t%2F1%20x/share`);
+  });
+
+  it('listThreadShares GETs the share list for a thread', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: [{ id: 'sh1', audience: 'external' }] }],
+    });
+    const shares = await client.listThreadShares('t1');
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/mail/threads/t1/shares`);
+    expect(calls[0].method).toBe('GET');
+    expect(shares).toEqual([{ id: 'sh1', audience: 'external' }]);
+  });
+
+  it('revokeThreadShare DELETEs the share by id (encoded) and resolves on 204', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    await client.revokeThreadShare('t1', 'sh 1');
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/mail/threads/t1/shares/sh%201`);
+    expect(calls[0].method).toBe('DELETE');
+  });
+
+  it('getSharedThread GETs the public view with the token percent-encoded', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { subject: 'Launch plan', audience: 'external', messages: [] } }],
+    });
+    const view = await client.getSharedThread('tok/123');
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/shared/threads/tok%2F123`);
+    expect(view.subject).toBe('Launch plan');
+  });
+
+  it('getSharedThread omits Authorization when signed out (anonymous external viewer)', async () => {
+    const { client, calls } = makeClient({
+      token: null,
+      responses: [{ status: 200, body: { subject: 's', audience: 'external', messages: [] } }],
+    });
+    await client.getSharedThread('tok123');
+    expect(calls[0].headers.Authorization).toBeUndefined();
+  });
+
+  it('getSharedThread sends the bearer when signed in (team-audience viewer)', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { subject: 's', audience: 'team', messages: [] } }],
+    });
+    await client.getSharedThread('tok123');
+    expect(calls[0].headers.Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it('maps unknown/revoked tokens to ApiRequestError(404, "not_found")', async () => {
+    const { client } = makeClient({
+      responses: [{ status: 404, body: { error: { code: 'not_found', message: 'not found' } } }],
+    });
+    await expect(client.getSharedThread('nope')).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Team comments (M2.7)
+// ---------------------------------------------------------------------------
+
+describe('team comments', () => {
+  it('listComments GETs the comments with teamId as a query parameter', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { comments: [{ id: 'c1', body: 'hello' }] } }],
+    });
+    const result = await client.listComments('t1', 'team 1');
+    const [path, query] = calls[0].url.split('?');
+    expect(path).toBe(`${BASE_URL}/v1/mail/threads/t1/comments`);
+    expect(searchParamsToObject(new URLSearchParams(query))).toEqual({ teamId: 'team 1' });
+    expect(result.comments).toEqual([{ id: 'c1', body: 'hello' }]);
+  });
+
+  it('addComment POSTs the teamId + body payload', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 201, body: { id: 'c9', body: 'hi @ada@example.com' } }],
+    });
+    const input: CommentInput = { teamId: 'team1', body: 'hi @ada@example.com' };
+    const comment = await client.addComment('t1', input);
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/mail/threads/t1/comments`);
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].body).toEqual(input);
+    expect(comment.id).toBe('c9');
+  });
+
+  it('updateComment PATCHes the body by comment id', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { id: 'c1', body: 'edited' } }],
+    });
+    await client.updateComment('c1', 'edited');
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/comments/c1`);
+    expect(calls[0].method).toBe('PATCH');
+    expect(calls[0].body).toEqual({ body: 'edited' });
+  });
+
+  it('deleteComment DELETEs by comment id and resolves on 204', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    await client.deleteComment('c 1');
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/comments/c%201`);
+    expect(calls[0].method).toBe('DELETE');
+  });
+
+  it('maps a non-member 404 without leaking existence', async () => {
+    const { client } = makeClient({
+      responses: [{ status: 404, body: { error: { code: 'not_found', message: 'not found' } } }],
+    });
+    await expect(client.listComments('t1', 'ghost')).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EA delegation (M2.7 Task 15) — grants, audit, and act-as
+// ---------------------------------------------------------------------------
+
+describe('ApiClient delegation endpoints', () => {
+  it('createDelegation POSTs /v1/delegations with assistantEmail and scopes', async () => {
+    const { client, calls } = makeClient();
+    await client.createDelegation('ea@example.com', ['mail_read', 'calendar_write']);
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/delegations`);
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].body).toEqual({
+      assistantEmail: 'ea@example.com',
+      scopes: ['mail_read', 'calendar_write'],
+    });
+  });
+
+  it('listDelegations GETs /v1/delegations and returns both sides', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { asPrincipal: [], asAssistant: [] } }],
+    });
+    const result = await client.listDelegations();
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/delegations`);
+    expect(calls[0].method).toBe('GET');
+    expect(result).toEqual({ asPrincipal: [], asAssistant: [] });
+  });
+
+  it('acceptDelegation POSTs to a percent-encoded id path', async () => {
+    const { client, calls } = makeClient();
+    await client.acceptDelegation('del/1?x');
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/delegations/${encodeURIComponent('del/1?x')}/accept`);
+    expect(calls[0].method).toBe('POST');
+  });
+
+  it('revokeDelegation DELETEs the percent-encoded id path', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    await client.revokeDelegation('del 2');
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/delegations/${encodeURIComponent('del 2')}`);
+    expect(calls[0].method).toBe('DELETE');
+  });
+
+  it('listDelegationAudit GETs /v1/delegations/audit without a limit by default', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: { entries: [] } }] });
+    const result = await client.listDelegationAudit();
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/delegations/audit`);
+    expect(result.entries).toEqual([]);
+  });
+
+  it('listDelegationAudit passes an explicit limit as a query param', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: { entries: [] } }] });
+    await client.listDelegationAudit(50);
+    expect(calls[0].url).toBe(`${BASE_URL}/v1/delegations/audit?limit=50`);
+  });
+});
+
+describe('ApiClient.actAs', () => {
+  it('adds X-Calendium-Act-As on delegable mail/calendar routes', async () => {
+    const { client, calls } = makeClient();
+    const acting = client.actAs('user_principal');
+    await acting.getThread('t1');
+    await acting.listCalendars();
+    await acting.listEvents('2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z');
+    await acting.search('hello');
+    await acting.getAvailability('2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', 30);
+    for (const call of calls) {
+      expect(call.headers['X-Calendium-Act-As']).toBe('user_principal');
+    }
+  });
+
+  it('never adds the header on non-delegable routes (backend rejects act-as there)', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { asPrincipal: [], asAssistant: [] } }],
+    });
+    const acting = client.actAs('user_principal');
+    await acting.listDelegations();
+    await acting.getMe();
+    await acting.listTeams();
+    await acting.listAccounts();
+    for (const call of calls) {
+      expect(call.headers['X-Calendium-Act-As']).toBeUndefined();
+    }
+  });
+
+  it('omits the header on denied team/collab sub-paths under delegable prefixes', async () => {
+    const { client, calls } = makeClient({
+      responses: [
+        { status: 201, body: { share: {}, token: 'tok' } },
+        { status: 200, body: [] },
+        { status: 200, body: { comments: [] } },
+        { status: 200, body: [] },
+        { status: 200, body: [] },
+        { status: 200, body: [] },
+      ],
+    });
+    const acting = client.actAs('user_principal');
+    await acting.shareThread('t1', { audience: 'external' } as ShareThreadInput);
+    await acting.listThreadShares('t1');
+    await acting.listComments('t1', 'team_1');
+    await acting.teamThreadActivity('t1');
+    await acting.listSnippets();
+    await acting.listCalendarShares('c1');
+    expect(calls.length).toBe(6);
+    for (const call of calls) {
+      expect(call.headers['X-Calendium-Act-As'], call.url).toBeUndefined();
+    }
+  });
+
+  it('keeps the Authorization bearer token on delegated requests', async () => {
+    const { client, calls } = makeClient();
+    await client.actAs('user_principal').actOnThread('t1', 'archive');
+    expect(calls[0].headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(calls[0].headers['X-Calendium-Act-As']).toBe('user_principal');
+  });
+
+  it('returns a NEW client and leaves the original free of the header', async () => {
+    const { client, calls } = makeClient();
+    const acting = client.actAs('user_principal');
+    expect(acting).not.toBe(client);
+    await client.getThread('t1');
+    expect(calls[0].headers['X-Calendium-Act-As']).toBeUndefined();
+    await acting.getThread('t1');
+    expect(calls[1].headers['X-Calendium-Act-As']).toBe('user_principal');
+  });
+});
+
+describe('isDelegablePath', () => {
+  it('accepts exactly the backend delegationScopeForRoute route groups', () => {
+    const delegable = [
+      '/v1/search',
+      '/v1/mail',
+      '/v1/mail/threads',
+      '/v1/mail/threads/t1/actions',
+      '/v1/events',
+      '/v1/events/e1/rsvp',
+      '/v1/calendars',
+      '/v1/calendars/c1',
+      '/v1/availability',
+    ];
+    for (const path of delegable) {
+      expect(isDelegablePath(path), path).toBe(true);
+    }
+    const notDelegable = [
+      // Team/collab sub-surfaces under the delegable prefixes (I1 fix).
+      '/v1/mail/threads/t1/share',
+      '/v1/mail/threads/t1/shares',
+      '/v1/mail/threads/t1/shares/sh1',
+      '/v1/mail/threads/t1/comments',
+      '/v1/mail/threads/t1/team-activity',
+      '/v1/mail/snippets',
+      '/v1/mail/snippets/sn1',
+      '/v1/calendars/c1/shares',
+      '/v1/calendars/c1/shares/sh1',
+      '/v1/comments/cm1',
+      '/v1/teams',
+      '/v1/delegations',
+      '/v1/delegations/audit',
+      '/v1/billing/subscription',
+      '/v1/accounts',
+      '/v1/devices',
+      '/v1/me',
+      '/v1/mailbox', // prefix must not match beyond the exact segment
+      '/v1/eventsx',
+      '/v1/instance',
+    ];
+    for (const path of notDelegable) {
+      expect(isDelegablePath(path), path).toBe(false);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shared calendars & team availability (M2.7 Tasks 12–13)
+// ---------------------------------------------------------------------------
+
+describe('calendar shares & team availability', () => {
+  const SHARE = {
+    id: 'sh_1',
+    calendarId: 'cal_1',
+    granteeTeamId: 'team_1',
+    permission: 'free_busy',
+    createdBy: 'user_1',
+    createdAt: '2026-07-07T09:00:00Z',
+  };
+
+  it('lists a calendar’s shares via GET /v1/calendars/{id}/shares', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: [SHARE] }] });
+    const shares = await client.listCalendarShares('cal_1');
+    expect(shares).toEqual([SHARE]);
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendars/cal_1/shares`);
+  });
+
+  it('shares a calendar with a team via POST, passing the input verbatim', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: SHARE }] });
+    const share = await client.shareCalendar('cal_1', {
+      granteeTeamId: 'team_1',
+      permission: 'free_busy',
+    });
+    expect(share).toEqual(SHARE);
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendars/cal_1/shares`);
+    expect(calls[0]!.body).toEqual({ granteeTeamId: 'team_1', permission: 'free_busy' });
+  });
+
+  it('updates a share’s permission via PATCH .../shares/{shareId}', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { ...SHARE, permission: 'editor' } }],
+    });
+    await client.updateCalendarShare('cal_1', 'sh_1', 'editor');
+    expect(calls[0]!.method).toBe('PATCH');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendars/cal_1/shares/sh_1`);
+    expect(calls[0]!.body).toEqual({ permission: 'editor' });
+  });
+
+  it('revokes a share via DELETE and resolves on 204', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    await expect(client.revokeCalendarShare('cal_1', 'sh_1')).resolves.toBeUndefined();
+    expect(calls[0]!.method).toBe('DELETE');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendars/cal_1/shares/sh_1`);
+  });
+
+  it('fetches team availability with RFC 3339 from/to query params', async () => {
+    const rows = [
+      {
+        userId: 'user_1',
+        shared: true,
+        busy: [{ start: '2026-07-07T10:00:00Z', end: '2026-07-07T11:00:00Z' }],
+      },
+      { userId: 'user_2', shared: false, busy: [] },
+    ];
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: rows }] });
+    const got = await client.teamAvailability(
+      'team_1',
+      '2026-07-07T00:00:00Z',
+      '2026-07-08T00:00:00Z'
+    );
+    expect(got).toEqual(rows);
+    expect(calls[0]!.method).toBe('GET');
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe('/v1/teams/team_1/availability');
+    expect(searchParamsToObject(url.searchParams)).toEqual({
+      from: '2026-07-07T00:00:00Z',
+      to: '2026-07-08T00:00:00Z',
+    });
+  });
+
+  it('percent-encodes path params in share and availability routes', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: [] }] });
+    await client.listCalendarShares('cal/1');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendars/${encodeURIComponent('cal/1')}/shares`);
+
+    const { client: c2, calls: calls2 } = makeClient({ responses: [{ status: 204 }] });
+    await c2.revokeCalendarShare('cal 1', 'sh#2');
+    expect(calls2[0]!.url).toBe(`${BASE_URL}/v1/calendars/cal%201/shares/sh%232`);
+
+    const { client: c3, calls: calls3 } = makeClient({ responses: [{ status: 200, body: [] }] });
+    await c3.teamAvailability('team 1', '2026-07-07T00:00:00Z', '2026-07-08T00:00:00Z');
+    expect(new URL(calls3[0]!.url).pathname).toBe('/v1/teams/team%201/availability');
+  });
+
+  it('maps a 404 non-member availability response to ApiRequestError(404)', async () => {
+    const { client } = makeClient({
+      responses: [{ status: 404, body: { error: { code: 'not_found', message: 'resource not found' } } }],
+    });
+    await expect(
+      client.teamAvailability('team_x', '2026-07-07T00:00:00Z', '2026-07-08T00:00:00Z')
+    ).rejects.toMatchObject({ status: 404, code: 'not_found' });
   });
 });

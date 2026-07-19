@@ -31,6 +31,7 @@ import {
 
 import { AskSidebarPanel, AskSidebarProvider } from '@/components/ai/ask-sidebar';
 import { AccountSwitcher } from '@/components/app/account-switcher';
+import { ActAsMenuItems, ActingBanner } from '@/components/app/acting-as';
 import { AttachmentsPaneProvider } from '@/components/app/attachments-pane';
 import { CommandPalette } from '@/components/app/command-palette';
 import { ComposeProvider, useCompose } from '@/components/app/compose';
@@ -54,9 +55,10 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Kbd } from '@/components/ui/kbd';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { authClient, signOut } from '@/lib/auth-client';
+import { authClient } from '@/lib/auth-client';
 import { DEMO_MODE } from '@/lib/demo';
-import { clearOfflineState, startOutboxReplay } from '@/lib/offline/queue';
+import { startOutboxReplay } from '@/lib/offline/queue';
+import { performSignOut } from '@/lib/sign-out';
 import { accountSwitchShortcuts, useChords, useShortcuts } from '@/lib/shortcuts';
 import { ActiveAccountProvider, useActiveAccount } from '@/lib/use-accounts';
 import { useApiOnline } from '@/lib/use-mail';
@@ -99,6 +101,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                   <SideRail user={user} />
                 </React.Suspense>
                 <div className="flex min-w-0 flex-1 flex-col">
+                  <ActingBanner />
                   <OfflineBanner />
                   <OutboxIndicator />
                   <main className="min-h-0 flex-1">{children}</main>
@@ -391,13 +394,14 @@ function UserMenu({ user }: { user: SessionUser | null }) {
               </DropdownMenuRadioGroup>
             </DropdownMenuSubContent>
           </DropdownMenuSub>
+          <ActAsMenuItems />
           <DropdownMenuSeparator />
           <DropdownMenuItem
             className="gap-2"
             onSelect={async () => {
-              await signOut();
-              // Never leave the previous user's mail/outbox on this device.
-              await clearOfflineState();
+              // Shared routine: ends the session and scrubs acting-as +
+              // offline state so nothing survives onto the next user.
+              await performSignOut();
               router.replace('/signin');
             }}
           >

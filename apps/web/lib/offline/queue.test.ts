@@ -15,6 +15,10 @@ const apiMock = vi.hoisted(() => ({
 }));
 vi.mock('@/lib/api', () => ({ getApiClient: () => apiMock }));
 
+// Acting identity in effect (lib/act-as). Mutable per test: null = self.
+const actAs = vi.hoisted(() => ({ current: null as string | null }));
+vi.mock('@/lib/act-as', () => ({ getActingAs: () => actAs.current }));
+
 const toastMock = vi.hoisted(() =>
   Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn(), info: vi.fn() })
 );
@@ -41,6 +45,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  actAs.current = null;
   cleanups = [];
   // Fresh IndexedDB universe + fresh module state (outbox singleton AND the
   // connectivity tracker queue.ts subscribes to) per test.
@@ -209,6 +214,92 @@ describe('startOutboxReplay', () => {
     window.dispatchEvent(new Event('focus'));
     await sleep(30);
     expect(apiMock.actOnThread).not.toHaveBeenCalled();
+  });
+});
+
+describe('acting identity isolation', () => {
+  it('an entry queued as SELF stays parked while acting, then replays after acting stops', async () => {
+    await queue.queueAction(
+      { kind: 'thread_action', threadId: 't1', action: 'archive' },
+      { silent: true }
+    );
+    apiMock.actOnThread.mockResolvedValue({ id: 't1' });
+    actAs.current = 'principal-1'; // start acting BEFORE anything replays
+
+    const { client } = stubQueryClient();
+    cleanups.push(queue.startOutboxReplay(client));
+    window.dispatchEvent(new Event('focus'));
+    await sleep(30);
+    // Never sent through the acting client — that would mutate the PRINCIPAL.
+    expect(apiMock.actOnThread).not.toHaveBeenCalled();
+    expect(queue.getOutbox().queuedCount).toBe(1);
+
+    actAs.current = null; // back to self — the matching identity replays it
+    window.dispatchEvent(new Event('focus'));
+    await vi.waitFor(() => {
+      expect(apiMock.actOnThread).toHaveBeenCalledWith('t1', 'archive');
+      expect(queue.getOutbox().queuedCount).toBe(0);
+    });
+  });
+
+  it('an entry queued WHILE ACTING never replays as self, only when acting again', async () => {
+    actAs.current = 'principal-1';
+    await queue.queueAction(
+      { kind: 'thread_action', threadId: 't1', action: 'archive' },
+      { silent: true }
+    );
+    apiMock.actOnThread.mockResolvedValue({ id: 't1' });
+    actAs.current = null; // stop acting before the replay triggers fire
+
+    const { client } = stubQueryClient();
+    cleanups.push(queue.startOutboxReplay(client));
+    window.dispatchEvent(new Event('focus'));
+    await sleep(30);
+    // Never sent as self — that would mutate the ASSISTANT's own account.
+    expect(apiMock.actOnThread).not.toHaveBeenCalled();
+    expect(queue.getOutbox().queuedCount).toBe(1);
+
+    actAs.current = 'principal-1'; // acting again — matching identity replays
+    window.dispatchEvent(new Event('focus'));
+    await vi.waitFor(() => {
+      expect(apiMock.actOnThread).toHaveBeenCalledWith('t1', 'archive');
+      expect(queue.getOutbox().queuedCount).toBe(0);
+    });
+  });
+
+  it('a legacy untagged entry (pre-actingAs persistence) is treated as self', async () => {
+    const { createIndexedDbKv, OUTBOX_STORAGE_KEY } = await import('@calendium/shared');
+    const kv = createIndexedDbKv();
+    await kv.setItem(
+      OUTBOX_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: 'legacy-1',
+          seq: 1,
+          createdAt: new Date().toISOString(),
+          attempts: 0,
+          status: 'queued',
+          lastError: null,
+          // No actingAs field at all — written before the tag existed.
+          action: { kind: 'thread_action', threadId: 't1', action: 'archive' },
+        },
+      ])
+    );
+    apiMock.actOnThread.mockResolvedValue({ id: 't1' });
+    actAs.current = 'principal-1';
+
+    const { client } = stubQueryClient();
+    cleanups.push(queue.startOutboxReplay(client));
+    window.dispatchEvent(new Event('focus'));
+    await sleep(30);
+    expect(apiMock.actOnThread).not.toHaveBeenCalled(); // parked while acting
+
+    actAs.current = null;
+    window.dispatchEvent(new Event('focus'));
+    await vi.waitFor(() => {
+      expect(apiMock.actOnThread).toHaveBeenCalledWith('t1', 'archive');
+      expect(queue.getOutbox().queuedCount).toBe(0);
+    });
   });
 });
 

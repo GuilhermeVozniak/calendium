@@ -51,14 +51,14 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | Share Availability | Select free slots and insert them into an email as text plus a booking link; `GET /v1/availability` + compose flow | P0 | scaffolded | web, desktop, mobile |
 | Calendar peek | See your day/week calendar without leaving the inbox (shortcut on desktop, swipe-down on mobile) | P1 | planned | web, desktop, mobile |
 | One-tap event creation | Create an event from an email with title, attendees, location, and suggested time auto-filled from the thread | P1 | planned | web, desktop, mobile |
-| Team scheduling | See when teammates are free and schedule group meetings from the inbox, no time-zone math | P1 | planned | web, desktop |
+| Team scheduling | See when teammates are free and schedule group meetings from the inbox, no time-zone math; team availability + Find Time inline in compose over privacy-filtered busy blocks | P1 | scaffolded | web, desktop |
 | Conferencing integrations | Zoom / Google Meet / Teams links attached automatically when creating meetings (`Conferencing` modeled on events) | P2 | planned | web, desktop, mobile |
 | Time-zone aware scheduling | Availability and send-time suggestions account for the recipient's time zone | P2 | planned | web, desktop, mobile |
 | **Collaboration** | | | | |
-| Shared Conversations | Share a live, always-up-to-date view of any thread with teammates via link | P1 | planned | web, desktop, mobile |
-| Team Comments | Internal comments with @mentions on external threads, discussed without leaving email | P1 | planned | web, desktop, mobile |
-| Team read statuses and reply indicators | Read/replied state shared across the team on CC'd threads | P1 | planned | web, desktop, mobile |
-| Team Snippets | Snippet templates shared across the team for consistent replies | P2 | planned | web, desktop, mobile |
+| Shared Conversations | Share a live, always-up-to-date view of any thread with teammates via link; `thread_shares` (token stored hash-only, fail-closed public view) + `/shared/{token}` web page streaming updates over SSE | P1 | scaffolded | web, desktop, mobile |
+| Team Comments | Internal comments with @mentions on external threads, discussed without leaving email; `thread_comments` CRUD with team-scoped @mention resolution and mention notifications | P1 | scaffolded | web, desktop, mobile |
+| Team read statuses and reply indicators | Read/replied state shared across the team on CC'd threads; correlated across member mailboxes via RFC Message-ID, honoring the per-member `share_read_statuses` opt-out | P1 | scaffolded | web, desktop, mobile |
+| Team Snippets | Snippet templates shared across the team for consistent replies; team-scoped snippets via `snippets.team_id` | P2 | scaffolded | web, desktop, mobile |
 | **Speed** | | | | |
 | Sub-100ms interactions | Every interaction responds in under 100ms; served by the local Postgres mirror + optimistic mutations (architecture in place, perf budget enforced from M1; p95 measured via Playwright 36-46ms on production build) | P0 | scaffolded | web, desktop, mobile |
 | Command palette (Cmd+K) | Search and execute any action from the keyboard, with each action's shortcut displayed to teach it | P0 | scaffolded | web, desktop |
@@ -120,15 +120,15 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | Secondary time zone display (Google Calendar) | Labeled second time zone alongside the primary axis plus a world-clock widget | P1 | planned | web, desktop |
 | Recipient-time-zone preview (Vimcal) | Shared slots and booking pages render automatically in the recipient's local time zone, eliminating conversion errors | P2 | planned | web, desktop |
 | **Collaboration** | | | | |
-| Shared calendars with granular permissions (Google Calendar) | Per-person sharing with tiered permissions from free/busy-only up to full edit and delegation | P0 | planned | web, desktop, mobile |
-| Find a Time guest availability grid (Google Calendar) | View guests' free/busy side by side when inviting and pick a slot that works for everyone | P0 | planned | web, desktop, mobile |
-| Find Time inline team availability (Superhuman) | Teammates' availability inline while composing; share only slots that work for the group, or override deliberately | P1 | planned | web, desktop |
-| Team availability overview (Rise) | Every teammate's availability and time zone at a glance to coordinate without asking around | P1 | planned | web, desktop |
-| Team scheduling links (Rise) | Scheduling links checking one or multiple team members' calendars so externals book the whole group at once | P1 | planned | web |
+| Shared calendars with granular permissions (Google Calendar) | Per-person sharing with tiered permissions from free/busy-only up to full edit and delegation; `calendar_shares` with free-busy/reader tiers, server-side busy-only field redaction, audited grants (local layer — provider ACLs out of scope, see `docs/collaboration.md`) | P0 | scaffolded | web, desktop, mobile |
+| Find a Time guest availability grid (Google Calendar) | View guests' free/busy side by side when inviting and pick a slot that works for everyone; side-by-side member busy grid from the team availability endpoint | P0 | scaffolded | web, desktop, mobile |
+| Find Time inline team availability (Superhuman) | Teammates' availability inline while composing; share only slots that work for the group, or override deliberately; inline compose surface over the team availability API | P1 | scaffolded | web, desktop |
+| Team availability overview (Rise) | Every teammate's availability and time zone at a glance to coordinate without asking around; privacy-filtered opaque busy blocks, 35-day window cap | P1 | scaffolded | web, desktop |
+| Team scheduling links (Rise) | Scheduling links checking one or multiple team members' calendars so externals book the whole group at once; `booking_links.team_id` + `booking_link_members`, collective all-free mode (round-robin is a noted follow-up) | P1 | scaffolded | web |
 | Propose-new-time RSVP flow (Google Calendar) | Invitees respond Yes/No/Maybe with a note or counter-propose a time the organizer accepts in one click | P1 | planned | web, desktop, mobile |
 | Working location and hours (Google Calendar) | Broadcast where you work (office, home) and working hours so colleagues schedule appropriately | P1 | planned | web, desktop, mobile |
 | Out-of-office auto-decline (Google Calendar) | OOO blocks automatically decline incoming and existing meetings during the away period with a custom message | P2 | planned | web, desktop, mobile |
-| EA delegation mode (Vimcal) | Executive assistants manage multiple executives' calendars from one interface with calendar holds and scheduling analytics | P2 | planned | web, desktop |
+| EA delegation mode (Vimcal) | Executive assistants manage multiple executives' calendars from one interface with calendar holds and scheduling analytics; `delegations` grants + act-as request scoping with append-only `audit_entries` attribution | P2 | scaffolded | web, desktop |
 | **Speed** | | | | |
 | Sub-100ms speed with a shortcut for everything (Vimcal) | Every calendar action, from event creation to jumping between meetings, has a shortcut and responds in under 100ms | P0 | planned | web, desktop |
 | Keyboard-first navigation (Notion Calendar) | Single-key shortcuts (T today, J/K move, S share availability, ? shortcut list) drive the whole app | P1 | scaffolded | web, desktop |

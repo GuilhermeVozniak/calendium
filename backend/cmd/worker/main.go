@@ -132,8 +132,12 @@ func run(logger *slog.Logger) error {
 		OAuth:             oauth,
 		Push:              pushSender,
 		AiJobs:            aiJobsRepo,
-		Classifiers:       store.Classifiers(),
-		Clock:             service.SystemClock{},
+		// Activity records team replied_at indicators on delivered sends. The
+		// worker is a separate process from the API's in-process event bus, so
+		// no Bus here: SSE clients converge via their normal refetches.
+		Activity:    postgres.NewTeamThreadActivityRepo(store),
+		Classifiers: store.Classifiers(),
+		Clock:       service.SystemClock{},
 	})
 	calendarSvc := service.NewCalendarService(service.CalendarServiceDeps{
 		Subscriptions:     store.Subscriptions(),
@@ -159,6 +163,8 @@ func run(logger *slog.Logger) error {
 		Polls:             store.Polls(),
 		Proposals:         store.TimeProposals(),
 		Settings:          store.UserSettings(),
+		Teams:             postgres.NewTeamRepo(store),
+		Shares:            postgres.NewCalendarShareRepo(store),
 		Tx:                store,
 		CalendarProviders: calendarProviders,
 		MailProviders:     mailProviders,

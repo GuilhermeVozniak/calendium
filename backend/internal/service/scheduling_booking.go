@@ -128,6 +128,16 @@ func (s *SchedulingService) createBookingEvent(ctx context.Context, link domain.
 	if hold.Note != nil {
 		in.Description = *hold.Note
 	}
+	if link.TeamID != nil {
+		// Team link: invite every (still-)member. The event stays a SINGLE
+		// provider write on the creator's calendar via the creator's tokens —
+		// no cross-account event fan-out (scheduling_team.go).
+		memberEmails, err := s.teamAttendeeEmails(ctx, link)
+		if err != nil {
+			return domain.Event{}, err
+		}
+		in.AttendeeEmails = appendMissingEmails(in.AttendeeEmails, memberEmails)
+	}
 	ev := eventFromInput(in, cal.ID)
 	if provider, ok := s.cal[acct.Provider]; ok {
 		token, err := s.tokens.accessToken(ctx, acct)

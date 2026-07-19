@@ -22,10 +22,13 @@ type Deps struct {
 	Accounts  port.AccountService
 	Mail      port.MailService
 	Calendars port.CalendarService
-	Search    port.SearchService
-	AI        port.AIService
-	Devices   port.DeviceService
-	Prefs     port.PrefsService
+	// CalendarShares manages calendar sharing grants (M2.7 Task 12). When
+	// nil the share routes answer 501.
+	CalendarShares port.CalendarSharingService
+	Search         port.SearchService
+	AI             port.AIService
+	Devices        port.DeviceService
+	Prefs          port.PrefsService
 	// Scheduling covers booking links, bookings, meeting polls,
 	// propose-new-time, and guest free/busy (owner-authenticated surface;
 	// the public booking/poll routes live behind their own rate limiter).
@@ -37,6 +40,23 @@ type Deps struct {
 	// applies events through Billing; the port is part of Deps so the
 	// composition surface matches the adapter contract.
 	Payments port.Payments
+	// Events fans realtime collaboration events out to SSE subscribers
+	// (GET /v1/collab/stream). When nil the stream endpoint answers 501.
+	Events port.EventBus
+	// Teams manages teams, membership, and invitations (M2.7); it also
+	// resolves the caller's memberships so the SSE stream subscribes to the
+	// caller's team topics.
+	Teams port.TeamService
+	// Collab is the M2.7 collaboration surface (tokenized live thread
+	// shares + team thread-comments). When nil those routes answer 501.
+	Collab port.CollabService
+	// Delegations manages EA grants and authorizes X-Calendium-Act-As
+	// delegated requests (M2.7 Task 15). When nil the delegation routes
+	// answer 501 and any act-as request is rejected (fail closed).
+	Delegations port.DelegationService
+	// TeamActivity serves teammate read/reply indicators (M2.7 Task 10);
+	// when nil the team-activity route answers 501.
+	TeamActivity port.TeamActivityService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -78,9 +98,15 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("GET /v1/public/polls/{token}", s.rateLimited(publicRead, s.handlePublicPoll))
 	mux.HandleFunc("POST /v1/public/polls/{token}/votes", s.rateLimited(publicWrite, s.handlePublicPollVote))
 
+	// M2.7 shared conversations: tokenized share links. Registered OUTSIDE
+	// authed(...) (the Stripe-webhook precedent): external shares are fully
+	// public, team shares re-check an optional bearer inside the handler.
+	mux.HandleFunc("GET /v1/shared/threads/{token}", s.rateLimited(publicRead, s.handleGetSharedThread))
+	mux.HandleFunc("GET /v1/shared/threads/{token}/stream", s.rateLimited(publicRead, s.handleSharedThreadStream))
+
 	// Authenticated surface.
 	authed := func(pattern string, h http.HandlerFunc) {
-		mux.Handle(pattern, s.requireAuth(h))
+		mux.Handle(pattern, s.requireAuth(s.withActAs(h)))
 	}
 
 	authed("GET /v1/me", s.handleMe)
@@ -108,6 +134,7 @@ func New(deps Deps) http.Handler {
 	authed("POST /v1/mail/threads/{id}/reminder", s.handleThreadReminder)
 	authed("POST /v1/mail/threads/{id}/unsubscribe", s.handleUnsubscribeThread)
 	authed("GET /v1/mail/threads/{id}/instant-replies", s.handleInstantReplies)
+	authed("GET /v1/mail/threads/{id}/team-activity", s.handleTeamThreadActivity)
 	authed("POST /v1/mail/threads/zero", s.handleGetMeToZero)
 
 	authed("GET /v1/mail/labels", s.handleListLabels)
@@ -136,8 +163,19 @@ func New(deps Deps) http.Handler {
 	authed("POST /v1/mail/messages/{id}/reactions", s.handleReactToMessage)
 	authed("DELETE /v1/mail/messages/{id}/reactions/{emoji}", s.handleRemoveReaction)
 
+	// M2.7: shared conversations (owner-side share management).
+	authed("POST /v1/mail/threads/{id}/share", s.handleShareThread)
+	authed("GET /v1/mail/threads/{id}/shares", s.handleListThreadShares)
+	authed("DELETE /v1/mail/threads/{id}/shares/{shareId}", s.handleRevokeThreadShare)
+
 	authed("GET /v1/calendars", s.handleListCalendars)
 	authed("PATCH /v1/calendars/{id}", s.handleUpdateCalendar)
+
+	// M2.7 Task 12: shared calendars with granular permissions.
+	authed("GET /v1/calendars/{id}/shares", s.handleListCalendarShares)
+	authed("POST /v1/calendars/{id}/shares", s.handleShareCalendar)
+	authed("PATCH /v1/calendars/{id}/shares/{shareId}", s.handleUpdateCalendarShare)
+	authed("DELETE /v1/calendars/{id}/shares/{shareId}", s.handleRevokeCalendarShare)
 
 	authed("GET /v1/events", s.handleListEvents)
 	authed("POST /v1/events", s.handleCreateEvent)
@@ -199,6 +237,38 @@ func New(deps Deps) http.Handler {
 
 	authed("GET /v1/settings", s.handleGetSettings)
 	authed("PUT /v1/settings", s.handleUpdateSettings)
+
+	// M2.7: teams, membership, and email invitations.
+	authed("POST /v1/teams", s.handleCreateTeam)
+	authed("GET /v1/teams", s.handleListTeams)
+	authed("GET /v1/teams/{id}", s.handleGetTeam)
+	authed("PATCH /v1/teams/{id}", s.handleRenameTeam)
+	authed("DELETE /v1/teams/{id}", s.handleDeleteTeam)
+	authed("PATCH /v1/teams/{id}/members/{userId}", s.handleSetMemberRole)
+	authed("PUT /v1/teams/{id}/read-status-sharing", s.handleSetShareReadStatuses)
+	authed("DELETE /v1/teams/{id}/members/{userId}", s.handleRemoveMember)
+	authed("POST /v1/teams/{id}/invitations", s.handleInvite)
+	authed("GET /v1/teams/{id}/invitations", s.handleListInvitations)
+	authed("DELETE /v1/teams/{id}/invitations/{invitationId}", s.handleRevokeInvitation)
+	authed("POST /v1/invitations/accept", s.handleAcceptInvitation)
+
+	// M2.7 Task 13: team availability overview (per-member opaque busy
+	// blocks; membership + opt-in enforced in the calendar service).
+	authed("GET /v1/teams/{id}/availability", s.handleTeamAvailability)
+
+	// M2.7: realtime collaboration stream (SSE) and team thread-comments.
+	authed("GET /v1/collab/stream", s.handleCollabStream)
+	authed("GET /v1/mail/threads/{id}/comments", s.handleListComments)
+	authed("POST /v1/mail/threads/{id}/comments", s.handleAddComment)
+	authed("PATCH /v1/comments/{id}", s.handleUpdateComment)
+	authed("DELETE /v1/comments/{id}", s.handleDeleteComment)
+
+	// M2.7 Task 15: EA delegation grants + audit log.
+	authed("POST /v1/delegations", s.handleCreateDelegation)
+	authed("GET /v1/delegations", s.handleListDelegations)
+	authed("POST /v1/delegations/{id}/accept", s.handleAcceptDelegation)
+	authed("DELETE /v1/delegations/{id}", s.handleRevokeDelegation)
+	authed("GET /v1/delegations/audit", s.handleDelegationAudit)
 
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins)

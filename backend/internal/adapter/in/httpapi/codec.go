@@ -45,6 +45,8 @@ func statusFor(err error) (int, string) {
 		return http.StatusBadRequest, "validation_failed"
 	case errors.Is(err, domain.ErrUnauthorized):
 		return http.StatusUnauthorized, "unauthorized"
+	case errors.Is(err, domain.ErrForbidden):
+		return http.StatusForbidden, "forbidden"
 	case errors.Is(err, domain.ErrPaymentRequired):
 		return http.StatusPaymentRequired, "payment_required"
 	case errors.Is(err, domain.ErrNotFound):
@@ -75,6 +77,8 @@ func safeMessage(code string) string {
 		return "The request was invalid."
 	case "unauthorized":
 		return "Authentication is required or has failed."
+	case "forbidden":
+		return "You do not have permission to perform this action."
 	case "payment_required":
 		return "An active subscription is required."
 	case "not_found":

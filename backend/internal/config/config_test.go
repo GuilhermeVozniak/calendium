@@ -23,7 +23,7 @@ var configEnvKeys = []string{
 	"FCM_SERVICE_ACCOUNT_JSON", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY",
 	"OPENROUTER_API_KEY", "OPENROUTER_MODEL", "AI_DAILY_LIMIT",
 	"HTTP_ADDR", "PORT", "TOKEN_ENCRYPTION_KEY", "UNDO_SEND_SECONDS",
-	"INSTANCE_NAME", "PUBLIC_WEB_URL", "APP_URL", "PUBLIC_API_URL",
+	"INSTANCE_NAME", "PUBLIC_WEB_URL", "APP_URL", "PUBLIC_API_URL", "APP_BASE_URL",
 	"SELF_HOSTED", "OAUTH_ALLOWED_REDIRECT_URIS", "CORS_ALLOWED_ORIGINS",
 }
 
@@ -318,6 +318,29 @@ func TestFromEnv(t *testing.T) {
 			check: func(t *testing.T, c Config) {
 				assertEq(t, "PublicWebURL", c.Instance.PublicWebURL, "https://app.example.com")
 			},
+		},
+		// ---- Invite link base URL ----
+		{
+			name: "APP_BASE_URL wins over PUBLIC_WEB_URL",
+			env: withBase(map[string]string{
+				"APP_BASE_URL":   "https://invite.example.com",
+				"PUBLIC_WEB_URL": "https://web.example.com",
+			}),
+			check: func(t *testing.T, c Config) {
+				assertEq(t, "AppBaseURL", c.Instance.AppBaseURL, "https://invite.example.com")
+			},
+		},
+		{
+			name: "APP_BASE_URL falls back to PUBLIC_WEB_URL",
+			env:  withBase(map[string]string{"PUBLIC_WEB_URL": "https://web.example.com"}),
+			check: func(t *testing.T, c Config) {
+				assertEq(t, "AppBaseURL", c.Instance.AppBaseURL, "https://web.example.com")
+			},
+		},
+		{
+			name:  "AppBaseURL empty when neither set",
+			env:   withBase(nil),
+			check: func(t *testing.T, c Config) { assertEq(t, "AppBaseURL", c.Instance.AppBaseURL, "") },
 		},
 	}
 

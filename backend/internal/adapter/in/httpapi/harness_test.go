@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +31,9 @@ var (
 
 	_ port.SchedulingService = (*fakeSchedulingService)(nil)
 	_ port.SettingsService   = (*fakeSettingsService)(nil)
+
+	_ port.EventBus    = (*fakeEventBus)(nil)
+	_ port.TeamService = (*fakeTeamService)(nil)
 )
 
 const (
@@ -280,7 +284,8 @@ type fakeMailService struct {
 	unsendDraftRet domain.Draft
 	unsendDraftErr error
 
-	// snippets
+	// snippets (gotSnippetInput records the last create/update payload the
+	// handler forwarded — team snippets M2.7 assert sanitization + teamId)
 	listSnippetsRet []domain.Snippet
 	listSnippetsErr error
 	createSnippet   domain.Snippet
@@ -288,6 +293,7 @@ type fakeMailService struct {
 	updateSnippet   domain.Snippet
 	updateSnipErr   error
 	deleteSnipErr   error
+	gotSnippetInput port.SnippetInput
 
 	// ListLabels
 	listLabelsRet []domain.Label
@@ -421,9 +427,11 @@ func (f *fakeMailService) ListSnippets(ctx context.Context, userID string) ([]do
 	return f.listSnippetsRet, f.listSnippetsErr
 }
 func (f *fakeMailService) CreateSnippet(ctx context.Context, userID string, in port.SnippetInput) (domain.Snippet, error) {
+	f.gotSnippetInput = in
 	return f.createSnippet, f.createSnipErr
 }
 func (f *fakeMailService) UpdateSnippet(ctx context.Context, userID, snippetID string, in port.SnippetInput) (domain.Snippet, error) {
+	f.gotSnippetInput = in
 	return f.updateSnippet, f.updateSnipErr
 }
 func (f *fakeMailService) DeleteSnippet(ctx context.Context, userID, snippetID string) error {
@@ -509,6 +517,12 @@ type fakeCalendarService struct {
 	availCalls  int
 	gotAvailDur time.Duration
 
+	teamAvailRet     []port.MemberAvailability
+	teamAvailErr     error
+	gotTeamAvailID   string
+	gotTeamAvailFrom time.Time
+	gotTeamAvailTo   time.Time
+
 	// Event Template methods
 	listTemplatesRet   []domain.EventTemplate
 	listTemplatesErr   error
@@ -580,6 +594,11 @@ func (f *fakeCalendarService) Availability(ctx context.Context, userID string, f
 	f.availCalls++
 	f.gotEventsFrom, f.gotEventsTo, f.gotAvailDur = from, to, slotDuration
 	return f.availRet, f.availErr
+}
+func (f *fakeCalendarService) TeamAvailability(ctx context.Context, userID, teamID string, from, to time.Time) ([]port.MemberAvailability, error) {
+	f.gotTeamAvailID = teamID
+	f.gotTeamAvailFrom, f.gotTeamAvailTo = from, to
+	return f.teamAvailRet, f.teamAvailErr
 }
 
 // --- Event Template Methods
@@ -966,6 +985,216 @@ func (f *fakeSettingsService) Update(ctx context.Context, userID string, s domai
 	return f.updateRet, f.updateErr
 }
 
+// --- EventBus ----------------------------------------------------------------
+
+// fakeEventBus is a real (topic-filtering, non-blocking) in-memory bus with
+// capture: subscribed topic sets and the live subscriber count, so stream
+// tests can assert scoping and context-driven teardown.
+type fakeEventBus struct {
+	mu        sync.Mutex
+	subs      map[*fakeBusSub]struct{}
+	gotTopics [][]string
+}
+
+type fakeBusSub struct {
+	topics map[string]struct{}
+	ch     chan port.CollabEvent
+}
+
+func newFakeEventBus() *fakeEventBus {
+	return &fakeEventBus{subs: map[*fakeBusSub]struct{}{}}
+}
+
+func (f *fakeEventBus) Publish(ev port.CollabEvent) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for s := range f.subs {
+		if _, ok := s.topics[ev.Topic]; !ok {
+			continue
+		}
+		select {
+		case s.ch <- ev:
+		default:
+		}
+	}
+}
+
+func (f *fakeEventBus) Subscribe(topics []string) (<-chan port.CollabEvent, func()) {
+	s := &fakeBusSub{topics: map[string]struct{}{}, ch: make(chan port.CollabEvent, 16)}
+	for _, t := range topics {
+		s.topics[t] = struct{}{}
+	}
+	f.mu.Lock()
+	f.subs[s] = struct{}{}
+	f.gotTopics = append(f.gotTopics, topics)
+	f.mu.Unlock()
+	return s.ch, func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if _, ok := f.subs[s]; ok {
+			delete(f.subs, s)
+			close(s.ch)
+		}
+	}
+}
+
+func (f *fakeEventBus) activeSubscribers() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.subs)
+}
+
+func (f *fakeEventBus) subscribedTopics() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][]string, len(f.gotTopics))
+	copy(out, f.gotTopics)
+	return out
+}
+
+// --- TeamService -------------------------------------------------------------
+
+// fakeTeamService doubles port.TeamService. The List fields are guarded by a
+// mutex because the SSE stream tests hit them from the server goroutine.
+type fakeTeamService struct {
+	mu        sync.Mutex
+	teams     []domain.Team
+	err       error
+	gotUserID string
+
+	createRet domain.Team
+	createErr error
+	gotCreate port.TeamInput
+
+	getTeamRet    domain.Team
+	getMembersRet []domain.TeamMember
+	getErr        error
+	gotGetTeamID  string
+
+	renameRet      domain.Team
+	renameErr      error
+	gotRenameID    string
+	gotRenameValue string
+
+	deleteErr   error
+	gotDeleteID string
+
+	setRoleRet      domain.TeamMember
+	setRoleErr      error
+	gotRoleTeamID   string
+	gotRoleMemberID string
+	gotRole         domain.TeamRole
+
+	shareRet       domain.TeamMember
+	shareErr       error
+	gotShareTeamID string
+	gotShare       bool
+
+	removeErr       error
+	gotRemoveTeamID string
+	gotRemoveUserID string
+
+	inviteRet       domain.TeamInvitation
+	inviteErr       error
+	gotInviteTeamID string
+	gotInviteEmail  string
+	gotInviteRole   domain.TeamRole
+
+	listInvsRet       []domain.TeamInvitation
+	listInvsErr       error
+	gotListInvsTeamID string
+
+	revokeErr       error
+	gotRevokeTeamID string
+	gotRevokeInvID  string
+
+	acceptRet       domain.Team
+	acceptErr       error
+	gotAcceptUserID string
+	gotAcceptToken  string
+}
+
+func (f *fakeTeamService) Create(ctx context.Context, userID string, in port.TeamInput) (domain.Team, error) {
+	f.gotUserID = userID
+	f.gotCreate = in
+	return f.createRet, f.createErr
+}
+
+func (f *fakeTeamService) List(ctx context.Context, userID string) ([]domain.Team, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gotUserID = userID
+	return f.teams, f.err
+}
+
+func (f *fakeTeamService) Get(ctx context.Context, userID, teamID string) (domain.Team, []domain.TeamMember, error) {
+	f.gotUserID, f.gotGetTeamID = userID, teamID
+	return f.getTeamRet, f.getMembersRet, f.getErr
+}
+
+func (f *fakeTeamService) Rename(ctx context.Context, userID, teamID, name string) (domain.Team, error) {
+	f.gotUserID, f.gotRenameID, f.gotRenameValue = userID, teamID, name
+	return f.renameRet, f.renameErr
+}
+
+func (f *fakeTeamService) Delete(ctx context.Context, userID, teamID string) error {
+	f.gotUserID, f.gotDeleteID = userID, teamID
+	return f.deleteErr
+}
+
+func (f *fakeTeamService) SetMemberRole(ctx context.Context, userID, teamID, memberUserID string, role domain.TeamRole) (domain.TeamMember, error) {
+	f.gotUserID, f.gotRoleTeamID, f.gotRoleMemberID, f.gotRole = userID, teamID, memberUserID, role
+	return f.setRoleRet, f.setRoleErr
+}
+
+func (f *fakeTeamService) SetShareReadStatuses(ctx context.Context, userID, teamID string, share bool) (domain.TeamMember, error) {
+	f.gotUserID, f.gotShareTeamID, f.gotShare = userID, teamID, share
+	return f.shareRet, f.shareErr
+}
+
+func (f *fakeTeamService) RemoveMember(ctx context.Context, userID, teamID, memberUserID string) error {
+	f.gotUserID, f.gotRemoveTeamID, f.gotRemoveUserID = userID, teamID, memberUserID
+	return f.removeErr
+}
+
+func (f *fakeTeamService) Invite(ctx context.Context, userID, teamID, email string, role domain.TeamRole) (domain.TeamInvitation, error) {
+	f.gotUserID, f.gotInviteTeamID, f.gotInviteEmail, f.gotInviteRole = userID, teamID, email, role
+	return f.inviteRet, f.inviteErr
+}
+
+func (f *fakeTeamService) ListInvitations(ctx context.Context, userID, teamID string) ([]domain.TeamInvitation, error) {
+	f.gotUserID, f.gotListInvsTeamID = userID, teamID
+	return f.listInvsRet, f.listInvsErr
+}
+
+func (f *fakeTeamService) RevokeInvitation(ctx context.Context, userID, teamID, invitationID string) error {
+	f.gotUserID, f.gotRevokeTeamID, f.gotRevokeInvID = userID, teamID, invitationID
+	return f.revokeErr
+}
+
+func (f *fakeTeamService) AcceptInvitation(ctx context.Context, userID, token string) (domain.Team, error) {
+	f.gotAcceptUserID, f.gotAcceptToken = userID, token
+	return f.acceptRet, f.acceptErr
+}
+
+func (f *fakeTeamService) setTeams(teams []domain.Team) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.teams = teams
+}
+
+func (f *fakeTeamService) setErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
+}
+
+func (f *fakeTeamService) listedUserID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gotUserID
+}
+
 // --- harness -----------------------------------------------------------------
 
 type harness struct {
@@ -984,6 +1213,8 @@ type harness struct {
 	sched      *fakeSchedulingService
 	scheduling *fakeSchedulingService // alias of sched (public-surface tests)
 	settings   *fakeSettingsService
+	events     *fakeEventBus
+	teams      *fakeTeamService
 }
 
 // newHarness wires every double into Deps with a discard logger and one
@@ -1008,6 +1239,8 @@ func newHarness(t *testing.T) *harness {
 		prefs:     &fakePrefsService{},
 		sched:     &fakeSchedulingService{},
 		settings:  &fakeSettingsService{},
+		events:    newFakeEventBus(),
+		teams:     &fakeTeamService{},
 	}
 	h.scheduling = h.sched
 	h.deps = Deps{
@@ -1024,6 +1257,8 @@ func newHarness(t *testing.T) *harness {
 		Prefs:      h.prefs,
 		Scheduling: h.sched,
 		Settings:   h.settings,
+		Events:     h.events,
+		Teams:      h.teams,
 	}
 	return h
 }

@@ -9,6 +9,7 @@ import { BellRing, Check, ChevronDown, Clock, Loader2, Send, Sparkles, X } from 
 import { toast } from 'sonner';
 
 import { ChipsRow, parseAddress } from '@/components/app/chips-row';
+import { FindTimeDialog } from '@/components/app/find-time';
 import { TimePickerDialog } from '@/components/app/snooze-menu';
 import { AiEditMenu } from '@/components/compose/ai-edit-menu';
 import { AiDraftBadge } from '@/components/mail/ai-draft-badge';
@@ -188,6 +189,7 @@ function ComposeForm({
   const [scheduledAt, setScheduledAt] = React.useState<Date | null>(null);
   const [remindAt, setRemindAt] = React.useState<{ label: string; when: Date } | null>(null);
   const [scheduleDialogOpen, setScheduleDialogOpen] = React.useState(false);
+  const [findTimeOpen, setFindTimeOpen] = React.useState(false);
   // Tracks the persisted draft id across the session: seeded from a reopened
   // draft, or lazily created by ensureDraftId() the first time AI edit needs
   // one. Once set, send/save use it (PUT) instead of creating a duplicate.
@@ -528,8 +530,25 @@ function ComposeForm({
 
   const remindChoices = reminderOptions();
 
+  // Find Time (M2.7 Task 13): ⌘⇧A opens the inline team-aware slot picker;
+  // the chosen times are inserted at the cursor as plain text.
+  function insertFindTimeText(text: string) {
+    const textarea = bodyRef.current;
+    const cursor = textarea?.selectionStart ?? body.length;
+    setBody(`${body.slice(0, cursor)}${text}${body.slice(cursor)}`);
+  }
+
   return (
-    <div className="flex flex-col">
+    // biome-ignore lint/a11y/noStaticElementInteractions: ⌘⇧A is a shortcut listener on the compose container, not an interactive control.
+    <div
+      className="flex flex-col"
+      onKeyDown={(event) => {
+        if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'a') {
+          event.preventDefault();
+          setFindTimeOpen(true);
+        }
+      }}
+    >
       {/* Header */}
       <div className="flex items-center justify-between border-b px-4 py-2.5">
         <span className="flex items-center gap-2 text-sm font-medium">
@@ -651,7 +670,14 @@ function ComposeForm({
               onMouseEnter={() => setSnippetIndex(index)}
               onClick={() => insertSnippet(snippet)}
             >
-              <span className="truncate">{snippet.name}</span>
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className="truncate">{snippet.name}</span>
+                {snippet.teamId && (
+                  <Badge variant="secondary" className="h-4 shrink-0 px-1 text-[10px]">
+                    Team
+                  </Badge>
+                )}
+              </span>
               {snippet.shortcut && <Kbd size="sm">;{snippet.shortcut}</Kbd>}
             </button>
           ))}
@@ -821,6 +847,11 @@ function ComposeForm({
         description="The message will be sent automatically."
         options={sendLaterOptions()}
         onPick={(when) => setScheduledAt(when)}
+      />
+      <FindTimeDialog
+        open={findTimeOpen}
+        onOpenChange={setFindTimeOpen}
+        onInsert={insertFindTimeText}
       />
     </div>
   );

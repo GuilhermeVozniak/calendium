@@ -82,6 +82,10 @@ type SnippetInput struct {
 	Name     string  `json:"name"`
 	Shortcut *string `json:"shortcut"`
 	BodyHTML string  `json:"bodyHtml"`
+	// TeamID scopes a NEW snippet to a team the caller belongs to (any
+	// role). Create only — a snippet's scope is immutable afterwards, so
+	// update ignores it. Nil creates a personal snippet.
+	TeamID *string `json:"teamId"`
 }
 
 // BulkActionResult reports a bulk mutation: mutated threads plus the ids
@@ -187,6 +191,17 @@ type CalendarPatch struct {
 	Color     *string `json:"color"`
 }
 
+// MemberAvailability is one team member's row in the GET
+// /v1/teams/{id}/availability response. Busy blocks are opaque start/end
+// intervals (free_busy-level: no titles, no details); Shared reports
+// whether the member has opted in by sharing at least one calendar with
+// the team (Task 12 grants are the opt-in; there is no other mechanism).
+type MemberAvailability struct {
+	UserID string                    `json:"userId"`
+	Busy   []domain.AvailabilitySlot `json:"busy"`
+	Shared bool                      `json:"shared"`
+}
+
 // CalendarService covers calendars, events (provider write-through), rsvp,
 // availability, event templates, and calendar sets.
 type CalendarService interface {
@@ -200,6 +215,13 @@ type CalendarService interface {
 	// Availability returns free windows of at least slotDuration between
 	// from and to, computed from the user's visible calendars.
 	Availability(ctx context.Context, userID string, from, to time.Time, slotDuration time.Duration) ([]domain.AvailabilitySlot, error)
+	// TeamAvailability returns one row per team member (the caller must be
+	// a member; non-members get ErrNotFound, never an oracle). A member is
+	// Shared=true with opaque busy blocks only when they granted >=
+	// free_busy on >= 1 calendar to that team; everyone else is
+	// Shared=false with an empty list (no data leak). `to` must be after
+	// `from` and the span at most 35 days (ErrValidation otherwise).
+	TeamAvailability(ctx context.Context, userID, teamID string, from, to time.Time) ([]MemberAvailability, error)
 
 	// Event template methods
 	ListEventTemplates(ctx context.Context, userID string) ([]domain.EventTemplate, error)
@@ -308,6 +330,13 @@ type BookingLinkInput struct {
 	RespectWorkingHours bool                        `json:"respectWorkingHours"`
 	AddConferencing     bool                        `json:"addConferencing"`
 	Active              bool                        `json:"active"`
+	// TeamID scopes the link to a team (M2.7 Task 14, collective
+	// availability); nil/empty = personal link.
+	TeamID *string `json:"teamId,omitempty"`
+	// MemberUserIDs lists team members to include; requires TeamID. Each must
+	// be a member of the team and have shared free/busy with it (or be the
+	// creator, who is implicit).
+	MemberUserIDs []string `json:"memberUserIds,omitempty"`
 }
 
 // PublicBookingPage is the public GET /v1/public/booking/{slug} document —
@@ -428,4 +457,99 @@ type SchedulingService interface {
 type SettingsService interface {
 	Get(ctx context.Context, userID string) (domain.UserSettings, error)
 	Update(ctx context.Context, userID string, s domain.UserSettings) (domain.UserSettings, error)
+}
+
+// TeamInput is the create/rename team payload.
+type TeamInput struct {
+	Name string `json:"name"`
+}
+
+// TeamService manages teams, membership, and email invitations. All
+// role/authorization checks live here (service layer), never in adapters:
+// non-members get ErrNotFound, under-privileged members get ErrForbidden.
+type TeamService interface {
+	Create(ctx context.Context, userID string, in TeamInput) (domain.Team, error)
+	List(ctx context.Context, userID string) ([]domain.Team, error)
+	// Get returns the team and its members; callers must be members.
+	Get(ctx context.Context, userID, teamID string) (domain.Team, []domain.TeamMember, error)
+	Rename(ctx context.Context, userID, teamID, name string) (domain.Team, error)
+	// Delete requires the owner role and removes the team and all
+	// memberships, shares, and comments (DB cascades).
+	Delete(ctx context.Context, userID, teamID string) error
+	// SetMemberRole requires admin+; only owners may grant/revoke owner.
+	// Demoting or removing the last owner returns ErrConflict.
+	SetMemberRole(ctx context.Context, userID, teamID, memberUserID string, role domain.TeamRole) (domain.TeamMember, error)
+	// SetShareReadStatuses toggles the CALLER's own read-status opt-in.
+	SetShareReadStatuses(ctx context.Context, userID, teamID string, share bool) (domain.TeamMember, error)
+	// RemoveMember: admins remove members, owners remove anyone; any member
+	// may remove themselves (leave), except the last owner (ErrConflict).
+	RemoveMember(ctx context.Context, userID, teamID, memberUserID string) error
+	// Invite (admin+) creates a pending invitation and emails the invite
+	// link via the inviter's own connected account send pipeline.
+	Invite(ctx context.Context, userID, teamID, email string, role domain.TeamRole) (domain.TeamInvitation, error)
+	ListInvitations(ctx context.Context, userID, teamID string) ([]domain.TeamInvitation, error)
+	RevokeInvitation(ctx context.Context, userID, teamID, invitationID string) error
+	// AcceptInvitation redeems a raw invite token for the AUTHENTICATED
+	// user. The token is hashed and looked up; expired/revoked/used tokens
+	// return ErrNotFound (no oracle).
+	AcceptInvitation(ctx context.Context, userID, token string) (domain.Team, error)
+}
+
+// --- Collaboration on threads (M2.7 Tasks 7+9) -------------------------------
+
+// ShareThreadInput creates a live share link for a thread.
+type ShareThreadInput struct {
+	Audience domain.ShareAudience `json:"audience"` // "team" | "external"
+	TeamID   string               `json:"teamId,omitempty"`
+	// ExpiresAt optionally bounds the link's life; nil = until revoked.
+	ExpiresAt *time.Time `json:"expiresAt"`
+}
+
+// SharedThreadView is the read-only projection served to share viewers:
+// thread metadata + messages, with recipients' Bcc stripped and no
+// labels/split/snooze state (owner-private triage data never leaves).
+type SharedThreadView struct {
+	Subject   string               `json:"subject"`
+	Audience  domain.ShareAudience `json:"audience"`
+	Messages  []domain.Message     `json:"messages"`
+	UpdatedAt time.Time            `json:"updatedAt"`
+}
+
+// CommentInput is the add-comment payload.
+type CommentInput struct {
+	TeamID string `json:"teamId"`
+	Body   string `json:"body"`
+}
+
+// CollabService is the team-collaboration surface on mail threads (M2.7):
+// tokenized live shares plus comments with @mentions. All authorization
+// lives here: sharing requires thread ownership + entitlement, team-audience
+// shares require the sharer's membership of TeamID, and viewers of
+// revoked/expired/unknown tokens uniformly get ErrNotFound (no oracle).
+// Commenting requires (a) team membership and (b) the thread being visible
+// to that team — the caller owns it, or an unrevoked team-audience share
+// exists (comments piggyback on the explicit share; they never expose a
+// thread by themselves). Non-members and invisible threads are ErrNotFound
+// (never an oracle); an under-privileged known member is ErrForbidden.
+type CollabService interface {
+	// ShareThread creates a live share link; the raw token is returned
+	// exactly once — only its hash is stored.
+	ShareThread(ctx context.Context, userID, threadID string, in ShareThreadInput) (share domain.ThreadShare, rawToken string, err error)
+	ListThreadShares(ctx context.Context, userID, threadID string) ([]domain.ThreadShare, error)
+	RevokeThreadShare(ctx context.Context, userID, threadID, shareID string) error
+	// GetSharedThread serves a share view. viewerUserID is nil for
+	// unauthenticated (external) viewers; team-audience shares require a
+	// viewer who is a member of the share's team.
+	GetSharedThread(ctx context.Context, rawToken string, viewerUserID *string) (SharedThreadView, error)
+	// ResolveShare authorizes a raw share token with GetSharedThread's exact
+	// fail-closed semantics and returns just the share id — the SSE stream
+	// endpoint's subscription topic ("share:<id>") needs no projection.
+	ResolveShare(ctx context.Context, rawToken string, viewerUserID *string) (shareID string, err error)
+
+	ListComments(ctx context.Context, userID, threadID, teamID string) ([]domain.Comment, error)
+	AddComment(ctx context.Context, userID, threadID string, in CommentInput) (domain.Comment, error)
+	// UpdateComment: author only (team admins may delete, not edit).
+	UpdateComment(ctx context.Context, userID, commentID, body string) (domain.Comment, error)
+	// DeleteComment: the author, or a team admin+ (soft delete).
+	DeleteComment(ctx context.Context, userID, commentID string) error
 }

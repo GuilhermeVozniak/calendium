@@ -7,6 +7,10 @@ import type {
   AiEditAction,
   AiEventProposal,
   AttachmentHit,
+  AuditEntry,
+  Delegation,
+  DelegationList,
+  DelegationScope,
   AvailabilitySlot,
   Booking,
   BookingLink,
@@ -16,9 +20,14 @@ import type {
   BulkActionResult,
   BusyInterval,
   Calendar,
+  CalendarPermission,
   CalendarSet,
   CalendarSetInput,
+  CalendarShare,
+  CalendarShareInput,
   ClassifierInput,
+  Comment,
+  CommentInput,
   ConnectedAccount,
   ContactSummary,
   DevicePlatform,
@@ -32,6 +41,7 @@ import type {
   InstanceInfo,
   Label,
   MeetingPoll,
+  MemberAvailability,
   Message,
   NotificationDevice,
   OpenEvent,
@@ -44,10 +54,19 @@ import type {
   ReactionResult,
   RsvpStatus,
   SendSuggestion,
+  SharedThreadView,
+  ShareThreadInput,
   Snippet,
   Subscription,
+  Team,
+  TeamInvitation,
+  TeamMember,
+  TeamRole,
+  TeamThreadActivity,
   Thread,
   ThreadAction,
+  ThreadShare,
+  ThreadShareCreated,
   TimeProposal,
   TimeProposalInput,
   UnsubscribeResult,
@@ -218,6 +237,10 @@ export class ApiClient {
   markThreadOpened(threadId: string) {
     return this.request<void>('POST', `/v1/mail/threads/${threadId}/open`);
   }
+  /** Teammate read/reply indicators for the thread's conversation (M2.7; opted-in members only). */
+  teamThreadActivity(threadId: string) {
+    return this.request<TeamThreadActivity[]>('GET', `/v1/mail/threads/${threadId}/team-activity`);
+  }
   snoozeThread(threadId: string, until: string) {
     return this.request<Thread>('POST', `/v1/mail/threads/${threadId}/snooze`, { until });
   }
@@ -259,7 +282,8 @@ export class ApiClient {
   listSnippets() {
     return this.request<Snippet[]>('GET', '/v1/mail/snippets');
   }
-  createSnippet(snippet: Pick<Snippet, 'name' | 'shortcut' | 'bodyHtml'>) {
+  /** teamId scopes the new snippet to a team (create only — scope is immutable afterwards). */
+  createSnippet(snippet: Pick<Snippet, 'name' | 'shortcut' | 'bodyHtml' | 'teamId'>) {
     return this.request<Snippet>('POST', '/v1/mail/snippets', snippet);
   }
   updateSnippet(snippetId: string, patch: Pick<Snippet, 'name' | 'shortcut' | 'bodyHtml'>) {
@@ -537,6 +561,253 @@ export class ApiClient {
   updateSettings(s: UserSettings) {
     return this.request<UserSettings>('PUT', '/v1/settings', s);
   }
+
+  // --- Teams (M2.7) ---
+  // Authorization is decided server-side: a team the caller is not a member
+  // of 404s (existence is never leaked), and role-gated calls 403.
+  listTeams() {
+    return this.request<Team[]>('GET', '/v1/teams');
+  }
+  createTeam(name: string) {
+    return this.request<Team>('POST', '/v1/teams', { name });
+  }
+  /** The team plus its member list; caller must be a member. */
+  getTeam(teamId: string) {
+    return this.request<{ team: Team; members: TeamMember[] }>(
+      'GET',
+      `/v1/teams/${encodeURIComponent(teamId)}`
+    );
+  }
+  renameTeam(teamId: string, name: string) {
+    return this.request<Team>('PATCH', `/v1/teams/${encodeURIComponent(teamId)}`, { name });
+  }
+  /** Owner-only; removes the team and all memberships, shares, and comments. */
+  deleteTeam(teamId: string) {
+    return this.request<void>('DELETE', `/v1/teams/${encodeURIComponent(teamId)}`);
+  }
+  /** Admin+; only owners may grant or revoke the owner role. Demoting the last owner 409s. */
+  setMemberRole(teamId: string, userId: string, role: TeamRole) {
+    return this.request<TeamMember>(
+      'PATCH',
+      `/v1/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(userId)}`,
+      { role }
+    );
+  }
+  /** Toggles the CALLER's own read-status sharing opt-in for this team. */
+  setShareReadStatuses(teamId: string, share: boolean) {
+    return this.request<TeamMember>(
+      'PUT',
+      `/v1/teams/${encodeURIComponent(teamId)}/read-status-sharing`,
+      { share }
+    );
+  }
+  /** Admins remove members, owners remove anyone; pass your own userId to leave. */
+  removeMember(teamId: string, userId: string) {
+    return this.request<void>(
+      'DELETE',
+      `/v1/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(userId)}`
+    );
+  }
+  /** Admin+; emails an invite link through the inviter's own connected account. */
+  invite(teamId: string, email: string, role: TeamRole) {
+    return this.request<TeamInvitation>(
+      'POST',
+      `/v1/teams/${encodeURIComponent(teamId)}/invitations`,
+      { email, role }
+    );
+  }
+  listInvitations(teamId: string) {
+    return this.request<TeamInvitation[]>(
+      'GET',
+      `/v1/teams/${encodeURIComponent(teamId)}/invitations`
+    );
+  }
+  revokeInvitation(teamId: string, invitationId: string) {
+    return this.request<void>(
+      'DELETE',
+      `/v1/teams/${encodeURIComponent(teamId)}/invitations/${encodeURIComponent(invitationId)}`
+    );
+  }
+  /**
+   * Redeems the raw token from an emailed invite link for the signed-in
+   * user, returning the joined team. Unknown/expired/revoked tokens throw
+   * ApiRequestError(404, 'not_found') — they are indistinguishable.
+   */
+  acceptInvitation(token: string) {
+    return this.request<Team>('POST', '/v1/invitations/accept', { token });
+  }
+
+  // --- Shared conversations & team comments (M2.7) ---
+  /**
+   * Creates a live share link for a thread. The response carries the raw
+   * link token exactly once — show it to the user immediately; it is never
+   * returned again (and must never be logged or sent to analytics).
+   */
+  shareThread(threadId: string, input: ShareThreadInput) {
+    return this.request<ThreadShareCreated>(
+      'POST',
+      `/v1/mail/threads/${encodeURIComponent(threadId)}/share`,
+      input
+    );
+  }
+  listThreadShares(threadId: string) {
+    return this.request<ThreadShare[]>(
+      'GET',
+      `/v1/mail/threads/${encodeURIComponent(threadId)}/shares`
+    );
+  }
+  /** Revokes a share link; viewers holding it see a uniform 404 afterwards. */
+  revokeThreadShare(threadId: string, shareId: string) {
+    return this.request<void>(
+      'DELETE',
+      `/v1/mail/threads/${encodeURIComponent(threadId)}/shares/${encodeURIComponent(shareId)}`
+    );
+  }
+  /**
+   * The read-only share view for a raw link token. Works signed out (external
+   * shares); when a session exists the bearer identifies the viewer for
+   * team-audience membership checks. Unknown/revoked/expired tokens throw
+   * ApiRequestError(404, 'not_found') — indistinguishable by design.
+   */
+  getSharedThread(token: string) {
+    return this.request<SharedThreadView>(
+      'GET',
+      `/v1/shared/threads/${encodeURIComponent(token)}`
+    );
+  }
+  /** Team comments on a thread; caller must be a member of teamId. */
+  listComments(threadId: string, teamId: string) {
+    const qs = new URLSearchParams({ teamId });
+    return this.request<{ comments: Comment[] }>(
+      'GET',
+      `/v1/mail/threads/${encodeURIComponent(threadId)}/comments?${qs}`
+    );
+  }
+  addComment(threadId: string, input: CommentInput) {
+    return this.request<Comment>(
+      'POST',
+      `/v1/mail/threads/${encodeURIComponent(threadId)}/comments`,
+      input
+    );
+  }
+  /** Author only (team admins may delete, not edit). */
+  updateComment(commentId: string, body: string) {
+    return this.request<Comment>('PATCH', `/v1/comments/${encodeURIComponent(commentId)}`, {
+      body,
+    });
+  }
+  /** The author, or a team admin+ (soft delete). */
+  deleteComment(commentId: string) {
+    return this.request<void>('DELETE', `/v1/comments/${encodeURIComponent(commentId)}`);
+  }
+
+  // --- EA delegation (M2.7 Task 15) ---
+  // A principal grants an assistant scoped access to their mail/calendar; the
+  // assistant then acts as the principal via `actAs`. Authorization is decided
+  // server-side on EVERY request (fail closed — revocation is immediate), and
+  // every delegated mutation is audit-logged with the real actor.
+
+  /** Grants `assistantEmail` (an existing user) the given scopes; starts pending. */
+  createDelegation(assistantEmail: string, scopes: DelegationScope[]) {
+    return this.request<Delegation>('POST', '/v1/delegations', { assistantEmail, scopes });
+  }
+  listDelegations() {
+    return this.request<DelegationList>('GET', '/v1/delegations');
+  }
+  /** Assistant accepts a pending grant (pending → active). */
+  acceptDelegation(delegationId: string) {
+    return this.request<Delegation>(
+      'POST',
+      `/v1/delegations/${encodeURIComponent(delegationId)}/accept`
+    );
+  }
+  /** Either party revokes; the grant stops authorizing immediately. */
+  revokeDelegation(delegationId: string) {
+    return this.request<void>('DELETE', `/v1/delegations/${encodeURIComponent(delegationId)}`);
+  }
+  /** The caller's delegated-mutation audit log (principal-only server-side), newest first. */
+  listDelegationAudit(limit?: number) {
+    const qs = limit !== undefined ? `?limit=${limit}` : '';
+    return this.request<{ entries: AuditEntry[] }>('GET', `/v1/delegations/audit${qs}`);
+  }
+
+  /**
+   * Returns a NEW client that acts as `principalUserId`: every request to a
+   * delegable route (mail, search, events, calendars, availability — mirroring
+   * the backend's delegationScopeForRoute map) carries the X-Calendium-Act-As
+   * header. Non-delegable routes (teams, billing, accounts, devices,
+   * delegations, …) are sent WITHOUT the header — the backend rejects act-as
+   * on them outright. The original client is untouched and never sends the
+   * header, so acting is always an explicit, per-instance choice.
+   */
+  actAs(principalUserId: string): ApiClient {
+    const innerFetch = this.opts.fetch;
+    const wrapped = (async (input: string | URL | Request, init?: RequestInit) => {
+      const doFetch = innerFetch ?? fetch;
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      let pathname: string;
+      try {
+        pathname = new URL(url, 'http://relative.invalid').pathname;
+      } catch {
+        pathname = url;
+      }
+      if (!isDelegablePath(pathname)) return doFetch(input as string, init);
+      return doFetch(input as string, {
+        ...init,
+        headers: {
+          ...((init?.headers ?? {}) as Record<string, string>),
+          [ACT_AS_HEADER]: principalUserId,
+        },
+      });
+    }) as typeof fetch;
+    return new ApiClient({ ...this.opts, fetch: wrapped });
+  }
+
+  // --- Shared calendars & team availability (M2.7 Tasks 12–13) ---
+  // Share management is owner-only server-side (non-owners 404 — existence
+  // is never leaked). Shared-calendar reads themselves arrive through the
+  // existing listCalendars/listEvents (annotated with `sharedPermission` /
+  // redacted `freeBusyOnly` events); there is no separate listing endpoint.
+  listCalendarShares(calendarId: string) {
+    return this.request<CalendarShare[]>(
+      'GET',
+      `/v1/calendars/${encodeURIComponent(calendarId)}/shares`
+    );
+  }
+  /** Grants a user or a whole team access to one of the caller's calendars. */
+  shareCalendar(calendarId: string, input: CalendarShareInput) {
+    return this.request<CalendarShare>(
+      'POST',
+      `/v1/calendars/${encodeURIComponent(calendarId)}/shares`,
+      input
+    );
+  }
+  updateCalendarShare(calendarId: string, shareId: string, permission: CalendarPermission) {
+    return this.request<CalendarShare>(
+      'PATCH',
+      `/v1/calendars/${encodeURIComponent(calendarId)}/shares/${encodeURIComponent(shareId)}`,
+      { permission }
+    );
+  }
+  revokeCalendarShare(calendarId: string, shareId: string) {
+    return this.request<void>(
+      'DELETE',
+      `/v1/calendars/${encodeURIComponent(calendarId)}/shares/${encodeURIComponent(shareId)}`
+    );
+  }
+  /**
+   * Per-member opaque busy blocks for a team in [from, to) (RFC 3339, span
+   * ≤ 35 days). Caller must be a member (404 otherwise); members who have
+   * not shared a calendar with the team come back `shared: false` with an
+   * empty list — busy blocks never carry titles or details.
+   */
+  teamAvailability(teamId: string, from: string, to: string) {
+    const qs = new URLSearchParams({ from, to });
+    return this.request<MemberAvailability[]>(
+      'GET',
+      `/v1/teams/${encodeURIComponent(teamId)}/availability?${qs}`
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -623,4 +894,49 @@ export function votePublicPoll(
   fetchImpl?: typeof fetch
 ): Promise<PublicPoll> {
   return publicRequest(baseUrl, 'POST', `/v1/public/polls/${token}/votes`, ballot, fetchImpl);
+}
+
+// ---------------------------------------------------------------------------
+// EA delegation (M2.7 Task 15) — act-as plumbing shared by ApiClient#actAs and
+// app-side wrappers.
+// ---------------------------------------------------------------------------
+
+/**
+ * Request header carrying the principal user id an assistant acts for. MUST
+ * match `actAsHeader` in backend/internal/adapter/in/httpapi/delegation.go.
+ */
+export const ACT_AS_HEADER = 'X-Calendium-Act-As';
+
+/**
+ * Whether a request path may carry the act-as header — the client-side mirror
+ * of the backend's delegationScopeForRoute route groups. Anything else
+ * (teams, billing, accounts, devices, delegations, …) rejects act-as outright
+ * server-side, so the header must never be attached there.
+ *
+ * Team/collaboration sub-surfaces that sit under the delegable mail/calendar
+ * prefixes (thread shares, comments, team activity, snippets, calendar-share
+ * management) are denied too — the backend 403s them under act-as (an
+ * assistant must never mint share tokens or self-grant shares on the
+ * principal's behalf), so the header is never attached there either.
+ */
+export function isDelegablePath(pathname: string): boolean {
+  const path = pathname.split('?')[0];
+  if (
+    path === '/v1/mail/snippets' ||
+    path.startsWith('/v1/mail/snippets/') ||
+    /^\/v1\/mail\/threads\/[^/]+\/(share$|shares($|\/)|comments$|team-activity$)/.test(path) ||
+    /^\/v1\/calendars\/[^/]+\/shares($|\/)/.test(path)
+  ) {
+    return false;
+  }
+  return (
+    path === '/v1/search' ||
+    path === '/v1/mail' ||
+    path.startsWith('/v1/mail/') ||
+    path === '/v1/events' ||
+    path.startsWith('/v1/events/') ||
+    path === '/v1/calendars' ||
+    path.startsWith('/v1/calendars/') ||
+    path === '/v1/availability'
+  );
 }

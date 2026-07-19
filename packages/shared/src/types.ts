@@ -138,6 +138,20 @@ export interface ReactionResult {
   draftId: string | null;
 }
 
+/**
+ * One teammate's read/reply state on a shared conversation (M2.7 team read
+ * statuses). Served only for members who opted in via shareReadStatuses;
+ * conversations are correlated across accounts by the RFC 5322 Message-ID of
+ * the thread's earliest message.
+ */
+export interface TeamThreadActivity {
+  teamId: string;
+  userId: string;
+  conversationKey: string;
+  openedAt: string | null;
+  repliedAt: string | null;
+}
+
 export interface Draft {
   id: string;
   accountId: string;
@@ -183,6 +197,8 @@ export interface Snippet {
   shortcut: string | null;
   bodyHtml: string;
   usageCount: number;
+  /** Team scope (M2.7 team snippets): set = shared with that team's members; null/absent = personal. */
+  teamId?: string | null;
 }
 
 export type ThreadAction =
@@ -710,6 +726,56 @@ export interface ContactSummary {
 }
 
 // ---------------------------------------------------------------------------
+// Teams & collaboration (M2.7)
+// ---------------------------------------------------------------------------
+
+/** Member privileges, ordered owner > admin > member. */
+export type TeamRole = 'owner' | 'admin' | 'member';
+
+/**
+ * A collaboration group. Membership grants NOTHING by itself: every
+ * collaborative surface (shares, comments, read statuses, calendars,
+ * availability) requires its own explicit opt-in (privacy default).
+ */
+export interface Team {
+  id: string;
+  name: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+/** A user's membership in a team. */
+export interface TeamMember {
+  teamId: string;
+  userId: string;
+  role: TeamRole;
+  /**
+   * Opts this member's thread open/reply activity into the team's
+   * read-status indicators. Privacy default: false.
+   */
+  shareReadStatuses: boolean;
+  joinedAt: string;
+}
+
+/** Lifecycle of an email invitation. */
+export type TeamInvitationStatus = 'pending' | 'accepted' | 'revoked' | 'expired';
+
+/**
+ * An email invitation to join a team. The raw token appears once, inside the
+ * emailed invite link; the API never returns it.
+ */
+export interface TeamInvitation {
+  id: string;
+  teamId: string;
+  email: string;
+  role: TeamRole;
+  invitedBy: string;
+  status: TeamInvitationStatus;
+  expiresAt: string;
+  createdAt: string;
+}
+
+// ---------------------------------------------------------------------------
 // API envelopes
 // ---------------------------------------------------------------------------
 
@@ -765,4 +831,217 @@ export interface InstanceInfo {
   /** Web Push application server key; present only when web push is configured. */
   vapidPublicKey?: string;
   features: InstanceFeatures;
+}
+
+// ---------------------------------------------------------------------------
+// Shared conversations & team comments (M2.7) — mirrors
+// backend/internal/domain/threadshare.go, backend/internal/domain/collab.go
+// and port.ShareThreadInput / port.SharedThreadView / port.CommentInput.
+// ---------------------------------------------------------------------------
+
+/** Who may open a thread-share link: team members only, or anyone holding it. */
+export type ShareAudience = 'team' | 'external';
+
+/**
+ * A tokenized live link to a mail thread. The raw token appears exactly once,
+ * in the create response (ThreadShareCreated.token); the API never returns it
+ * again — only its hash is stored server-side.
+ */
+export interface ThreadShare {
+  id: string;
+  threadId: string;
+  createdBy: string;
+  audience: ShareAudience;
+  /** Scopes a team-audience share; null for external shares. */
+  teamId: string | null;
+  revokedAt: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+/** Create-share payload; mirrors port.ShareThreadInput. */
+export interface ShareThreadInput {
+  audience: ShareAudience;
+  /** Required when audience is 'team'. */
+  teamId?: string;
+  /** Optional link expiry (RFC 3339); omitted/null = until revoked. */
+  expiresAt?: string | null;
+}
+
+/**
+ * POST /v1/mail/threads/{id}/share response: the stored share plus the raw
+ * link token. SECRET: the token appears here exactly once — surface it to the
+ * user immediately and never log it or send it to analytics.
+ */
+export interface ThreadShareCreated {
+  share: ThreadShare;
+  token: string;
+}
+
+/**
+ * The read-only projection served to share viewers (GET
+ * /v1/shared/threads/{token}): thread metadata + messages with recipients'
+ * Bcc stripped and no labels/split/snooze state. Unknown, revoked, and
+ * expired tokens are uniformly 404 (no oracle).
+ */
+export interface SharedThreadView {
+  subject: string;
+  audience: ShareAudience;
+  messages: Message[];
+  updatedAt: string;
+}
+
+/** A team comment on a mail thread; bodies are plain user text (escaped render-side). */
+export interface Comment {
+  id: string;
+  threadId: string;
+  teamId: string;
+  authorId: string;
+  body: string;
+  /** Team-member user IDs resolved from @email tokens at write time. */
+  mentions: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Add-comment payload; mirrors port.CommentInput. */
+export interface CommentInput {
+  teamId: string;
+  body: string;
+}
+
+// ---------------------------------------------------------------------------
+// EA delegation (M2.7 Task 15) — mirrors backend/internal/domain/delegation.go
+// and audit.go field-for-field.
+// ---------------------------------------------------------------------------
+
+/**
+ * One unit of access an assistant may exercise on behalf of a principal.
+ * Scopes are explicit and enumerated — no wildcard, no implied scope.
+ */
+export type DelegationScope = 'mail_read' | 'mail_write' | 'calendar_read' | 'calendar_write';
+
+/** Every delegation scope, for grant-dialog pickers. */
+export const DELEGATION_SCOPES: readonly DelegationScope[] = [
+  'mail_read',
+  'mail_write',
+  'calendar_read',
+  'calendar_write',
+];
+
+/**
+ * Grant lifecycle: a grant authorizes nothing until the assistant accepts it
+ * (pending → active) and nothing again once either party revokes it (terminal).
+ */
+export type DelegationStatus = 'pending' | 'active' | 'revoked';
+
+/** An explicit principal→assistant grant, limited to `scopes`. */
+export interface Delegation {
+  id: string;
+  principalId: string;
+  assistantId: string;
+  scopes: DelegationScope[];
+  status: DelegationStatus;
+  createdAt: string;
+  acceptedAt: string | null;
+  revokedAt: string | null;
+}
+
+/** GET /v1/delegations — the caller's grants, split by side. */
+export interface DelegationList {
+  /** Grants the caller gave (they are the principal). */
+  asPrincipal: Delegation[];
+  /** Grants the caller received (they are the assistant). */
+  asAssistant: Delegation[];
+}
+
+/**
+ * One append-only audit-log row: a mutation one user performed on another
+ * user's resources (every delegated mutation is recorded).
+ */
+export interface AuditEntry {
+  id: string;
+  /** Who really acted — the assistant on delegated requests. */
+  actorId: string;
+  /** Whose account was acted upon. */
+  principalId: string;
+  /** e.g. "POST /v1/mail/threads/{id}/actions". */
+  action: string;
+  resourceType: string;
+  resourceId: string;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Team booking links (M2.7 Task 14) — declaration merging augments the M2.4
+// scheduling interfaces above (appended here so parallel tasks merge cleanly).
+// ---------------------------------------------------------------------------
+
+export interface BookingLink {
+  /**
+   * Team scope: set = collective team link whose slots intersect the
+   * creator's and every listed member's availability, inviting all members
+   * on each confirmed booking. Null/absent = personal link.
+   */
+  teamId?: string | null;
+  /** Team member user IDs included in the collective intersection (creator implicit). */
+  memberUserIds?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Shared calendars & team availability (M2.7 Tasks 12–13) — mirrors
+// backend/internal/domain/calendar_sharing.go and port/calendar_sharing.go.
+// ---------------------------------------------------------------------------
+
+/** Shared-calendar access levels, ordered free_busy < reader < editor. */
+export type CalendarPermission = 'free_busy' | 'reader' | 'editor';
+
+/**
+ * A grant of one calendar to one user or one whole team — exactly one of
+ * granteeUserId / granteeTeamId is set. Sharing is a local layer over the
+ * mirrored calendars; provider-level ACLs are never touched.
+ */
+export interface CalendarShare {
+  id: string;
+  calendarId: string;
+  granteeUserId?: string;
+  granteeTeamId?: string;
+  permission: CalendarPermission;
+  createdBy: string;
+  createdAt: string;
+}
+
+/**
+ * POST /v1/calendars/{id}/shares payload. Exactly one grantee field must be
+ * set; permission defaults server-side to 'free_busy' (the privacy-preserving
+ * minimum) when omitted.
+ */
+export interface CalendarShareInput {
+  granteeUserId?: string;
+  granteeTeamId?: string;
+  permission?: CalendarPermission;
+}
+
+/**
+ * One member row of GET /v1/teams/{id}/availability. Busy blocks are opaque
+ * start/end intervals — free_busy privacy: the server never sends titles or
+ * details, and clients must not try to backfill them from other caches.
+ */
+export interface MemberAvailability {
+  userId: string;
+  busy: AvailabilitySlot[];
+  /** False = the member has not opted in by sharing a calendar with the team. */
+  shared: boolean;
+}
+
+// Declaration-merged augmentations (add-only): TypeScript merges these into
+// the Calendar / Event interfaces declared earlier in this file.
+export interface Calendar {
+  /** Set only on calendars shared TO the viewer: their effective permission. */
+  sharedPermission?: CalendarPermission;
+}
+export interface Event {
+  /** True when the event was redacted for a free_busy viewer (title "Busy", details zeroed). */
+  freeBusyOnly?: boolean;
 }

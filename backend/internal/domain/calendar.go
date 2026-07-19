@@ -17,6 +17,10 @@ type Calendar struct {
 	IsPrimary          bool   `json:"isPrimary"`
 	IsVisible          bool   `json:"isVisible"`
 	CanWrite           bool   `json:"canWrite"`
+	// SharedPermission annotates a shared-with-me calendar with the viewer's
+	// effective permission (most permissive applicable grant). Always nil on
+	// calendars the user owns.
+	SharedPermission *CalendarPermission `json:"sharedPermission,omitempty"`
 }
 
 // RsvpStatus is an attendee's response to an invitation.
@@ -100,6 +104,10 @@ type Event struct {
 	Status          EventStatus     `json:"status"`
 	Visibility      EventVisibility `json:"visibility"`
 	ReminderMinutes []int           `json:"reminderMinutes"`
+	// FreeBusyOnly marks an event served to a free_busy viewer of a shared
+	// calendar: only Start/End survive redaction (title "Busy", every other
+	// field zeroed server-side).
+	FreeBusyOnly bool `json:"freeBusyOnly,omitempty"`
 }
 
 // EventInput is the create-event payload (mirrors EventInput in types.ts).

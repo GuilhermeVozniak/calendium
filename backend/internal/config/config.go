@@ -153,6 +153,10 @@ type Instance struct {
 	// build the provider OAuth redirect_uri (${PublicAPIURL}/v1/accounts/
 	// callback/{provider}). When empty it is derived per-request. Optional.
 	PublicAPIURL string
+	// AppBaseURL (APP_BASE_URL, falling back to PublicWebURL) is the web app
+	// origin used to build emailed team-invite links
+	// (${AppBaseURL}/invite/<token>). Optional.
+	AppBaseURL string
 }
 
 // Config is the full backend configuration.
@@ -287,6 +291,12 @@ func FromEnv() (Config, error) {
 		cfg.Instance.PublicWebURL = os.Getenv("APP_URL")
 	}
 	cfg.Instance.PublicAPIURL = os.Getenv("PUBLIC_API_URL")
+	// APP_BASE_URL wins when set; the public web origin is the natural
+	// fallback since the web app hosts the /invite/<token> accept page.
+	cfg.Instance.AppBaseURL = os.Getenv("APP_BASE_URL")
+	if cfg.Instance.AppBaseURL == "" {
+		cfg.Instance.AppBaseURL = cfg.Instance.PublicWebURL
+	}
 	if v := os.Getenv("SELF_HOSTED"); v != "" {
 		b, err := strconv.ParseBool(v)
 		if err != nil {

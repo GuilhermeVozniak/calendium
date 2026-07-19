@@ -30,10 +30,19 @@ type MailServiceDeps struct {
 	Messages      port.MessageRepo
 	Drafts        port.DraftRepo
 	Snippets      port.SnippetRepo
+	// Teams enables team-scoped snippets (M2.7); nil disables them —
+	// snippet TeamIDs are then rejected and listings stay personal-only.
+	Teams         port.TeamRepo
 	Labels        port.LabelRepo
 	Reactions     port.ReactionRepo
 	MailProviders map[domain.Provider]port.MailProvider
 	OAuth         map[domain.Provider]port.OAuthGateway
+	// Activity records team read-status activity (M2.7 Task 10); nil
+	// disables recording (MarkThreadOpened stays activity-free).
+	Activity port.TeamThreadActivityRepo
+	// Bus fans activity.updated collab events out to SSE subscribers; nil
+	// disables publishing.
+	Bus port.EventBus
 	// Unsubscriber performs the RFC 8058 one-click POST; nil disables the
 	// one-click path (falls back to mailto / link).
 	Unsubscriber port.UnsubscribeGateway
@@ -55,8 +64,11 @@ type MailService struct {
 	messages      port.MessageRepo
 	drafts        port.DraftRepo
 	snippets      port.SnippetRepo
+	teams         port.TeamRepo // optional; see MailServiceDeps.Teams
 	labels        port.LabelRepo
 	reactions     port.ReactionRepo
+	activity      port.TeamThreadActivityRepo
+	bus           port.EventBus
 	mail          map[domain.Provider]port.MailProvider
 	tokens        tokenSource
 	unsubscriber  port.UnsubscribeGateway
@@ -83,8 +95,11 @@ func NewMailService(d MailServiceDeps) *MailService {
 		messages:      d.Messages,
 		drafts:        d.Drafts,
 		snippets:      d.Snippets,
+		teams:         d.Teams,
 		labels:        d.Labels,
 		reactions:     d.Reactions,
+		activity:      d.Activity,
+		bus:           d.Bus,
 		mail:          d.MailProviders,
 		tokens:        tokenSource{accounts: d.Accounts, oauth: d.OAuth, clock: d.Clock},
 		unsubscriber:  d.Unsubscriber,
@@ -270,6 +285,7 @@ func (s *MailService) MarkThreadOpened(ctx context.Context, userID, threadID str
 	if err := s.threads.MarkOpened(ctx, t.ID); err != nil {
 		return err
 	}
+	s.recordOpenActivity(ctx, userID, t) // team read statuses: best-effort, never fails the open
 	if provider, ok := s.mail[acct.Provider]; ok {
 		token, err := s.tokens.accessToken(ctx, acct)
 		if err != nil {
@@ -568,14 +584,17 @@ func (s *MailService) ListSnippets(ctx context.Context, userID string) ([]domain
 	if err := s.ent.require(ctx, userID); err != nil {
 		return nil, err
 	}
-	snips, err := s.snippets.ListByUser(ctx, userID)
+	personal, err := s.snippets.ListByUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	if snips == nil {
-		snips = []domain.Snippet{}
+	// Team snippets (M2.7): merge in every team's snippets; see
+	// snippets_team.go.
+	team, err := s.teamSnippets(ctx, userID)
+	if err != nil {
+		return nil, err
 	}
-	return snips, nil
+	return mergeSnippets(personal, team), nil
 }
 
 func (s *MailService) CreateSnippet(ctx context.Context, userID string, in port.SnippetInput) (domain.Snippet, error) {
@@ -585,9 +604,17 @@ func (s *MailService) CreateSnippet(ctx context.Context, userID string, in port.
 	if err := validateSnippetInput(in); err != nil {
 		return domain.Snippet{}, err
 	}
+	// Team snippets (M2.7): contributing to a team requires membership,
+	// any role; non-members get ErrNotFound (snippets_team.go).
+	if in.TeamID != nil {
+		if _, err := s.snippetTeamMember(ctx, userID, *in.TeamID); err != nil {
+			return domain.Snippet{}, err
+		}
+	}
 	return s.snippets.Create(ctx, domain.Snippet{
 		ID:       newID(),
 		UserID:   userID,
+		TeamID:   in.TeamID,
 		Name:     in.Name,
 		Shortcut: in.Shortcut,
 		BodyHTML: in.BodyHTML,
@@ -601,10 +628,12 @@ func (s *MailService) UpdateSnippet(ctx context.Context, userID, snippetID strin
 	if err := validateSnippetInput(in); err != nil {
 		return domain.Snippet{}, err
 	}
-	snip, err := s.ownedSnippet(ctx, userID, snippetID)
+	snip, err := s.editableSnippet(ctx, userID, snippetID)
 	if err != nil {
 		return domain.Snippet{}, err
 	}
+	// in.TeamID is deliberately ignored: a snippet's scope is immutable
+	// after creation (see port.SnippetInput).
 	snip.Name = in.Name
 	snip.Shortcut = in.Shortcut
 	snip.BodyHTML = in.BodyHTML
@@ -618,22 +647,11 @@ func (s *MailService) DeleteSnippet(ctx context.Context, userID, snippetID strin
 	if err := s.ent.require(ctx, userID); err != nil {
 		return err
 	}
-	snip, err := s.ownedSnippet(ctx, userID, snippetID)
+	snip, err := s.editableSnippet(ctx, userID, snippetID)
 	if err != nil {
 		return err
 	}
 	return s.snippets.Delete(ctx, snip.ID)
-}
-
-func (s *MailService) ownedSnippet(ctx context.Context, userID, snippetID string) (domain.Snippet, error) {
-	snip, err := s.snippets.GetByID(ctx, snippetID)
-	if err != nil {
-		return domain.Snippet{}, err
-	}
-	if snip.UserID != userID {
-		return domain.Snippet{}, domain.ErrNotFound
-	}
-	return snip, nil
 }
 
 func validateSnippetInput(in port.SnippetInput) error {
