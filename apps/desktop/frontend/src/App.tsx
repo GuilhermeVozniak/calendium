@@ -110,6 +110,9 @@ export default function App() {
     pushAutoJoinSettings();
     const offAction = wailsRuntime.EventsOn(TRAY_ACTION_EVENT, (...data: unknown[]) => {
       const action = data[0];
+      // Mirror the global-shortcut handler: a tray click is an explicit
+      // "take me to the app", so surface the window before acting.
+      wailsRuntime.WindowShow();
       if (action === 'open-calendar') setView('calendar');
       else if (action === 'compose') openCompose();
     });

@@ -190,6 +190,48 @@ func TestAutoJoin_DisabledByDefaultSchedulesNothing(t *testing.T) {
 	expectQuiet(t, h.afterCalls, "schedule while disabled")
 }
 
+func TestAutoJoin_JoinedMarkersPrunedAfter24h(t *testing.T) {
+	h := newSchedHarness()
+	s := h.scheduler()
+	s.SetConfig(true, 0)
+
+	s.SetEvents([]TrayEvent{{ID: "e1", Title: "Standup", StartAt: h.now.Add(time.Minute), JoinURL: "https://zoom.us/j/1"}})
+	waitFor(t, h.afterCalls, "schedule")
+	h.fireLatest(t)
+	waitFor(t, h.opened, "openURL")
+	waitFor(t, h.joined, "onJoined")
+
+	// 25h later a feed push must prune the stale joined marker (the map would
+	// otherwise grow for the lifetime of the process).
+	h.now = h.now.Add(25 * time.Hour)
+	s.SetEvents(nil)
+	s.mu.Lock()
+	got := len(s.joined)
+	s.mu.Unlock()
+	if got != 0 {
+		t.Fatalf("joined map holds %d entries after the 24h prune, want 0", got)
+	}
+
+	// A marker younger than 24h survives the prune (exactly-once still holds).
+	h2 := newSchedHarness()
+	s2 := h2.scheduler()
+	s2.SetConfig(true, 0)
+	evs := []TrayEvent{{ID: "e2", Title: "Sync", StartAt: h2.now.Add(time.Minute), JoinURL: "https://zoom.us/j/2"}}
+	s2.SetEvents(evs)
+	waitFor(t, h2.afterCalls, "schedule")
+	h2.fireLatest(t)
+	waitFor(t, h2.opened, "openURL")
+	waitFor(t, h2.joined, "onJoined")
+	h2.now = h2.now.Add(23 * time.Hour)
+	s2.SetEvents(evs)
+	s2.mu.Lock()
+	kept := len(s2.joined)
+	s2.mu.Unlock()
+	if kept != 1 {
+		t.Fatalf("joined map holds %d entries after 23h, want 1 (marker must survive)", kept)
+	}
+}
+
 func TestAutoJoin_StaleEventsNeverJoined(t *testing.T) {
 	h := newSchedHarness()
 	s := h.scheduler()

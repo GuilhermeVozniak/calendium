@@ -61,6 +61,9 @@ func newHotkeyManager(emit func(action string)) *hotkeyManager {
 // round-trips through the main GCD queue, and blocking Wails' startup on
 // that would deadlock if startup itself runs on the main thread). A combo
 // already taken by another app is logged and skipped — never fatal.
+// Serialized with Stop under m.mu — including Stop's wg.Wait — so a rapid
+// toggle can never wg.Add while a previous run's Wait is still in flight
+// (WaitGroup reuse panics).
 func (m *hotkeyManager) Start() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -77,17 +80,24 @@ func (m *hotkeyManager) Start() error {
 
 // Stop unregisters every successfully registered shortcut and waits for the
 // listen goroutines to exit. Safe to call when not running, and safe to call
-// twice.
+// twice. Holds m.mu across wg.Wait so a concurrent Start blocks until every
+// listen goroutine has fully exited — never reusing the WaitGroup mid-Wait.
+//
+// Teardown note (macOS): the listen goroutines' unregister path dispatches
+// synchronously onto the main GCD queue (runOnMainQueue). They never take
+// m.mu, so holding it here cannot deadlock them — but Stop itself must
+// never be called FROM the main GCD queue, or the unregister round-trip it
+// waits on could never be serviced. Wails method bindings run off that
+// queue, so SetGlobalShortcutsEnabled is safe.
 func (m *hotkeyManager) Stop() {
 	m.mu.Lock()
-	stop := m.stop
-	m.stop = nil
-	m.mu.Unlock()
-	if stop == nil {
+	defer m.mu.Unlock()
+	if m.stop == nil {
 		return
 	}
-	close(stop)
+	close(m.stop)
 	m.wg.Wait()
+	m.stop = nil
 }
 
 // listen registers one shortcut and pumps its Keydown events until stop

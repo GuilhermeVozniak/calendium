@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -162,6 +163,32 @@ func TestHotkeyManager_RegistrationFailureDegradesGracefully(t *testing.T) {
 	if got := unregs.Load(); got != 1 {
 		t.Fatalf("unregistered %d hotkeys, want 1 (only the successfully registered one)", got)
 	}
+}
+
+func TestHotkeyManager_RapidConcurrentToggleNeverRacesWaitGroup(t *testing.T) {
+	// A rapid Settings toggle (or concurrent bindings) must never let a new
+	// Start reuse the WaitGroup while a previous Stop is still in wg.Wait —
+	// that reuse panics ("WaitGroup is reused before previous Wait has
+	// returned"). Slow unregister widens the old race window.
+	swapShims(t,
+		func(*hotkey.Hotkey) error { return nil },
+		func(*hotkey.Hotkey) error { time.Sleep(2 * time.Millisecond); return nil },
+	)
+
+	m := newHotkeyManager(func(string) {})
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 25 {
+				_ = m.Start()
+				m.Stop()
+			}
+		}()
+	}
+	wg.Wait()
+	m.Stop()
 }
 
 func TestHotkeyManager_StopBeforeStartIsSafe_AndRestartWorks(t *testing.T) {

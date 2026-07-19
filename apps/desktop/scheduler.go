@@ -19,6 +19,12 @@ const autoJoinedEvent = "auto-joined"
 // never auto-joined (e.g. the app was closed over the meeting start).
 const autoJoinStaleAfter = 2 * time.Minute
 
+// joinedRetention: how long an already-joined marker is kept. Anything older
+// is pruned on each feed push — the map must not grow for the lifetime of the
+// process, and a marker this old can never be needed again (autoJoinStaleAfter
+// blocks re-joining events whose start has long passed).
+const joinedRetention = 24 * time.Hour
+
 type autoJoinScheduler struct {
 	mu       sync.Mutex
 	enabled  bool
@@ -27,13 +33,13 @@ type autoJoinScheduler struct {
 	after    func(d time.Duration) <-chan time.Time // injected timer
 	openURL  func(string)
 	onJoined func(ev TrayEvent)
-	joined   map[string]bool // event IDs already opened — never open twice
+	joined   map[string]time.Time // event ID → when auto-joined; never open twice, pruned after joinedRetention
 	events   []TrayEvent
 	cancel   chan struct{} // closing aborts the pending wait; nil when idle
 }
 
 func newAutoJoinScheduler(now func() time.Time, after func(d time.Duration) <-chan time.Time) *autoJoinScheduler {
-	return &autoJoinScheduler{now: now, after: after, joined: make(map[string]bool)}
+	return &autoJoinScheduler{now: now, after: after, joined: make(map[string]time.Time)}
 }
 
 // setSinks wires the effect callbacks (runtime.BrowserOpenURL + the
@@ -49,6 +55,12 @@ func (s *autoJoinScheduler) setSinks(openURL func(string), onJoined func(TrayEve
 func (s *autoJoinScheduler) SetEvents(evs []TrayEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	cutoff := s.now().Add(-joinedRetention)
+	for id, at := range s.joined {
+		if at.Before(cutoff) {
+			delete(s.joined, id)
+		}
+	}
 	s.events = append([]TrayEvent(nil), evs...)
 	s.rescheduleLocked()
 }
@@ -75,7 +87,7 @@ func (s *autoJoinScheduler) rescheduleLocked() {
 	var next *TrayEvent
 	for i := range s.events {
 		ev := s.events[i]
-		if ev.JoinURL == "" || s.joined[ev.ID] {
+		if _, alreadyJoined := s.joined[ev.ID]; ev.JoinURL == "" || alreadyJoined {
 			continue
 		}
 		if now.Sub(ev.StartAt) > autoJoinStaleAfter {
@@ -117,7 +129,7 @@ func (s *autoJoinScheduler) fire(id string, cancel chan struct{}) {
 		return // superseded or cancelled
 	}
 	s.cancel = nil
-	if !s.enabled || s.joined[id] {
+	if _, alreadyJoined := s.joined[id]; !s.enabled || alreadyJoined {
 		s.rescheduleLocked()
 		s.mu.Unlock()
 		return
@@ -134,7 +146,7 @@ func (s *autoJoinScheduler) fire(id string, cancel chan struct{}) {
 		s.mu.Unlock()
 		return
 	}
-	s.joined[id] = true
+	s.joined[id] = s.now()
 	joined := *ev
 	openURL, onJoined := s.openURL, s.onJoined
 	s.rescheduleLocked()
