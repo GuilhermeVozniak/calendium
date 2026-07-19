@@ -1045,3 +1045,36 @@ export interface Event {
   /** True when the event was redacted for a free_busy viewer (title "Busy", details zeroed). */
   freeBusyOnly?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Maps & location autocomplete (M2.8 Task 11) — mirrors domain.Place and the
+// event geo fields in backend/internal/domain/calendar.go.
+// ---------------------------------------------------------------------------
+
+/** One suggestion from GET /v1/places/autocomplete (Nominatim-backed). */
+export interface Place {
+  name: string;
+  address: string;
+  lat: number;
+  lon: number;
+}
+
+export interface Event {
+  /** Set when the location was picked from autocomplete; null for free-typed text. */
+  locationLat?: number | null;
+  locationLon?: number | null;
+}
+export interface EventInput {
+  /** Coordinates of an autocomplete-picked location; omit for free-typed text. */
+  locationLat?: number;
+  locationLon?: number;
+}
+export interface EventPatch {
+  /** Omitted = coordinates unchanged (free-typed edits keep what was stored). */
+  locationLat?: number;
+  locationLon?: number;
+}
+export interface InstanceFeatures {
+  /** Maps provider configured (location autocomplete + travel times). */
+  maps?: boolean;
+}

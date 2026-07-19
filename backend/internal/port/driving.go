@@ -553,3 +553,12 @@ type CollabService interface {
 	// DeleteComment: the author, or a team admin+ (soft delete).
 	DeleteComment(ctx context.Context, userID, commentID string) error
 }
+
+// --- Places (M2.8 Task 11) ---------------------------------------------------
+
+// PlacesService is entitlement-gated location autocomplete over a
+// MapsProvider, with an in-memory result cache honoring Nominatim's
+// 1 req/s usage policy. Queries under 3 characters are ErrValidation.
+type PlacesService interface {
+	Autocomplete(ctx context.Context, userID, query string) ([]domain.Place, error)
+}

@@ -57,6 +57,10 @@ type Deps struct {
 	// TeamActivity serves teammate read/reply indicators (M2.7 Task 10);
 	// when nil the team-activity route answers 501.
 	TeamActivity port.TeamActivityService
+	// Places is location autocomplete backed by a MapsProvider (M2.8
+	// Task 11). When nil (maps not configured) the places route answers 501
+	// and GET /v1/instance advertises features.maps=false.
+	Places port.PlacesService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -269,6 +273,9 @@ func New(deps Deps) http.Handler {
 	authed("POST /v1/delegations/{id}/accept", s.handleAcceptDelegation)
 	authed("DELETE /v1/delegations/{id}", s.handleRevokeDelegation)
 	authed("GET /v1/delegations/audit", s.handleDelegationAudit)
+
+	// M2.8 Task 11: location autocomplete (Nominatim-backed; 501 unwired).
+	authed("GET /v1/places/autocomplete", s.handlePlacesAutocomplete)
 
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins)

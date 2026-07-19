@@ -108,6 +108,11 @@ type Event struct {
 	// calendar: only Start/End survive redaction (title "Busy", every other
 	// field zeroed server-side).
 	FreeBusyOnly bool `json:"freeBusyOnly,omitempty"`
+	// LocationLat/LocationLon are set when Location was picked from maps
+	// autocomplete; nil for free-typed locations (travel features skip
+	// events without coordinates). Local-only: never sent to providers.
+	LocationLat *float64 `json:"locationLat"`
+	LocationLon *float64 `json:"locationLon"`
 }
 
 // EventInput is the create-event payload (mirrors EventInput in types.ts).
@@ -123,6 +128,10 @@ type EventInput struct {
 	AttendeeEmails  []string  `json:"attendeeEmails,omitempty"`
 	AddConferencing bool      `json:"addConferencing,omitempty"`
 	ReminderMinutes []int     `json:"reminderMinutes,omitempty"`
+	// LocationLat/LocationLon carry the coordinates of an autocomplete-picked
+	// location; omitted for free-typed location text.
+	LocationLat *float64 `json:"locationLat,omitempty"`
+	LocationLon *float64 `json:"locationLon,omitempty"`
 }
 
 // EventPatch is a partial event update; nil fields are left unchanged.
@@ -136,6 +145,10 @@ type EventPatch struct {
 	RecurrenceRule  *string    `json:"recurrenceRule"`
 	AttendeeEmails  *[]string  `json:"attendeeEmails"`
 	ReminderMinutes *[]int     `json:"reminderMinutes"`
+	// LocationLat/LocationLon update the picked-location coordinates; nil
+	// leaves them unchanged (free-typed edits keep whatever was stored).
+	LocationLat *float64 `json:"locationLat"`
+	LocationLon *float64 `json:"locationLon"`
 }
 
 // AvailabilitySlot is a free window for the share-availability flow.
@@ -192,3 +205,23 @@ type CalendarSetInput struct {
 	CalendarIDs []string `json:"calendarIds"`
 	Position    int      `json:"position"`
 }
+
+// --- Maps & location autocomplete (M2.8 Task 11) -----------------------------
+
+// Place is one location-autocomplete suggestion (mirrors Place in
+// packages/shared/src/types.ts).
+type Place struct {
+	Name    string  `json:"name"`
+	Address string  `json:"address"`
+	Lat     float64 `json:"lat"`
+	Lon     float64 `json:"lon"`
+}
+
+// TravelMode selects how a travel-time estimate is computed.
+type TravelMode string
+
+const (
+	TravelDriving TravelMode = "driving"
+	TravelWalking TravelMode = "walking"
+	TravelTransit TravelMode = "transit" // OSRM adapter approximates as driving*1.5 until a transit vendor lands
+)

@@ -110,21 +110,25 @@ func (r calendarRepo) Update(ctx context.Context, c domain.Calendar) error {
 
 const eventCols = `e.id, e.calendar_id, e.provider_event_id, e.title, e.description,
 	e.location, e.start_at, e.end_at, e.all_day, e.recurrence_rule, e.attendees,
-	e.conferencing, e.status, e.visibility, array_to_json(e.reminder_minutes)::text`
+	e.conferencing, e.status, e.visibility, array_to_json(e.reminder_minutes)::text,
+	e.location_lat, e.location_lon`
 
 func scanEvent(r rowScanner) (domain.Event, error) {
 	var e domain.Event
 	var description, location, rrule sql.NullString
 	var attendees, conferencing []byte
 	var reminders string
+	var lat, lon sql.NullFloat64
 	if err := r.Scan(&e.ID, &e.CalendarID, &e.ProviderEventID, &e.Title, &description,
 		&location, &e.Start, &e.End, &e.AllDay, &rrule, &attendees,
-		&conferencing, &e.Status, &e.Visibility, &reminders); err != nil {
+		&conferencing, &e.Status, &e.Visibility, &reminders, &lat, &lon); err != nil {
 		return domain.Event{}, notFound(err)
 	}
 	e.Description = strPtr(description)
 	e.Location = strPtr(location)
 	e.RecurrenceRule = strPtr(rrule)
+	e.LocationLat = floatPtr(lat)
+	e.LocationLon = floatPtr(lon)
 	if err := unmarshalInto(attendees, &e.Attendees); err != nil {
 		return domain.Event{}, err
 	}
@@ -173,16 +177,22 @@ func (r eventRepo) Upsert(ctx context.Context, e domain.Event) (domain.Event, er
 	if err != nil {
 		return domain.Event{}, err
 	}
+	var upsertLat, upsertLon sql.NullFloat64
 	conflict := "(calendar_id, provider_event_id)"
 	if e.ProviderEventID == "" {
 		conflict = "(id)"
 	}
+	// location_lat/lon use COALESCE on conflict: provider syncs never carry
+	// coordinates (they are local-only, set by the autocomplete picker), so
+	// a NULL incoming value preserves what the user chose — the same
+	// local-preference-preservation as calendars.is_visible/color.
 	err = r.q(ctx).QueryRowContext(ctx, `
 		INSERT INTO events (id, calendar_id, provider_event_id, title, description, location,
 			start_at, end_at, all_day, recurrence_rule, attendees, conferencing, status,
-			visibility, reminder_minutes)
+			visibility, reminder_minutes, location_lat, location_lon)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14,
-			(SELECT coalesce(array_agg(x::integer), '{}'::integer[]) FROM jsonb_array_elements_text($15::jsonb) x))
+			(SELECT coalesce(array_agg(x::integer), '{}'::integer[]) FROM jsonb_array_elements_text($15::jsonb) x),
+			$16, $17)
 		ON CONFLICT `+conflict+` DO UPDATE SET
 			title            = EXCLUDED.title,
 			description      = EXCLUDED.description,
@@ -196,14 +206,21 @@ func (r eventRepo) Upsert(ctx context.Context, e domain.Event) (domain.Event, er
 			status           = EXCLUDED.status,
 			visibility       = EXCLUDED.visibility,
 			reminder_minutes = EXCLUDED.reminder_minutes,
+			location_lat     = COALESCE(EXCLUDED.location_lat, events.location_lat),
+			location_lon     = COALESCE(EXCLUDED.location_lon, events.location_lon),
 			updated_at       = now()
-		RETURNING id`,
+		RETURNING id, location_lat, location_lon`,
 		e.ID, e.CalendarID, e.ProviderEventID, e.Title, nullStrPtr(e.Description),
 		nullStrPtr(e.Location), e.Start, e.End, e.AllDay, nullStrPtr(e.RecurrenceRule),
-		attendees, conferencing, string(e.Status), string(e.Visibility), reminders).Scan(&e.ID)
+		attendees, conferencing, string(e.Status), string(e.Visibility), reminders,
+		nullFloatPtr(e.LocationLat), nullFloatPtr(e.LocationLon)).Scan(&e.ID, &upsertLat, &upsertLon)
 	if err != nil {
 		return domain.Event{}, err
 	}
+	// Reflect the post-COALESCE column values so callers see coordinates a
+	// coordinate-less sync upsert preserved.
+	e.LocationLat = floatPtr(upsertLat)
+	e.LocationLon = floatPtr(upsertLon)
 	if e.Attendees == nil {
 		e.Attendees = []domain.Attendee{}
 	}

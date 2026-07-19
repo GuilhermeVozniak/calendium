@@ -46,6 +46,7 @@ import type {
   NotificationDevice,
   OpenEvent,
   Page,
+  Place,
   PollBallot,
   PollInput,
   Provider,
@@ -807,6 +808,16 @@ export class ApiClient {
       'GET',
       `/v1/teams/${encodeURIComponent(teamId)}/availability?${qs}`
     );
+  }
+
+  // --- Places (M2.8 Task 11): location autocomplete ---
+  /**
+   * Up to 5 place suggestions for a partial location query (min 3 chars).
+   * Throws ApiRequestError(501, 'not_implemented') when the server has no
+   * maps provider configured — callers degrade to a plain text input.
+   */
+  autocompletePlaces(q: string) {
+    return this.request<Place[]>('GET', `/v1/places/autocomplete?q=${encodeURIComponent(q)}`);
   }
 }
 

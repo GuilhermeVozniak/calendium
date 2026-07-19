@@ -191,6 +191,7 @@ func (s *CalendarService) CreateEvent(ctx context.Context, userID string, in dom
 		}
 		created.ID = ev.ID
 		created.CalendarID = c.ID
+		carryLocalGeo(&created, ev)
 		ev = created
 	}
 	return s.events.Upsert(ctx, ev)
@@ -226,6 +227,7 @@ func (s *CalendarService) UpdateEvent(ctx context.Context, userID, eventID strin
 		}
 		updated.ID = ev.ID
 		updated.CalendarID = c.ID
+		carryLocalGeo(&updated, ev)
 		ev = updated
 	}
 	return s.events.Upsert(ctx, ev)
@@ -822,7 +824,20 @@ func eventFromInput(in domain.EventInput, calendarID string) domain.Event {
 	for _, email := range in.AttendeeEmails {
 		ev.Attendees = append(ev.Attendees, domain.Attendee{Email: email, Response: domain.RsvpNeedsAction})
 	}
+	// Coordinates arrive only when the location was picked from maps
+	// autocomplete; free-typed locations keep them nil (travel features
+	// skip such events).
+	ev.LocationLat = in.LocationLat
+	ev.LocationLon = in.LocationLon
 	return ev
+}
+
+// carryLocalGeo re-applies the local-only coordinate fields after a provider
+// write-through: providers know nothing about locationLat/Lon, so the event
+// they return must not erase coordinates chosen locally.
+func carryLocalGeo(dst *domain.Event, src domain.Event) {
+	dst.LocationLat = src.LocationLat
+	dst.LocationLon = src.LocationLon
 }
 
 func applyEventPatch(ev *domain.Event, patch domain.EventPatch) {
@@ -863,6 +878,12 @@ func applyEventPatch(ev *domain.Event, patch domain.EventPatch) {
 	}
 	if patch.ReminderMinutes != nil {
 		ev.ReminderMinutes = *patch.ReminderMinutes
+	}
+	if patch.LocationLat != nil {
+		ev.LocationLat = patch.LocationLat
+	}
+	if patch.LocationLon != nil {
+		ev.LocationLon = patch.LocationLon
 	}
 }
 

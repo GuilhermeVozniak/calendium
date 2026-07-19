@@ -104,6 +104,15 @@ type OpenRouter struct {
 	DailyLimit int
 }
 
+// Maps configures the location-autocomplete / travel-time vendor endpoints
+// (M2.8 Task 11): a Nominatim geocoding instance and an OSRM routing
+// instance. Both empty (the default) leaves the maps feature off — the
+// places routes answer 501 and GET /v1/instance advertises maps=false.
+type Maps struct {
+	NominatimBaseURL string // MAPS_NOMINATIM_URL
+	OSRMBaseURL      string // MAPS_OSRM_URL
+}
+
 // Crypto holds secrets-at-rest material.
 type Crypto struct {
 	// TokenEncryptionKey is the 32-byte AES-256-GCM key for provider
@@ -174,6 +183,7 @@ type Config struct {
 	Mail       Mail
 	OAuth      OAuth
 	Instance   Instance
+	Maps       Maps
 }
 
 // FromEnv builds a Config from environment variables. DATABASE_URL and a
@@ -313,6 +323,11 @@ func FromEnv() (Config, error) {
 				cfg.OAuth.AllowedRedirectURIs = append(cfg.OAuth.AllowedRedirectURIs, p)
 			}
 		}
+	}
+
+	cfg.Maps = Maps{
+		NominatimBaseURL: strings.TrimRight(os.Getenv("MAPS_NOMINATIM_URL"), "/"),
+		OSRMBaseURL:      strings.TrimRight(os.Getenv("MAPS_OSRM_URL"), "/"),
 	}
 
 	if v := os.Getenv("CORS_ALLOWED_ORIGINS"); v != "" {
