@@ -43,6 +43,8 @@ import {
   createBookingLinkApi,
   deleteBookingLinkApi,
   fetchBookingLinks,
+  fetchSchedulingTeams,
+  fetchTeamMembers,
   updateBookingLinkApi,
 } from '@/lib/scheduling-data';
 
@@ -157,6 +159,10 @@ interface FormState {
   title: string;
   description: string;
   calendarId: string;
+  /** '' = personal link; otherwise the team id (collective availability). */
+  teamId: string;
+  /** Team member user IDs to include; only sent when teamId is set. */
+  memberUserIds: string[];
   durationMinutes: string;
   timeZone: string;
   windows: AvailabilityWindow[];
@@ -176,6 +182,8 @@ function emptyForm(): FormState {
     title: '',
     description: '',
     calendarId: '',
+    teamId: '',
+    memberUserIds: [],
     durationMinutes: '30',
     timeZone: localTimeZone(),
     windows: [{ weekday: 1, start: '09:00', end: '17:00' }],
@@ -196,6 +204,8 @@ function toInput(form: FormState): BookingLinkInput {
     title: form.title.trim(),
     description: form.description.trim() || undefined,
     calendarId: form.calendarId,
+    teamId: form.teamId || null,
+    memberUserIds: form.teamId ? form.memberUserIds : [],
     durationMinutes: Math.max(5, Number(form.durationMinutes) || 30),
     timeZone: form.timeZone,
     windows: form.windows,
@@ -235,6 +245,7 @@ export function BookingLinks() {
   const queryClient = useQueryClient();
   const linksQuery = useQuery({ queryKey: ['booking-links'], queryFn: fetchBookingLinks });
   const calendarsQuery = useQuery({ queryKey: ['calendars'], queryFn: fetchCalendars });
+  const teamsQuery = useQuery({ queryKey: ['scheduling-teams'], queryFn: fetchSchedulingTeams });
 
   const [editing, setEditing] = React.useState<BookingLink | null>(null);
   const [formOpen, setFormOpen] = React.useState(false);
@@ -243,6 +254,7 @@ export function BookingLinks() {
 
   const links = linksQuery.data ?? [];
   const calendars = calendarsQuery.data ?? [];
+  const teams = teamsQuery.data ?? [];
 
   const openCreateForm = React.useCallback(() => {
     setEditing(null);
@@ -260,6 +272,8 @@ export function BookingLinks() {
       title: link.title,
       description: link.description ?? '',
       calendarId: link.calendarId,
+      teamId: link.teamId ?? '',
+      memberUserIds: link.memberUserIds ?? [],
       durationMinutes: String(link.durationMinutes),
       timeZone: link.timeZone,
       windows:
@@ -278,6 +292,27 @@ export function BookingLinks() {
   };
 
   const slugValid = SLUG_RE.test(form.slug.trim());
+
+  // Member picker for the selected team (loaded lazily; the server 404s
+  // membership lookups for non-members, so this only ever shows teams the
+  // signed-in user belongs to).
+  const selectedTeamId = form.teamId;
+  const membersEnabled = formOpen && selectedTeamId !== '';
+  const membersQuery = useQuery({
+    queryKey: ['scheduling-team-members', selectedTeamId],
+    queryFn: () => fetchTeamMembers(selectedTeamId),
+    enabled: membersEnabled,
+  });
+  const teamMembers = membersQuery.data ?? [];
+
+  const toggleMember = (userId: string, include: boolean) => {
+    setForm((f) => ({
+      ...f,
+      memberUserIds: include
+        ? [...f.memberUserIds, userId]
+        : f.memberUserIds.filter((id) => id !== userId),
+    }));
+  };
 
   const save = useMutation({
     mutationFn: () => {
@@ -358,6 +393,7 @@ export function BookingLinks() {
                   <Badge variant="outline" className="font-normal">
                     {link.durationMinutes}m
                   </Badge>
+                  {link.teamId && <Badge variant="secondary">Team</Badge>}
                   {!link.active && <Badge variant="secondary">Inactive</Badge>}
                 </div>
                 <p className="mt-0.5 truncate text-xs text-muted-foreground">/book/{link.slug}</p>
@@ -477,6 +513,61 @@ export function BookingLinks() {
                 rows={2}
               />
             </div>
+
+            {teams.length > 0 && (
+              <div className="grid gap-1.5">
+                <Label htmlFor="link-team">Team (optional)</Label>
+                <Select
+                  value={form.teamId || 'personal'}
+                  onValueChange={(v) =>
+                    setForm((f) => ({
+                      ...f,
+                      teamId: v === 'personal' ? '' : v,
+                      memberUserIds: [],
+                    }))
+                  }
+                >
+                  <SelectTrigger id="link-team" size="sm">
+                    <SelectValue placeholder="Personal" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="personal">Personal</SelectItem>
+                    {teams.map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {form.teamId && (
+                  <div className="mt-1 flex flex-col gap-2 rounded-md border p-3">
+                    <p className="text-xs text-muted-foreground">
+                      Collective availability: every selected member must be free, and each
+                      member must have shared free/busy with this team.
+                    </p>
+                    {teamMembers.map((m) => (
+                      <div key={m.userId} className="flex items-center gap-2">
+                        <Switch
+                          id={`link-member-${m.userId}`}
+                          checked={form.memberUserIds.includes(m.userId)}
+                          onCheckedChange={(v) => toggleMember(m.userId, v)}
+                          aria-label={`Include member ${m.userId}`}
+                        />
+                        <Label htmlFor={`link-member-${m.userId}`} className="font-normal">
+                          <span className="truncate">{m.userId}</span>
+                        </Label>
+                        <Badge variant="outline" className="font-normal">
+                          {m.role}
+                        </Badge>
+                      </div>
+                    ))}
+                    {membersEnabled && !membersQuery.isLoading && teamMembers.length === 0 && (
+                      <p className="text-xs text-muted-foreground">No members found.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="grid gap-1.5">
               <Label>Availability windows</Label>

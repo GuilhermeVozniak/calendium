@@ -35,6 +35,15 @@ type BookingLink struct {
 	AddConferencing     bool                 `json:"addConferencing"`
 	Active              bool                 `json:"active"`
 	CreatedAt           time.Time            `json:"createdAt"`
+	// TeamID scopes this link to a team (M2.7 Task 14): slots become the
+	// COLLECTIVE intersection of the creator's and every listed member's
+	// availability, and confirmed bookings invite every member. nil =
+	// personal link. Round-robin rotation is future work.
+	TeamID *string `json:"teamId"`
+	// MemberUserIDs are the team members whose free/busy is intersected and
+	// who are invited on every confirmed booking. Normalized: the creator is
+	// implicit and never stored here. Meaningful only when TeamID is set.
+	MemberUserIDs []string `json:"memberUserIds"`
 }
 
 // BookingStatus is the slot-hold lifecycle: hold → confirmed | cancelled.
