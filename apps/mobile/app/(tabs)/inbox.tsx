@@ -4,6 +4,7 @@ import { Text } from '@/components/ui/text';
 import { api } from '@/lib/api';
 import { relativeTime } from '@/lib/format';
 import { isDemoMode, mockOpens, mockThreadPage, withMockFallback } from '@/lib/mock';
+import { isNetworkError, queueIfOffline, useQueuedCount } from '@/lib/offline';
 import { cn } from '@/lib/utils';
 import type { InboxSplit, OpenEvent, Page, Thread, ThreadAction } from '@calendium/shared';
 import {
@@ -16,6 +17,7 @@ import { useRouter } from 'expo-router';
 import {
   ArchiveIcon,
   ClockIcon,
+  CloudOffIcon,
   EllipsisVerticalIcon,
   EyeIcon,
   InboxIcon,
@@ -55,6 +57,7 @@ export default function InboxScreen() {
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
   const [split, setSplit] = React.useState<InboxSplit>('important');
+  const queuedCount = useQueuedCount();
   const [selected, setSelected] = React.useState<Thread | null>(null);
   const [opensOpen, setOpensOpen] = React.useState(false);
 
@@ -117,11 +120,17 @@ export default function InboxScreen() {
       }
       return { previous, split };
     },
-    onError: (error, _vars, context) => {
+    onError: (error, { thread, action }, context) => {
       // Demo mode has no backend, so the optimistic update stands; otherwise a
       // real rejection (paywall, validation, server error) must not look like
-      // success — revert and tell the user.
+      // success — revert and tell the user. A NETWORK failure is different:
+      // the action is durably queued for replay, so the optimistic state stays
+      // as an honest pending change (surfaced by the header's queued badge).
       if (isDemoMode()) return;
+      if (isNetworkError(error)) {
+        void queueIfOffline(error, { kind: 'thread_action', threadId: thread.id, action });
+        return;
+      }
       if (context?.previous) {
         queryClient.setQueryData(['threads', context.split], context.previous);
       }
@@ -137,8 +146,13 @@ export default function InboxScreen() {
       updateList(split, (items) => items.filter((t) => t.id !== thread.id));
       return { previous, split };
     },
-    onError: (error, _vars, context) => {
+    onError: (error, { thread, until }, context) => {
       if (isDemoMode()) return;
+      if (isNetworkError(error)) {
+        // Offline: keep the optimistic removal as a queued pending change.
+        void queueIfOffline(error, { kind: 'thread_snooze', threadId: thread.id, until });
+        return;
+      }
       if (context?.previous) {
         queryClient.setQueryData(['threads', context.split], context.previous);
       }
@@ -239,7 +253,19 @@ export default function InboxScreen() {
     <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
       {/* Header */}
       <View className="flex-row items-center justify-between px-4 pb-2 pt-1">
-        <Text variant="h3">Inbox</Text>
+        <View className="flex-row items-center gap-2">
+          <Text variant="h3">Inbox</Text>
+          {queuedCount > 0 && (
+            // Real pending state: offline actions durably queued, not yet
+            // confirmed by the server. Clears only when replay succeeds.
+            <View
+              testID="outbox-badge"
+              className="flex-row items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5">
+              <Icon as={CloudOffIcon} className="size-3.5 text-amber-600" />
+              <Text className="text-xs font-medium text-amber-600">{queuedCount} queued</Text>
+            </View>
+          )}
+        </View>
         <View className="flex-row items-center gap-1">
           <Button
             size="icon"

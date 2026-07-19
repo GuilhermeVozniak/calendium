@@ -13,6 +13,7 @@ import {
   withMockFallback,
 } from '@/lib/mock';
 import { REACTION_EMOJIS } from '@/lib/mail-extras';
+import { queueIfOffline } from '@/lib/offline';
 import { useServerConfig } from '@/lib/server-config';
 import type { Message, Page, Thread, UnsubscribeResult } from '@calendium/shared';
 import {
@@ -165,6 +166,13 @@ export default function ThreadScreen() {
       await api.actOnThread(thread.id, 'archive');
     } catch (error) {
       if (isDemoMode()) return; // demo: keep the optimistic removal
+      // Offline: durably queue the archive for replay and keep the optimistic
+      // removal as an honest pending change (inbox badge shows it queued).
+      if (
+        await queueIfOffline(error, { kind: 'thread_action', threadId: thread.id, action: 'archive' })
+      ) {
+        return;
+      }
       if (previous) queryClient.setQueryData(['threads', thread.split], previous);
       Alert.alert('Could not archive', error instanceof Error ? error.message : 'Please try again.');
     }
@@ -181,6 +189,10 @@ export default function ThreadScreen() {
         await api.snoozeThread(thread.id, until);
       } catch (error) {
         if (isDemoMode()) return; // demo: keep the optimistic removal
+        // Offline: queue the snooze for replay; the removal stays as pending.
+        if (await queueIfOffline(error, { kind: 'thread_snooze', threadId: thread.id, until })) {
+          return;
+        }
         if (previous) queryClient.setQueryData(['threads', thread.split], previous);
         Alert.alert('Could not snooze', error instanceof Error ? error.message : 'Please try again.');
       }

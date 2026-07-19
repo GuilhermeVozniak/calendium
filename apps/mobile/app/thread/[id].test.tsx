@@ -30,6 +30,18 @@ jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
+// The screen now imports @/lib/offline (offline triage queue), which pulls in
+// AsyncStorage and expo-network at module scope; both need test fakes here.
+jest.mock('@react-native-async-storage/async-storage', () =>
+  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
+);
+jest.mock('expo-network', () => ({
+  addNetworkStateListener: jest.fn(() => ({ remove: jest.fn() })),
+  getNetworkStateAsync: jest.fn(() =>
+    Promise.resolve({ isConnected: false, isInternetReachable: false })
+  ),
+}));
+
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import type { Message, Thread } from '@calendium/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
