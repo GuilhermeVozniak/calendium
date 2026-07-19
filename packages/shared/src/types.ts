@@ -138,6 +138,20 @@ export interface ReactionResult {
   draftId: string | null;
 }
 
+/**
+ * One teammate's read/reply state on a shared conversation (M2.7 team read
+ * statuses). Served only for members who opted in via shareReadStatuses;
+ * conversations are correlated across accounts by the RFC 5322 Message-ID of
+ * the thread's earliest message.
+ */
+export interface TeamThreadActivity {
+  teamId: string;
+  userId: string;
+  conversationKey: string;
+  openedAt: string | null;
+  repliedAt: string | null;
+}
+
 export interface Draft {
   id: string;
   accountId: string;

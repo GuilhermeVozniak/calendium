@@ -108,6 +108,8 @@ func run(logger *slog.Logger) error {
 
 	// --- services ---
 	clock := service.SystemClock{}
+	bus := eventbus.New()
+	activityRepo := postgres.NewTeamThreadActivityRepo(store)
 
 	users := service.NewUserService(store.Users(), store.UserPreferences(), clock)
 	billing := service.NewBillingService(store.Users(), store.Subscriptions(), store.StripeEvents(), stripe, clock, store, cfg.Instance.SelfHosted)
@@ -121,6 +123,8 @@ func run(logger *slog.Logger) error {
 		Snippets:      store.Snippets(),
 		Labels:        store.Labels(),
 		Reactions:     store.Reactions(),
+		Activity:      activityRepo,
+		Bus:           bus,
 		MailProviders: mailProviders,
 		OAuth:         oauth,
 		Unsubscriber:  unsubscribe.New(),
@@ -181,6 +185,15 @@ func run(logger *slog.Logger) error {
 		Logger:            logger,
 	})
 	settingsSvc := service.NewSettingsService(store.UserSettings())
+	teamActivitySvc := service.NewTeamActivityService(service.TeamActivityServiceDeps{
+		Subscriptions: store.Subscriptions(),
+		Accounts:      store.Accounts(),
+		Threads:       store.Threads(),
+		Teams:         postgres.NewTeamRepo(store),
+		Activity:      activityRepo,
+		Clock:         clock,
+		SelfHosted:    cfg.Instance.SelfHosted,
+	})
 
 	// --- instance discovery document (GET /v1/instance) ---
 	mode := httpapi.ModeCloud
@@ -244,7 +257,8 @@ func run(logger *slog.Logger) error {
 		// Realtime collaboration stream (M2.7): in-process SSE fan-out.
 		// Teams is left nil until the team service lands — the stream then
 		// carries only user:<id> events.
-		Events:             eventbus.New(),
+		Events:             bus,
+		TeamActivity:       teamActivitySvc,
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 	})
