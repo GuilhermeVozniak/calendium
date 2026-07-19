@@ -574,6 +574,29 @@ func TestTeamInviteDuplicatePendingConflicts(t *testing.T) {
 	}
 }
 
+func TestTeamInviteSendFailureRevokesInvitation(t *testing.T) {
+	f := newTeamFixture(t, true)
+	f.seedTeam(t, "t1", "owner")
+	f.seedSendAccount(t, "owner")
+	sendErr := errors.New("provider send exploded")
+	f.provider.sendErr = sendErr
+	ctx := context.Background()
+
+	if _, err := f.svc.Invite(ctx, "owner", "t1", "x@example.com", domain.TeamRoleMember); !errors.Is(err, sendErr) {
+		t.Fatalf("Invite with failing send err = %v, want wrapped %v", err, sendErr)
+	}
+	invs, err := f.invites.ListByTeam(ctx, "t1")
+	if err != nil {
+		t.Fatalf("ListByTeam: %v", err)
+	}
+	if len(invs) != 1 {
+		t.Fatalf("stored invitations = %d, want 1 (created then rolled back)", len(invs))
+	}
+	if invs[0].Status != domain.InviteRevoked {
+		t.Fatalf("invitation status after send failure = %s, want revoked (rollback frees the pending-unique index)", invs[0].Status)
+	}
+}
+
 // --- ListInvitations / RevokeInvitation ---------------------------------------
 
 func TestTeamListInvitationsRequiresAdmin(t *testing.T) {
