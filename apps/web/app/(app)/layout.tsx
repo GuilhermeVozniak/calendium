@@ -55,10 +55,10 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Kbd } from '@/components/ui/kbd';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { clearActingAs } from '@/lib/act-as';
-import { authClient, signOut } from '@/lib/auth-client';
+import { authClient } from '@/lib/auth-client';
 import { DEMO_MODE } from '@/lib/demo';
-import { clearOfflineState, startOutboxReplay } from '@/lib/offline/queue';
+import { startOutboxReplay } from '@/lib/offline/queue';
+import { performSignOut } from '@/lib/sign-out';
 import { accountSwitchShortcuts, useChords, useShortcuts } from '@/lib/shortcuts';
 import { ActiveAccountProvider, useActiveAccount } from '@/lib/use-accounts';
 import { useApiOnline } from '@/lib/use-mail';
@@ -399,11 +399,9 @@ function UserMenu({ user }: { user: SessionUser | null }) {
           <DropdownMenuItem
             className="gap-2"
             onSelect={async () => {
-              await signOut();
-              // Never leave the previous user's mail/outbox on this device —
-              // and never let a persisted acting-as selection survive sign-out.
-              clearActingAs();
-              await clearOfflineState();
+              // Shared routine: ends the session and scrubs acting-as +
+              // offline state so nothing survives onto the next user.
+              await performSignOut();
               router.replace('/signin');
             }}
           >

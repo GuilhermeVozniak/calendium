@@ -59,6 +59,21 @@ vi.mock('@/lib/auth-client', () => ({
   signOut: (...args: unknown[]) => signOutMock(...args),
 }));
 
+// The palette signs out through the shared performSignOut routine; its leaf
+// effects are mocked (other exports kept real for transitive importers) so
+// the test can assert BOTH cleanups run on this path.
+const clearActingAsMock = vi.fn();
+vi.mock('@/lib/act-as', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/act-as')>()),
+  clearActingAs: () => clearActingAsMock(),
+}));
+
+const clearOfflineStateMock = vi.fn();
+vi.mock('@/lib/offline/queue', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/offline/queue')>()),
+  clearOfflineState: () => clearOfflineStateMock(),
+}));
+
 const fetchSearchMock = vi.fn();
 vi.mock('@/lib/search-data', () => ({
   fetchSearch: (q: string) => fetchSearchMock(q),
@@ -679,12 +694,16 @@ describe('CommandPalette — calendar templates & sets', () => {
 });
 
 describe('CommandPalette — account', () => {
-  it('signs out and redirects to /signin', async () => {
+  it('signs out, clears acting-as AND offline state, and redirects to /signin', async () => {
     const user = userEvent.setup();
     renderPalette();
     await openPalette();
     await user.click(screen.getByText('Sign out'));
     await waitFor(() => expect(signOutMock).toHaveBeenCalledTimes(1));
+    // The palette path must scrub the same state as the user-menu path —
+    // no path may leave the previous user's outbox or acting-as behind.
+    await waitFor(() => expect(clearActingAsMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(clearOfflineStateMock).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(replaceMock).toHaveBeenCalledWith('/signin'));
   });
 });

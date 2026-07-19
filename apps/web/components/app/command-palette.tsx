@@ -65,9 +65,8 @@ import { fetchCalendarSets } from '@/lib/set-data';
 import type { CalendarView } from '@/lib/calendar-views';
 import { VIEW_KEYS } from '@/lib/calendar-views';
 import { dispatchMailCommand, queueMailCommand, type MailCommand } from '@/lib/mail-utils';
-import { clearActingAs } from '@/lib/act-as';
-import { signOut } from '@/lib/auth-client';
 import { fetchSearch } from '@/lib/search-data';
+import { performSignOut } from '@/lib/sign-out';
 import { MOD_KEY, useShortcuts } from '@/lib/shortcuts';
 import { teachShortcut } from '@/lib/shortcut-hints';
 import { fetchEventTemplates } from '@/lib/template-data';
@@ -595,9 +594,9 @@ export function CommandPalette() {
           <CommandItem
             onSelect={() =>
               run(async () => {
-                await signOut();
-                // Acting-as never survives sign-out.
-                clearActingAs();
+                // Shared routine: ends the session and scrubs acting-as +
+                // offline state (this path used to skip the offline wipe).
+                await performSignOut();
                 router.replace('/signin');
               })
             }
