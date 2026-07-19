@@ -719,10 +719,17 @@ function dropReaction(m: Message, emoji: string): Message {
   return { ...m, reactions: m.reactions.filter((r) => r.emoji !== emoji) };
 }
 
-async function undoTinyReply(draftId: string): Promise<void> {
+/**
+ * Undoes a just-sent tiny reply. On success, `onUndone` flips the reaction
+ * chip's cached `delivery` back to 'local' — the message is back in drafts,
+ * so the chip claiming it was "sent" would now be a lie (M2.5 review fix,
+ * MINOR f).
+ */
+async function undoTinyReply(draftId: string, onUndone: () => void): Promise<void> {
   try {
     await getApiClient().unsendDraft(draftId);
     toast.success('Send undone — the message is back in your drafts.');
+    onUndone();
   } catch (err) {
     if (err instanceof ApiRequestError && err.status === 409) {
       toast.error('Too late — that message already went out.');
@@ -736,12 +743,13 @@ async function undoTinyReply(draftId: string): Promise<void> {
  * Surfaces the undo-capable toast the moment a reaction's response reports a
  * real tiny-reply send — draftId is only ever non-null when the backend's
  * OBSERVED delivery was "sent" (see mail.go ReactToMessage), so this never
- * fires on a merely-requested-but-undelivered reply.
+ * fires on a merely-requested-but-undelivered reply. `onUndone` is forwarded
+ * to undoTinyReply to reconcile the chip if the undo succeeds.
  */
-function notifyTinyReply(draftId: string | null): void {
+function notifyTinyReply(draftId: string | null, onUndone: () => void): void {
   if (!draftId) return;
   toast.success('Sent a tiny reply', {
-    action: { label: 'Undo', onClick: () => void undoTinyReply(draftId) },
+    action: { label: 'Undo', onClick: () => void undoTinyReply(draftId, onUndone) },
   });
 }
 
@@ -783,12 +791,16 @@ export function useReactToMessage() {
     if (DEMO_MODE) {
       const result = mockReactToMessage(messageId, emoji, sendReply);
       patchMessage(threadId, messageId, (m) => upsertReaction(m, result.reaction));
-      notifyTinyReply(result.draftId);
+      notifyTinyReply(result.draftId, () =>
+        patchMessage(threadId, messageId, (m) => upsertReaction(m, { ...result.reaction, delivery: 'local' }))
+      );
     }
     try {
       const result = await getApiClient().reactToMessage(messageId, emoji, sendReply);
       patchMessage(threadId, messageId, (m) => upsertReaction(m, result.reaction));
-      notifyTinyReply(result.draftId);
+      notifyTinyReply(result.draftId, () =>
+        patchMessage(threadId, messageId, (m) => upsertReaction(m, { ...result.reaction, delivery: 'local' }))
+      );
     } catch {
       if (DEMO_MODE) return;
       queryClient.setQueryData(['thread', threadId], previous);
@@ -987,9 +999,10 @@ export function useAttachmentSearch(params: AttachmentSearchParams) {
 
 /**
  * Parses filename="..." out of a Content-Disposition header value (RFC 6266
- * quoted-string form — matches escapeQuotedString on the backend).
+ * quoted-string form — matches escapeQuotedString on the backend). Exported
+ * for direct unit testing (see use-mail-attachments.test.ts).
  */
-function parseContentDispositionFilename(header: string | null): string | null {
+export function parseContentDispositionFilename(header: string | null): string | null {
   if (!header) return null;
   const match = header.match(/filename="((?:[^"\\]|\\.)*)"/);
   if (!match) return null;
