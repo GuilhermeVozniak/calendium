@@ -5,6 +5,8 @@ import type {
   BusyInterval,
   MeetingPoll,
   PollInput,
+  Team,
+  TeamMember,
   UserSettings,
 } from '@calendium/shared';
 
@@ -151,6 +153,29 @@ export async function fetchFreeBusy(
     return await getApiClient().getFreeBusy(emails, from, to);
   } catch (err) {
     if (DEMO_MODE) return schedulingMock.getFreeBusy(emails, from, to);
+    throw err;
+  }
+}
+
+// --- Team booking links (M2.7 Task 14) --------------------------------------
+
+/** Teams the signed-in user belongs to (team picker in the link editor). */
+export async function fetchSchedulingTeams(): Promise<Team[]> {
+  try {
+    return await getApiClient().listTeams();
+  } catch (err) {
+    if (DEMO_MODE) return [];
+    throw err;
+  }
+}
+
+/** Member list of one team; the server 404s for non-members. */
+export async function fetchTeamMembers(teamId: string): Promise<TeamMember[]> {
+  try {
+    const { members } = await getApiClient().getTeam(teamId);
+    return members;
+  } catch (err) {
+    if (DEMO_MODE) return [];
     throw err;
   }
 }

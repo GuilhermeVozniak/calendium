@@ -818,3 +818,19 @@ export interface InstanceInfo {
   vapidPublicKey?: string;
   features: InstanceFeatures;
 }
+
+// ---------------------------------------------------------------------------
+// Team booking links (M2.7 Task 14) — declaration merging augments the M2.4
+// scheduling interfaces above (appended here so parallel tasks merge cleanly).
+// ---------------------------------------------------------------------------
+
+export interface BookingLink {
+  /**
+   * Team scope: set = collective team link whose slots intersect the
+   * creator's and every listed member's availability, inviting all members
+   * on each confirmed booking. Null/absent = personal link.
+   */
+  teamId?: string | null;
+  /** Team member user IDs included in the collective intersection (creator implicit). */
+  memberUserIds?: string[];
+}

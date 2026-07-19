@@ -312,6 +312,13 @@ type BookingLinkInput struct {
 	RespectWorkingHours bool                        `json:"respectWorkingHours"`
 	AddConferencing     bool                        `json:"addConferencing"`
 	Active              bool                        `json:"active"`
+	// TeamID scopes the link to a team (M2.7 Task 14, collective
+	// availability); nil/empty = personal link.
+	TeamID *string `json:"teamId,omitempty"`
+	// MemberUserIDs lists team members to include; requires TeamID. Each must
+	// be a member of the team and have shared free/busy with it (or be the
+	// creator, who is implicit).
+	MemberUserIDs []string `json:"memberUserIds,omitempty"`
 }
 
 // PublicBookingPage is the public GET /v1/public/booking/{slug} document —

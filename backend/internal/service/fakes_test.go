@@ -853,6 +853,13 @@ type fakeEventRepo struct {
 	byID  map[string]domain.Event
 	order []string
 
+	// calendars/accounts, when BOTH set, scope ListInRange by resolving each
+	// event → calendar → account → user (mirrors the SQL join; needed by the
+	// Task 14 team-busy tests where two users' mirrors coexist). Left nil,
+	// ListInRange ignores userID (existing behavior for older tests).
+	calendars *fakeCalendarRepo
+	accounts  *fakeAccountRepo
+
 	searchResult        []domain.Event
 	searchErr           error
 	deleteByProviderErr error
@@ -905,6 +912,16 @@ func (r *fakeEventRepo) ListInRange(_ context.Context, userID string, from, to t
 		}
 		if len(filter) > 0 {
 			if _, in := filter[e.CalendarID]; !in {
+				continue
+			}
+		}
+		if r.calendars != nil && r.accounts != nil {
+			c, ok := r.calendars.byID[e.CalendarID]
+			if !ok {
+				continue
+			}
+			a, ok := r.accounts.byID[c.AccountID]
+			if !ok || a.UserID != userID {
 				continue
 			}
 		}

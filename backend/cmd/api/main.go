@@ -180,6 +180,8 @@ func run(logger *slog.Logger) error {
 		Polls:             store.Polls(),
 		Proposals:         store.TimeProposals(),
 		Settings:          store.UserSettings(),
+		Teams:             postgres.NewTeamRepo(store),
+		Shares:            postgres.NewCalendarShareRepo(store),
 		Tx:                store,
 		CalendarProviders: calendarProviders,
 		MailProviders:     mailProviders,

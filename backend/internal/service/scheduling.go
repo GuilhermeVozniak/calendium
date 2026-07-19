@@ -26,16 +26,22 @@ const maxPublicSlotsWindow = 31 * 24 * time.Hour
 // public booking page/slots/booking, meeting polls, propose-new-time, and
 // guest free/busy.
 type SchedulingServiceDeps struct {
-	Subscriptions     port.SubscriptionRepo
-	Users             port.UserRepo
-	Accounts          port.AccountRepo
-	Calendars         port.CalendarRepo
-	Events            port.EventRepo
-	Links             port.BookingLinkRepo
-	Bookings          port.BookingRepo
-	Polls             port.PollRepo
-	Proposals         port.TimeProposalRepo
-	Settings          port.UserSettingsRepo
+	Subscriptions port.SubscriptionRepo
+	Users         port.UserRepo
+	Accounts      port.AccountRepo
+	Calendars     port.CalendarRepo
+	Events        port.EventRepo
+	Links         port.BookingLinkRepo
+	Bookings      port.BookingRepo
+	Polls         port.PollRepo
+	Proposals     port.TimeProposalRepo
+	Settings      port.UserSettingsRepo
+	// Teams + Shares power team booking links (M2.7 Task 14): Teams is the
+	// membership authz primitive (GetMember → 404 for non-members), Shares
+	// verifies each member's ≥ free_busy calendar grant to the link's team.
+	// Nil disables team links; personal links are unaffected.
+	Teams             port.TeamRepo
+	Shares            port.CalendarShareRepo
 	Tx                port.TxRunner
 	CalendarProviders map[domain.Provider]port.CalendarProvider
 	MailProviders     map[domain.Provider]port.MailProvider
@@ -65,10 +71,13 @@ type SchedulingService struct {
 	settings  port.UserSettingsRepo
 	polls     port.PollRepo
 	proposals port.TimeProposalRepo
-	cal       map[domain.Provider]port.CalendarProvider
-	mail      map[domain.Provider]port.MailProvider
-	tokens    tokenSource
-	clock     port.Clock
+	// teams/shares back team booking links (scheduling_team.go); may be nil.
+	teams  port.TeamRepo
+	shares port.CalendarShareRepo
+	cal    map[domain.Provider]port.CalendarProvider
+	mail   map[domain.Provider]port.MailProvider
+	tokens tokenSource
+	clock  port.Clock
 	// tx wraps the booking pipeline's confirm step (event upsert + hold
 	// promotion) in a single transaction (scheduling_booking.go).
 	tx port.TxRunner
@@ -93,6 +102,8 @@ func NewSchedulingService(d SchedulingServiceDeps) *SchedulingService {
 		settings:  d.Settings,
 		polls:     d.Polls,
 		proposals: d.Proposals,
+		teams:     d.Teams,
+		shares:    d.Shares,
 		cal:       d.CalendarProviders,
 		mail:      d.MailProviders,
 		tokens:    tokenSource{accounts: d.Accounts, oauth: d.OAuth, clock: d.Clock},
@@ -199,9 +210,14 @@ func (s *SchedulingService) CreateLink(ctx context.Context, userID string, in po
 	if _, err := s.ownedWritableCalendar(ctx, userID, in.CalendarID); err != nil {
 		return domain.BookingLink{}, err
 	}
+	teamID, memberIDs, err := s.validateTeamLink(ctx, userID, in)
+	if err != nil {
+		return domain.BookingLink{}, err
+	}
 	link := bookingLinkFromInput(in)
 	link.ID = newID()
 	link.UserID = userID
+	link.TeamID, link.MemberUserIDs = teamID, memberIDs
 	return s.links.Create(ctx, link)
 }
 
@@ -219,10 +235,15 @@ func (s *SchedulingService) UpdateLink(ctx context.Context, userID, linkID strin
 	if _, err := s.ownedWritableCalendar(ctx, userID, in.CalendarID); err != nil {
 		return domain.BookingLink{}, err
 	}
+	teamID, memberIDs, err := s.validateTeamLink(ctx, userID, in)
+	if err != nil {
+		return domain.BookingLink{}, err
+	}
 	updated := bookingLinkFromInput(in)
 	updated.ID = existing.ID
 	updated.UserID = userID
 	updated.CreatedAt = existing.CreatedAt
+	updated.TeamID, updated.MemberUserIDs = teamID, memberIDs
 	if err := s.links.Update(ctx, updated); err != nil {
 		return domain.BookingLink{}, err
 	}
@@ -354,6 +375,16 @@ func (s *SchedulingService) PublicSlots(ctx context.Context, slug string, from, 
 	busy, err := s.ownerBusy(ctx, link.UserID, from, to)
 	if err != nil {
 		return nil, err
+	}
+	if link.TeamID != nil {
+		// Team link: collective availability — union in every (still-)member's
+		// busy so slots are the intersection of everyone's free time
+		// (scheduling_team.go).
+		teamBusy, err := s.teamMembersBusy(ctx, link, from, to)
+		if err != nil {
+			return nil, err
+		}
+		busy = append(busy, teamBusy...)
 	}
 	active, err := s.bookings.ListActiveInRange(ctx, link.ID, from, to)
 	if err != nil {
