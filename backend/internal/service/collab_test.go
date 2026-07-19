@@ -359,6 +359,39 @@ func TestCommentAddMentionPushPerDeviceAndBusEvents(t *testing.T) {
 	}
 }
 
+func TestCommentAddPushFailureDoesNotFailWrite(t *testing.T) {
+	// Push delivery is strictly best-effort: a failing push provider must
+	// never fail (or roll back) the comment write itself.
+	ctx := context.Background()
+	f := newCollabFixture(t)
+	f.seedCollabTeam(t, "t1", "owner")
+	f.seedMemberUser(t, "t1", "bob", domain.TeamRoleMember)
+	f.seedOwnedThread(t, "th1", "owner")
+	f.devices.Upsert(ctx, domain.NotificationDevice{UserID: "bob", Token: "tb"})
+	f.push.err = errors.New("push down")
+
+	c, err := f.svc.AddComment(ctx, "owner", "th1", port.CommentInput{TeamID: "t1", Body: "fyi @bob@example.com"})
+	if err != nil {
+		t.Fatalf("AddComment with failing push: %v, want nil", err)
+	}
+	if len(c.Mentions) != 1 || c.Mentions[0] != "bob" {
+		t.Fatalf("mentions = %v, want [bob]", c.Mentions)
+	}
+	// The comment is persisted despite the push failure.
+	stored, ok := f.comments.byID[c.ID]
+	if !ok || stored.DeletedAt != nil {
+		t.Fatalf("comment %s not persisted after push failure", c.ID)
+	}
+	if stored.Body != "fyi @bob@example.com" || stored.ThreadID != "th1" || stored.TeamID != "t1" {
+		t.Fatalf("persisted comment = %+v", stored)
+	}
+	// The fan-out was attempted (and failed) — proving the error was swallowed,
+	// not skipped.
+	if len(f.push.sent) != 1 {
+		t.Fatalf("push attempts = %d, want 1", len(f.push.sent))
+	}
+}
+
 func TestCommentAddBodyValidation(t *testing.T) {
 	ctx := context.Background()
 	f := newCollabFixture(t)
