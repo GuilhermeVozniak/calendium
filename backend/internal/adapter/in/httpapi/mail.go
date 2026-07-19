@@ -16,9 +16,10 @@ import (
 func (s *server) handleListThreads(w http.ResponseWriter, r *http.Request) {
 	qs := r.URL.Query()
 	q := port.ThreadQuery{
-		LabelID: qs.Get("labelId"),
-		Query:   qs.Get("q"),
-		Cursor:  qs.Get("cursor"),
+		AccountID: qs.Get("accountId"),
+		LabelID:   qs.Get("labelId"),
+		Query:     qs.Get("q"),
+		Cursor:    qs.Get("cursor"),
 	}
 	if v := qs.Get("split"); v != "" {
 		split, err := domain.ParseInboxSplit(v)

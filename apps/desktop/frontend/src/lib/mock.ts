@@ -148,9 +148,10 @@ function seedToThread(seed: ThreadSeed): Thread {
   };
 }
 
-export function mockThreads(split?: InboxSplit): Thread[] {
+export function mockThreads(split?: InboxSplit, accountId?: string): Thread[] {
   const all = threadSeeds.map(seedToThread);
-  return split ? all.filter((t) => t.split === split) : all;
+  const bySplit = split ? all.filter((t) => t.split === split) : all;
+  return accountId ? bySplit.filter((t) => t.accountId === accountId) : bySplit;
 }
 
 export function mockThread(threadId: string): { thread: Thread; messages: Message[] } {

@@ -191,6 +191,8 @@ export class ApiClient {
     q?: string;
     cursor?: string;
     limit?: number;
+    /** Scope the list to one connected account (multi-account switching). */
+    accountId?: string;
   }) {
     const qs = new URLSearchParams();
     if (params.split) qs.set('split', params.split);
@@ -199,6 +201,7 @@ export class ApiClient {
     if (params.q) qs.set('q', params.q);
     if (params.cursor) qs.set('cursor', params.cursor);
     if (params.limit) qs.set('limit', String(params.limit));
+    if (params.accountId) qs.set('accountId', params.accountId);
     return this.request<Page<Thread>>('GET', `/v1/mail/threads?${qs}`);
   }
   getThread(threadId: string) {

@@ -318,6 +318,7 @@ describe('query-string building', () => {
       q: 'invoice',
       cursor: 'cur1',
       limit: 25,
+      accountId: 'acc1',
     });
     const url = new URL(calls[0].url);
     expect(url.pathname).toBe('/v1/mail/threads');
@@ -328,6 +329,7 @@ describe('query-string building', () => {
       q: 'invoice',
       cursor: 'cur1',
       limit: '25',
+      accountId: 'acc1',
     });
   });
 

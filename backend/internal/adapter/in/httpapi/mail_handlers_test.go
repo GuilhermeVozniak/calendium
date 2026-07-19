@@ -20,12 +20,15 @@ func TestListThreadsParsing(t *testing.T) {
 	}{
 		{
 			name:       "all filters parse",
-			query:      "?labelId=lbl1&q=hello&cursor=cur1&split=important&view=starred&limit=25",
+			query:      "?labelId=lbl1&q=hello&cursor=cur1&split=important&view=starred&limit=25&accountId=acc1",
 			wantStatus: http.StatusOK,
 			wantCall:   true,
 			check: func(t *testing.T, q port.ThreadQuery) {
 				if q.LabelID != "lbl1" || q.Query != "hello" || q.Cursor != "cur1" {
 					t.Fatalf("string filters = %+v", q)
+				}
+				if q.AccountID != "acc1" {
+					t.Fatalf("accountId = %q, want acc1", q.AccountID)
 				}
 				if q.Split != domain.SplitImportant {
 					t.Fatalf("split = %q, want %q", q.Split, domain.SplitImportant)
@@ -39,12 +42,23 @@ func TestListThreadsParsing(t *testing.T) {
 			},
 		},
 		{
+			name:       "account filter parses alone",
+			query:      "?accountId=acc1",
+			wantStatus: http.StatusOK,
+			wantCall:   true,
+			check: func(t *testing.T, q port.ThreadQuery) {
+				if q.AccountID != "acc1" {
+					t.Fatalf("accountId = %q, want acc1", q.AccountID)
+				}
+			},
+		},
+		{
 			name:       "no optional params leaves zero values",
 			query:      "",
 			wantStatus: http.StatusOK,
 			wantCall:   true,
 			check: func(t *testing.T, q port.ThreadQuery) {
-				if q.Split != "" || q.View != "" || q.Limit != 0 || q.LabelID != "" {
+				if q.Split != "" || q.View != "" || q.Limit != 0 || q.LabelID != "" || q.AccountID != "" {
 					t.Fatalf("expected zero-valued query, got %+v", q)
 				}
 			},
