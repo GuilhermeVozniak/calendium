@@ -235,6 +235,16 @@ func run(logger *slog.Logger) error {
 		SelfHost: cfg.Instance.SelfHosted,
 	})
 
+	// EA delegation mode (M2.7 Task 15): explicit grants + fail-closed
+	// act-as authorization. Delegated mutations land in the unified
+	// audit_entries trail (Task 12's AuditRepo).
+	delegations := service.NewDelegationService(service.DelegationServiceDeps{
+		Delegations: postgres.NewDelegationRepo(store),
+		Audit:       postgres.NewAuditRepo(store),
+		Users:       postgres.NewUserDirectory(store),
+		Clock:       clock,
+	})
+
 	// --- instance discovery document (GET /v1/instance) ---
 	mode := httpapi.ModeCloud
 	if cfg.Instance.SelfHosted {
@@ -300,8 +310,10 @@ func run(logger *slog.Logger) error {
 		// M2.7 collaboration: team service + in-process SSE fan-out. The
 		// stream scopes each subscriber to user:<id> plus the caller's real
 		// team:<id> memberships resolved through Teams.
-		Teams:              teams,
-		Events:             bus,
+		Teams:  teams,
+		Events: bus,
+		// M2.7 Task 15: EA delegation grants + act-as + audit surface.
+		Delegations:        delegations,
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 	})

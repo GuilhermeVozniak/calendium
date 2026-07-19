@@ -50,6 +50,10 @@ type Deps struct {
 	// Collab is the M2.7 collaboration surface (tokenized live thread
 	// shares + team thread-comments). When nil those routes answer 501.
 	Collab port.CollabService
+	// Delegations manages EA grants and authorizes X-Calendium-Act-As
+	// delegated requests (M2.7 Task 15). When nil the delegation routes
+	// answer 501 and any act-as request is rejected (fail closed).
+	Delegations port.DelegationService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -99,7 +103,7 @@ func New(deps Deps) http.Handler {
 
 	// Authenticated surface.
 	authed := func(pattern string, h http.HandlerFunc) {
-		mux.Handle(pattern, s.requireAuth(h))
+		mux.Handle(pattern, s.requireAuth(s.withActAs(h)))
 	}
 
 	authed("GET /v1/me", s.handleMe)
@@ -250,6 +254,13 @@ func New(deps Deps) http.Handler {
 	authed("POST /v1/mail/threads/{id}/comments", s.handleAddComment)
 	authed("PATCH /v1/comments/{id}", s.handleUpdateComment)
 	authed("DELETE /v1/comments/{id}", s.handleDeleteComment)
+
+	// M2.7 Task 15: EA delegation grants + audit log.
+	authed("POST /v1/delegations", s.handleCreateDelegation)
+	authed("GET /v1/delegations", s.handleListDelegations)
+	authed("POST /v1/delegations/{id}/accept", s.handleAcceptDelegation)
+	authed("DELETE /v1/delegations/{id}", s.handleRevokeDelegation)
+	authed("GET /v1/delegations/audit", s.handleDelegationAudit)
 
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins)
