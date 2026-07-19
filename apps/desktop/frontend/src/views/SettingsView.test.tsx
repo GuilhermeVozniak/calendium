@@ -81,10 +81,14 @@ vi.mock('@/lib/auth', () => ({
   signOut: vi.fn(),
 }));
 
+const setGlobalShortcutsEnabledMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+
 vi.mock('@/lib/wails', () => ({
   desktop: { GetAppVersion: () => Promise.resolve('0.1.0'), OpenExternal: vi.fn() },
   isDesktop: false,
   onDeepLink: () => () => {},
+  globalShortcutsEnabled: () => true,
+  setGlobalShortcutsEnabled: setGlobalShortcutsEnabledMock,
 }));
 
 vi.mock('@/lib/toast', () => ({
@@ -141,6 +145,21 @@ describe('SettingsView — signature & auto-BCC', () => {
 
     await waitFor(() => expect(setSignatureMock).toHaveBeenCalledWith('acc_google', '<p>Ada Lovelace</p>'));
     await waitFor(() => expect(setAutoBccMock).toHaveBeenCalledWith('acc_google', ['archive@calendium.app']));
+  });
+
+  it('renders the global-shortcuts toggle on (persisted default) and flips the host on change', async () => {
+    renderSettings();
+    const toggle = (await screen.findByLabelText(
+      'Enable global shortcuts'
+    )) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+
+    await userEvent.click(toggle);
+    expect(toggle.checked).toBe(false);
+    expect(setGlobalShortcutsEnabledMock).toHaveBeenCalledWith(false);
+
+    await userEvent.click(toggle);
+    expect(setGlobalShortcutsEnabledMock).toHaveBeenCalledWith(true);
   });
 
   it('pre-fills the signature textarea from the account, round-tripped to plain text', async () => {

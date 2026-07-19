@@ -13,6 +13,7 @@ import {
   ChevronRight,
   CreditCard,
   ExternalLink,
+  Keyboard,
   Loader2,
   LogOut,
   Mail,
@@ -39,13 +40,22 @@ import {
 } from '@/lib/mock';
 import { useServerConfig, webOrigin } from '@/lib/server-config';
 import { errorMessage, toast } from '@/lib/toast';
-import { desktop, isDesktop, onDeepLink } from '@/lib/wails';
+import {
+  desktop,
+  globalShortcutsEnabled,
+  isDesktop,
+  onDeepLink,
+  setGlobalShortcutsEnabled,
+} from '@/lib/wails';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
 
 const SPLIT_OPTIONS: InboxSplit[] = ['important', 'vip', 'team', 'calendar', 'news', 'social', 'other'];
 const MAX_CLASSIFIERS = 20;
+
+// Task 9: shortcut labels only — the actual chord is chosen by the Go host.
+const isMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.userAgent);
 
 function validateClassifier(form: { name: string; prompt: string; targetSplit: string; labelName: string }): string | null {
   if (!form.name.trim()) return 'Give the classifier a name.';
@@ -362,6 +372,14 @@ export function SettingsView() {
   const billingEnabled = config?.features?.billing ?? false;
   const [connecting, setConnecting] = useState<Provider | null>(null);
 
+  // --- Task 9: global shortcuts toggle (persisted; flips the host live) ---
+  const [globalShortcuts, setGlobalShortcuts] = useState(() => globalShortcutsEnabled());
+  function handleGlobalShortcutsChange(enabled: boolean) {
+    setGlobalShortcuts(enabled);
+    void setGlobalShortcutsEnabled(enabled);
+  }
+  // --- end Task 9 ---
+
   const { data: user } = useQuery({
     queryKey: ['me'],
     queryFn: () =>
@@ -626,6 +644,27 @@ export function SettingsView() {
             </div>
           </Section>
         )}
+
+        {/* --- Task 9: global shortcuts toggle --- */}
+        <Section title="Shortcuts">
+          <div className="flex items-center gap-3 p-3">
+            <Keyboard className="size-4 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">Global shortcuts</div>
+              <p className="text-xs text-muted-foreground">
+                {isMac ? '⌘⇧C composes, ⌘⇧K searches' : 'Ctrl+Shift+C composes, Ctrl+Shift+K searches'}{' '}
+                — system-wide, even while Calendium is in the background.
+              </p>
+            </div>
+            <input
+              type="checkbox"
+              checked={globalShortcuts}
+              onChange={(e) => handleGlobalShortcutsChange(e.target.checked)}
+              aria-label="Enable global shortcuts"
+            />
+          </div>
+        </Section>
+        {/* --- end Task 9 --- */}
 
         <Section title="About">
           <div className="flex flex-col gap-1 p-3 text-xs text-muted-foreground">
