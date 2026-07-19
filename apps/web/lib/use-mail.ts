@@ -29,6 +29,7 @@ import { getApiClient } from '@/lib/api';
 import { getAccessToken } from '@/lib/auth-client';
 import { DEMO_MODE } from '@/lib/demo';
 import { env } from '@/lib/env';
+import { reportApiReachable } from '@/lib/offline/connectivity';
 import {
   applyMockAction,
   applyMockLabel,
@@ -136,8 +137,13 @@ export function useApiOnline(): boolean {
     queryFn: async () => {
       try {
         await getApiClient().getMe();
+        // Fold real reachability into the connectivity tracker — except in
+        // demo mode, where the API is unreachable by design and demo data is
+        // served locally (see lib/offline/connectivity.ts).
+        if (!DEMO_MODE) reportApiReachable(true);
         return true;
       } catch {
+        if (!DEMO_MODE) reportApiReachable(false);
         return false;
       }
     },
