@@ -44,6 +44,9 @@ type Deps struct {
 	// to the caller's team topics. Optional until the M2.7 team service is
 	// wired: when nil the stream carries only user:<id> events.
 	Teams TeamLister
+	// Collab is the M2.7 shared-conversations surface (tokenized live
+	// thread shares; comments/activity grow it in later tasks).
+	Collab port.CollabService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -84,6 +87,12 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("POST /v1/public/booking/{slug}/bookings", s.rateLimited(publicWrite, s.handlePublicBook))
 	mux.HandleFunc("GET /v1/public/polls/{token}", s.rateLimited(publicRead, s.handlePublicPoll))
 	mux.HandleFunc("POST /v1/public/polls/{token}/votes", s.rateLimited(publicWrite, s.handlePublicPollVote))
+
+	// M2.7 shared conversations: tokenized share links. Registered OUTSIDE
+	// authed(...) (the Stripe-webhook precedent): external shares are fully
+	// public, team shares re-check an optional bearer inside the handler.
+	mux.HandleFunc("GET /v1/shared/threads/{token}", s.rateLimited(publicRead, s.handleGetSharedThread))
+	mux.HandleFunc("GET /v1/shared/threads/{token}/stream", s.rateLimited(publicRead, s.handleSharedThreadStream))
 
 	// Authenticated surface.
 	authed := func(pattern string, h http.HandlerFunc) {
@@ -142,6 +151,11 @@ func New(deps Deps) http.Handler {
 	authed("GET /v1/mail/contacts/{email}", s.handleGetContact)
 	authed("POST /v1/mail/messages/{id}/reactions", s.handleReactToMessage)
 	authed("DELETE /v1/mail/messages/{id}/reactions/{emoji}", s.handleRemoveReaction)
+
+	// M2.7: shared conversations (owner-side share management).
+	authed("POST /v1/mail/threads/{id}/share", s.handleShareThread)
+	authed("GET /v1/mail/threads/{id}/shares", s.handleListThreadShares)
+	authed("DELETE /v1/mail/threads/{id}/shares/{shareId}", s.handleRevokeThreadShare)
 
 	authed("GET /v1/calendars", s.handleListCalendars)
 	authed("PATCH /v1/calendars/{id}", s.handleUpdateCalendar)

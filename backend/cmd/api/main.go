@@ -181,6 +181,17 @@ func run(logger *slog.Logger) error {
 		Logger:            logger,
 	})
 	settingsSvc := service.NewSettingsService(store.UserSettings())
+	// M2.7 Task 7: shared conversations (tokenized live thread shares).
+	collab := service.NewCollabService(service.CollabServiceDeps{
+		Shares:   postgres.NewThreadShareRepo(store),
+		Teams:    postgres.NewTeamRepo(store),
+		Threads:  store.Threads(),
+		Messages: store.Messages(),
+		Accounts: store.Accounts(),
+		Subs:     store.Subscriptions(),
+		Clock:    clock,
+		SelfHost: cfg.Instance.SelfHosted,
+	})
 
 	// --- instance discovery document (GET /v1/instance) ---
 	mode := httpapi.ModeCloud
@@ -240,6 +251,7 @@ func run(logger *slog.Logger) error {
 		Prefs:      prefs,
 		Scheduling: scheduling,
 		Settings:   settingsSvc,
+		Collab:     collab,
 		Payments:   stripe,
 		// Realtime collaboration stream (M2.7): in-process SSE fan-out.
 		// Teams is left nil until the team service lands — the stream then

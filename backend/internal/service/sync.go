@@ -38,6 +38,12 @@ type SyncServiceDeps struct {
 	// rule set (see hasClassifiers in applyMailPage).
 	Classifiers port.ClassifierRepo
 	Clock       port.Clock
+	// Shares + Bus are optional (M2.7 Task 7): when both are set, a thread
+	// that receives new messages fans {Topic: "share:<id>", Type:
+	// "share.updated"} out for each of its live shares (ids only, never
+	// content). Nil disables the hook entirely.
+	Shares port.ThreadShareRepo
+	Bus    port.EventBus
 }
 
 // SyncService implements port.SyncService: incremental provider sync (with
@@ -60,6 +66,8 @@ type SyncService struct {
 	aiJobs      port.AiJobRepo
 	classifiers port.ClassifierRepo
 	clock       port.Clock
+	shares      port.ThreadShareRepo // optional (M2.7 share fan-out)
+	bus         port.EventBus        // optional (M2.7 share fan-out)
 }
 
 var _ port.SyncService = (*SyncService)(nil)
@@ -82,6 +90,8 @@ func NewSyncService(d SyncServiceDeps) *SyncService {
 		aiJobs:      d.AiJobs,
 		classifiers: d.Classifiers,
 		clock:       d.Clock,
+		shares:      d.Shares,
+		bus:         d.Bus,
 	}
 }
 
@@ -282,7 +292,9 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 		}
 	}
 
-	// 4. Messages, remapped onto local thread ids.
+	// 4. Messages, remapped onto local thread ids. Threads that receive
+	// messages are collected for the M2.7 share.updated fan-out below.
+	sharedThreads := map[string]struct{}{}
 	for _, im := range page.Messages {
 		m := im.Message
 		m.AccountID = acct.ID
@@ -305,7 +317,9 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 		if _, err := s.messages.Upsert(ctx, m); err != nil {
 			return err
 		}
+		sharedThreads[m.ThreadID] = struct{}{}
 	}
+	s.publishShareUpdates(ctx, sharedThreads)
 
 	// 5. Push notifications for new important/vip mail (best-effort).
 	for _, t := range notify {
@@ -602,6 +616,7 @@ func (s *SyncService) deliverDraft(ctx context.Context, d domain.Draft) error {
 				RunAfter:  s.clock.Now().Add(24 * time.Hour),
 			})
 		}
+		s.publishShareUpdates(ctx, map[string]struct{}{msg.ThreadID: {}})
 	}
 	// New standalone threads are picked up by the next provider sync.
 	return s.drafts.Delete(ctx, d.ID)
