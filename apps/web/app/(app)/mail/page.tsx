@@ -42,6 +42,7 @@ import { usePrefs } from '@/lib/prefs-data';
 import { useSelfEmails } from '@/lib/use-identity';
 import { MOD_KEY, useChords, useShortcuts } from '@/lib/shortcuts';
 import { useDraftActions, useDrafts, useLabels, useMailActions, useThreadList } from '@/lib/use-mail';
+import { useNextPagePrefetch, usePrefetchNeighbors, useThreadHoverPrefetch } from '@/lib/use-prefetch';
 import { cn } from '@/lib/utils';
 
 const VIEW_TITLES: Record<MailboxView, string> = {
@@ -99,14 +100,15 @@ function MailClient() {
     () => orderSplits(DEFAULT_SPLITS, prefs.data?.prefs.splitOrder ?? []),
     [prefs.data]
   );
-  const { data, isLoading, isError } = useThreadList({
-    split: view ? undefined : split,
-    view: isDrafts ? undefined : (view ?? undefined),
-    q: deferredQ.trim() || undefined,
-    enabled: !isDrafts,
-  });
+  const { data, isLoading, isError, fetchNextPage, hasNextPage, isFetchingNextPage } =
+    useThreadList({
+      split: view ? undefined : split,
+      view: isDrafts ? undefined : (view ?? undefined),
+      q: deferredQ.trim() || undefined,
+      enabled: !isDrafts,
+    });
   const threads = React.useMemo(
-    () => (isDrafts ? [] : (data?.page.items ?? [])),
+    () => (isDrafts ? [] : (data?.items ?? [])),
     [data, isDrafts]
   );
 
@@ -127,6 +129,33 @@ function MailClient() {
   React.useEffect(() => {
     if (selectedId) rowRefs.current.get(selectedId)?.scrollIntoView({ block: 'nearest' });
   }, [selectedId]);
+
+  // --- Preloading (M2.6 Task 7) --------------------------------------------
+  // Hover intent + j/k neighbors warm ['thread', id]; the scroll sentinel
+  // (10th-from-last row) pulls the next cursor page before the user hits the
+  // bottom. All silent, debounced, and skipped while offline (use-prefetch).
+  const { onHoverStart, onHoverEnd } = useThreadHoverPrefetch();
+  usePrefetchNeighbors(threads, selectedId);
+
+  const sentinelId = threads.length > 0 ? threads[Math.max(threads.length - 10, 0)]!.id : null;
+  const [nearEnd, setNearEnd] = React.useState(false);
+  React.useEffect(() => {
+    setNearEnd(false);
+    if (!sentinelId || typeof IntersectionObserver === 'undefined') return;
+    const el = rowRefs.current.get(sentinelId);
+    if (!el) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) setNearEnd(true);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [sentinelId]);
+  useNextPagePrefetch({
+    nearEnd,
+    hasNextPage: hasNextPage ?? false,
+    isFetching: isFetchingNextPage,
+    fetchNextPage,
+  });
 
   // --- Bulk range selection --------------------------------------------------
   const [selection, setSelection] = React.useState(EMPTY_SELECTION);
@@ -651,6 +680,8 @@ function MailClient() {
                   bulkSelected={selection.ids.has(thread.id)}
                   onSelect={() => setSelectedId(thread.id)}
                   onOpen={() => openThread(thread.id)}
+                  onHoverStart={() => onHoverStart(thread.id)}
+                  onHoverEnd={onHoverEnd}
                 />
               ))}
             </ul>
@@ -762,10 +793,12 @@ interface ThreadRowProps {
   bulkSelected: boolean;
   onSelect: () => void;
   onOpen: () => void;
+  onHoverStart: () => void;
+  onHoverEnd: () => void;
 }
 
 const ThreadRow = React.forwardRef<HTMLLIElement, ThreadRowProps>(function ThreadRow(
-  { thread, selfEmails, selected, open, compact, bulkSelected, onSelect, onOpen },
+  { thread, selfEmails, selected, open, compact, bulkSelected, onSelect, onOpen, onHoverStart, onHoverEnd },
   ref
 ) {
   return (
@@ -773,7 +806,11 @@ const ThreadRow = React.forwardRef<HTMLLIElement, ThreadRowProps>(function Threa
       <button
         type="button"
         onClick={onOpen}
-        onMouseEnter={onSelect}
+        onMouseEnter={() => {
+          onSelect();
+          onHoverStart();
+        }}
+        onMouseLeave={onHoverEnd}
         className={cn(
           'relative flex w-full items-center gap-2.5 border-b px-4 py-0 text-left',
           compact ? 'h-14' : 'h-11',

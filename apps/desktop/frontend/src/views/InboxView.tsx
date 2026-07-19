@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 import { api, orMock } from '@/lib/api';
 import { mockOpens, mockThreads } from '@/lib/mock';
 import { isNetworkError, queueOffline, useQueuedCount } from '@/lib/offline';
+import { usePrefetchNeighbors, useThreadHoverPrefetch } from '@/lib/prefetch';
 import { isDemoMode } from '@/lib/server-config';
 import {
   ACTION_INVERSE,
@@ -61,17 +62,23 @@ function ThreadRow({
   active,
   bulkSelected,
   onClick,
+  onHoverStart,
+  onHoverEnd,
 }: {
   thread: Thread;
   active: boolean;
   bulkSelected: boolean;
   onClick: () => void;
+  onHoverStart: () => void;
+  onHoverEnd: () => void;
 }) {
   const sender = thread.participants[0];
   return (
     <button
       type="button"
       onClick={onClick}
+      onMouseEnter={onHoverStart}
+      onMouseLeave={onHoverEnd}
       className={cn(
         'flex w-full flex-col gap-0.5 border-b px-3 py-2 text-left transition-colors select-none',
         bulkSelected ? 'bg-primary/10' : active ? 'bg-accent' : 'hover:bg-accent/50'
@@ -194,6 +201,13 @@ export function InboxView({ split }: { split: InboxSplit }) {
 
   const selected = threads[cursor] ?? null;
   const orderedIds = threads.map((t) => t.id);
+
+  // Preloading (M2.6 Task 7): hover intent + j/k neighbors warm the
+  // ['thread', id] cache ThreadPane reads. Debounced, silent, offline-aware
+  // (lib/prefetch.ts). The desktop list is non-paginated, so there is no
+  // next-page prefetch here.
+  const { onHoverStart, onHoverEnd } = useThreadHoverPrefetch();
+  usePrefetchNeighbors(threads, selected?.id ?? null);
 
   // Opening a thread records real read state server-side (contract item 5).
   useEffect(() => {
@@ -686,6 +700,8 @@ export function InboxView({ split }: { split: InboxSplit }) {
                 active={i === cursor}
                 bulkSelected={selection.ids.has(thread.id)}
                 onClick={() => setCursor(i)}
+                onHoverStart={() => onHoverStart(thread.id)}
+                onHoverEnd={onHoverEnd}
               />
             ))
           )}
