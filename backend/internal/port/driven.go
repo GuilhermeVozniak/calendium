@@ -454,6 +454,36 @@ type UserSettingsRepo interface {
 	Upsert(ctx context.Context, s domain.UserSettings) error
 }
 
+// --- Collaboration (M2.7) ---
+
+// TeamRepo persists teams and memberships.
+type TeamRepo interface {
+	// Create inserts the team and its owner membership atomically.
+	Create(ctx context.Context, t domain.Team, owner domain.TeamMember) (domain.Team, error)
+	GetByID(ctx context.Context, id string) (domain.Team, error)
+	ListByUser(ctx context.Context, userID string) ([]domain.Team, error)
+	Update(ctx context.Context, t domain.Team) error
+	Delete(ctx context.Context, id string) error
+	// GetMember returns domain.ErrNotFound for non-members — the authz
+	// primitive behind service-layer membership checks.
+	GetMember(ctx context.Context, teamID, userID string) (domain.TeamMember, error)
+	ListMembers(ctx context.Context, teamID string) ([]domain.TeamMember, error)
+	// UpsertMember inserts or updates role/share_read_statuses.
+	UpsertMember(ctx context.Context, m domain.TeamMember) error
+	RemoveMember(ctx context.Context, teamID, userID string) error
+	// CountByRole supports the last-owner invariant.
+	CountByRole(ctx context.Context, teamID string, role domain.TeamRole) (int, error)
+}
+
+// TeamInvitationRepo persists email invitations (token stored hashed).
+type TeamInvitationRepo interface {
+	Create(ctx context.Context, inv domain.TeamInvitation) (domain.TeamInvitation, error)
+	GetByID(ctx context.Context, id string) (domain.TeamInvitation, error)
+	GetByTokenHash(ctx context.Context, tokenHash string) (domain.TeamInvitation, error)
+	ListByTeam(ctx context.Context, teamID string) ([]domain.TeamInvitation, error)
+	Update(ctx context.Context, inv domain.TeamInvitation) error
+}
+
 // ---------------------------------------------------------------------------
 // Gateways (implemented by internal/adapter/out/{googleapi,msgraph,stripeapi,openrouter,push,authjwt})
 // ---------------------------------------------------------------------------
