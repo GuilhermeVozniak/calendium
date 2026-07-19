@@ -11,6 +11,8 @@ export interface DesktopBindings {
   /** Opens a URL in the system default browser (Stripe checkout et al.). */
   OpenExternal(url: string): Promise<void>;
   GetAppVersion(): Promise<string>;
+  /** Registers/unregisters the system-wide hotkeys in the Go host (Task 9). */
+  SetGlobalShortcutsEnabled(enabled: boolean): Promise<void>;
 }
 
 /** Subset of the Wails runtime API the app uses. */
@@ -18,6 +20,7 @@ export interface DesktopRuntime {
   EventsOn(eventName: string, callback: (...data: unknown[]) => void): () => void;
   EventsEmit(eventName: string, ...data: unknown[]): void;
   WindowSetTitle(title: string): void;
+  WindowShow(): void;
   BrowserOpenURL(url: string): void;
 }
 
@@ -38,6 +41,9 @@ const browserFallback: DesktopBindings = {
   async GetAppVersion() {
     return 'dev (browser)';
   },
+  async SetGlobalShortcutsEnabled() {
+    // No host to register system-wide hotkeys in a plain browser.
+  },
 };
 
 const runtimeFallback: DesktopRuntime = {
@@ -47,6 +53,9 @@ const runtimeFallback: DesktopRuntime = {
   EventsEmit() {},
   WindowSetTitle(title: string) {
     document.title = title;
+  },
+  WindowShow() {
+    // A browser tab is already "shown"; nothing to do.
   },
   BrowserOpenURL(url: string) {
     window.open(url, '_blank', 'noopener,noreferrer');
@@ -70,5 +79,54 @@ export function onDeepLink(handler: (url: string) => void): () => void {
   return wailsRuntime.EventsOn(DEEP_LINK_EVENT, (...data: unknown[]) => {
     const url = data[0];
     if (typeof url === 'string') handler(url);
+  });
+}
+
+// --- Task 9: system-wide global shortcuts ----------------------------------
+
+/**
+ * Event the Go host emits (apps/desktop/hotkeys.go) when a system-wide hotkey
+ * fires. Payload: `{"action":"compose"|"search"}`.
+ */
+export const GLOBAL_SHORTCUT_EVENT = 'global-shortcut';
+
+export type GlobalShortcutAction = 'compose' | 'search';
+
+const GLOBAL_SHORTCUTS_STORAGE_KEY = 'calendium.global-shortcuts';
+
+/** Persisted Settings toggle for the system-wide shortcuts (default on). */
+export function globalShortcutsEnabled(): boolean {
+  try {
+    const stored = localStorage.getItem(GLOBAL_SHORTCUTS_STORAGE_KEY);
+    return stored == null ? true : stored === 'true';
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Persists the toggle and tells the Go host to (un)register the hotkeys. The
+ * host cannot read localStorage, so App.tsx calls this once on boot with the
+ * stored value — that is how "enabled at startup" reaches the host.
+ */
+export async function setGlobalShortcutsEnabled(enabled: boolean): Promise<void> {
+  try {
+    localStorage.setItem(GLOBAL_SHORTCUTS_STORAGE_KEY, String(enabled));
+  } catch {
+    // Persistence is best-effort; still flip the host registration.
+  }
+  await desktop.SetGlobalShortcutsEnabled(enabled);
+}
+
+/**
+ * Subscribe to system-wide shortcuts forwarded by the host. Returns an
+ * unsubscribe function; no-ops in a plain browser.
+ */
+export function onGlobalShortcut(handler: (action: GlobalShortcutAction) => void): () => void {
+  return wailsRuntime.EventsOn(GLOBAL_SHORTCUT_EVENT, (...data: unknown[]) => {
+    const payload = data[0];
+    if (typeof payload !== 'object' || payload === null) return;
+    const action = (payload as { action?: unknown }).action;
+    if (action === 'compose' || action === 'search') handler(action);
   });
 }

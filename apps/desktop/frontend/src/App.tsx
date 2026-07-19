@@ -34,6 +34,13 @@ import { Toaster } from '@/ui/toaster';
 import { api, orMock } from '@/lib/api';
 import { openCompose } from '@/lib/compose';
 import { mockSearch } from '@/lib/mock';
+import {
+  globalShortcutsEnabled,
+  isDesktop,
+  onGlobalShortcut,
+  setGlobalShortcutsEnabled,
+  wailsRuntime,
+} from '@/lib/wails';
 import { CalendarView, emitFocusDate } from '@/views/CalendarView';
 import { ComposeHost } from '@/views/ComposeView';
 import { emitFocusThread, emitMailAction, InboxView } from '@/views/InboxView';
@@ -111,6 +118,21 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
+
+  // --- Task 9: system-wide global shortcuts (host hotkeys → UI) ---
+  // On boot, push the persisted Settings toggle to the Go host (it cannot
+  // read localStorage itself); then bring the window forward and open the
+  // composer / command palette whenever a registered hotkey fires — even
+  // while Calendium is unfocused.
+  useEffect(() => {
+    if (isDesktop) void setGlobalShortcutsEnabled(globalShortcutsEnabled());
+    return onGlobalShortcut((action) => {
+      wailsRuntime.WindowShow();
+      if (action === 'compose') openCompose();
+      else setPaletteOpen(true);
+    });
+  }, []);
+  // --- end Task 9 ---
 
   // Reset the query when the palette closes; debounce it for search.
   useEffect(() => {
