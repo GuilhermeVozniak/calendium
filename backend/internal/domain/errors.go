@@ -11,6 +11,7 @@ import "errors"
 //
 //	ErrNotFound        → 404
 //	ErrUnauthorized    → 401
+//	ErrForbidden       → 403
 //	ErrPaymentRequired → 402
 //	ErrValidation      → 400
 //	ErrConflict        → 409
@@ -20,8 +21,12 @@ import "errors"
 //	ErrAIOutput        → 502
 //	ErrRateLimited     → 429
 var (
-	ErrNotFound        = errors.New("not found")
-	ErrUnauthorized    = errors.New("unauthorized")
+	ErrNotFound     = errors.New("not found")
+	ErrUnauthorized = errors.New("unauthorized")
+	// ErrForbidden marks a caller who is authenticated and known (e.g. a team
+	// member) but lacks the required role/permission. Mapped to 403. Non-members
+	// keep getting ErrNotFound so resource existence is never leaked.
+	ErrForbidden       = errors.New("forbidden")
 	ErrPaymentRequired = errors.New("payment required")
 	ErrValidation      = errors.New("validation failed")
 	ErrConflict        = errors.New("conflict")

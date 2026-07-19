@@ -19,6 +19,7 @@ func TestStatusFor(t *testing.T) {
 	}{
 		{"validation", fmt.Errorf("x: %w", domain.ErrValidation), http.StatusBadRequest, "validation_failed"},
 		{"unauthorized", fmt.Errorf("x: %w", domain.ErrUnauthorized), http.StatusUnauthorized, "unauthorized"},
+		{"forbidden", fmt.Errorf("x: %w", domain.ErrForbidden), http.StatusForbidden, "forbidden"},
 		{"payment required", fmt.Errorf("x: %w", domain.ErrPaymentRequired), http.StatusPaymentRequired, "payment_required"},
 		{"not found", fmt.Errorf("x: %w", domain.ErrNotFound), http.StatusNotFound, "not_found"},
 		{"conflict", fmt.Errorf("x: %w", domain.ErrConflict), http.StatusConflict, "conflict"},
@@ -45,6 +46,7 @@ func TestSafeMessage(t *testing.T) {
 	}{
 		{"validation_failed", "The request was invalid."},
 		{"unauthorized", "Authentication is required or has failed."},
+		{"forbidden", "You do not have permission to perform this action."},
 		{"payment_required", "An active subscription is required."},
 		{"not_found", "The requested resource was not found."},
 		{"conflict", "The request conflicts with the current state of the resource."},
@@ -76,6 +78,7 @@ func TestStatusForViaHandler(t *testing.T) {
 	}{
 		{"validation", fmt.Errorf("wrapped: %w", domain.ErrValidation), http.StatusBadRequest, "validation_failed"},
 		{"unauthorized", fmt.Errorf("wrapped: %w", domain.ErrUnauthorized), http.StatusUnauthorized, "unauthorized"},
+		{"forbidden", fmt.Errorf("wrapped: %w", domain.ErrForbidden), http.StatusForbidden, "forbidden"},
 		{"payment required", fmt.Errorf("wrapped: %w", domain.ErrPaymentRequired), http.StatusPaymentRequired, "payment_required"},
 		{"not found", fmt.Errorf("wrapped: %w", domain.ErrNotFound), http.StatusNotFound, "not_found"},
 		{"conflict", fmt.Errorf("wrapped: %w", domain.ErrConflict), http.StatusConflict, "conflict"},

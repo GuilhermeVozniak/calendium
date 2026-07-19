@@ -1490,7 +1490,9 @@ var _ port.UnsubscribeGateway = (*fakeUnsubscriber)(nil)
 
 // --- prefs repo --------------------------------------------------------------
 
-type fakeUserPreferencesRepo struct{ byUser map[string]port.UserPreferences }
+type fakeUserPreferencesRepo struct {
+	byUser map[string]port.UserPreferences
+}
 
 func newUserPreferencesRepo() *fakeUserPreferencesRepo {
 	return &fakeUserPreferencesRepo{byUser: map[string]port.UserPreferences{}}
