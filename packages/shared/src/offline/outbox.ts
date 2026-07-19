@@ -22,6 +22,13 @@ export interface OutboxEntry {
   status: OutboxEntryStatus;
   lastError: string | null;
   action: OutboxAction;
+  /**
+   * Principal user id the action was queued under (X-Calendium-Act-As
+   * delegation), or null when queued as the signed-in user themselves.
+   * Optional because entries persisted before this field existed have no tag;
+   * a missing tag is treated as null (self) everywhere.
+   */
+  actingAs?: string | null;
 }
 
 export interface OutboxStorage {
@@ -94,9 +101,20 @@ export class Outbox {
    *   same target (keeping the original seq so a later queued send still
    *   replays after the save it depends on).
    * Returns the stored entry, or null when the action coalesced away.
+   *
+   * `actingAs` tags the entry with the delegation identity in effect (null =
+   * self). Coalescing/dedupe/replace never cross identities: a star queued as
+   * self and an unstar queued while acting are mutations of DIFFERENT
+   * accounts and must both survive.
    */
-  async enqueue(action: OutboxAction): Promise<OutboxEntry | null> {
-    const queued = this.entries.filter((e) => e.status === 'queued');
+  async enqueue(
+    action: OutboxAction,
+    opts?: { actingAs?: string | null }
+  ): Promise<OutboxEntry | null> {
+    const actingAs = opts?.actingAs ?? null;
+    const queued = this.entries.filter(
+      (e) => e.status === 'queued' && (e.actingAs ?? null) === actingAs
+    );
 
     if (action.kind === 'thread_action') {
       const cancel = CANCELLING[action.action];
@@ -136,6 +154,7 @@ export class Outbox {
       status: 'queued',
       lastError: null,
       action,
+      actingAs,
     };
     this.entries.push(entry);
     if (this.entries.length > MAX_ENTRIES) {
@@ -195,14 +214,22 @@ export class Outbox {
    * network errors, 401/402/429, and 5xx (after bumping attempts); marks
    * unrecoverable 4xx entries `conflict` and continues. Concurrent-safe:
    * a second call while replaying returns an empty report.
+   *
+   * Only entries tagged with `actingAs` (null/missing = self, the default)
+   * are replayed — the given client must carry exactly that identity, so an
+   * entry queued as self never replays through an acting client and vice
+   * versa. Entries for other identities stay queued untouched; they replay
+   * when the user returns to that identity.
    */
-  async replay(client: ApiClient): Promise<ReplayReport> {
+  async replay(client: ApiClient, opts?: { actingAs?: string | null }): Promise<ReplayReport> {
+    const actingAs = opts?.actingAs ?? null;
     const report: ReplayReport = { replayed: [], conflicts: [], failed: [], interrupted: false };
     if (this.replaying || !this.loaded) return report;
     this.replaying = true;
     try {
       for (const entry of [...this.entries].sort((a, b) => a.seq - b.seq)) {
         if (entry.status !== 'queued') continue;
+        if ((entry.actingAs ?? null) !== actingAs) continue;
         try {
           await this.execute(client, entry.action);
           this.entries = this.entries.filter((e) => e.id !== entry.id);
