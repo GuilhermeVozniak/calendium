@@ -141,7 +141,7 @@ export class Outbox {
     if (this.entries.length > MAX_ENTRIES) {
       // Shed non-queued (conflict/failed) history first, then the oldest.
       const shed = this.entries.find((e) => e.status !== 'queued') ?? this.entries[0];
-      this.entries = this.entries.filter((e) => e.id !== shed.id);
+      if (shed) this.entries = this.entries.filter((e) => e.id !== shed.id);
     }
     await this.persist();
     return entry;
