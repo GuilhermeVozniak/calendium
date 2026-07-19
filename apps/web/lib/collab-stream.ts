@@ -13,6 +13,13 @@ export interface CollabEvent {
 export interface CollabStreamOptions {
   /** Aborting this signal closes the stream (same as the returned closer). */
   signal?: AbortSignal;
+  /**
+   * Override the SSE endpoint path (default: /v1/collab/stream). Used by the
+   * shared-conversation page to scope the stream to one share:
+   * `/v1/shared/threads/{token}/stream`. Same fetch-based auth: the token
+   * never appears anywhere but the request itself.
+   */
+  path?: string;
   /** Test seams / overrides — default to the real fetch, auth token, and API URL. */
   fetchFn?: typeof fetch;
   getToken?: () => Promise<string | null>;
@@ -48,6 +55,7 @@ export function openCollabStream(
   const fetchFn = options.fetchFn ?? fetch;
   const getToken = options.getToken ?? getAccessToken;
   const baseUrl = (options.baseUrl ?? env.apiUrl).replace(/\/+$/, '');
+  const streamPath = options.path ?? STREAM_PATH;
   const initialDelay = options.initialDelayMs ?? 1_000;
   const maxDelay = options.maxDelayMs ?? 30_000;
 
@@ -110,7 +118,7 @@ export function openCollabStream(
     while (!signal.aborted) {
       try {
         const token = await getToken();
-        const res = await fetchFn(`${baseUrl}${STREAM_PATH}`, {
+        const res = await fetchFn(`${baseUrl}${streamPath}`, {
           headers: {
             Accept: 'text/event-stream',
             ...(token ? { Authorization: `Bearer ${token}` } : {}),

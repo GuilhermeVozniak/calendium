@@ -12,9 +12,11 @@ import {
   Forward,
   Loader2,
   MailX,
+  MessagesSquare,
   Reply,
   ReplyAll,
   Send,
+  Share2,
   Sparkles,
   Star,
   User,
@@ -22,8 +24,10 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { CommentsPanel } from '@/components/app/comments-panel';
 import { useCompose } from '@/components/app/compose';
 import { ContactPane } from '@/components/app/contact-pane';
+import { SHARE_THREAD_EVENT, ShareDialog } from '@/components/app/share-dialog';
 import { TimePickerDialog } from '@/components/app/snooze-menu';
 import { InstantReplies } from '@/components/mail/instant-replies';
 import { MessageReactions } from '@/components/mail/message-reactions';
@@ -213,6 +217,15 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
   const [snoozeOpen, setSnoozeOpen] = React.useState(false);
   const [remindOpen, setRemindOpen] = React.useState(false);
   const [contactPaneOpen, setContactPaneOpen] = React.useState(false);
+  const [shareOpen, setShareOpen] = React.useState(false);
+  const [commentsOpen, setCommentsOpen] = React.useState(false);
+
+  // ⌘K "Share conversation" targets whichever thread view is open.
+  React.useEffect(() => {
+    const onShare = () => setShareOpen(true);
+    window.addEventListener(SHARE_THREAD_EVENT, onShare);
+    return () => window.removeEventListener(SHARE_THREAD_EVENT, onShare);
+  }, []);
 
   const thread = data?.thread ?? null;
   const messages = React.useMemo(() => data?.messages ?? [], [data]);
@@ -423,6 +436,35 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
             <TooltipContent>
               Star <Kbd size="sm">S</Kbd>
             </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7"
+                aria-label="Share thread"
+                onClick={() => setShareOpen(true)}
+              >
+                <Share2 className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Share thread</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7"
+                aria-label="Toggle team comments"
+                aria-pressed={commentsOpen}
+                onClick={() => setCommentsOpen((open) => !open)}
+              >
+                <MessagesSquare className={cn('size-4', commentsOpen && 'text-primary')} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Team comments</TooltipContent>
           </Tooltip>
           {contactEmail && (
             <Tooltip>
@@ -661,6 +703,10 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
       {contactPaneOpen && contactEmail && (
         <ContactPane email={contactEmail} onClose={() => setContactPaneOpen(false)} />
       )}
+      {commentsOpen && (
+        <CommentsPanel threadId={thread.id} onClose={() => setCommentsOpen(false)} />
+      )}
+      <ShareDialog threadId={thread.id} open={shareOpen} onOpenChange={setShareOpen} />
     </div>
   );
 }

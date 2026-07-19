@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Message, Thread } from '@calendium/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -68,6 +68,24 @@ vi.mock('@/components/app/contact-pane', () => ({
       <span>{email}</span>
       <button type="button" onClick={onClose}>
         Close contact stub
+      </button>
+    </div>
+  ),
+}));
+
+vi.mock('@/components/app/share-dialog', () => ({
+  SHARE_THREAD_EVENT: 'calendium:share-thread',
+  dispatchShareThread: () => window.dispatchEvent(new Event('calendium:share-thread')),
+  ShareDialog: ({ open, threadId }: { open: boolean; threadId: string }) =>
+    open ? <div data-testid="share-dialog-stub">{threadId}</div> : null,
+}));
+
+vi.mock('@/components/app/comments-panel', () => ({
+  CommentsPanel: ({ threadId, onClose }: { threadId: string; onClose: () => void }) => (
+    <div data-testid="comments-panel-stub">
+      <span>{threadId}</span>
+      <button type="button" onClick={onClose}>
+        Close comments stub
       </button>
     </div>
   ),
@@ -374,5 +392,41 @@ describe('ThreadView — shortcut teaching', () => {
     await user.click(screen.getByRole('button', { name: 'Set reminder' }));
 
     expect(toastMessage).toHaveBeenCalledWith('Tip: press ⇧H to Set follow-up reminder');
+  });
+});
+
+describe('ThreadView — share dialog + team comments wiring', () => {
+  it('opens the share dialog for this thread from the toolbar button', async () => {
+    const user = userEvent.setup();
+    renderThreadView();
+
+    expect(screen.queryByTestId('share-dialog-stub')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Share thread' }));
+
+    expect(within(screen.getByTestId('share-dialog-stub')).getByText(THREAD.id)).toBeInTheDocument();
+  });
+
+  it('opens the share dialog when the ⌘K share event fires', async () => {
+    renderThreadView();
+
+    act(() => {
+      window.dispatchEvent(new Event('calendium:share-thread'));
+    });
+
+    expect(await screen.findByTestId('share-dialog-stub')).toBeInTheDocument();
+  });
+
+  it('toggles the comments panel scoped to this thread', async () => {
+    const user = userEvent.setup();
+    renderThreadView();
+
+    expect(screen.queryByTestId('comments-panel-stub')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Toggle team comments' }));
+
+    const panel = screen.getByTestId('comments-panel-stub');
+    expect(within(panel).getByText(THREAD.id)).toBeInTheDocument();
+
+    await user.click(within(panel).getByText('Close comments stub'));
+    expect(screen.queryByTestId('comments-panel-stub')).not.toBeInTheDocument();
   });
 });
