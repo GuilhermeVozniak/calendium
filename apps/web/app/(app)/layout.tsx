@@ -3,6 +3,7 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   AtSign,
   CalendarDays,
@@ -32,6 +33,7 @@ import { AskSidebarPanel, AskSidebarProvider } from '@/components/ai/ask-sidebar
 import { AttachmentsPaneProvider } from '@/components/app/attachments-pane';
 import { CommandPalette } from '@/components/app/command-palette';
 import { ComposeProvider, useCompose } from '@/components/app/compose';
+import { OutboxIndicator } from '@/components/app/outbox-indicator';
 import { useTheme } from '@/components/theme-provider';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -53,6 +55,7 @@ import { Kbd } from '@/components/ui/kbd';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { authClient, signOut } from '@/lib/auth-client';
 import { DEMO_MODE } from '@/lib/demo';
+import { startOutboxReplay } from '@/lib/offline/queue';
 import { useChords, useShortcuts } from '@/lib/shortcuts';
 import { useApiOnline } from '@/lib/use-mail';
 import { cn } from '@/lib/utils';
@@ -94,12 +97,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               </React.Suspense>
               <div className="flex min-w-0 flex-1 flex-col">
                 <OfflineBanner />
+                <OutboxIndicator />
                 <main className="min-h-0 flex-1">{children}</main>
               </div>
               <AskSidebarPanel />
             </div>
             <CommandPalette />
             <GlobalShortcuts />
+            <OutboxReplayLifecycle />
           </TooltipProvider>
         </AskSidebarProvider>
       </ComposeProvider>
@@ -137,6 +142,16 @@ function GlobalShortcuts() {
       enabled: pathname !== '/calendar',
     },
   ]);
+  return null;
+}
+
+/**
+ * Starts the outbox replay triggers (reconnect, window focus, 30s interval)
+ * for the lifetime of the authenticated app shell.
+ */
+function OutboxReplayLifecycle() {
+  const queryClient = useQueryClient();
+  React.useEffect(() => startOutboxReplay(queryClient), [queryClient]);
   return null;
 }
 
