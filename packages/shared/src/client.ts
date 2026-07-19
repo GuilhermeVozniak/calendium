@@ -327,7 +327,7 @@ export class ApiClient {
     return `/v1/mail/attachments/${attachmentId}/content`;
   }
   getContact(email: string) {
-    return this.request<ContactSummary>('GET', `/v1/mail/contacts/${email}`);
+    return this.request<ContactSummary>('GET', `/v1/mail/contacts/${encodeURIComponent(email)}`);
   }
   reactToMessage(messageId: string, emoji: string, sendReply?: boolean) {
     return this.request<ReactionResult>('POST', `/v1/mail/messages/${messageId}/reactions`, {

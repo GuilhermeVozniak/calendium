@@ -889,10 +889,13 @@ const methodCases: MethodCase[] = [
   // percent-encodes on parse — exercised directly (no URL parsing) in the
   // "mail M2.5 endpoints" describe block below instead of this table.
   {
+    // email is percent-encoded into the path segment (encodeURIComponent) so
+    // an address is never mistaken for an extra path segment/query string;
+    // the '@' here becoming '%40' is the load-bearing part of this case.
     name: 'getContact',
     call: (c) => c.getContact('ada@example.com'),
     method: 'GET',
-    path: '/v1/mail/contacts/ada@example.com',
+    path: '/v1/mail/contacts/ada%40example.com',
   },
 
   // --- Push devices ---
