@@ -14,6 +14,7 @@ import type {
   Label,
   Message,
   OpenEvent,
+  OutboxAction,
   Page,
   Reaction,
   SendSuggestion,
@@ -29,7 +30,8 @@ import { getApiClient } from '@/lib/api';
 import { getAccessToken } from '@/lib/auth-client';
 import { DEMO_MODE } from '@/lib/demo';
 import { env } from '@/lib/env';
-import { reportApiReachable } from '@/lib/offline/connectivity';
+import { isOnline, reportApiReachable } from '@/lib/offline/connectivity';
+import { isNetworkError, queueAction } from '@/lib/offline/queue';
 import {
   applyMockAction,
   applyMockLabel,
@@ -391,8 +393,12 @@ export function useMailActions() {
    * Applies an optimistic cache patch, calls the API, and — outside demo mode —
    * reverts the caches and toasts on failure so a rejected mutation is never
    * shown as success. Returns whether the mutation actually took effect: a
-   * resolved real API call, or (DEMO_MODE) the local fallback applied above.
-   * Callers use this to decide whether pushing an undo entry is honest.
+   * resolved real API call, (DEMO_MODE) the local fallback applied above, or
+   * — when `offlineAction` is provided — a durable outbox enqueue on a
+   * transport failure (the action WILL replay; the optimistic patch is kept).
+   * Callers use this to decide whether pushing an undo entry is honest — an
+   * undo of a queued action enqueues the inverse, which coalesces away in the
+   * outbox.
    */
   async function runOptimistic(
     threadId: string,
@@ -400,7 +406,8 @@ export function useMailActions() {
     removeFromLists: boolean,
     apiCall: () => Promise<unknown>,
     mockApply: () => void,
-    errorMessage: string
+    errorMessage: string,
+    offlineAction?: OutboxAction
   ): Promise<boolean> {
     const previousLists = queryClient.getQueriesData<ThreadListResult | undefined>({
       queryKey: ['threads'],
@@ -411,11 +418,22 @@ export function useMailActions() {
     ]);
     updateCaches(threadId, patch, removeFromLists);
     if (DEMO_MODE) mockApply();
+    if (offlineAction && !isOnline()) {
+      // Known-offline: don't burn a doomed request — queue for replay and
+      // keep the optimistic patch. (In DEMO_MODE the mock fallback above
+      // already applied, so the demo store stays consistent too.)
+      await queueAction(offlineAction);
+      return true;
+    }
     try {
       await apiCall();
       return true;
-    } catch {
+    } catch (err) {
       if (DEMO_MODE) return true;
+      if (offlineAction && isNetworkError(err)) {
+        await queueAction(offlineAction); // keep the optimistic patch; no revert
+        return true;
+      }
       for (const [key, data] of previousLists) queryClient.setQueryData(key, data);
       queryClient.setQueryData(['thread', threadId], previousDetail);
       toast.error(errorMessage);
@@ -434,7 +452,8 @@ export function useMailActions() {
       REMOVES_FROM_LIST.has(action),
       () => getApiClient().actOnThread(threadId, action),
       () => applyMockAction(threadId, action),
-      ACTION_ERROR[action] ?? 'Could not update the conversation.'
+      ACTION_ERROR[action] ?? 'Could not update the conversation.',
+      { kind: 'thread_action', threadId, action }
     );
     const inverse = ACTION_INVERSE[action];
     if (ok && opts?.undoable !== false && inverse) {
@@ -457,7 +476,8 @@ export function useMailActions() {
       true,
       () => getApiClient().snoozeThread(threadId, until),
       () => mockSnoozeThread(threadId, until),
-      'Could not snooze the conversation.'
+      'Could not snooze the conversation.',
+      { kind: 'thread_snooze', threadId, until }
     );
     if (ok) {
       mailUndo.push({
@@ -478,7 +498,8 @@ export function useMailActions() {
       false,
       () => getApiClient().setThreadReminder(threadId, remindAt),
       () => mockRemindThread(threadId, remindAt),
-      'Could not set the reminder.'
+      'Could not set the reminder.',
+      { kind: 'thread_reminder', threadId, remindAt }
     );
   }
 
@@ -494,7 +515,12 @@ export function useMailActions() {
     if (DEMO_MODE) applyMockAction(threadId, 'read');
     try {
       await getApiClient().markThreadOpened(threadId);
-    } catch {
+    } catch (err) {
+      if (!DEMO_MODE && isNetworkError(err)) {
+        // Queue silently — a read receipt shouldn't toast on every open.
+        await queueAction({ kind: 'thread_open', threadId }, { silent: true });
+        return;
+      }
       // Reconciles on the next refetch.
     }
   }
