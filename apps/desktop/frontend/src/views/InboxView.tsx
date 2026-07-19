@@ -1,11 +1,12 @@
-import type { BulkAction, InboxSplit, OpenEvent, Thread } from '@calendium/shared';
+import type { BulkAction, InboxSplit, OpenEvent, OutboxAction, Thread } from '@calendium/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { addHours, format, isToday } from 'date-fns';
-import { Loader2, MailOpen, Star } from 'lucide-react';
+import { CloudOff, Loader2, MailOpen, Star } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { api, orMock } from '@/lib/api';
 import { mockOpens, mockThreads } from '@/lib/mock';
+import { isNetworkError, queueOffline, useQueuedCount } from '@/lib/offline';
 import { isDemoMode } from '@/lib/server-config';
 import {
   ACTION_INVERSE,
@@ -135,6 +136,9 @@ function OpensFeedList({ opens, isLoading }: { opens: OpenEvent[]; isLoading: bo
 
 export function InboxView({ split }: { split: InboxSplit }) {
   const queryClient = useQueryClient();
+  // Real persisted-outbox size — the pill never claims more or less than
+  // what is actually queued for replay (honesty policy).
+  const queuedOffline = useQueuedCount();
   const [paneView, setPaneView] = useState<'inbox' | 'opens'>('inbox');
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['threads', split],
@@ -196,7 +200,12 @@ export function InboxView({ split }: { split: InboxSplit }) {
     if (!selected?.unread) return;
     const id = selected.id;
     setThreads((prev) => prev.map((t) => (t.id === id ? { ...t, unread: false } : t)));
-    if (!isDemoMode()) void api.markThreadOpened(id).catch(() => {});
+    if (!isDemoMode()) {
+      void api.markThreadOpened(id).catch((e: unknown) => {
+        // Offline: durably queue the open so real read state syncs on reconnect.
+        if (isNetworkError(e)) void queueOffline({ kind: 'thread_open', threadId: id });
+      });
+    }
   }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persists a mutation and reports whether it actually took effect. A
@@ -206,16 +215,27 @@ export function InboxView({ split }: { split: InboxSplit }) {
   // mutation must actually resolve before an undo entry is pushed or a
   // success toast shown; on failure it reverts the local state and surfaces
   // the error (never a fabricated success).
+  //
+  // Offline (M2.6): when the failure is network-level and a `queueAction` is
+  // given, the action is durably queued instead — the optimistic UI stands
+  // (it WILL replay, at-least-once) but commit still returns false so no undo
+  // entry or success toast claims the server already applied it. If even
+  // queueing fails (storage broken), it falls through to revert + error.
   async function commit(
     apiCall: () => Promise<unknown>,
     revert: () => void,
-    errorTitle: string
+    errorTitle: string,
+    queueAction?: OutboxAction
   ): Promise<boolean> {
     if (isDemoMode()) return true;
     try {
       await apiCall();
       return true;
     } catch (e) {
+      if (queueAction && isNetworkError(e) && (await queueOffline(queueAction))) {
+        toast({ title: 'Saved offline', description: 'Will sync when you reconnect.' });
+        return false;
+      }
       revert();
       toast({ title: errorTitle, description: errorMessage(e), variant: 'destructive' });
       return false;
@@ -271,7 +291,8 @@ export function InboxView({ split }: { split: InboxSplit }) {
             setThreads((prev) =>
               prev.map((t) => (t.id === current.id ? { ...t, starred: wasStarred } : t))
             ),
-          'Could not update star'
+          'Could not update star',
+          { kind: 'thread_action', threadId: current.id, action: nextAction }
         ).then((ok) => {
           if (!ok) return;
           const inverse = ACTION_INVERSE[nextAction];
@@ -329,7 +350,8 @@ export function InboxView({ split }: { split: InboxSplit }) {
         setThreads(previousThreads);
         setCursor(previousCursor);
       },
-      'Could not archive'
+      'Could not archive',
+      { kind: 'thread_action', threadId: thread.id, action: 'archive' }
     ).then((ok) => {
       if (!ok) return;
       inboxUndo.push({
@@ -357,7 +379,8 @@ export function InboxView({ split }: { split: InboxSplit }) {
         setThreads(previousThreads);
         setCursor(previousCursor);
       },
-      'Could not snooze'
+      'Could not snooze',
+      { kind: 'thread_snooze', threadId: thread.id, until }
     ).then((ok) => {
       if (!ok) return;
       inboxUndo.push({
@@ -383,7 +406,8 @@ export function InboxView({ split }: { split: InboxSplit }) {
       () => api.actOnThread(thread.id, 'read'),
       () =>
         setThreads((prev) => prev.map((t) => (t.id === thread.id ? { ...t, unread: true } : t))),
-      'Could not mark read'
+      'Could not mark read',
+      { kind: 'thread_action', threadId: thread.id, action: 'read' }
     ).then((ok) => {
       if (!ok) return;
       inboxUndo.push({
@@ -596,6 +620,12 @@ export function InboxView({ split }: { split: InboxSplit }) {
             {paneView === 'opens' ? 'Recent opens' : SPLIT_LABELS[split]}
           </h1>
           <Badge variant="secondary">{paneView === 'opens' ? opens.length : threads.length}</Badge>
+          {queuedOffline > 0 && (
+            <Badge variant="outline" className="gap-1">
+              <CloudOff className="size-3" />
+              {queuedOffline} queued
+            </Badge>
+          )}
           <Button
             variant="ghost"
             size="sm"

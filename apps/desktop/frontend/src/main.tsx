@@ -1,4 +1,7 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createIndexedDbKv } from '@calendium/shared';
+import { QueryClient } from '@tanstack/react-query';
+import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
+import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
@@ -6,6 +9,7 @@ import { Loader2 } from 'lucide-react';
 
 import App from './App';
 import { useSession } from './lib/auth';
+import { startOutboxReplay } from './lib/offline';
 import { ServerConfigProvider, useServerConfig } from './lib/server-config';
 import { ConnectView } from './views/ConnectView';
 import { SignInView } from './views/SignInView';
@@ -20,15 +24,34 @@ const applyTheme = () => {
 applyTheme();
 media.addEventListener('change', applyTheme);
 
+// Persisted query cache (M2.6): the last-known server data survives restarts
+// so the app opens instantly offline. gcTime must outlive maxAge or persisted
+// queries would be garbage-collected before they can be restored.
+const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+// Bump to discard every persisted cache after a breaking shape change
+// (mirrors the web app's buster).
+const CACHE_BUSTER = 'calendium-cache-v1';
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry: 1,
       staleTime: 30_000,
+      gcTime: CACHE_MAX_AGE_MS,
       refetchOnWindowFocus: false,
     },
   },
 });
+
+// The Wails webview (WKWebView/WebView2) fully supports IndexedDB, so the
+// same KV that backs the outbox also backs the query-cache persister.
+const persister = createAsyncStoragePersister({
+  storage: createIndexedDbKv(),
+  key: 'calendium-query-cache',
+});
+
+// Replays queued offline actions now (if online) and on every reconnect.
+startOutboxReplay(queryClient);
 
 // Two gates: first pick a server (Connect), then authenticate against its
 // Better Auth instance (Sign in). Only a configured server + live session
@@ -58,10 +81,13 @@ function AuthGate() {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
+    <PersistQueryClientProvider
+      client={queryClient}
+      persistOptions={{ persister, buster: CACHE_BUSTER, maxAge: CACHE_MAX_AGE_MS }}
+    >
       <ServerConfigProvider>
         <Root />
       </ServerConfigProvider>
-    </QueryClientProvider>
+    </PersistQueryClientProvider>
   </StrictMode>
 );

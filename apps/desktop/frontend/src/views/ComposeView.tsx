@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { api, orMock } from '@/lib/api';
 import { applySignature, type ComposeIntent, onOpenCompose, toHtml } from '@/lib/compose';
+import { isNetworkError, newLocalDraftId, queueOffline } from '@/lib/offline';
 import { mockAccounts, mockSendSuggestion, mockUser } from '@/lib/mock';
 import { getActiveServerConfig, isDemoMode } from '@/lib/server-config';
 import { errorMessage, toast } from '@/lib/toast';
@@ -292,8 +293,13 @@ export function ComposeHost() {
       return;
     }
     setBusy(mode);
+    // Tracks how far the happy path got, so the offline branch queues only
+    // what is still missing (persisted draft + failed send ⇒ queue the send
+    // alone; nothing persisted ⇒ queue save-then-send under a local id).
+    let persistedId: string | null = null;
     try {
       const draft = await persistDraft(scheduledAt);
+      persistedId = draft.id;
       if (mode === 'draft') {
         toast({ title: 'Draft saved' });
         close();
@@ -303,6 +309,14 @@ export function ComposeHost() {
       close();
       showSentToast(draft.id, scheduledAt);
     } catch (e) {
+      if (isNetworkError(e) && (await queueSubmitOffline(mode, scheduledAt, persistedId))) {
+        close();
+        toast({
+          title: mode === 'send' ? 'Queued to send' : 'Draft saved offline',
+          description: "You're offline — it will sync when you reconnect.",
+        });
+        return;
+      }
       setBusy(null);
       toast({
         title: scheduledAt ? 'Could not schedule' : 'Could not send',
@@ -310,6 +324,31 @@ export function ComposeHost() {
         variant: 'destructive',
       });
     }
+  }
+
+  /**
+   * Offline fallback for submit(): durably queues the draft save (skipped
+   * when the draft already persisted server-side this attempt) and, for
+   * sends, the send itself. Returns false when queueing could not persist —
+   * the caller then surfaces the real error instead of claiming "queued".
+   */
+  async function queueSubmitOffline(
+    mode: 'send' | 'draft',
+    scheduledAt: string | null,
+    persistedId: string | null
+  ): Promise<boolean> {
+    const draftId = persistedId ?? liveDraftId ?? newLocalDraftId();
+    if (persistedId === null) {
+      const saved = await queueOffline({
+        kind: 'draft_save',
+        draftId,
+        accountId,
+        input: buildInput(scheduledAt),
+      });
+      if (!saved) return false;
+    }
+    if (mode === 'send') return queueOffline({ kind: 'draft_send', draftId });
+    return true;
   }
 
   const fieldClass =
