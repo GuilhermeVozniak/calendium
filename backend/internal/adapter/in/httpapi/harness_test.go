@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +31,9 @@ var (
 
 	_ port.SchedulingService = (*fakeSchedulingService)(nil)
 	_ port.SettingsService   = (*fakeSettingsService)(nil)
+
+	_ port.EventBus = (*fakeEventBus)(nil)
+	_ TeamLister    = (*fakeTeamLister)(nil)
 )
 
 const (
@@ -966,6 +970,107 @@ func (f *fakeSettingsService) Update(ctx context.Context, userID string, s domai
 	return f.updateRet, f.updateErr
 }
 
+// --- EventBus ----------------------------------------------------------------
+
+// fakeEventBus is a real (topic-filtering, non-blocking) in-memory bus with
+// capture: subscribed topic sets and the live subscriber count, so stream
+// tests can assert scoping and context-driven teardown.
+type fakeEventBus struct {
+	mu        sync.Mutex
+	subs      map[*fakeBusSub]struct{}
+	gotTopics [][]string
+}
+
+type fakeBusSub struct {
+	topics map[string]struct{}
+	ch     chan port.CollabEvent
+}
+
+func newFakeEventBus() *fakeEventBus {
+	return &fakeEventBus{subs: map[*fakeBusSub]struct{}{}}
+}
+
+func (f *fakeEventBus) Publish(ev port.CollabEvent) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for s := range f.subs {
+		if _, ok := s.topics[ev.Topic]; !ok {
+			continue
+		}
+		select {
+		case s.ch <- ev:
+		default:
+		}
+	}
+}
+
+func (f *fakeEventBus) Subscribe(topics []string) (<-chan port.CollabEvent, func()) {
+	s := &fakeBusSub{topics: map[string]struct{}{}, ch: make(chan port.CollabEvent, 16)}
+	for _, t := range topics {
+		s.topics[t] = struct{}{}
+	}
+	f.mu.Lock()
+	f.subs[s] = struct{}{}
+	f.gotTopics = append(f.gotTopics, topics)
+	f.mu.Unlock()
+	return s.ch, func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if _, ok := f.subs[s]; ok {
+			delete(f.subs, s)
+			close(s.ch)
+		}
+	}
+}
+
+func (f *fakeEventBus) activeSubscribers() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.subs)
+}
+
+func (f *fakeEventBus) subscribedTopics() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][]string, len(f.gotTopics))
+	copy(out, f.gotTopics)
+	return out
+}
+
+// --- TeamLister --------------------------------------------------------------
+
+type fakeTeamLister struct {
+	mu        sync.Mutex
+	teams     []domain.Team
+	err       error
+	gotUserID string
+}
+
+func (f *fakeTeamLister) List(ctx context.Context, userID string) ([]domain.Team, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gotUserID = userID
+	return f.teams, f.err
+}
+
+func (f *fakeTeamLister) setTeams(teams []domain.Team) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.teams = teams
+}
+
+func (f *fakeTeamLister) setErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
+}
+
+func (f *fakeTeamLister) listedUserID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gotUserID
+}
+
 // --- harness -----------------------------------------------------------------
 
 type harness struct {
@@ -984,6 +1089,8 @@ type harness struct {
 	sched      *fakeSchedulingService
 	scheduling *fakeSchedulingService // alias of sched (public-surface tests)
 	settings   *fakeSettingsService
+	events     *fakeEventBus
+	teams      *fakeTeamLister
 }
 
 // newHarness wires every double into Deps with a discard logger and one
@@ -1008,6 +1115,8 @@ func newHarness(t *testing.T) *harness {
 		prefs:     &fakePrefsService{},
 		sched:     &fakeSchedulingService{},
 		settings:  &fakeSettingsService{},
+		events:    newFakeEventBus(),
+		teams:     &fakeTeamLister{},
 	}
 	h.scheduling = h.sched
 	h.deps = Deps{
@@ -1024,6 +1133,8 @@ func newHarness(t *testing.T) *harness {
 		Prefs:      h.prefs,
 		Scheduling: h.sched,
 		Settings:   h.settings,
+		Events:     h.events,
+		Teams:      h.teams,
 	}
 	return h
 }

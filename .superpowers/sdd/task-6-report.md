@@ -1,35 +1,33 @@
-# Task 6 Report — Mobile: AsyncStorage persister + outbox + reachability replay
+# Task 6 Report — Realtime SSE (EventBus port, in-memory broker, stream endpoint)
 
-**Status:** COMPLETE
-**Branch:** worktree-agent-ad737d28a2b8a0cb1 (based on main, `feat/m2-6-platform` merged in first — clean fast-forward)
-**Commit:** 542be87 `feat(mobile): AsyncStorage query persistence and offline outbox with reachability replay`
+STATUS: COMPLETE
 
 ## What was built
 
-- `apps/mobile/lib/offline.ts` (new): `getOutbox()` singleton over `new Outbox(createKvOutboxStorage(AsyncStorage), generateOutboxId)`. BINDING FLAG honored: `generateOutboxId` injected as the `newId` constructor param — uses `crypto.randomUUID` when present, otherwise a time+random token (Hermes-safe; no new dep — expo-crypto is not in the app and ids are device-local only). `isNetworkError` distinguishes fetch/connectivity failures from `ApiRequestError` (server answered → never queued). `queueIfOffline(error, action)` is the screens' single decision point. `startOutboxReplay(queryClient)` replays on `Network.addNetworkStateListener` (isConnected && isInternetReachable !== false), `AppState 'active'` (reachability-gated via `getNetworkStateAsync`), plus one gated startup kick for entries queued in a previous session; invalidates `['threads']`/`['thread']` only when something actually replayed; returns cleanup. `useQueuedCount()` (useSyncExternalStore over `outbox.subscribe`) drives the badge.
-- `apps/mobile/lib/query-client.ts`: exports `persister` (`createAsyncStoragePersister({ storage: AsyncStorage, key: 'rq:v1' })`) and `persistOptions` (buster `calendium-cache-v1`, maxAge 7d, `PERSISTED_PREFIXES` allowlist + success-only dehydrate); queryClient default `gcTime` 7d. Allowlist excludes `api-online`, `instant-replies`, `send-suggestion`.
-- `apps/mobile/context/providers.tsx`: `QueryClientProvider` → `PersistQueryClientProvider`; starts `startOutboxReplay` for the app lifetime. (Brief listed `_layout.tsx`, but the provider tree actually lives in context/providers.tsx, which _layout renders — modified there.)
-- `apps/mobile/app/(tabs)/inbox.tsx`: act/snooze mutations — on network error, queue durably and KEEP the optimistic state as an honest pending change; real amber "N queued" badge (testID `outbox-badge`) in the header, live via notify(). Server rejections still roll back + alert (truthful rollback preserved).
-- `apps/mobile/app/thread/[id].tsx`: archive + snooze catch paths queue-on-network-error the same way.
-- Deps added: `@tanstack/react-query-persist-client`, `@tanstack/query-async-storage-persister` (5.101.2).
+- `backend/internal/port/driven.go` — appended `CollabEvent` + `EventBus` verbatim from the brief (new "Realtime event bus (M2.7)" section at end of file; added `encoding/json` import).
+- `backend/internal/adapter/out/eventbus/bus.go` (+ `bus_test.go`) — in-process broker: mutex-guarded subscriber set, per-subscriber buffered channels (cap 64, `subscriberBuffer`). Publish is non-blocking (full buffer ⇒ drop for that subscriber only); cancel is idempotent (`sync.Once`), removes the subscriber and closes its channel under the same mutex publishes hold, so send-on-closed-channel is impossible by construction.
+- `backend/internal/adapter/in/httpapi/stream.go` (+ `stream_test.go`) — `GET /v1/collab/stream` (authed): subscribes to `user:<uid>` plus `team:<id>` via `Teams.List`, writes `event:`/`data:` frames (data = full CollabEvent JSON), `: keepalive` comment every 25s, `http.Flusher` flushes, exits + unsubscribes on `r.Context().Done()`. Team-list errors map through the codec (500 envelope, no leaked subscription).
+- `backend/internal/adapter/in/httpapi/httpapi.go` — Deps gains `Events port.EventBus` and `Teams TeamLister`; route registered in the authed block.
+- `backend/internal/adapter/in/httpapi/middleware.go` — `statusRecorder.Flush()` added: the logging wrapper previously swallowed `http.Flusher`, which would have broken SSE through the full stack (caught by TDD through `New(deps)`).
+- `backend/cmd/api/main.go` — wires `Events: eventbus.New()`.
+- `apps/web/lib/collab-stream.ts` (+ test) — `openCollabStream(onEvent, { signal, … })`: fetch + ReadableStream SSE line parser (Authorization header, no token in URL), exponential-backoff reconnect 1s→30s cap reset on healthy connect, abortable sleep, idempotent closer, malformed frames skipped.
+- Harness (`harness_test.go`, additive): `fakeEventBus` (topic-filtering, capture of subscribed topics + live subscriber count) and `fakeTeamLister`, wired into Deps.
 
-## Tests (TDD)
+## Design decisions
 
-`apps/mobile/lib/offline.test.ts` (new, 14 tests, written red-first): id fallback without `crypto.randomUUID`, isNetworkError honesty, persister config (buster/maxAge/gcTime, allowlist excludes api-online, pending never dehydrated), durable enqueue to `outbox:v1`, enqueue-on-network-error vs server-rejection, replay-on-reconnect + query invalidation, no replay while unreachable, at-least-once honesty (entry stays queued when replay itself hits a network failure, no invalidation), AppState-active trigger, cleanup. Heavy async interaction tests placed LAST per the jest-expo ordering lesson; real-macrotask flush instead of waitFor. Added AsyncStorage/expo-network mocks to the two screen suites that now import offline.ts.
+- **TeamLister is consumer-side in httpapi** (`List(ctx, userID) ([]domain.Team, error)`): no `TeamService` exists in `port/driving.go` yet (parallel task) and the brief doesn't spec one. The future full service satisfies it structurally. `Deps.Teams == nil` is tolerated (stream carries only `user:<id>`), so main.go compiles today — Task 3's postgres `store.Teams()` doesn't exist yet either.
+- `keepaliveInterval` is a package var (25s) so a test can shrink it and assert the tick.
 
-Validation (explicit exit codes): `bunx tsc --noEmit` → 0; `bunx jest --ci --forceExit` → 0 (21 suites, 195 tests, 0 fail); scoped `bunx biome check` → 0 (one pre-existing warning in the untouched markOpened effect).
+## Tests / validation (explicit exit codes)
+
+- `go test -race ./...` — **exit 0**, 1755 tests / 18 packages (incl. 12 eventbus tests: round-trip, topic isolation, full-buffer drop w/o deadlock, cancel-closes-channel + idempotency, publish-after-cancel, concurrent publish/subscribe/cancel; 5 stream tests: 401 unauth, scoped delivery over a real HTTP conn with cross-tenant no-leak assertion + context-teardown/no-goroutine-leak, codec error mapping, nil-Teams user-topic-only, keepalive tick).
+- `gofmt -l .` — **exit 0**, no files.
+- `cd backend && golangci-lint run ./...` — **exit 0**, no issues.
+- `bun run lint:go` — **exit 1**, but the sole issue is pre-existing/environmental: `apps/desktop/main.go` `//go:embed all:frontend/dist` fails because the gitignored desktop `frontend/dist` build artifact doesn't exist in a fresh worktree. Backend (this task's surface) lints clean.
+- `bun run --cwd apps/web test collab-stream` — **exit 0**, 6 tests.
+- `bun run --cwd apps/web typecheck` — **exit 0**; Biome check on the two new TS files — **exit 0**.
 
 ## Concerns
 
-- `bun.lock` (repo root) is in the commit — unavoidable side effect of the dep add; everything else is apps/mobile only.
-- Replay currently invalidates `['threads']`/`['thread']`; if later tasks queue draft/calendar actions on mobile, widen the invalidation set.
-- `AppState.addEventListener`'s subscription is optional-chained on cleanup: jest-expo's mock returned undefined in one ordering; harmless in the real app.
-
-## Review fixes (post-review, commit 542be87 minors)
-
-1. **Honest queue failure (inbox)**: `apps/mobile/app/(tabs)/inbox.tsx` act/snooze `onError` no longer fire-and-forgets `queueIfOffline` — they now `await` it (with `.catch(() => false)`) and, when the AsyncStorage write fails, fall through to the existing revert + alert instead of leaving optimistic UI standing with nothing queued (and no unhandled rejection). Mirrors the thread screen's awaited pattern. Action-bar archive button gained `testID="triage-archive"` for the test.
-2. **Replay-conflict surfacing**: `apps/mobile/lib/offline.ts` `replayNow` now invalidates `['threads']`/`['thread']` when `report.conflicts.length > 0` even with `replayed=0` (stale optimistic state refetches to server truth) and raises a one-line `Alert` naming how many queued changes the server rejected. Conflict entries stay in the outbox (status `'conflict'`) until dismissed — no auto-dismiss.
-
-Tests: inbox suite gained an offline-queue-persistence-failure test (storage save rejection → optimistic archive reverted, alert fired, no unhandled rejection); offline suite gained a conflict-replay test (invalidation of both keys + notice + entry kept as `'conflict'`). The inbox Opens pagination test moved to its own LAST describe — its fetch+fetchNextPage tail corrupts any later render in that file (verified: the new test's query never even mounted when placed after it), preserving the heavy-async-last discipline.
-
-Validation: `bunx tsc --noEmit` → 0; `bunx jest --ci --forceExit` → 0 (21 suites, 197 tests); scoped `bunx biome check` on the 4 touched files → 0.
+- `lint:go`'s desktop leg needs `apps/desktop/frontend/dist` built; unrelated to this task.
+- When the M2.7 team service lands, swap `Deps.Teams TeamLister` for the full port type (drop-in) and wire it in main.go.

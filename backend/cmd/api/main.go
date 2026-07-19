@@ -19,6 +19,7 @@ import (
 
 	"calendium/backend/internal/adapter/in/httpapi"
 	"calendium/backend/internal/adapter/out/authjwt"
+	"calendium/backend/internal/adapter/out/eventbus"
 	"calendium/backend/internal/adapter/out/googleapi"
 	"calendium/backend/internal/adapter/out/msgraph"
 	"calendium/backend/internal/adapter/out/openrouter"
@@ -226,20 +227,24 @@ func run(logger *slog.Logger) error {
 
 	// --- HTTP server ---
 	handler := httpapi.New(httpapi.Deps{
-		Logger:             logger,
-		Verifier:           verifier,
-		Users:              users,
-		Billing:            billing,
-		Accounts:           accounts,
-		Mail:               mail,
-		Calendars:          calendars,
-		Search:             search,
-		AI:                 aiSvc,
-		Devices:            devices,
-		Prefs:              prefs,
-		Scheduling:         scheduling,
-		Settings:           settingsSvc,
-		Payments:           stripe,
+		Logger:     logger,
+		Verifier:   verifier,
+		Users:      users,
+		Billing:    billing,
+		Accounts:   accounts,
+		Mail:       mail,
+		Calendars:  calendars,
+		Search:     search,
+		AI:         aiSvc,
+		Devices:    devices,
+		Prefs:      prefs,
+		Scheduling: scheduling,
+		Settings:   settingsSvc,
+		Payments:   stripe,
+		// Realtime collaboration stream (M2.7): in-process SSE fan-out.
+		// Teams is left nil until the team service lands — the stream then
+		// carries only user:<id> events.
+		Events:             eventbus.New(),
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 	})
