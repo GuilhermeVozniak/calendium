@@ -318,6 +318,7 @@ describe('query-string building', () => {
       q: 'invoice',
       cursor: 'cur1',
       limit: 25,
+      accountId: 'acc1',
     });
     const url = new URL(calls[0].url);
     expect(url.pathname).toBe('/v1/mail/threads');
@@ -328,6 +329,7 @@ describe('query-string building', () => {
       q: 'invoice',
       cursor: 'cur1',
       limit: '25',
+      accountId: 'acc1',
     });
   });
 
@@ -955,6 +957,19 @@ const methodCases: MethodCase[] = [
     method: 'PUT',
     path: '/v1/prefs',
     body: { splitOrder: ['vip', 'important'] },
+  },
+  {
+    name: 'getPreferences',
+    call: (c) => c.getPreferences(),
+    method: 'GET',
+    path: '/v1/me/preferences',
+  },
+  {
+    name: 'updatePreferences',
+    call: (c) => c.updatePreferences({ theme: 'ocean' }),
+    method: 'PUT',
+    path: '/v1/me/preferences',
+    body: { theme: 'ocean' },
   },
 
   // --- Event templates ---

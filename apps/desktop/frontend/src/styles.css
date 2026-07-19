@@ -60,6 +60,79 @@
   --chart-5: 340 75% 55%;
 }
 
+/*
+ * Named themes (M2.6 Task 13) — a data-theme attribute on <html>, layered
+ * with the light/dark class. Only the nine tokens that differ from neutral
+ * are overridden. Values are shared verbatim with apps/web/app/globals.css
+ * and apps/mobile/lib/theme.ts.
+ */
+:root[data-theme='ocean'] {
+  --background: 210 40% 99%;
+  --primary: 217 72% 46%;
+  --primary-foreground: 210 40% 98%;
+  --secondary: 214 45% 94%;
+  --accent: 214 45% 93%;
+  --accent-foreground: 217 60% 25%;
+  --muted: 214 40% 94%;
+  --border: 214 32% 88%;
+  --ring: 217 72% 55%;
+}
+:root[data-theme='ocean'].dark {
+  --background: 218 35% 8%;
+  --primary: 213 80% 66%;
+  --primary-foreground: 218 35% 10%;
+  --secondary: 216 28% 16%;
+  --accent: 216 28% 18%;
+  --accent-foreground: 213 70% 85%;
+  --muted: 216 28% 15%;
+  --border: 216 26% 18%;
+  --ring: 213 80% 60%;
+}
+:root[data-theme='forest'] {
+  --background: 150 40% 99%;
+  --primary: 158 55% 34%;
+  --primary-foreground: 150 40% 98%;
+  --secondary: 154 45% 94%;
+  --accent: 154 45% 93%;
+  --accent-foreground: 158 60% 25%;
+  --muted: 154 40% 94%;
+  --border: 154 32% 88%;
+  --ring: 158 55% 43%;
+}
+:root[data-theme='forest'].dark {
+  --background: 156 35% 8%;
+  --primary: 152 45% 60%;
+  --primary-foreground: 156 35% 10%;
+  --secondary: 154 28% 16%;
+  --accent: 154 28% 18%;
+  --accent-foreground: 152 70% 85%;
+  --muted: 154 28% 15%;
+  --border: 154 26% 18%;
+  --ring: 152 45% 54%;
+}
+:root[data-theme='sunset'] {
+  --background: 24 40% 99%;
+  --primary: 24 82% 48%;
+  --primary-foreground: 24 40% 98%;
+  --secondary: 26 45% 94%;
+  --accent: 26 45% 93%;
+  --accent-foreground: 24 60% 25%;
+  --muted: 26 40% 94%;
+  --border: 26 32% 88%;
+  --ring: 24 82% 57%;
+}
+:root[data-theme='sunset'].dark {
+  --background: 22 35% 8%;
+  --primary: 27 90% 62%;
+  --primary-foreground: 22 35% 10%;
+  --secondary: 24 28% 16%;
+  --accent: 24 28% 18%;
+  --accent-foreground: 27 70% 85%;
+  --muted: 24 28% 15%;
+  --border: 24 26% 18%;
+  --ring: 27 90% 56%;
+}
+
 @theme inline {
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));

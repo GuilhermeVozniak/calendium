@@ -52,6 +52,7 @@ import type {
   TimeProposalInput,
   UnsubscribeResult,
   User,
+  UserPreferences,
   UserPrefs,
   UserSettings,
 } from './types';
@@ -191,6 +192,8 @@ export class ApiClient {
     q?: string;
     cursor?: string;
     limit?: number;
+    /** Scope the list to one connected account (multi-account switching). */
+    accountId?: string;
   }) {
     const qs = new URLSearchParams();
     if (params.split) qs.set('split', params.split);
@@ -199,6 +202,7 @@ export class ApiClient {
     if (params.q) qs.set('q', params.q);
     if (params.cursor) qs.set('cursor', params.cursor);
     if (params.limit) qs.set('limit', String(params.limit));
+    if (params.accountId) qs.set('accountId', params.accountId);
     return this.request<Page<Thread>>('GET', `/v1/mail/threads?${qs}`);
   }
   getThread(threadId: string) {
@@ -292,6 +296,13 @@ export class ApiClient {
   }
   updatePrefs(prefs: UserPrefs) {
     return this.request<UserPrefs>('PUT', '/v1/prefs', prefs);
+  }
+  /** Cross-device user preferences (named theme, M2.6 Task 13). */
+  getPreferences() {
+    return this.request<UserPreferences>('GET', '/v1/me/preferences');
+  }
+  updatePreferences(prefs: UserPreferences) {
+    return this.request<UserPreferences>('PUT', '/v1/me/preferences', prefs);
   }
 
   // --- Mail (M2.5) — Recent Opens, Smart Send, attachments, contacts, reactions ---

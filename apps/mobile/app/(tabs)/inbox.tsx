@@ -3,12 +3,14 @@ import { Icon } from '@/components/ui/icon';
 import { Text } from '@/components/ui/text';
 import { api } from '@/lib/api';
 import { relativeTime } from '@/lib/format';
-import { isDemoMode, mockOpens, mockThreadPage, withMockFallback } from '@/lib/mock';
+import { isDemoMode, mockAccounts, mockOpens, mockThreadPage, withMockFallback } from '@/lib/mock';
+import { isNetworkError, queueIfOffline, useQueuedCount } from '@/lib/offline';
 import { cn } from '@/lib/utils';
 import type { InboxSplit, OpenEvent, Page, Thread, ThreadAction } from '@calendium/shared';
 import {
   useInfiniteQuery,
   useMutation,
+  useQuery,
   useQueryClient,
   type InfiniteData,
 } from '@tanstack/react-query';
@@ -16,6 +18,7 @@ import { useRouter } from 'expo-router';
 import {
   ArchiveIcon,
   ClockIcon,
+  CloudOffIcon,
   EllipsisVerticalIcon,
   EyeIcon,
   InboxIcon,
@@ -55,14 +58,33 @@ export default function InboxScreen() {
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
   const [split, setSplit] = React.useState<InboxSplit>('important');
+  // Active-account inbox scope (M2.6 task 12): the filter chips only render
+  // with more than one connected account; null = all accounts.
+  const [activeAccountId, setActiveAccountId] = React.useState<string | null>(null);
+  const accountsQuery = useQuery({
+    queryKey: ['accounts'],
+    queryFn: () =>
+      withMockFallback(
+        () => api.listAccounts(),
+        () => mockAccounts
+      ),
+  });
+  const accounts = accountsQuery.data ?? [];
+  const queuedCount = useQueuedCount();
   const [selected, setSelected] = React.useState<Thread | null>(null);
   const [opensOpen, setOpensOpen] = React.useState(false);
 
   const threadsQuery = useInfiniteQuery({
-    queryKey: ['threads', split],
+    queryKey: ['threads', split, activeAccountId],
     queryFn: ({ pageParam }) =>
       withMockFallback(
-        () => api.listThreads({ split, limit: 50, cursor: pageParam ?? undefined }),
+        () =>
+          api.listThreads({
+            split,
+            limit: 50,
+            cursor: pageParam ?? undefined,
+            accountId: activeAccountId ?? undefined,
+          }),
         () => mockThreadPage(split)
       ),
     initialPageParam: undefined as string | undefined,
@@ -94,20 +116,21 @@ export default function InboxScreen() {
 
   const updateList = React.useCallback(
     (listSplit: InboxSplit, updater: (threads: Thread[]) => Thread[]) => {
-      queryClient.setQueryData<ThreadsData>(['threads', listSplit], (data) =>
+      queryClient.setQueryData<ThreadsData>(['threads', listSplit, activeAccountId], (data) =>
         data
           ? { ...data, pages: data.pages.map((page) => ({ ...page, items: updater(page.items) })) }
           : data
       );
     },
-    [queryClient]
+    [queryClient, activeAccountId]
   );
 
   const actMutation = useMutation({
     mutationFn: ({ thread, action }: { thread: Thread; action: ThreadAction }) =>
       api.actOnThread(thread.id, action),
     onMutate: ({ thread, action }) => {
-      const previous = queryClient.getQueryData<ThreadsData>(['threads', split]);
+      const key = ['threads', split, activeAccountId];
+      const previous = queryClient.getQueryData<ThreadsData>(key);
       if (action === 'archive') {
         updateList(split, (items) => items.filter((t) => t.id !== thread.id));
       } else if (action === 'star' || action === 'unstar') {
@@ -115,15 +138,29 @@ export default function InboxScreen() {
           items.map((t) => (t.id === thread.id ? { ...t, starred: action === 'star' } : t))
         );
       }
-      return { previous, split };
+      return { previous, key };
     },
-    onError: (error, _vars, context) => {
+    onError: async (error, { thread, action }, context) => {
       // Demo mode has no backend, so the optimistic update stands; otherwise a
       // real rejection (paywall, validation, server error) must not look like
-      // success — revert and tell the user.
+      // success — revert and tell the user. A NETWORK failure is different:
+      // the action is durably queued for replay, so the optimistic state stays
+      // as an honest pending change (surfaced by the header's queued badge).
+      // Queueing itself can fail (AsyncStorage rejection) — an unqueued change
+      // must not keep standing as optimistic UI, so await the result and fall
+      // through to the revert below when persistence failed (same pattern as
+      // the thread screen's archive/snooze).
       if (isDemoMode()) return;
+      if (isNetworkError(error)) {
+        const queued = await queueIfOffline(error, {
+          kind: 'thread_action',
+          threadId: thread.id,
+          action,
+        }).catch(() => false);
+        if (queued) return;
+      }
       if (context?.previous) {
-        queryClient.setQueryData(['threads', context.split], context.previous);
+        queryClient.setQueryData(context.key, context.previous);
       }
       Alert.alert('Action failed', error instanceof Error ? error.message : 'Please try again.');
     },
@@ -133,14 +170,25 @@ export default function InboxScreen() {
     mutationFn: ({ thread, until }: { thread: Thread; until: string }) =>
       api.snoozeThread(thread.id, until),
     onMutate: ({ thread }) => {
-      const previous = queryClient.getQueryData<ThreadsData>(['threads', split]);
+      const key = ['threads', split, activeAccountId];
+      const previous = queryClient.getQueryData<ThreadsData>(key);
       updateList(split, (items) => items.filter((t) => t.id !== thread.id));
-      return { previous, split };
+      return { previous, key };
     },
-    onError: (error, _vars, context) => {
+    onError: async (error, { thread, until }, context) => {
       if (isDemoMode()) return;
+      if (isNetworkError(error)) {
+        // Offline: keep the optimistic removal as a queued pending change —
+        // but only when the queue write actually persisted (see actMutation).
+        const queued = await queueIfOffline(error, {
+          kind: 'thread_snooze',
+          threadId: thread.id,
+          until,
+        }).catch(() => false);
+        if (queued) return;
+      }
       if (context?.previous) {
-        queryClient.setQueryData(['threads', context.split], context.previous);
+        queryClient.setQueryData(context.key, context.previous);
       }
       Alert.alert('Could not snooze', error instanceof Error ? error.message : 'Please try again.');
     },
@@ -167,7 +215,7 @@ export default function InboxScreen() {
       let count = 0;
       const cutoff = Date.parse(iso);
       for (const s of SPLITS) {
-        previous[s.key] = queryClient.getQueryData<ThreadsData>(['threads', s.key]);
+        previous[s.key] = queryClient.getQueryData<ThreadsData>(['threads', s.key, activeAccountId]);
         updateList(s.key, (items) =>
           items.filter((t) => {
             const stale = Date.parse(t.lastMessageAt) < cutoff;
@@ -176,7 +224,7 @@ export default function InboxScreen() {
           })
         );
       }
-      return { previous, count };
+      return { previous, count, accountId: activeAccountId };
     },
     onSuccess: (result) => {
       // The optimistic removal above is a client-side date-cutoff guess; the
@@ -201,7 +249,7 @@ export default function InboxScreen() {
       if (context?.previous) {
         for (const s of SPLITS) {
           const data = context.previous[s.key];
-          if (data) queryClient.setQueryData(['threads', s.key], data);
+          if (data) queryClient.setQueryData(['threads', s.key, context.accountId], data);
         }
       }
       Alert.alert('Could not run Get Me To Zero', error instanceof Error ? error.message : 'Please try again.');
@@ -239,7 +287,19 @@ export default function InboxScreen() {
     <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
       {/* Header */}
       <View className="flex-row items-center justify-between px-4 pb-2 pt-1">
-        <Text variant="h3">Inbox</Text>
+        <View className="flex-row items-center gap-2">
+          <Text variant="h3">Inbox</Text>
+          {queuedCount > 0 && (
+            // Real pending state: offline actions durably queued, not yet
+            // confirmed by the server. Clears only when replay succeeds.
+            <View
+              testID="outbox-badge"
+              className="flex-row items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5">
+              <Icon as={CloudOffIcon} className="size-3.5 text-amber-600" />
+              <Text className="text-xs font-medium text-amber-600">{queuedCount} queued</Text>
+            </View>
+          )}
+        </View>
         <View className="flex-row items-center gap-1">
           <Button
             size="icon"
@@ -290,6 +350,55 @@ export default function InboxScreen() {
           })}
         </ScrollView>
       </View>
+
+      {/* Account filter chips (only meaningful with more than one account) */}
+      {accounts.length > 1 && (
+        <View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerClassName="gap-2 px-4 pb-3">
+            <Pressable
+              testID="account-chip-all"
+              onPress={() => setActiveAccountId(null)}
+              className={cn(
+                'h-7 flex-row items-center rounded-full border px-3',
+                activeAccountId === null
+                  ? 'border-primary bg-primary'
+                  : 'border-border bg-background active:bg-accent'
+              )}>
+              <Text
+                className={cn(
+                  'text-xs font-medium',
+                  activeAccountId === null ? 'text-primary-foreground' : 'text-muted-foreground'
+                )}>
+                All accounts
+              </Text>
+            </Pressable>
+            {accounts.map((account) => {
+              const active = activeAccountId === account.id;
+              return (
+                <Pressable
+                  key={account.id}
+                  testID={`account-chip-${account.id}`}
+                  onPress={() => setActiveAccountId(account.id)}
+                  className={cn(
+                    'h-7 flex-row items-center rounded-full border px-3',
+                    active ? 'border-primary bg-primary' : 'border-border bg-background active:bg-accent'
+                  )}>
+                  <Text
+                    className={cn(
+                      'text-xs font-medium',
+                      active ? 'text-primary-foreground' : 'text-muted-foreground'
+                    )}>
+                    {account.email}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
 
       {/* Thread list */}
       {threadsQuery.isLoading ? (
@@ -365,6 +474,7 @@ export default function InboxScreen() {
           <Button
             size="icon"
             variant="ghost"
+            testID="triage-archive"
             onPress={() => {
               actMutation.mutate({ thread: selected, action: 'archive' });
               setSelected(null);

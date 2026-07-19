@@ -81,15 +81,33 @@ vi.mock('@/lib/auth', () => ({
   signOut: vi.fn(),
 }));
 
+const setGlobalShortcutsEnabledMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+
 vi.mock('@/lib/wails', () => ({
   desktop: { GetAppVersion: () => Promise.resolve('0.1.0'), OpenExternal: vi.fn() },
   isDesktop: false,
   onDeepLink: () => () => {},
+  globalShortcutsEnabled: () => true,
+  setGlobalShortcutsEnabled: setGlobalShortcutsEnabledMock,
 }));
 
 vi.mock('@/lib/toast', () => ({
   toast: vi.fn(),
   errorMessage: (e: unknown) => (e instanceof Error ? e.message : 'error'),
+}));
+
+const setNamedThemeMock = vi.fn();
+vi.mock('@/lib/named-theme', () => ({
+  THEME_NAMES: ['neutral', 'ocean', 'forest', 'sunset'],
+  THEME_SWATCHES: {
+    neutral: { light: 'hsl(0 0% 9%)', dark: 'hsl(0 0% 98%)' },
+    ocean: { light: 'hsl(217 72% 46%)', dark: 'hsl(213 80% 66%)' },
+    forest: { light: 'hsl(158 55% 34%)', dark: 'hsl(152 45% 60%)' },
+    sunset: { light: 'hsl(24 82% 48%)', dark: 'hsl(27 90% 62%)' },
+  },
+  getStoredNamedTheme: () => 'neutral',
+  setNamedTheme: (...args: unknown[]) => setNamedThemeMock(...args),
+  syncNamedThemeFromServer: () => Promise.resolve(null),
 }));
 
 import { SettingsView } from './SettingsView';
@@ -119,6 +137,24 @@ function renderSettings() {
   );
 }
 
+describe('SettingsView — named theme picker', () => {
+  beforeEach(() => {
+    setNamedThemeMock.mockReset();
+  });
+
+  it('lists the four palettes and switches on click', async () => {
+    renderSettings();
+    await screen.findByText('Appearance');
+
+    for (const label of ['Neutral', 'Ocean', 'Forest', 'Sunset']) {
+      expect(screen.getByRole('button', { name: label })).toBeTruthy();
+    }
+
+    await userEvent.click(screen.getByRole('button', { name: 'Ocean' }));
+    expect(setNamedThemeMock).toHaveBeenCalledWith('ocean');
+  });
+});
+
 describe('SettingsView — signature & auto-BCC', () => {
   beforeEach(() => {
     fixtures.accounts = [makeAccount()];
@@ -141,6 +177,21 @@ describe('SettingsView — signature & auto-BCC', () => {
 
     await waitFor(() => expect(setSignatureMock).toHaveBeenCalledWith('acc_google', '<p>Ada Lovelace</p>'));
     await waitFor(() => expect(setAutoBccMock).toHaveBeenCalledWith('acc_google', ['archive@calendium.app']));
+  });
+
+  it('renders the global-shortcuts toggle on (persisted default) and flips the host on change', async () => {
+    renderSettings();
+    const toggle = (await screen.findByLabelText(
+      'Enable global shortcuts'
+    )) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+
+    await userEvent.click(toggle);
+    expect(toggle.checked).toBe(false);
+    expect(setGlobalShortcutsEnabledMock).toHaveBeenCalledWith(false);
+
+    await userEvent.click(toggle);
+    expect(setGlobalShortcutsEnabledMock).toHaveBeenCalledWith(true);
   });
 
   it('pre-fills the signature textarea from the account, round-tripped to plain text', async () => {

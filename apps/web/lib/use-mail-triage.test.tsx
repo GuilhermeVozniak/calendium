@@ -59,7 +59,7 @@ vi.mock('sonner', () => ({
 }));
 
 // Imported after the mocks above so use-mail.ts picks them up.
-import { mailUndo, useMailActions, type ThreadListResult } from '@/lib/use-mail';
+import { mailUndo, useMailActions, type ThreadListData } from '@/lib/use-mail';
 
 // ---------------------------------------------------------------------------
 // Fixtures / helpers
@@ -91,15 +91,15 @@ function makeThread(id: string, overrides: Partial<Thread> = {}): Thread {
 }
 
 function seedThreads(queryClient: QueryClient, threads: Thread[]) {
-  queryClient.setQueryData<ThreadListResult>(THREADS_KEY, {
-    page: { items: threads, nextCursor: null },
-    source: 'api',
+  queryClient.setQueryData<ThreadListData>(THREADS_KEY, {
+    pages: [{ page: { items: threads, nextCursor: null }, source: 'api' }],
+    pageParams: [undefined],
   });
 }
 
 function readThreadIds(queryClient: QueryClient): string[] {
-  const cached = queryClient.getQueryData<ThreadListResult>(THREADS_KEY);
-  return cached ? cached.page.items.map((t) => t.id) : [];
+  const cached = queryClient.getQueryData<ThreadListData>(THREADS_KEY);
+  return cached ? cached.pages.flatMap((p) => p.page.items.map((t) => t.id)) : [];
 }
 
 function createWrapper(queryClient: QueryClient) {

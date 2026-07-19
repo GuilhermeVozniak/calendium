@@ -4,6 +4,7 @@ import * as React from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
   Archive,
+  AtSign,
   BellRing,
   CalendarCheck2,
   CalendarDays,
@@ -20,6 +21,7 @@ import {
   MessageSquareText,
   Monitor,
   Moon,
+  Palette,
   PanelRight,
   Paperclip,
   PenLine,
@@ -33,6 +35,7 @@ import {
   Sun,
   Tag,
   UserPlus,
+  Users,
   Vote,
 } from 'lucide-react';
 
@@ -65,6 +68,7 @@ import { fetchSearch } from '@/lib/search-data';
 import { MOD_KEY, useShortcuts } from '@/lib/shortcuts';
 import { teachShortcut } from '@/lib/shortcut-hints';
 import { fetchEventTemplates } from '@/lib/template-data';
+import { useActiveAccount } from '@/lib/use-accounts';
 import { useSelfEmails } from '@/lib/use-identity';
 import { useInstance } from '@/lib/use-instance';
 import { useThreadDetail } from '@/lib/use-mail';
@@ -95,7 +99,7 @@ export function CommandPalette() {
   const router = useRouter();
   const pathname = usePathname();
   const { openCompose } = useCompose();
-  const { setTheme, resolvedTheme } = useTheme();
+  const { setTheme, resolvedTheme, setNamedTheme } = useTheme();
   const { openSidebar } = useAskSidebar();
   const { open: openAttachments } = useAttachmentsPane();
   const aiEnabled = useInstance().data?.features.ai ?? false;
@@ -105,6 +109,7 @@ export function CommandPalette() {
   const openThreadId = pathname === '/mail' ? searchParams.get('t') : null;
   const { data: openThreadDetail } = useThreadDetail(openThreadId);
   const selfEmails = useSelfEmails();
+  const { accounts, setActiveAccountId } = useActiveAccount();
 
   // Reset the query when the palette closes; debounce it for live search.
   React.useEffect(() => {
@@ -331,6 +336,50 @@ export function CommandPalette() {
 
         <CommandSeparator />
 
+        {accounts.length > 0 && (
+          <>
+            <CommandGroup heading="Accounts">
+              <CommandItem
+                onSelect={() => {
+                  teachShortcut('account-all', `${MOD_KEY}0`, 'show all accounts');
+                  run(() => setActiveAccountId(null));
+                }}
+              >
+                <Users />
+                All accounts
+                <Kbd size="sm" className="ml-auto">
+                  {`${MOD_KEY}0`}
+                </Kbd>
+              </CommandItem>
+              {accounts.map((account, index) => (
+                <CommandItem
+                  key={account.id}
+                  value={`switch to account ${account.email}`}
+                  onSelect={() => {
+                    if (index < 9) {
+                      teachShortcut(
+                        `account-${index + 1}`,
+                        `${MOD_KEY}${index + 1}`,
+                        `switch to ${account.email}`
+                      );
+                    }
+                    run(() => setActiveAccountId(account.id));
+                  }}
+                >
+                  <AtSign />
+                  <span className="truncate">Switch to {account.email}</span>
+                  {index < 9 && (
+                    <Kbd size="sm" className="ml-auto">
+                      {`${MOD_KEY}${index + 1}`}
+                    </Kbd>
+                  )}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+            <CommandSeparator />
+          </>
+        )}
+
         <CommandGroup heading="Navigate">
           <CommandItem onSelect={() => run(() => router.push('/mail'))}>
             <Inbox />
@@ -523,6 +572,12 @@ export function CommandPalette() {
             <Monitor />
             System theme
           </CommandItem>
+          {(['neutral', 'ocean', 'forest', 'sunset'] as const).map((name) => (
+            <CommandItem key={name} onSelect={() => run(() => setNamedTheme(name))}>
+              <Palette />
+              {`Theme: ${name.charAt(0).toUpperCase()}${name.slice(1)}`}
+            </CommandItem>
+          ))}
         </CommandGroup>
 
         <CommandSeparator />

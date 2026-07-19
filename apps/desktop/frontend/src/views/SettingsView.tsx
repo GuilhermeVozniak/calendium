@@ -13,6 +13,7 @@ import {
   ChevronRight,
   CreditCard,
   ExternalLink,
+  Keyboard,
   Loader2,
   LogOut,
   Mail,
@@ -25,6 +26,7 @@ import { type ReactNode, useEffect, useState } from 'react';
 
 import { api, apiConfigured, orMock } from '@/lib/api';
 import { clearStoredToken, signOut } from '@/lib/auth';
+import { clearOfflineState } from '@/lib/offline';
 import { htmlToText, toHtml } from '@/lib/compose';
 import {
   createMockClassifier,
@@ -39,13 +41,36 @@ import {
 } from '@/lib/mock';
 import { useServerConfig, webOrigin } from '@/lib/server-config';
 import { errorMessage, toast } from '@/lib/toast';
-import { desktop, isDesktop, onDeepLink } from '@/lib/wails';
+import {
+  desktop,
+  globalShortcutsEnabled,
+  isDesktop,
+  onDeepLink,
+  setGlobalShortcutsEnabled,
+} from '@/lib/wails';
+import {
+  type AutoJoinLeadSeconds,
+  type AutoJoinSettings,
+  loadAutoJoinSettings,
+  saveAutoJoinSettings,
+} from '@/lib/tray';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
+import {
+  getStoredNamedTheme,
+  setNamedTheme,
+  syncNamedThemeFromServer,
+  THEME_NAMES,
+  THEME_SWATCHES,
+  type ThemeName,
+} from '@/lib/named-theme';
 
 const SPLIT_OPTIONS: InboxSplit[] = ['important', 'vip', 'team', 'calendar', 'news', 'social', 'other'];
 const MAX_CLASSIFIERS = 20;
+
+// Task 9: shortcut labels only — the actual chord is chosen by the Go host.
+const isMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.userAgent);
 
 function validateClassifier(form: { name: string; prompt: string; targetSplit: string; labelName: string }): string | null {
   if (!form.name.trim()) return 'Give the classifier a name.';
@@ -333,6 +358,109 @@ function AccountPreferences({ account }: { account: ConnectedAccount }) {
   );
 }
 
+const THEME_LABEL: Record<ThemeName, string> = {
+  neutral: 'Neutral',
+  ocean: 'Ocean',
+  forest: 'Forest',
+  sunset: 'Sunset',
+};
+
+/**
+ * Named-theme picker (M2.6 Task 13). Swatches derive from THEME_SWATCHES —
+ * the canonical --primary token per palette, verbatim from the styles.css
+ * token blocks — not ad-hoc approximations.
+ */
+function AppearanceSection() {
+  const [namedTheme, setNamedThemeState] = useState<ThemeName>(() => getStoredNamedTheme());
+
+  // Server preference wins over localStorage when they differ (localStorage
+  // is the offline fallback).
+  useEffect(() => {
+    void syncNamedThemeFromServer().then((server) => {
+      if (server) setNamedThemeState(server);
+    });
+  }, []);
+
+  const dark = document.documentElement.classList.contains('dark');
+
+  return (
+    <Section title="Appearance">
+      <div className="flex flex-wrap gap-2 p-3">
+        {THEME_NAMES.map((name) => (
+          <button
+            key={name}
+            type="button"
+            aria-pressed={namedTheme === name}
+            onClick={() => {
+              setNamedThemeState(name);
+              setNamedTheme(name);
+            }}
+            className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm transition-colors hover:bg-accent ${
+              namedTheme === name ? 'border-ring ring-1 ring-ring' : 'border-input'
+            }`}
+          >
+            <span
+              aria-hidden
+              className="size-3 rounded-full"
+              style={{ background: THEME_SWATCHES[name][dark ? 'dark' : 'light'] }}
+            />
+            {THEME_LABEL[name]}
+          </button>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+/**
+ * Auto-join meetings (M2.6 Task 11): persisted in localStorage and pushed to
+ * the Go host (SetAutoJoin) on every change; App.tsx re-pushes it on startup.
+ * The host only ever auto-joins while this real setting is enabled.
+ */
+function MeetingsSection() {
+  const [settings, setSettings] = useState<AutoJoinSettings>(loadAutoJoinSettings);
+
+  function update(next: AutoJoinSettings) {
+    setSettings(next);
+    saveAutoJoinSettings(next);
+  }
+
+  return (
+    <Section title="Meetings">
+      <div className="flex items-center gap-3 p-3">
+        <div className="min-w-0 flex-1">
+          <label className="text-sm font-medium" htmlFor="auto-join-toggle">
+            Auto-join meetings
+          </label>
+          <p className="text-xs text-muted-foreground">
+            Opens the call link of your next meeting automatically at start time.
+          </p>
+        </div>
+        <select
+          value={String(settings.leadSeconds)}
+          disabled={!settings.enabled}
+          onChange={(e) =>
+            update({ ...settings, leadSeconds: Number(e.target.value) as AutoJoinLeadSeconds })
+          }
+          aria-label="Auto-join lead time"
+          className="h-8 rounded-md border border-input bg-transparent px-2.5 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+        >
+          <option value="0">At start</option>
+          <option value="30">30s before</option>
+          <option value="60">1m before</option>
+        </select>
+        <input
+          id="auto-join-toggle"
+          type="checkbox"
+          checked={settings.enabled}
+          onChange={() => update({ ...settings, enabled: !settings.enabled })}
+          aria-label="Auto-join meetings"
+        />
+      </div>
+    </Section>
+  );
+}
+
 const STATUS_BADGE: Record<SubscriptionStatus, { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {
   active: { label: 'Active', variant: 'default' },
   trialing: { label: 'Trial', variant: 'secondary' },
@@ -361,6 +489,14 @@ export function SettingsView() {
   // advertises it, mailbox-connect only for enabled providers.
   const billingEnabled = config?.features?.billing ?? false;
   const [connecting, setConnecting] = useState<Provider | null>(null);
+
+  // --- Task 9: global shortcuts toggle (persisted; flips the host live) ---
+  const [globalShortcuts, setGlobalShortcuts] = useState(() => globalShortcutsEnabled());
+  function handleGlobalShortcutsChange(enabled: boolean) {
+    setGlobalShortcuts(enabled);
+    void setGlobalShortcutsEnabled(enabled);
+  }
+  // --- end Task 9 ---
 
   const { data: user } = useQuery({
     queryKey: ['me'],
@@ -466,7 +602,9 @@ export function SettingsView() {
 
   function handleSignOut() {
     if (demoMode) exitDemo();
-    else void signOut();
+    // Clear the previous user's cached mail + queued outbox regardless of
+    // whether the server-side sign-out call succeeded.
+    else void signOut().finally(() => void clearOfflineState());
   }
 
   function handleSwitchServer() {
@@ -501,6 +639,7 @@ export function SettingsView() {
             </Button>
           </div>
         </Section>
+        <AppearanceSection />
 
         <Section title="Connected accounts">
           {accounts.length > 0 && (
@@ -565,6 +704,8 @@ export function SettingsView() {
 
         {config?.features?.ai && <ClassifiersSection />}
 
+        <MeetingsSection />
+
         <Section title="Server">
           <div className="flex flex-col gap-3 p-3">
             <div className="flex items-center gap-3">
@@ -626,6 +767,27 @@ export function SettingsView() {
             </div>
           </Section>
         )}
+
+        {/* --- Task 9: global shortcuts toggle --- */}
+        <Section title="Shortcuts">
+          <div className="flex items-center gap-3 p-3">
+            <Keyboard className="size-4 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">Global shortcuts</div>
+              <p className="text-xs text-muted-foreground">
+                {isMac ? '⌘⇧C composes, ⌘⇧K searches' : 'Ctrl+Shift+C composes, Ctrl+Shift+K searches'}{' '}
+                — system-wide, even while Calendium is in the background.
+              </p>
+            </div>
+            <input
+              type="checkbox"
+              checked={globalShortcuts}
+              onChange={(e) => handleGlobalShortcutsChange(e.target.checked)}
+              aria-label="Enable global shortcuts"
+            />
+          </div>
+        </Section>
+        {/* --- end Task 9 --- */}
 
         <Section title="About">
           <div className="flex flex-col gap-1 p-3 text-xs text-muted-foreground">

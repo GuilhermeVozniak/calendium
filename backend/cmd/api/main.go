@@ -108,7 +108,7 @@ func run(logger *slog.Logger) error {
 	// --- services ---
 	clock := service.SystemClock{}
 
-	users := service.NewUserService(store.Users(), clock)
+	users := service.NewUserService(store.Users(), store.UserPreferences(), clock)
 	billing := service.NewBillingService(store.Users(), store.Subscriptions(), store.StripeEvents(), stripe, clock, store, cfg.Instance.SelfHosted)
 	accounts := service.NewAccountService(store.Accounts(), store.OAuthStates(), store.SyncStates(), oauth, cfg.OAuth.AllowedRedirectURIs, cfg.Instance.PublicAPIURL, clock)
 	mail := service.NewMailService(service.MailServiceDeps{

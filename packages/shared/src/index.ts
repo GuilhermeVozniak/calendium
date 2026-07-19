@@ -4,3 +4,5 @@ export * from './triage';
 export * from './conferencing';
 export * from './conflicts';
 export * from './mail-transforms';
+export * from './offline/outbox';
+export * from './offline/kv';

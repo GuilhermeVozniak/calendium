@@ -43,76 +43,81 @@ func (s *Store) Events() port.EventRepo                 { return eventRepo{s} }
 func (s *Store) EventTemplates() port.EventTemplateRepo { return eventTemplateRepo{s} }
 func (s *Store) CalendarSets() port.CalendarSetRepo     { return calendarSetRepo{s} }
 func (s *Store) Prefs() port.PrefsRepo                  { return prefsRepo{s} }
-func (s *Store) AiJobs() port.AiJobRepo                 { return aiJobRepo{s} }
-func (s *Store) Classifiers() port.ClassifierRepo       { return classifierRepo{s} }
-func (s *Store) VoiceProfiles() port.VoiceProfileRepo   { return voiceProfileRepo{s} }
-func (s *Store) AiUsage() port.AiUsageRepo              { return aiUsageRepo{s} }
-func (s *Store) BookingLinks() port.BookingLinkRepo     { return bookingLinkRepo{s} }
-func (s *Store) Bookings() port.BookingRepo             { return bookingRepo{s} }
-func (s *Store) Polls() port.PollRepo                   { return pollRepo{s} }
-func (s *Store) TimeProposals() port.TimeProposalRepo   { return timeProposalRepo{s} }
-func (s *Store) UserSettings() port.UserSettingsRepo    { return userSettingsRepo{s} }
-func (s *Store) Reactions() port.ReactionRepo           { return reactionRepo{s} }
+func (s *Store) UserPreferences() port.UserPreferencesRepo {
+	return userPreferencesRepo{s}
+}
+func (s *Store) AiJobs() port.AiJobRepo               { return aiJobRepo{s} }
+func (s *Store) Classifiers() port.ClassifierRepo     { return classifierRepo{s} }
+func (s *Store) VoiceProfiles() port.VoiceProfileRepo { return voiceProfileRepo{s} }
+func (s *Store) AiUsage() port.AiUsageRepo            { return aiUsageRepo{s} }
+func (s *Store) BookingLinks() port.BookingLinkRepo   { return bookingLinkRepo{s} }
+func (s *Store) Bookings() port.BookingRepo           { return bookingRepo{s} }
+func (s *Store) Polls() port.PollRepo                 { return pollRepo{s} }
+func (s *Store) TimeProposals() port.TimeProposalRepo { return timeProposalRepo{s} }
+func (s *Store) UserSettings() port.UserSettingsRepo  { return userSettingsRepo{s} }
+func (s *Store) Reactions() port.ReactionRepo         { return reactionRepo{s} }
 
 var (
-	_ port.TxRunner          = (*Store)(nil)
-	_ port.UserRepo          = userRepo{}
-	_ port.SubscriptionRepo  = subscriptionRepo{}
-	_ port.StripeEventRepo   = stripeEventRepo{}
-	_ port.AccountRepo       = accountRepo{}
-	_ port.OAuthStateRepo    = oauthStateRepo{}
-	_ port.SyncStateRepo     = syncStateRepo{}
-	_ port.DeviceRepo        = deviceRepo{}
-	_ port.ThreadRepo        = threadRepo{}
-	_ port.MessageRepo       = messageRepo{}
-	_ port.LabelRepo         = labelRepo{}
-	_ port.DraftRepo         = draftRepo{}
-	_ port.SnippetRepo       = snippetRepo{}
-	_ port.CalendarRepo      = calendarRepo{}
-	_ port.EventRepo         = eventRepo{}
-	_ port.EventTemplateRepo = eventTemplateRepo{}
-	_ port.CalendarSetRepo   = calendarSetRepo{}
-	_ port.PrefsRepo         = prefsRepo{}
-	_ port.AiJobRepo         = aiJobRepo{}
-	_ port.ClassifierRepo    = classifierRepo{}
-	_ port.VoiceProfileRepo  = voiceProfileRepo{}
-	_ port.AiUsageRepo       = aiUsageRepo{}
-	_ port.BookingLinkRepo   = bookingLinkRepo{}
-	_ port.BookingRepo       = bookingRepo{}
-	_ port.PollRepo          = pollRepo{}
-	_ port.TimeProposalRepo  = timeProposalRepo{}
-	_ port.UserSettingsRepo  = userSettingsRepo{}
-	_ port.ReactionRepo      = reactionRepo{}
+	_ port.TxRunner            = (*Store)(nil)
+	_ port.UserRepo            = userRepo{}
+	_ port.SubscriptionRepo    = subscriptionRepo{}
+	_ port.StripeEventRepo     = stripeEventRepo{}
+	_ port.AccountRepo         = accountRepo{}
+	_ port.OAuthStateRepo      = oauthStateRepo{}
+	_ port.SyncStateRepo       = syncStateRepo{}
+	_ port.DeviceRepo          = deviceRepo{}
+	_ port.ThreadRepo          = threadRepo{}
+	_ port.MessageRepo         = messageRepo{}
+	_ port.LabelRepo           = labelRepo{}
+	_ port.DraftRepo           = draftRepo{}
+	_ port.SnippetRepo         = snippetRepo{}
+	_ port.CalendarRepo        = calendarRepo{}
+	_ port.EventRepo           = eventRepo{}
+	_ port.EventTemplateRepo   = eventTemplateRepo{}
+	_ port.CalendarSetRepo     = calendarSetRepo{}
+	_ port.PrefsRepo           = prefsRepo{}
+	_ port.UserPreferencesRepo = userPreferencesRepo{}
+	_ port.AiJobRepo           = aiJobRepo{}
+	_ port.ClassifierRepo      = classifierRepo{}
+	_ port.VoiceProfileRepo    = voiceProfileRepo{}
+	_ port.AiUsageRepo         = aiUsageRepo{}
+	_ port.BookingLinkRepo     = bookingLinkRepo{}
+	_ port.BookingRepo         = bookingRepo{}
+	_ port.PollRepo            = pollRepo{}
+	_ port.TimeProposalRepo    = timeProposalRepo{}
+	_ port.UserSettingsRepo    = userSettingsRepo{}
+	_ port.ReactionRepo        = reactionRepo{}
 )
 
 type (
-	userRepo          struct{ *Store }
-	subscriptionRepo  struct{ *Store }
-	stripeEventRepo   struct{ *Store }
-	accountRepo       struct{ *Store }
-	oauthStateRepo    struct{ *Store }
-	syncStateRepo     struct{ *Store }
-	deviceRepo        struct{ *Store }
-	threadRepo        struct{ *Store }
-	messageRepo       struct{ *Store }
-	labelRepo         struct{ *Store }
-	draftRepo         struct{ *Store }
-	snippetRepo       struct{ *Store }
-	calendarRepo      struct{ *Store }
-	eventRepo         struct{ *Store }
-	eventTemplateRepo struct{ *Store }
-	calendarSetRepo   struct{ *Store }
-	prefsRepo         struct{ *Store }
-	aiJobRepo         struct{ *Store }
-	classifierRepo    struct{ *Store }
-	voiceProfileRepo  struct{ *Store }
-	aiUsageRepo       struct{ *Store }
-	bookingLinkRepo   struct{ *Store }
-	bookingRepo       struct{ *Store }
-	pollRepo          struct{ *Store }
-	timeProposalRepo  struct{ *Store }
-	userSettingsRepo  struct{ *Store }
-	reactionRepo      struct{ *Store }
+	userRepo            struct{ *Store }
+	subscriptionRepo    struct{ *Store }
+	stripeEventRepo     struct{ *Store }
+	accountRepo         struct{ *Store }
+	oauthStateRepo      struct{ *Store }
+	syncStateRepo       struct{ *Store }
+	deviceRepo          struct{ *Store }
+	threadRepo          struct{ *Store }
+	messageRepo         struct{ *Store }
+	labelRepo           struct{ *Store }
+	draftRepo           struct{ *Store }
+	snippetRepo         struct{ *Store }
+	calendarRepo        struct{ *Store }
+	eventRepo           struct{ *Store }
+	eventTemplateRepo   struct{ *Store }
+	calendarSetRepo     struct{ *Store }
+	prefsRepo           struct{ *Store }
+	userPreferencesRepo struct{ *Store }
+	aiJobRepo           struct{ *Store }
+	classifierRepo      struct{ *Store }
+	voiceProfileRepo    struct{ *Store }
+	aiUsageRepo         struct{ *Store }
+	bookingLinkRepo     struct{ *Store }
+	bookingRepo         struct{ *Store }
+	pollRepo            struct{ *Store }
+	timeProposalRepo    struct{ *Store }
+	userSettingsRepo    struct{ *Store }
+	reactionRepo        struct{ *Store }
 )
 
 // --- transactions -----------------------------------------------------------

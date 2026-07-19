@@ -14,6 +14,7 @@ import type {
   Label,
   Message,
   OpenEvent,
+  OutboxAction,
   Page,
   Reaction,
   SendSuggestion,
@@ -22,13 +23,22 @@ import type {
   UnsubscribeResult,
 } from '@calendium/shared';
 import { ApiRequestError, UndoStack } from '@calendium/shared';
-import { useInfiniteQuery, useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
+import {
+  useInfiniteQuery,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+  type QueryKey,
+} from '@tanstack/react-query';
 import { toast } from 'sonner';
 
 import { getApiClient } from '@/lib/api';
 import { getAccessToken } from '@/lib/auth-client';
+import { useActiveAccount } from '@/lib/use-accounts';
 import { DEMO_MODE } from '@/lib/demo';
 import { env } from '@/lib/env';
+import { isOnline, reportApiReachable } from '@/lib/offline/connectivity';
+import { isNetworkError, queueAction } from '@/lib/offline/queue';
 import {
   applyMockAction,
   applyMockLabel,
@@ -73,12 +83,26 @@ export interface MailListParams {
   split?: InboxSplit;
   view?: MailboxView;
   q?: string;
+  /**
+   * Scope to one connected account. When omitted, the active-account context
+   * (mod+1..9 switcher) applies; undefined/null there means all accounts.
+   */
+  accountId?: string;
   /** Skip fetching (e.g. while the Drafts pseudo-view is showing instead). */
   enabled?: boolean;
 }
 
 export interface ThreadListResult {
   page: Page<Thread>;
+  source: DataSource;
+}
+
+/** Raw ['threads', …] cache shape since the infinite-query migration (M2.6 Task 7). */
+export type ThreadListData = InfiniteData<ThreadListResult, string | undefined>;
+
+/** Flattened view useThreadList exposes to consumers (mail/page.tsx). */
+export interface ThreadListView {
+  items: Thread[];
   source: DataSource;
 }
 
@@ -136,8 +160,16 @@ export function useApiOnline(): boolean {
     queryFn: async () => {
       try {
         await getApiClient().getMe();
+        // Fold real reachability into the connectivity tracker — except in
+        // demo mode, where the API is unreachable by design and demo data is
+        // served locally (see lib/offline/connectivity.ts).
+        if (!DEMO_MODE) reportApiReachable(true);
         return true;
-      } catch {
+      } catch (err) {
+        // Only a transport failure means unreachable — a 401/5xx response IS
+        // the server answering, so reachability stays true and mutations fail
+        // honestly instead of queueing into the offline outbox.
+        if (!DEMO_MODE) reportApiReachable(!isNetworkError(err));
         return false;
       }
     },
@@ -149,20 +181,41 @@ export function useApiOnline(): boolean {
   return data !== false;
 }
 
+// Module-level (stable identity) so TanStack Query memoizes the flattened
+// result instead of re-deriving a fresh array every render.
+function selectThreadList(data: ThreadListData): ThreadListView {
+  return {
+    items: data.pages.flatMap((p) => p.page.items),
+    source: data.pages[0]?.source ?? 'api',
+  };
+}
+
+/**
+ * Cursor-paginated thread list (M2.6 Task 7): an infinite query over the
+ * server's keyset cursor, flattened to `{ items, source }` for consumers.
+ * `fetchNextPage`/`hasNextPage` come straight from the query result; the
+ * demo fallback returns a single cursor-less page, so it never paginates.
+ */
 export function useThreadList(params: MailListParams) {
   // 'drafts' is not a thread view — it lists drafts via useDrafts, so never
   // send it as a listThreads view.
   const view = params.view && params.view !== 'drafts' ? params.view : undefined;
-  return useQuery({
-    queryKey: ['threads', params.split ?? null, view ?? null, params.q ?? ''],
+  // Explicit param wins; otherwise the active-account context scopes the list.
+  const { activeAccountId } = useActiveAccount();
+  const accountId = params.accountId ?? activeAccountId ?? undefined;
+  return useInfiniteQuery({
+    queryKey: ['threads', params.split ?? null, view ?? null, params.q ?? '', accountId ?? null],
     enabled: params.enabled ?? true,
-    queryFn: async (): Promise<ThreadListResult> => {
+    initialPageParam: undefined as string | undefined,
+    queryFn: async ({ pageParam }): Promise<ThreadListResult> => {
       try {
         const page = await getApiClient().listThreads({
           split: view ? undefined : (params.split ?? 'important'),
           view,
           q: params.q || undefined,
+          cursor: pageParam,
           limit: 100,
+          accountId,
         });
         return { page, source: 'api' };
       } catch (err) {
@@ -170,27 +223,35 @@ export function useThreadList(params: MailListParams) {
         throw err;
       }
     },
+    getNextPageParam: (lastPage) => lastPage.page.nextCursor || undefined,
+    select: selectThreadList,
     placeholderData: (previous) => previous,
   });
+}
+
+/**
+ * Fetches one thread's detail (thread + messages). Shared verbatim between
+ * useThreadDetail and the prefetch hooks (lib/use-prefetch.ts) so a prefetch
+ * lands in the exact cache entry the open reads — a hit, never a duplicate.
+ */
+export async function fetchThreadDetail(threadId: string): Promise<ThreadDetailResult | null> {
+  try {
+    const detail = await getApiClient().getThread(threadId);
+    return { ...detail, source: 'api' };
+  } catch (err) {
+    if (DEMO_MODE) {
+      const mock = getMockThread(threadId);
+      return mock ? { ...mock, source: 'demo' } : null;
+    }
+    throw err;
+  }
 }
 
 export function useThreadDetail(threadId: string | null) {
   return useQuery({
     queryKey: ['thread', threadId],
     enabled: threadId !== null,
-    queryFn: async (): Promise<ThreadDetailResult | null> => {
-      if (!threadId) return null;
-      try {
-        const detail = await getApiClient().getThread(threadId);
-        return { ...detail, source: 'api' };
-      } catch (err) {
-        if (DEMO_MODE) {
-          const mock = getMockThread(threadId);
-          return mock ? { ...mock, source: 'demo' } : null;
-        }
-        throw err;
-      }
-    },
+    queryFn: () => (threadId ? fetchThreadDetail(threadId) : Promise.resolve(null)),
   });
 }
 
@@ -329,6 +390,18 @@ const ACTION_INVERSE: Partial<Record<ThreadAction, ThreadAction>> = {
   move_to_inbox: 'archive',
 };
 
+/** Applies an items transform to every page of a cached infinite thread list. */
+function mapListPages(
+  data: ThreadListData | undefined,
+  fn: (items: Thread[]) => Thread[]
+): ThreadListData | undefined {
+  if (!data) return data;
+  return {
+    ...data,
+    pages: data.pages.map((p) => ({ ...p, page: { ...p.page, items: fn(p.page.items) } })),
+  };
+}
+
 const ACTION_UNDO_LABEL: Partial<Record<ThreadAction, string>> = {
   archive: 'Archive',
   trash: 'Delete',
@@ -365,15 +438,12 @@ export function useMailActions() {
   const queryClient = useQueryClient();
 
   function updateCaches(threadId: string, patch: (t: Thread) => Thread, removeFromLists: boolean) {
-    queryClient.setQueriesData<ThreadListResult | undefined>(
-      { queryKey: ['threads'] },
-      (data) => {
-        if (!data) return data;
-        const items = removeFromLists
-          ? data.page.items.filter((t) => t.id !== threadId)
-          : data.page.items.map((t) => (t.id === threadId ? patch(t) : t));
-        return { ...data, page: { ...data.page, items } };
-      }
+    queryClient.setQueriesData<ThreadListData | undefined>({ queryKey: ['threads'] }, (data) =>
+      mapListPages(data, (items) =>
+        removeFromLists
+          ? items.filter((t) => t.id !== threadId)
+          : items.map((t) => (t.id === threadId ? patch(t) : t))
+      )
     );
     queryClient.setQueryData<ThreadDetailResult | null | undefined>(
       ['thread', threadId],
@@ -385,8 +455,12 @@ export function useMailActions() {
    * Applies an optimistic cache patch, calls the API, and — outside demo mode —
    * reverts the caches and toasts on failure so a rejected mutation is never
    * shown as success. Returns whether the mutation actually took effect: a
-   * resolved real API call, or (DEMO_MODE) the local fallback applied above.
-   * Callers use this to decide whether pushing an undo entry is honest.
+   * resolved real API call, (DEMO_MODE) the local fallback applied above, or
+   * — when `offlineAction` is provided — a durable outbox enqueue on a
+   * transport failure (the action WILL replay; the optimistic patch is kept).
+   * Callers use this to decide whether pushing an undo entry is honest — an
+   * undo of a queued action enqueues the inverse, which coalesces away in the
+   * outbox.
    */
   async function runOptimistic(
     threadId: string,
@@ -394,9 +468,10 @@ export function useMailActions() {
     removeFromLists: boolean,
     apiCall: () => Promise<unknown>,
     mockApply: () => void,
-    errorMessage: string
+    errorMessage: string,
+    offlineAction?: OutboxAction
   ): Promise<boolean> {
-    const previousLists = queryClient.getQueriesData<ThreadListResult | undefined>({
+    const previousLists = queryClient.getQueriesData<ThreadListData | undefined>({
       queryKey: ['threads'],
     });
     const previousDetail = queryClient.getQueryData<ThreadDetailResult | null | undefined>([
@@ -405,11 +480,22 @@ export function useMailActions() {
     ]);
     updateCaches(threadId, patch, removeFromLists);
     if (DEMO_MODE) mockApply();
+    if (offlineAction && !isOnline()) {
+      // Known-offline: don't burn a doomed request — queue for replay and
+      // keep the optimistic patch. (In DEMO_MODE the mock fallback above
+      // already applied, so the demo store stays consistent too.)
+      await queueAction(offlineAction);
+      return true;
+    }
     try {
       await apiCall();
       return true;
-    } catch {
+    } catch (err) {
       if (DEMO_MODE) return true;
+      if (offlineAction && isNetworkError(err)) {
+        await queueAction(offlineAction); // keep the optimistic patch; no revert
+        return true;
+      }
       for (const [key, data] of previousLists) queryClient.setQueryData(key, data);
       queryClient.setQueryData(['thread', threadId], previousDetail);
       toast.error(errorMessage);
@@ -428,7 +514,8 @@ export function useMailActions() {
       REMOVES_FROM_LIST.has(action),
       () => getApiClient().actOnThread(threadId, action),
       () => applyMockAction(threadId, action),
-      ACTION_ERROR[action] ?? 'Could not update the conversation.'
+      ACTION_ERROR[action] ?? 'Could not update the conversation.',
+      { kind: 'thread_action', threadId, action }
     );
     const inverse = ACTION_INVERSE[action];
     if (ok && opts?.undoable !== false && inverse) {
@@ -451,7 +538,8 @@ export function useMailActions() {
       true,
       () => getApiClient().snoozeThread(threadId, until),
       () => mockSnoozeThread(threadId, until),
-      'Could not snooze the conversation.'
+      'Could not snooze the conversation.',
+      { kind: 'thread_snooze', threadId, until }
     );
     if (ok) {
       mailUndo.push({
@@ -472,7 +560,8 @@ export function useMailActions() {
       false,
       () => getApiClient().setThreadReminder(threadId, remindAt),
       () => mockRemindThread(threadId, remindAt),
-      'Could not set the reminder.'
+      'Could not set the reminder.',
+      { kind: 'thread_reminder', threadId, remindAt }
     );
   }
 
@@ -488,7 +577,12 @@ export function useMailActions() {
     if (DEMO_MODE) applyMockAction(threadId, 'read');
     try {
       await getApiClient().markThreadOpened(threadId);
-    } catch {
+    } catch (err) {
+      if (!DEMO_MODE && isNetworkError(err)) {
+        // Queue silently — a read receipt shouldn't toast on every open.
+        await queueAction({ kind: 'thread_open', threadId }, { silent: true });
+        return;
+      }
       // Reconciles on the next refetch.
     }
   }
@@ -500,24 +594,42 @@ export function useMailActions() {
    * while leaving the succeeded ids in their new (mutated) state.
    */
   function restoreFailedIds(
-    previousLists: Array<[QueryKey, ThreadListResult | undefined]>,
+    previousLists: Array<[QueryKey, ThreadListData | undefined]>,
     failedIds: string[]
   ): void {
     if (failedIds.length === 0) return;
     const failedSet = new Set(failedIds);
     for (const [key, prevData] of previousLists) {
       if (!prevData) continue;
-      const prevById = new Map(prevData.page.items.map((t) => [t.id, t] as const));
-      queryClient.setQueryData<ThreadListResult | undefined>(key, (current) => {
+      const prevById = new Map(
+        prevData.pages.flatMap((p) => p.page.items).map((t) => [t.id, t] as const)
+      );
+      queryClient.setQueryData<ThreadListData | undefined>(key, (current) => {
         if (!current) return current;
-        const currentIds = new Set(current.page.items.map((t) => t.id));
-        const items = current.page.items.map((t) =>
-          failedSet.has(t.id) && prevById.has(t.id) ? prevById.get(t.id)! : t
-        );
-        for (const id of failedIds) {
-          if (prevById.has(id) && !currentIds.has(id)) items.push(prevById.get(id)!);
+        const currentIds = new Set(current.pages.flatMap((p) => p.page.items.map((t) => t.id)));
+        const pages = current.pages.map((p) => ({
+          ...p,
+          page: {
+            ...p.page,
+            items: p.page.items.map((t) =>
+              failedSet.has(t.id) && prevById.has(t.id) ? prevById.get(t.id)! : t
+            ),
+          },
+        }));
+        // Failed ids the optimistic update removed entirely are reinserted at
+        // the end of the last page (same flattened position the pre-migration
+        // single list gave them).
+        const reinsert = failedIds
+          .filter((id) => prevById.has(id) && !currentIds.has(id))
+          .map((id) => prevById.get(id)!);
+        const last = pages[pages.length - 1];
+        if (reinsert.length > 0 && last) {
+          pages[pages.length - 1] = {
+            ...last,
+            page: { ...last.page, items: [...last.page.items, ...reinsert] },
+          };
         }
-        return { ...current, page: { ...current.page, items } };
+        return { ...current, pages };
       });
     }
   }
@@ -527,21 +639,21 @@ export function useMailActions() {
     action: BulkAction,
     labelId?: string
   ): Promise<BulkActResult> {
-    const previousLists = queryClient.getQueriesData<ThreadListResult | undefined>({
+    const previousLists = queryClient.getQueriesData<ThreadListData | undefined>({
       queryKey: ['threads'],
     });
     const removes = action === 'archive' || action === 'trash' || action === 'spam';
     const isLabelAction = action === 'label' || action === 'unlabel';
     const idSet = new Set(threadIds);
-    queryClient.setQueriesData<ThreadListResult | undefined>({ queryKey: ['threads'] }, (data) => {
-      if (!data) return data;
-      const items = removes
-        ? data.page.items.filter((t) => !idSet.has(t.id))
-        : data.page.items.map((t) =>
-            idSet.has(t.id) && !isLabelAction ? applyActionToThread(t, action as ThreadAction) : t
-          );
-      return { ...data, page: { ...data.page, items } };
-    });
+    queryClient.setQueriesData<ThreadListData | undefined>({ queryKey: ['threads'] }, (data) =>
+      mapListPages(data, (items) =>
+        removes
+          ? items.filter((t) => !idSet.has(t.id))
+          : items.map((t) =>
+              idSet.has(t.id) && !isLabelAction ? applyActionToThread(t, action as ThreadAction) : t
+            )
+      )
+    );
     if (DEMO_MODE) {
       if (isLabelAction) {
         for (const id of threadIds) applyMockLabel(id, labelId ?? '', action === 'label');

@@ -13,6 +13,7 @@ const mockListAccounts = jest.fn();
 const mockGetSubscription = jest.fn();
 const mockSetSignature = jest.fn();
 const mockSetAutoBcc = jest.fn();
+const mockUpdatePreferences = jest.fn();
 jest.mock('@/lib/api', () => ({
   api: {
     listAccounts: (...args: unknown[]) => mockListAccounts(...args),
@@ -20,8 +21,13 @@ jest.mock('@/lib/api', () => ({
     connectAccount: (...args: unknown[]) => jest.fn()(...args),
     setSignature: (...args: unknown[]) => mockSetSignature(...args),
     setAutoBcc: (...args: unknown[]) => mockSetAutoBcc(...args),
+    updatePreferences: (...args: unknown[]) => mockUpdatePreferences(...args),
   },
 }));
+
+jest.mock('@react-native-async-storage/async-storage', () =>
+  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
+);
 
 const mockPush = jest.fn();
 const mockReplace = jest.fn();
@@ -100,6 +106,23 @@ beforeEach(() => {
   mockUseServerConfig.mockReturnValue({ config: AI_ENABLED_CONFIG, clear: jest.fn() });
   mockListAccounts.mockResolvedValue([]);
   mockGetSubscription.mockResolvedValue({ status: 'none', priceUsd: 50 });
+});
+
+describe('SettingsScreen — named theme picker', () => {
+  it('lists the four palettes and PUTs the chosen theme to the server', async () => {
+    mockUpdatePreferences.mockResolvedValue({ theme: 'ocean' });
+    await renderScreen();
+    await flush();
+
+    for (const name of ['neutral', 'ocean', 'forest', 'sunset']) {
+      expect(screen.getByTestId(`theme-${name}`)).toBeTruthy();
+    }
+
+    await fireEvent.press(screen.getByTestId('theme-ocean'));
+    await flush();
+
+    expect(mockUpdatePreferences).toHaveBeenCalledWith({ theme: 'ocean' });
+  });
 });
 
 /**

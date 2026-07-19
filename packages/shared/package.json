@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "fake-indexeddb": "^6.2.5",
     "typescript": "~5.9.2",
     "vitest": "^4.1.10"
   }

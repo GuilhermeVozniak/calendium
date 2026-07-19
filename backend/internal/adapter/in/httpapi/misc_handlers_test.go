@@ -47,6 +47,67 @@ func TestHandleSearch(t *testing.T) {
 	})
 }
 
+func TestHandlePreferences(t *testing.T) {
+	t.Run("GET returns the preference document", func(t *testing.T) {
+		h := newHarness(t)
+		h.users.prefsRet = port.UserPreferences{Theme: "ocean"}
+		rec := h.authed(http.MethodGet, "/v1/me/preferences", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		var got port.UserPreferences
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.Theme != "ocean" {
+			t.Fatalf("theme = %q, want ocean", got.Theme)
+		}
+	})
+
+	t.Run("PUT with a valid theme persists and echoes", func(t *testing.T) {
+		h := newHarness(t)
+		h.users.updatePrefsRet = port.UserPreferences{Theme: "forest"}
+		rec := h.authed(http.MethodPut, "/v1/me/preferences", jsonBody(t, map[string]string{"theme": "forest"}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.users.gotPrefs.Theme != "forest" {
+			t.Fatalf("gotPrefs.Theme = %q, want forest", h.users.gotPrefs.Theme)
+		}
+		var got port.UserPreferences
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.Theme != "forest" {
+			t.Fatalf("theme = %q, want forest", got.Theme)
+		}
+	})
+
+	t.Run("PUT with an unknown theme is rejected with 400 before the service", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPut, "/v1/me/preferences", jsonBody(t, map[string]string{"theme": "bogus"}))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if got := decodeErr(t, rec); got.Code != "validation_failed" {
+			t.Fatalf("code = %q, want validation_failed", got.Code)
+		}
+		if h.users.updatePrefsCalls != 0 {
+			t.Fatalf("updatePrefsCalls = %d, want 0 (handler-level validation)", h.users.updatePrefsCalls)
+		}
+	})
+
+	t.Run("unauthenticated requests get 401", func(t *testing.T) {
+		h := newHarness(t)
+		for _, method := range []string{http.MethodGet, http.MethodPut} {
+			rec := h.anon(method, "/v1/me/preferences", nil)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("%s status = %d, want 401", method, rec.Code)
+			}
+		}
+	})
+}
+
 func TestHandleAiCompose(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		h := newHarness(t)

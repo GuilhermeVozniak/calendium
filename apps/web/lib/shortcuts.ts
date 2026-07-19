@@ -97,6 +97,34 @@ export function useShortcuts(shortcuts: Shortcut[]): void {
 }
 
 // ---------------------------------------------------------------------------
+// Account switching (mod+1..9 / mod+0)
+// ---------------------------------------------------------------------------
+
+/**
+ * Bindings for multi-account switching: mod+1..9 selects the nth connected
+ * account, mod+0 clears back to "all accounts". Digits past the account count
+ * are left unbound, so e.g. mod+5 with three accounts is a no-op. Uses the
+ * default editable-target guard — nothing fires while an
+ * input/textarea/contenteditable has focus.
+ */
+export function accountSwitchShortcuts(
+  accountIds: string[],
+  setActiveAccountId: (id: string | null) => void
+): Shortcut[] {
+  const shortcuts: Shortcut[] = accountIds.slice(0, 9).map((id, index) => ({
+    keys: `mod+${index + 1}`,
+    description: `Switch to account ${index + 1}`,
+    handler: () => setActiveAccountId(id),
+  }));
+  shortcuts.push({
+    keys: 'mod+0',
+    description: 'Show all accounts',
+    handler: () => setActiveAccountId(null),
+  });
+  return shortcuts;
+}
+
+// ---------------------------------------------------------------------------
 // Chord sequences (Gmail/Superhuman "G then I", "G then C")
 // ---------------------------------------------------------------------------
 

@@ -3,6 +3,7 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   AtSign,
   CalendarDays,
@@ -29,9 +30,11 @@ import {
 } from 'lucide-react';
 
 import { AskSidebarPanel, AskSidebarProvider } from '@/components/ai/ask-sidebar';
+import { AccountSwitcher } from '@/components/app/account-switcher';
 import { AttachmentsPaneProvider } from '@/components/app/attachments-pane';
 import { CommandPalette } from '@/components/app/command-palette';
 import { ComposeProvider, useCompose } from '@/components/app/compose';
+import { OutboxIndicator } from '@/components/app/outbox-indicator';
 import { useTheme } from '@/components/theme-provider';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -53,7 +56,9 @@ import { Kbd } from '@/components/ui/kbd';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { authClient, signOut } from '@/lib/auth-client';
 import { DEMO_MODE } from '@/lib/demo';
-import { useChords, useShortcuts } from '@/lib/shortcuts';
+import { clearOfflineState, startOutboxReplay } from '@/lib/offline/queue';
+import { accountSwitchShortcuts, useChords, useShortcuts } from '@/lib/shortcuts';
+import { ActiveAccountProvider, useActiveAccount } from '@/lib/use-accounts';
 import { useApiOnline } from '@/lib/use-mail';
 import { cn } from '@/lib/utils';
 
@@ -68,29 +73,46 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     if (!isPending && !session) router.replace('/signin');
   }, [isPending, session, router]);
 
+  // Eager service-worker registration so static-asset caching works before any
+  // push opt-in (lib/web-push.ts reuses this same registration — no double
+  // registration). Production builds only: under `next dev` the cache-first
+  // /_next/static strategy would serve stale HMR chunks.
+  React.useEffect(() => {
+    if (process.env.NODE_ENV !== 'production') return;
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // Registration failure only disables offline asset caching; the app
+      // itself is unaffected.
+    });
+  }, []);
+
   if (isPending || !session) return <Splash />;
 
   return (
-    <AttachmentsPaneProvider>
-      <ComposeProvider>
-        <AskSidebarProvider>
-          <TooltipProvider>
-            <div className="bg-background flex h-svh overflow-hidden">
-              <React.Suspense fallback={<div className="w-60 shrink-0 border-r" />}>
-                <SideRail user={user} />
-              </React.Suspense>
-              <div className="flex min-w-0 flex-1 flex-col">
-                <OfflineBanner />
-                <main className="min-h-0 flex-1">{children}</main>
+    <ActiveAccountProvider>
+      <AttachmentsPaneProvider>
+        <ComposeProvider>
+          <AskSidebarProvider>
+            <TooltipProvider>
+              <div className="bg-background flex h-svh overflow-hidden">
+                <React.Suspense fallback={<div className="w-60 shrink-0 border-r" />}>
+                  <SideRail user={user} />
+                </React.Suspense>
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <OfflineBanner />
+                  <OutboxIndicator />
+                  <main className="min-h-0 flex-1">{children}</main>
+                </div>
+                <AskSidebarPanel />
               </div>
-              <AskSidebarPanel />
-            </div>
-            <CommandPalette />
-            <GlobalShortcuts />
-          </TooltipProvider>
-        </AskSidebarProvider>
-      </ComposeProvider>
-    </AttachmentsPaneProvider>
+              <CommandPalette />
+              <GlobalShortcuts />
+              <OutboxReplayLifecycle />
+            </TooltipProvider>
+          </AskSidebarProvider>
+        </ComposeProvider>
+      </AttachmentsPaneProvider>
+    </ActiveAccountProvider>
   );
 }
 
@@ -109,6 +131,7 @@ function GlobalShortcuts() {
   const router = useRouter();
   const { openCompose } = useCompose();
   const pathname = usePathname();
+  const { accounts, setActiveAccountId } = useActiveAccount();
   // Chords must register before the single-key bindings so a completed "g c"
   // preventDefaults the plain "c" (compose) that would otherwise also fire.
   useChords([
@@ -123,7 +146,22 @@ function GlobalShortcuts() {
       // The calendar page binds 'c' to "new event"; don't double-fire there.
       enabled: pathname !== '/calendar',
     },
+    // mod+1..9 selects the nth connected account, mod+0 all accounts (M2.6).
+    ...accountSwitchShortcuts(
+      accounts.map((a) => a.id),
+      setActiveAccountId
+    ),
   ]);
+  return null;
+}
+
+/**
+ * Starts the outbox replay triggers (reconnect, window focus, 30s interval)
+ * for the lifetime of the authenticated app shell.
+ */
+function OutboxReplayLifecycle() {
+  const queryClient = useQueryClient();
+  React.useEffect(() => startOutboxReplay(queryClient), [queryClient]);
   return null;
 }
 
@@ -278,13 +316,18 @@ function SideRail({ user }: { user: SessionUser | null }) {
         </Link>
       </nav>
 
-      {/* Account switcher (stub) */}
-      <AccountSwitcher user={user} />
+      {/* Inbox account scope (mod+1..9 switching, M2.6 task 12) */}
+      <div className="border-t p-2">
+        <AccountSwitcher />
+      </div>
+
+      {/* User menu */}
+      <UserMenu user={user} />
     </aside>
   );
 }
 
-function AccountSwitcher({ user }: { user: SessionUser | null }) {
+function UserMenu({ user }: { user: SessionUser | null }) {
   const router = useRouter();
   const { theme, setTheme } = useTheme();
   const email = user?.email ?? 'you@calendium.app';
@@ -353,6 +396,8 @@ function AccountSwitcher({ user }: { user: SessionUser | null }) {
             className="gap-2"
             onSelect={async () => {
               await signOut();
+              // Never leave the previous user's mail/outbox on this device.
+              await clearOfflineState();
               router.replace('/signin');
             }}
           >

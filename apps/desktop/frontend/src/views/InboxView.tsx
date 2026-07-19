@@ -1,11 +1,13 @@
-import type { BulkAction, InboxSplit, OpenEvent, Thread } from '@calendium/shared';
+import type { BulkAction, InboxSplit, OpenEvent, OutboxAction, Thread } from '@calendium/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { addHours, format, isToday } from 'date-fns';
-import { Loader2, MailOpen, Star } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { ChevronsUpDown, CloudOff, Loader2, MailOpen, Star } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { api, orMock } from '@/lib/api';
-import { mockOpens, mockThreads } from '@/lib/mock';
+import { mockAccounts, mockOpens, mockThreads } from '@/lib/mock';
+import { isNetworkError, queueOffline, useQueuedCount } from '@/lib/offline';
+import { usePrefetchNeighbors, useThreadHoverPrefetch } from '@/lib/prefetch';
 import { isDemoMode } from '@/lib/server-config';
 import {
   ACTION_INVERSE,
@@ -22,6 +24,14 @@ import { errorMessage, toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/ui/dropdown';
 import { Kbd } from '@/ui/kbd';
 import { ThreadPane } from '@/views/ThreadPane';
 
@@ -39,6 +49,20 @@ export function emitMailAction(action: MailAction) {
 export function emitFocusThread(threadId: string) {
   window.dispatchEvent(new CustomEvent<string>(FOCUS_THREAD_EVENT, { detail: threadId }));
 }
+
+/** localStorage key backing the persisted active-account selection (matches web). */
+const ACTIVE_ACCOUNT_STORAGE_KEY = 'calendium.activeAccountId';
+
+function readStoredAccountId(): string | null {
+  try {
+    return window.localStorage.getItem(ACTIVE_ACCOUNT_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Display label for the platform modifier in account-switch badges. */
+const MOD_LABEL = /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl+';
 
 const SPLIT_LABELS: Record<InboxSplit, string> = {
   important: 'Important',
@@ -60,17 +84,23 @@ function ThreadRow({
   active,
   bulkSelected,
   onClick,
+  onHoverStart,
+  onHoverEnd,
 }: {
   thread: Thread;
   active: boolean;
   bulkSelected: boolean;
   onClick: () => void;
+  onHoverStart: () => void;
+  onHoverEnd: () => void;
 }) {
   const sender = thread.participants[0];
   return (
     <button
       type="button"
       onClick={onClick}
+      onMouseEnter={onHoverStart}
+      onMouseLeave={onHoverEnd}
       className={cn(
         'flex w-full flex-col gap-0.5 border-b px-3 py-2 text-left transition-colors select-none',
         bulkSelected ? 'bg-primary/10' : active ? 'bg-accent' : 'hover:bg-accent/50'
@@ -135,13 +165,47 @@ function OpensFeedList({ opens, isLoading }: { opens: OpenEvent[]; isLoading: bo
 
 export function InboxView({ split }: { split: InboxSplit }) {
   const queryClient = useQueryClient();
+  // Real persisted-outbox size — the pill never claims more or less than
+  // what is actually queued for replay (honesty policy).
+  const queuedOffline = useQueuedCount();
   const [paneView, setPaneView] = useState<'inbox' | 'opens'>('inbox');
-  const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ['threads', split],
+  // Connected accounts + active inbox scope for mod+1..9 switching (M2.6
+  // task 12). The selection persists in localStorage, matching web.
+  const { data: accounts = [] } = useQuery({
+    queryKey: ['accounts'],
     queryFn: () =>
       orMock(
-        async () => (await api.listThreads({ split, limit: 50 })).items,
-        () => mockThreads(split)
+        () => api.listAccounts(),
+        () => mockAccounts
+      ),
+  });
+  const [activeAccountId, setActiveAccountIdState] = useState<string | null>(readStoredAccountId);
+  const setActiveAccountId = useCallback((id: string | null) => {
+    setActiveAccountIdState(id);
+    try {
+      if (id === null) window.localStorage.removeItem(ACTIVE_ACCOUNT_STORAGE_KEY);
+      else window.localStorage.setItem(ACTIVE_ACCOUNT_STORAGE_KEY, id);
+    } catch {
+      // Best-effort persistence; the in-memory selection still applies.
+    }
+  }, []);
+  const activeAccount = accounts.find((a) => a.id === activeAccountId) ?? null;
+
+  // A persisted selection is only honest while that account still exists —
+  // once the account list resolves without it, fall back to "all accounts".
+  useEffect(() => {
+    if (accounts.length === 0 || activeAccountId === null) return;
+    if (!accounts.some((a) => a.id === activeAccountId)) setActiveAccountId(null);
+  }, [accounts, activeAccountId, setActiveAccountId]);
+
+  const { data, isLoading, isError, error, refetch } = useQuery({
+    queryKey: ['threads', split, activeAccountId],
+    queryFn: () =>
+      orMock(
+        async () =>
+          (await api.listThreads({ split, limit: 50, accountId: activeAccountId ?? undefined }))
+            .items,
+        () => mockThreads(split, activeAccountId ?? undefined)
       ),
   });
   const { data: opens = [], isLoading: opensLoading } = useQuery({
@@ -161,7 +225,7 @@ export function InboxView({ split }: { split: InboxSplit }) {
   useEffect(() => {
     setCursor(0);
     setSelection(EMPTY_SELECTION);
-  }, [split]);
+  }, [split, activeAccountId]);
 
   // Drop selected ids that fell out of a (possibly refetched) list so a stale
   // selection never outlives the rows it points at. Prune stale ids only;
@@ -191,12 +255,24 @@ export function InboxView({ split }: { split: InboxSplit }) {
   const selected = threads[cursor] ?? null;
   const orderedIds = threads.map((t) => t.id);
 
+  // Preloading (M2.6 Task 7): hover intent + j/k neighbors warm the
+  // ['thread', id] cache ThreadPane reads. Debounced, silent, offline-aware
+  // (lib/prefetch.ts). The desktop list is non-paginated, so there is no
+  // next-page prefetch here.
+  const { onHoverStart, onHoverEnd } = useThreadHoverPrefetch();
+  usePrefetchNeighbors(threads, selected?.id ?? null);
+
   // Opening a thread records real read state server-side (contract item 5).
   useEffect(() => {
     if (!selected?.unread) return;
     const id = selected.id;
     setThreads((prev) => prev.map((t) => (t.id === id ? { ...t, unread: false } : t)));
-    if (!isDemoMode()) void api.markThreadOpened(id).catch(() => {});
+    if (!isDemoMode()) {
+      void api.markThreadOpened(id).catch((e: unknown) => {
+        // Offline: durably queue the open so real read state syncs on reconnect.
+        if (isNetworkError(e)) void queueOffline({ kind: 'thread_open', threadId: id });
+      });
+    }
   }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persists a mutation and reports whether it actually took effect. A
@@ -206,16 +282,27 @@ export function InboxView({ split }: { split: InboxSplit }) {
   // mutation must actually resolve before an undo entry is pushed or a
   // success toast shown; on failure it reverts the local state and surfaces
   // the error (never a fabricated success).
+  //
+  // Offline (M2.6): when the failure is network-level and a `queueAction` is
+  // given, the action is durably queued instead — the optimistic UI stands
+  // (it WILL replay, at-least-once) but commit still returns false so no undo
+  // entry or success toast claims the server already applied it. If even
+  // queueing fails (storage broken), it falls through to revert + error.
   async function commit(
     apiCall: () => Promise<unknown>,
     revert: () => void,
-    errorTitle: string
+    errorTitle: string,
+    queueAction?: OutboxAction
   ): Promise<boolean> {
     if (isDemoMode()) return true;
     try {
       await apiCall();
       return true;
     } catch (e) {
+      if (queueAction && isNetworkError(e) && (await queueOffline(queueAction))) {
+        toast({ title: 'Saved offline', description: 'Will sync when you reconnect.' });
+        return false;
+      }
       revert();
       toast({ title: errorTitle, description: errorMessage(e), variant: 'destructive' });
       return false;
@@ -271,7 +358,8 @@ export function InboxView({ split }: { split: InboxSplit }) {
             setThreads((prev) =>
               prev.map((t) => (t.id === current.id ? { ...t, starred: wasStarred } : t))
             ),
-          'Could not update star'
+          'Could not update star',
+          { kind: 'thread_action', threadId: current.id, action: nextAction }
         ).then((ok) => {
           if (!ok) return;
           const inverse = ACTION_INVERSE[nextAction];
@@ -329,7 +417,8 @@ export function InboxView({ split }: { split: InboxSplit }) {
         setThreads(previousThreads);
         setCursor(previousCursor);
       },
-      'Could not archive'
+      'Could not archive',
+      { kind: 'thread_action', threadId: thread.id, action: 'archive' }
     ).then((ok) => {
       if (!ok) return;
       inboxUndo.push({
@@ -357,7 +446,8 @@ export function InboxView({ split }: { split: InboxSplit }) {
         setThreads(previousThreads);
         setCursor(previousCursor);
       },
-      'Could not snooze'
+      'Could not snooze',
+      { kind: 'thread_snooze', threadId: thread.id, until }
     ).then((ok) => {
       if (!ok) return;
       inboxUndo.push({
@@ -383,7 +473,8 @@ export function InboxView({ split }: { split: InboxSplit }) {
       () => api.actOnThread(thread.id, 'read'),
       () =>
         setThreads((prev) => prev.map((t) => (t.id === thread.id ? { ...t, unread: true } : t))),
-      'Could not mark read'
+      'Could not mark read',
+      { kind: 'thread_action', threadId: thread.id, action: 'read' }
     ).then((ok) => {
       if (!ok) return;
       inboxUndo.push({
@@ -534,14 +625,29 @@ export function InboxView({ split }: { split: InboxSplit }) {
       h: 'snooze',
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
       const target = e.target as HTMLElement | null;
-      if (
-        target &&
-        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
-      ) {
+      const inEditable =
+        !!target &&
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+      // mod+1..9 selects the nth account, mod+0 clears to all accounts (M2.6).
+      // Handled before the modifier early-return below, with its own
+      // editable-target guard so typing digits in an input never switches.
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && /^[0-9]$/.test(e.key)) {
+        if (inEditable) return;
+        if (e.key === '0') {
+          e.preventDefault();
+          setActiveAccountId(null);
+          return;
+        }
+        const account = accounts[Number(e.key) - 1];
+        if (account) {
+          e.preventDefault();
+          setActiveAccountId(account.id);
+        }
         return;
       }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (inEditable) return;
       const key = e.key.toLowerCase();
       if (e.shiftKey && key === 'j') {
         e.preventDefault();
@@ -596,6 +702,38 @@ export function InboxView({ split }: { split: InboxSplit }) {
             {paneView === 'opens' ? 'Recent opens' : SPLIT_LABELS[split]}
           </h1>
           <Badge variant="secondary">{paneView === 'opens' ? opens.length : threads.length}</Badge>
+          {queuedOffline > 0 && (
+            <Badge variant="outline" className="gap-1">
+              <CloudOff className="size-3" />
+              {queuedOffline} queued
+            </Badge>
+          )}
+          {accounts.length > 0 && paneView === 'inbox' && (
+            <DropdownMenu>
+              <DropdownMenuTrigger>
+                <Button variant="ghost" size="sm" className="max-w-44 gap-1 px-2">
+                  <span className="truncate text-xs font-normal">
+                    {activeAccount ? activeAccount.email : 'All accounts'}
+                  </span>
+                  <ChevronsUpDown className="size-3 shrink-0 opacity-60" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="w-64">
+                <DropdownMenuLabel>Inbox scope</DropdownMenuLabel>
+                <DropdownMenuItem onSelect={() => setActiveAccountId(null)}>
+                  <span className="flex-1 truncate">All accounts</span>
+                  <Kbd>{`${MOD_LABEL}0`}</Kbd>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                {accounts.map((account, index) => (
+                  <DropdownMenuItem key={account.id} onSelect={() => setActiveAccountId(account.id)}>
+                    <span className="flex-1 truncate">{account.email}</span>
+                    {index < 9 && <Kbd>{`${MOD_LABEL}${index + 1}`}</Kbd>}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -656,6 +794,8 @@ export function InboxView({ split }: { split: InboxSplit }) {
                 active={i === cursor}
                 bulkSelected={selection.ids.has(thread.id)}
                 onClick={() => setCursor(i)}
+                onHoverStart={() => onHoverStart(thread.id)}
+                onHoverEnd={onHoverEnd}
               />
             ))
           )}

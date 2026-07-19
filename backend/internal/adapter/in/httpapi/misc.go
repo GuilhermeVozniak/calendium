@@ -1,10 +1,43 @@
 package httpapi
 
 import (
+	"fmt"
 	"net/http"
 
 	"calendium/backend/internal/domain"
+	"calendium/backend/internal/port"
 )
+
+// handleGetPreferences serves the cross-device preference document (named
+// theme, M2.6 Task 13).
+func (s *server) handleGetPreferences(w http.ResponseWriter, r *http.Request) {
+	prefs, err := s.deps.Users.GetPreferences(r.Context(), userFrom(r).ID)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, prefs)
+}
+
+// handleUpdatePreferences validates the theme against the allowed set (400
+// otherwise) and upserts the preference document.
+func (s *server) handleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
+	var in port.UserPreferences
+	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if !port.ValidTheme(in.Theme) {
+		s.writeError(w, r, fmt.Errorf("%w: unknown theme %q", domain.ErrValidation, in.Theme))
+		return
+	}
+	prefs, err := s.deps.Users.UpdatePreferences(r.Context(), userFrom(r).ID, in)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, prefs)
+}
 
 func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	result, err := s.deps.Search.Search(r.Context(), userFrom(r).ID, r.URL.Query().Get("q"))

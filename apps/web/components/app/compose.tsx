@@ -29,6 +29,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { getApiClient } from '@/lib/api';
 import { DEMO_MODE } from '@/lib/demo';
 import { formatOptionTime, reminderOptions, sendLaterOptions } from '@/lib/mail-utils';
+import { isOnline } from '@/lib/offline/connectivity';
+import { getOutbox, isNetworkError, newLocalDraftId, queueAction } from '@/lib/offline/queue';
 import { fetchAccounts } from '@/lib/settings-data';
 import { MOD_KEY } from '@/lib/shortcuts';
 import { useInstance } from '@/lib/use-instance';
@@ -364,6 +366,15 @@ function ComposeForm({
       bodyHtml: buildBodyHtml(),
       scheduledAt: null,
     };
+    // Offline: mint a local id and queue the save durably — replay swaps in
+    // the real server id (see shared Outbox.rewriteDraftId).
+    const queueLocalDraft = async (): Promise<string> => {
+      const id = newLocalDraftId();
+      await queueAction({ kind: 'draft_save', draftId: id, accountId: fromAccountId, input });
+      setLiveDraftId(id);
+      return id;
+    };
+    if (!DEMO_MODE && !isOnline()) return queueLocalDraft();
     try {
       const draft = await getApiClient().saveDraft(input);
       setLiveDraftId(draft.id);
@@ -374,6 +385,7 @@ function ComposeForm({
         setLiveDraftId(id);
         return id;
       }
+      if (isNetworkError(err)) return queueLocalDraft();
       throw err;
     }
   }
@@ -391,6 +403,47 @@ function ComposeForm({
         toast.error('Could not undo the send.');
       }
     }
+  }
+
+  /**
+   * Offline send path: durably queue draft_save + draft_send (and the
+   * optional reply reminder) in the outbox and say exactly that — "queued",
+   * never "sent". The undo action for a QUEUED send removes the queued
+   * entries (getOutbox().removeForDraft) instead of calling unsendDraft,
+   * because nothing has reached the server yet.
+   */
+  async function queueOfflineSend(input: DraftInput): Promise<void> {
+    const draftId = liveDraftId ?? newLocalDraftId();
+    // When a reply reminder rides along with the send, remember its thread so
+    // undo removes the paired queued thread_reminder too — an undone send
+    // must not leave its reminder behind.
+    const reminderThreadId = remindAt && initial?.threadId ? initial.threadId : undefined;
+    await queueAction(
+      { kind: 'draft_save', draftId, accountId: fromAccountId, input },
+      { silent: true }
+    );
+    await queueAction({ kind: 'draft_send', draftId }, { silent: true });
+    if (reminderThreadId && remindAt) {
+      await queueAction(
+        {
+          kind: 'thread_reminder',
+          threadId: reminderThreadId,
+          remindAt: remindAt.when.toISOString(),
+        },
+        { silent: true }
+      );
+    }
+    toast.success('Offline — queued to send when you reconnect', {
+      duration: undoSeconds * 1000,
+      action: {
+        label: 'Undo',
+        onClick: () =>
+          void getOutbox()
+            .removeForDraft(draftId, reminderThreadId)
+            .then(() => toast.success('Queued send cancelled.')),
+      },
+    });
+    close();
   }
 
   // --- Send -----------------------------------------------------------------
@@ -419,6 +472,16 @@ function ComposeForm({
       bodyHtml: buildBodyHtml(),
       scheduledAt: scheduledIso,
     };
+    // Known-offline: skip the doomed request and queue the send durably.
+    if (!DEMO_MODE && !isOnline()) {
+      try {
+        await queueOfflineSend(input);
+      } catch {
+        toast.error('Could not queue the message. Please try again.');
+        setSending(false);
+      }
+      return;
+    }
     try {
       const api = getApiClient();
       // Reopened drafts (or ones lazily created by ensureDraftId for AI edit)
@@ -442,6 +505,15 @@ function ComposeForm({
         toast.success(`${successMessage} (demo mode)`);
         close();
         return;
+      }
+      if (isNetworkError(err)) {
+        // Transport failure mid-send — queue it durably instead of failing.
+        try {
+          await queueOfflineSend(input);
+          return;
+        } catch {
+          // Fall through to the honest failure path below.
+        }
       }
       // Never fake success: keep the dialog open with the composed text intact
       // and surface the real failure.

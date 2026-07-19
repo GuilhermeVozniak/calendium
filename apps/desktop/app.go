@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"sync"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -23,11 +24,25 @@ type App struct {
 
 	mu         sync.Mutex
 	pendingURL string
+
+	// --- Task 9: global shortcuts (hotkeys.go) ---
+	hotkeys *hotkeyManager
+	// --- end Task 9 ---
+	// Menu-bar tray + auto-join (M2.6 Tasks 10-11; tray.go / scheduler.go).
+	tray     *trayManager
+	autoJoin *autoJoinScheduler
 }
 
 // NewApp creates a new App application struct.
 func NewApp() *App {
-	return &App{}
+	a := &App{}
+	// --- Task 9: global shortcuts (hotkeys.go) ---
+	// Created eagerly so SetGlobalShortcutsEnabled is always safe to call;
+	// nothing touches the OS until Start().
+	a.hotkeys = newHotkeyManager(a.emitGlobalShortcut)
+	// --- end Task 9 ---
+	a.initDesktopExtras()
+	return a
 }
 
 // startup is called when the app starts; the context is saved so runtime
@@ -74,3 +89,37 @@ func (a *App) OpenExternal(url string) {
 func (a *App) GetAppVersion() string {
 	return appVersion
 }
+
+// --- Task 9: global shortcuts (hotkeys.go) ---
+
+// SetGlobalShortcutsEnabled starts or stops the system-wide hotkeys
+// (Cmd/Ctrl+Shift+C compose, Cmd/Ctrl+Shift+K search). The persisted toggle
+// lives in the frontend's localStorage, so the frontend calls this on boot
+// with the stored value (that is how "startup starts it when enabled"
+// happens — the host can't read localStorage) and again whenever the
+// Settings toggle flips. Registration failures (combo taken by another app)
+// are logged and degrade gracefully — see hotkeys.go.
+func (a *App) SetGlobalShortcutsEnabled(enabled bool) {
+	if enabled {
+		if err := a.hotkeys.Start(); err != nil {
+			log.Printf("global shortcuts: %v", err)
+		}
+		return
+	}
+	a.hotkeys.Stop()
+}
+
+// emitGlobalShortcut forwards a fired hotkey to the frontend. A press that
+// races app startup (before the WebView context exists) is dropped — there
+// is no UI to focus yet.
+func (a *App) emitGlobalShortcut(action string) {
+	a.mu.Lock()
+	ctx := a.ctx
+	a.mu.Unlock()
+	if ctx == nil {
+		return
+	}
+	runtime.EventsEmit(ctx, globalShortcutEvent, map[string]string{"action": action})
+}
+
+// --- end Task 9 ---

@@ -34,6 +34,20 @@ import { Toaster } from '@/ui/toaster';
 import { api, orMock } from '@/lib/api';
 import { openCompose } from '@/lib/compose';
 import { mockSearch } from '@/lib/mock';
+import {
+  globalShortcutsEnabled,
+  isDesktop,
+  onGlobalShortcut,
+  setGlobalShortcutsEnabled,
+  wailsRuntime,
+} from '@/lib/wails';
+import { toast } from '@/lib/toast';
+import {
+  AUTO_JOINED_EVENT,
+  pushAutoJoinSettings,
+  TRAY_ACTION_EVENT,
+  useTrayFeed,
+} from '@/lib/tray';
 import { CalendarView, emitFocusDate } from '@/views/CalendarView';
 import { ComposeHost } from '@/views/ComposeView';
 import { emitFocusThread, emitMailAction, InboxView } from '@/views/InboxView';
@@ -86,6 +100,33 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
 
+  // --- Tray + auto-join (M2.6 Tasks 10-11) -------------------------------
+  // Feed the Go host's menu-bar tray with upcoming events (Task 10).
+  useTrayFeed();
+  // Handle tray menu actions, push the persisted auto-join setting to the
+  // host on startup, and toast when the host actually auto-joined a meeting.
+  useEffect(() => {
+    if (!isDesktop) return;
+    pushAutoJoinSettings();
+    const offAction = wailsRuntime.EventsOn(TRAY_ACTION_EVENT, (...data: unknown[]) => {
+      const action = data[0];
+      // Mirror the global-shortcut handler: a tray click is an explicit
+      // "take me to the app", so surface the window before acting.
+      wailsRuntime.WindowShow();
+      if (action === 'open-calendar') setView('calendar');
+      else if (action === 'compose') openCompose();
+    });
+    const offJoined = wailsRuntime.EventsOn(AUTO_JOINED_EVENT, (...data: unknown[]) => {
+      const ev = data[0] as { title?: string } | undefined;
+      toast({ title: `Joined ${ev?.title ?? 'meeting'}` });
+    });
+    return () => {
+      offAction();
+      offJoined();
+    };
+  }, []);
+  // --- end tray + auto-join ----------------------------------------------
+
   // Global ⌘K / Ctrl+K opens the palette; C composes a new message. Both are
   // reachable from anywhere (ignoring typing targets for the C shortcut).
   useEffect(() => {
@@ -111,6 +152,21 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
+
+  // --- Task 9: system-wide global shortcuts (host hotkeys → UI) ---
+  // On boot, push the persisted Settings toggle to the Go host (it cannot
+  // read localStorage itself); then bring the window forward and open the
+  // composer / command palette whenever a registered hotkey fires — even
+  // while Calendium is unfocused.
+  useEffect(() => {
+    if (isDesktop) void setGlobalShortcutsEnabled(globalShortcutsEnabled());
+    return onGlobalShortcut((action) => {
+      wailsRuntime.WindowShow();
+      if (action === 'compose') openCompose();
+      else setPaletteOpen(true);
+    });
+  }, []);
+  // --- end Task 9 ---
 
   // Reset the query when the palette closes; debounce it for search.
   useEffect(() => {

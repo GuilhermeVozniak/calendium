@@ -59,7 +59,14 @@ function useThreadListImpl() {
       threadsListeners.delete(cb);
     };
   }, []);
-  return { data: { page: { items: currentThreads, nextCursor: null } }, isLoading: false, isError: false };
+  return {
+    data: { items: currentThreads, source: 'api' },
+    isLoading: false,
+    isError: false,
+    fetchNextPage: vi.fn(),
+    hasNextPage: false,
+    isFetchingNextPage: false,
+  };
 }
 
 /** Controls whether the mocked act/snooze mutations resolve true or false. */
@@ -116,6 +123,14 @@ vi.mock('@/lib/use-mail', () => ({
 
 vi.mock('@/lib/use-identity', () => ({
   useSelfEmails: () => new Set<string>(),
+}));
+
+// Prefetch hooks need a QueryClientProvider and fire debounced network warms —
+// both irrelevant to what this file asserts (covered by use-prefetch.test.tsx).
+vi.mock('@/lib/use-prefetch', () => ({
+  useThreadHoverPrefetch: () => ({ onHoverStart: () => {}, onHoverEnd: () => {} }),
+  usePrefetchNeighbors: () => {},
+  useNextPagePrefetch: () => {},
 }));
 
 vi.mock('@/lib/use-instance', () => ({
