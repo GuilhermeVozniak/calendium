@@ -191,6 +191,17 @@ type CalendarPatch struct {
 	Color     *string `json:"color"`
 }
 
+// MemberAvailability is one team member's row in the GET
+// /v1/teams/{id}/availability response. Busy blocks are opaque start/end
+// intervals (free_busy-level: no titles, no details); Shared reports
+// whether the member has opted in by sharing at least one calendar with
+// the team (Task 12 grants are the opt-in; there is no other mechanism).
+type MemberAvailability struct {
+	UserID string                    `json:"userId"`
+	Busy   []domain.AvailabilitySlot `json:"busy"`
+	Shared bool                      `json:"shared"`
+}
+
 // CalendarService covers calendars, events (provider write-through), rsvp,
 // availability, event templates, and calendar sets.
 type CalendarService interface {
@@ -204,6 +215,13 @@ type CalendarService interface {
 	// Availability returns free windows of at least slotDuration between
 	// from and to, computed from the user's visible calendars.
 	Availability(ctx context.Context, userID string, from, to time.Time, slotDuration time.Duration) ([]domain.AvailabilitySlot, error)
+	// TeamAvailability returns one row per team member (the caller must be
+	// a member; non-members get ErrNotFound, never an oracle). A member is
+	// Shared=true with opaque busy blocks only when they granted >=
+	// free_busy on >= 1 calendar to that team; everyone else is
+	// Shared=false with an empty list (no data leak). `to` must be after
+	// `from` and the span at most 35 days (ErrValidation otherwise).
+	TeamAvailability(ctx context.Context, userID, teamID string, from, to time.Time) ([]MemberAvailability, error)
 
 	// Event template methods
 	ListEventTemplates(ctx context.Context, userID string) ([]domain.EventTemplate, error)

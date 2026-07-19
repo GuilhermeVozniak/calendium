@@ -1556,3 +1556,103 @@ describe('teams (M2.7)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Shared calendars & team availability (M2.7 Tasks 12–13)
+// ---------------------------------------------------------------------------
+
+describe('calendar shares & team availability', () => {
+  const SHARE = {
+    id: 'sh_1',
+    calendarId: 'cal_1',
+    granteeTeamId: 'team_1',
+    permission: 'free_busy',
+    createdBy: 'user_1',
+    createdAt: '2026-07-07T09:00:00Z',
+  };
+
+  it('lists a calendar’s shares via GET /v1/calendars/{id}/shares', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: [SHARE] }] });
+    const shares = await client.listCalendarShares('cal_1');
+    expect(shares).toEqual([SHARE]);
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendars/cal_1/shares`);
+  });
+
+  it('shares a calendar with a team via POST, passing the input verbatim', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: SHARE }] });
+    const share = await client.shareCalendar('cal_1', {
+      granteeTeamId: 'team_1',
+      permission: 'free_busy',
+    });
+    expect(share).toEqual(SHARE);
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendars/cal_1/shares`);
+    expect(calls[0]!.body).toEqual({ granteeTeamId: 'team_1', permission: 'free_busy' });
+  });
+
+  it('updates a share’s permission via PATCH .../shares/{shareId}', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { ...SHARE, permission: 'editor' } }],
+    });
+    await client.updateCalendarShare('cal_1', 'sh_1', 'editor');
+    expect(calls[0]!.method).toBe('PATCH');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendars/cal_1/shares/sh_1`);
+    expect(calls[0]!.body).toEqual({ permission: 'editor' });
+  });
+
+  it('revokes a share via DELETE and resolves on 204', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    await expect(client.revokeCalendarShare('cal_1', 'sh_1')).resolves.toBeUndefined();
+    expect(calls[0]!.method).toBe('DELETE');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendars/cal_1/shares/sh_1`);
+  });
+
+  it('fetches team availability with RFC 3339 from/to query params', async () => {
+    const rows = [
+      {
+        userId: 'user_1',
+        shared: true,
+        busy: [{ start: '2026-07-07T10:00:00Z', end: '2026-07-07T11:00:00Z' }],
+      },
+      { userId: 'user_2', shared: false, busy: [] },
+    ];
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: rows }] });
+    const got = await client.teamAvailability(
+      'team_1',
+      '2026-07-07T00:00:00Z',
+      '2026-07-08T00:00:00Z'
+    );
+    expect(got).toEqual(rows);
+    expect(calls[0]!.method).toBe('GET');
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe('/v1/teams/team_1/availability');
+    expect(searchParamsToObject(url.searchParams)).toEqual({
+      from: '2026-07-07T00:00:00Z',
+      to: '2026-07-08T00:00:00Z',
+    });
+  });
+
+  it('percent-encodes path params in share and availability routes', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: [] }] });
+    await client.listCalendarShares('cal/1');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendars/${encodeURIComponent('cal/1')}/shares`);
+
+    const { client: c2, calls: calls2 } = makeClient({ responses: [{ status: 204 }] });
+    await c2.revokeCalendarShare('cal 1', 'sh#2');
+    expect(calls2[0]!.url).toBe(`${BASE_URL}/v1/calendars/cal%201/shares/sh%232`);
+
+    const { client: c3, calls: calls3 } = makeClient({ responses: [{ status: 200, body: [] }] });
+    await c3.teamAvailability('team 1', '2026-07-07T00:00:00Z', '2026-07-08T00:00:00Z');
+    expect(new URL(calls3[0]!.url).pathname).toBe('/v1/teams/team%201/availability');
+  });
+
+  it('maps a 404 non-member availability response to ApiRequestError(404)', async () => {
+    const { client } = makeClient({
+      responses: [{ status: 404, body: { error: { code: 'not_found', message: 'resource not found' } } }],
+    });
+    await expect(
+      client.teamAvailability('team_x', '2026-07-07T00:00:00Z', '2026-07-08T00:00:00Z')
+    ).rejects.toMatchObject({ status: 404, code: 'not_found' });
+  });
+});

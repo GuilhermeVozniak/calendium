@@ -774,3 +774,120 @@ func TestMostPermissiveGrantWins(t *testing.T) {
 		t.Fatalf("editor-by-team UpdateEvent: %v", err)
 	}
 }
+
+// --- team availability (Task 13) ---------------------------------------------
+
+// seedEvent stores a bare confirmed event on any calendar (details present so
+// a leak would be observable through anything richer than start/end).
+func (f *shareFixture) seedEvent(id, calID string, start, end time.Time, allDay bool) domain.Event {
+	ev := domain.Event{
+		ID: id, CalendarID: calID, ProviderEventID: "pe-" + id,
+		Title: "Secret " + id, Description: ptr("private detail"),
+		Start: start, End: end, AllDay: allDay,
+		Status: domain.EventConfirmed,
+	}
+	f.events.byID[ev.ID] = ev
+	f.events.order = append(f.events.order, ev.ID)
+	return ev
+}
+
+func TestTeamAvailabilityMembershipAndRangeValidation(t *testing.T) {
+	f := newShareFixture(t)
+	ctx := context.Background()
+	from, to := f.window()
+
+	// Non-member and unknown team are both the membership primitive's 404.
+	if _, err := f.svc.TeamAvailability(ctx, "u3", "t1", from, to); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("non-member err = %v, want ErrNotFound", err)
+	}
+	if _, err := f.svc.TeamAvailability(ctx, "u1", "t-ghost", from, to); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("unknown team err = %v, want ErrNotFound", err)
+	}
+
+	for _, badTo := range []time.Time{from, from.Add(-time.Hour)} {
+		if _, err := f.svc.TeamAvailability(ctx, "u1", "t1", from, badTo); !errors.Is(err, domain.ErrValidation) {
+			t.Fatalf("to=%v err = %v, want ErrValidation", badTo, err)
+		}
+	}
+	if _, err := f.svc.TeamAvailability(ctx, "u1", "t1", from, from.Add(35*24*time.Hour+time.Second)); !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("oversized span err = %v, want ErrValidation", err)
+	}
+	if _, err := f.svc.TeamAvailability(ctx, "u1", "t1", from, from.Add(35*24*time.Hour)); err != nil {
+		t.Fatalf("exactly-35-day span: %v", err)
+	}
+}
+
+func TestTeamAvailabilityWithoutTeamGrantSharesNothing(t *testing.T) {
+	f := newShareFixture(t)
+	ctx := context.Background()
+	f.seedSecretEvent("ev1")
+	// A DIRECT user grant is a 1:1 share, not a team-availability opt-in.
+	f.share(t, port.CalendarShareInput{GranteeUserID: "u2", Permission: "reader"})
+	from, to := f.window()
+
+	rows, err := f.svc.TeamAvailability(ctx, "u2", "t1", from, to)
+	if err != nil {
+		t.Fatalf("TeamAvailability: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2 (u1, u2)", len(rows))
+	}
+	for _, row := range rows {
+		if row.Shared {
+			t.Fatalf("member %s Shared = true without a team grant", row.UserID)
+		}
+		if len(row.Busy) != 0 {
+			t.Fatalf("member %s leaked busy data: %+v", row.UserID, row.Busy)
+		}
+	}
+}
+
+func TestTeamAvailabilityExposesOnlyGrantedCalendarBusy(t *testing.T) {
+	f := newShareFixture(t)
+	ctx := context.Background()
+	base := f.clock.Now()
+
+	// Second calendar for the same owner, NOT granted to the team.
+	if _, err := f.calendars.Upsert(ctx, domain.Calendar{
+		ID: "cal2", AccountID: "a1", ProviderCalendarID: "prov-cal-2",
+		Name: "Private", CanWrite: true, IsVisible: true,
+	}); err != nil {
+		t.Fatalf("seed cal2: %v", err)
+	}
+
+	secret := f.seedSecretEvent("ev1") // cal1: base+1h .. base+2h
+	f.seedEvent("ev-overlap", "cal1", base.Add(90*time.Minute), base.Add(150*time.Minute), false)
+	f.seedEvent("ev-allday", "cal1", base, base.Add(24*time.Hour), true) // must not blanket the day
+	f.seedEvent("ev-private", "cal2", base.Add(5*time.Hour), base.Add(6*time.Hour), false)
+
+	f.share(t, port.CalendarShareInput{GranteeTeamID: "t1", Permission: "free_busy"})
+	from, to := f.window()
+
+	rows, err := f.svc.TeamAvailability(ctx, "u2", "t1", from, to)
+	if err != nil {
+		t.Fatalf("TeamAvailability: %v", err)
+	}
+	byUser := map[string]port.MemberAvailability{}
+	for _, row := range rows {
+		byUser[row.UserID] = row
+	}
+
+	owner := byUser["u1"]
+	if !owner.Shared {
+		t.Fatalf("granting owner not Shared: %+v", owner)
+	}
+	// Overlapping events merge into ONE opaque block; the ungranted cal2
+	// event (base+5h..6h) and the all-day banner contribute nothing.
+	if len(owner.Busy) != 1 {
+		t.Fatalf("owner busy = %+v, want a single merged block", owner.Busy)
+	}
+	if !owner.Busy[0].Start.Equal(secret.Start) || !owner.Busy[0].End.Equal(base.Add(150*time.Minute)) {
+		t.Fatalf("busy block %v..%v, want %v..%v",
+			owner.Busy[0].Start, owner.Busy[0].End, secret.Start, base.Add(150*time.Minute))
+	}
+
+	viewer := byUser["u2"]
+	if viewer.Shared || len(viewer.Busy) != 0 {
+		t.Fatalf("non-granting member row = %+v, want Shared=false and no data", viewer)
+	}
+}

@@ -517,6 +517,12 @@ type fakeCalendarService struct {
 	availCalls  int
 	gotAvailDur time.Duration
 
+	teamAvailRet     []port.MemberAvailability
+	teamAvailErr     error
+	gotTeamAvailID   string
+	gotTeamAvailFrom time.Time
+	gotTeamAvailTo   time.Time
+
 	// Event Template methods
 	listTemplatesRet   []domain.EventTemplate
 	listTemplatesErr   error
@@ -588,6 +594,11 @@ func (f *fakeCalendarService) Availability(ctx context.Context, userID string, f
 	f.availCalls++
 	f.gotEventsFrom, f.gotEventsTo, f.gotAvailDur = from, to, slotDuration
 	return f.availRet, f.availErr
+}
+func (f *fakeCalendarService) TeamAvailability(ctx context.Context, userID, teamID string, from, to time.Time) ([]port.MemberAvailability, error) {
+	f.gotTeamAvailID = teamID
+	f.gotTeamAvailFrom, f.gotTeamAvailTo = from, to
+	return f.teamAvailRet, f.teamAvailErr
 }
 
 // --- Event Template Methods

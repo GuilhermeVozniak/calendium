@@ -818,3 +818,60 @@ export interface InstanceInfo {
   vapidPublicKey?: string;
   features: InstanceFeatures;
 }
+
+// ---------------------------------------------------------------------------
+// Shared calendars & team availability (M2.7 Tasks 12–13) — mirrors
+// backend/internal/domain/calendar_sharing.go and port/calendar_sharing.go.
+// ---------------------------------------------------------------------------
+
+/** Shared-calendar access levels, ordered free_busy < reader < editor. */
+export type CalendarPermission = 'free_busy' | 'reader' | 'editor';
+
+/**
+ * A grant of one calendar to one user or one whole team — exactly one of
+ * granteeUserId / granteeTeamId is set. Sharing is a local layer over the
+ * mirrored calendars; provider-level ACLs are never touched.
+ */
+export interface CalendarShare {
+  id: string;
+  calendarId: string;
+  granteeUserId?: string;
+  granteeTeamId?: string;
+  permission: CalendarPermission;
+  createdBy: string;
+  createdAt: string;
+}
+
+/**
+ * POST /v1/calendars/{id}/shares payload. Exactly one grantee field must be
+ * set; permission defaults server-side to 'free_busy' (the privacy-preserving
+ * minimum) when omitted.
+ */
+export interface CalendarShareInput {
+  granteeUserId?: string;
+  granteeTeamId?: string;
+  permission?: CalendarPermission;
+}
+
+/**
+ * One member row of GET /v1/teams/{id}/availability. Busy blocks are opaque
+ * start/end intervals — free_busy privacy: the server never sends titles or
+ * details, and clients must not try to backfill them from other caches.
+ */
+export interface MemberAvailability {
+  userId: string;
+  busy: AvailabilitySlot[];
+  /** False = the member has not opted in by sharing a calendar with the team. */
+  shared: boolean;
+}
+
+// Declaration-merged augmentations (add-only): TypeScript merges these into
+// the Calendar / Event interfaces declared earlier in this file.
+export interface Calendar {
+  /** Set only on calendars shared TO the viewer: their effective permission. */
+  sharedPermission?: CalendarPermission;
+}
+export interface Event {
+  /** True when the event was redacted for a free_busy viewer (title "Busy", details zeroed). */
+  freeBusyOnly?: boolean;
+}

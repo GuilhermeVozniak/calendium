@@ -309,36 +309,14 @@ func (s *CalendarService) Availability(ctx context.Context, userID string, from,
 		ownEmails[strings.ToLower(a.Email)] = struct{}{}
 	}
 
-	type interval struct{ start, end time.Time }
-	busy := make([]interval, 0, len(evs))
-	for _, ev := range evs {
-		// All-day events are usually informational (birthdays, OOO banners) and
-		// must not blanket the whole day as busy; cancelled or user-declined
-		// events are not busy either.
-		if ev.Status == domain.EventCancelled || ev.AllDay || declinedByUser(ev, ownEmails) {
-			continue
-		}
-		start, end := ev.Start, ev.End
-		if start.Before(from) {
-			start = from
-		}
-		if end.After(to) {
-			end = to
-		}
-		if end.After(start) {
-			busy = append(busy, interval{start, end})
-		}
-	}
-	sort.Slice(busy, func(i, j int) bool { return busy[i].start.Before(busy[j].start) })
-
 	slots := []domain.AvailabilitySlot{}
 	cursor := from
-	for _, b := range busy {
-		if b.start.Sub(cursor) >= slotDuration {
-			slots = append(slots, domain.AvailabilitySlot{Start: cursor, End: b.start})
+	for _, b := range mergedBusySlots(evs, ownEmails, from, to) {
+		if b.Start.Sub(cursor) >= slotDuration {
+			slots = append(slots, domain.AvailabilitySlot{Start: cursor, End: b.Start})
 		}
-		if b.end.After(cursor) {
-			cursor = b.end
+		if b.End.After(cursor) {
+			cursor = b.End
 		}
 	}
 	if to.Sub(cursor) >= slotDuration {
@@ -360,6 +338,133 @@ func (s *CalendarService) Availability(ctx context.Context, userID string, from,
 	}
 
 	return slots, nil
+}
+
+// mergedBusySlots is Availability's busy-interval core, exposed as the
+// inverse view for TeamAvailability: non-cancelled, non-all-day events the
+// user has not declined, clamped to [from, to), sorted and merged into
+// non-overlapping opaque {Start, End} blocks. All-day events are usually
+// informational (birthdays, OOO banners) and must not blanket the whole day
+// as busy; cancelled or user-declined events are not busy either.
+func mergedBusySlots(evs []domain.Event, ownEmails map[string]struct{}, from, to time.Time) []domain.AvailabilitySlot {
+	type interval struct{ start, end time.Time }
+	busy := make([]interval, 0, len(evs))
+	for _, ev := range evs {
+		if ev.Status == domain.EventCancelled || ev.AllDay || declinedByUser(ev, ownEmails) {
+			continue
+		}
+		start, end := ev.Start, ev.End
+		if start.Before(from) {
+			start = from
+		}
+		if end.After(to) {
+			end = to
+		}
+		if end.After(start) {
+			busy = append(busy, interval{start, end})
+		}
+	}
+	sort.Slice(busy, func(i, j int) bool { return busy[i].start.Before(busy[j].start) })
+
+	out := []domain.AvailabilitySlot{}
+	for _, b := range busy {
+		if n := len(out); n > 0 && !b.start.After(out[n-1].End) {
+			if b.end.After(out[n-1].End) {
+				out[n-1].End = b.end
+			}
+			continue
+		}
+		out = append(out, domain.AvailabilitySlot{Start: b.start, End: b.end})
+	}
+	return out
+}
+
+// maxTeamAvailabilitySpan caps a TeamAvailability query range: wide enough
+// for a month view, small enough to bound the per-member event scans.
+const maxTeamAvailabilitySpan = 35 * 24 * time.Hour
+
+// TeamAvailability returns each team member's opaque busy blocks in
+// [from, to). Privacy contract (M2.7 Task 13): the caller must be a team
+// member (non-members get the membership primitive's 404, no existence
+// oracle); a member contributes busy data only from calendars THEY granted
+// to this exact team at >= free_busy (every valid permission qualifies —
+// direct user-to-user grants are NOT a team opt-in); everyone else appears
+// Shared=false with an empty list. Blocks are start/end only — titles and
+// details never cross this boundary.
+func (s *CalendarService) TeamAvailability(ctx context.Context, userID, teamID string, from, to time.Time) ([]port.MemberAvailability, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return nil, err
+	}
+	if s.teams == nil || s.shares == nil {
+		return nil, domain.ErrNotImplemented
+	}
+	if !to.After(from) {
+		return nil, fmt.Errorf("%w: `to` must be after `from`", domain.ErrValidation)
+	}
+	if to.Sub(from) > maxTeamAvailabilitySpan {
+		return nil, fmt.Errorf("%w: range must not exceed 35 days", domain.ErrValidation)
+	}
+	if _, err := s.teams.GetMember(ctx, teamID, userID); err != nil {
+		return nil, err
+	}
+	members, err := s.teams.ListMembers(ctx, teamID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Calendars granted to THIS team, grouped by their owning member. The
+	// grantee-side repo query is reused with only this team's id; direct
+	// user grants that come back for the caller are filtered out — they are
+	// a 1:1 share, not a team-availability opt-in.
+	shares, err := s.shares.ListForGrantee(ctx, userID, []string{teamID})
+	if err != nil {
+		return nil, err
+	}
+	calsByOwner := map[string][]string{}
+	seen := map[string]struct{}{}
+	for _, sh := range shares {
+		if sh.GranteeTeamID == nil || *sh.GranteeTeamID != teamID {
+			continue
+		}
+		if _, dup := seen[sh.CalendarID]; dup {
+			continue
+		}
+		seen[sh.CalendarID] = struct{}{}
+		_, owner, err := s.calendarOwner(ctx, sh.CalendarID)
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				continue // dangling grant; DB cascade normally prevents this
+			}
+			return nil, err
+		}
+		calsByOwner[owner.UserID] = append(calsByOwner[owner.UserID], sh.CalendarID)
+	}
+
+	out := make([]port.MemberAvailability, 0, len(members))
+	for _, m := range members {
+		row := port.MemberAvailability{UserID: m.UserID, Busy: []domain.AvailabilitySlot{}}
+		calIDs := calsByOwner[m.UserID]
+		if len(calIDs) == 0 {
+			out = append(out, row) // not sharing — visibly opted out, zero data
+			continue
+		}
+		row.Shared = true
+		evs, err := s.events.ListInRange(ctx, m.UserID, from, to, calIDs)
+		if err != nil {
+			return nil, err
+		}
+		accounts, err := s.accounts.ListByUser(ctx, m.UserID)
+		if err != nil {
+			return nil, err
+		}
+		ownEmails := make(map[string]struct{}, len(accounts))
+		for _, a := range accounts {
+			ownEmails[strings.ToLower(a.Email)] = struct{}{}
+		}
+		row.Busy = mergedBusySlots(evs, ownEmails, from, to)
+		out = append(out, row)
+	}
+	return out, nil
 }
 
 // --- Event Template methods ---
