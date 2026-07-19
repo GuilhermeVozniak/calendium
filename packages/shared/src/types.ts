@@ -1103,3 +1103,66 @@ export interface CalendarPrefs {
  * treated as omitted, not as clearing.
  */
 export type CalendarPrefsPatch = Partial<CalendarPrefs>;
+
+// ---------------------------------------------------------------------------
+// Tasks (M2.8) — mirrors backend/internal/domain/task.go field-for-field.
+// ---------------------------------------------------------------------------
+
+/** Where a task originates: created in Calendium, or mirrored from a provider todo. */
+export type TaskSource = 'local' | 'todoist';
+
+/**
+ * A first-class todo. `due` carries deadline semantics; the scheduled pair
+ * carries timeblock semantics — when both are set the task renders on the
+ * calendar grid between scheduledStart and scheduledEnd and in the rail's
+ * due grouping. External tasks mirror a provider todo and write completion
+ * through to the provider server-side.
+ */
+export interface Task {
+  id: string;
+  title: string;
+  notes: string | null;
+  /** RFC 3339, or null when the task has no deadline. */
+  due: string | null;
+  /** Date-only due: render in the all-day lane, no hour. */
+  allDayDue: boolean;
+  scheduledStart: string | null;
+  scheduledEnd: string | null;
+  /** Non-null exactly when the task is checked off. */
+  completedAt: string | null;
+  source: TaskSource;
+  /** Deep link into the source app for mirrored tasks. */
+  sourceUrl: string | null;
+  /** Rail sort key: lower first, fractional so drag-reorder never rewrites neighbors. */
+  position: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** POST /v1/tasks payload (mirrors domain.TaskInput). Created tasks are always source 'local'. */
+export interface TaskInput {
+  title: string;
+  notes?: string;
+  due?: string;
+  allDayDue?: boolean;
+  scheduledStart?: string;
+  scheduledEnd?: string;
+  /** Omitted: the server appends after the current max position. */
+  position?: number;
+}
+
+/**
+ * PATCH /v1/tasks/{id} payload (mirrors domain.TaskPatch). Omitted fields are
+ * left unchanged; an explicit `null` clears notes/due/scheduledStart/
+ * scheduledEnd (JSON.stringify drops `undefined` keys, so the distinction
+ * survives the wire).
+ */
+export interface TaskPatch {
+  title?: string;
+  notes?: string | null;
+  due?: string | null;
+  allDayDue?: boolean;
+  scheduledStart?: string | null;
+  scheduledEnd?: string | null;
+  position?: number;
+}

@@ -567,3 +567,18 @@ type CollabService interface {
 	// DeleteComment: the author, or a team admin+ (soft delete).
 	DeleteComment(ctx context.Context, userID, commentID string) error
 }
+
+// --- Tasks (M2.8) ------------------------------------------------------------
+
+// TaskService covers first-class tasks: CRUD, timeblock scheduling, and
+// in-place completion. Completion of an external task writes through to
+// its TodoProvider (Task 10) and rolls back the local mirror on failure.
+type TaskService interface {
+	ListTasks(ctx context.Context, userID string, q TaskQuery) ([]domain.Task, error)
+	CreateTask(ctx context.Context, userID string, in domain.TaskInput) (domain.Task, error)
+	UpdateTask(ctx context.Context, userID, taskID string, patch domain.TaskPatch) (domain.Task, error)
+	// CompleteTask checks the task off (idempotent); ReopenTask clears it.
+	CompleteTask(ctx context.Context, userID, taskID string) (domain.Task, error)
+	ReopenTask(ctx context.Context, userID, taskID string) (domain.Task, error)
+	DeleteTask(ctx context.Context, userID, taskID string) error
+}

@@ -61,6 +61,9 @@ import type {
   ShareThreadInput,
   Snippet,
   Subscription,
+  Task,
+  TaskInput,
+  TaskPatch,
   Team,
   TeamInvitation,
   TeamMember,
@@ -837,6 +840,58 @@ export class ApiClient {
       bodyMd,
       links,
     });
+  }
+
+  // --- Tasks (M2.8) ---
+  // First-class tasks: local todos plus mirrored external provider todos.
+  // All authorization is server-side and user-scoped (another user's task is
+  // a plain 404); complete/reopen are idempotent.
+
+  /**
+   * Lists the caller's tasks. `from`/`to` (RFC 3339) select tasks whose
+   * scheduled block overlaps [from, to) — the calendar-grid query;
+   * `dueFrom`/`dueTo` select by due date — the rail's due grouping;
+   * `unscheduled` restricts to rail tasks without a timeblock. Completed
+   * tasks are excluded unless `includeCompleted`.
+   */
+  listTasks(query?: {
+    from?: string;
+    to?: string;
+    dueFrom?: string;
+    dueTo?: string;
+    unscheduled?: boolean;
+    includeCompleted?: boolean;
+  }) {
+    const qs = new URLSearchParams();
+    if (query?.from) qs.set('from', query.from);
+    if (query?.to) qs.set('to', query.to);
+    if (query?.dueFrom) qs.set('dueFrom', query.dueFrom);
+    if (query?.dueTo) qs.set('dueTo', query.dueTo);
+    if (query?.unscheduled) qs.set('unscheduled', '1');
+    if (query?.includeCompleted) qs.set('includeCompleted', '1');
+    const search = qs.toString();
+    return this.request<Task[]>('GET', `/v1/tasks${search ? `?${search}` : ''}`);
+  }
+  createTask(input: TaskInput) {
+    return this.request<Task>('POST', '/v1/tasks', input);
+  }
+  /**
+   * Partial update: omitted fields are left unchanged, an explicit `null`
+   * clears a clearable field (notes, due, scheduledStart, scheduledEnd).
+   */
+  updateTask(taskId: string, patch: TaskPatch) {
+    return this.request<Task>('PATCH', `/v1/tasks/${encodeURIComponent(taskId)}`, patch);
+  }
+  /** Checks the task off (idempotent). External tasks write through to their provider. */
+  completeTask(taskId: string) {
+    return this.request<Task>('POST', `/v1/tasks/${encodeURIComponent(taskId)}/complete`);
+  }
+  /** Clears completion (idempotent). */
+  reopenTask(taskId: string) {
+    return this.request<Task>('POST', `/v1/tasks/${encodeURIComponent(taskId)}/reopen`);
+  }
+  deleteTask(taskId: string) {
+    return this.request<void>('DELETE', `/v1/tasks/${encodeURIComponent(taskId)}`);
   }
 }
 

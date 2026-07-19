@@ -57,6 +57,9 @@ type Deps struct {
 	// TeamActivity serves teammate read/reply indicators (M2.7 Task 10);
 	// when nil the team-activity route answers 501.
 	TeamActivity port.TeamActivityService
+	// Tasks is the first-class task surface (M2.8): local todos plus
+	// mirrored external provider todos.
+	Tasks port.TaskService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -186,6 +189,14 @@ func New(deps Deps) http.Handler {
 	authed("GET /v1/events/{id}/note", s.handleGetEventNote)
 	authed("PUT /v1/events/{id}/note", s.handlePutEventNote)
 	authed("GET /v1/availability", s.handleAvailability)
+
+	// M2.8: first-class tasks (local + mirrored provider todos).
+	authed("GET /v1/tasks", s.handleListTasks)
+	authed("POST /v1/tasks", s.handleCreateTask)
+	authed("PATCH /v1/tasks/{id}", s.handleUpdateTask)
+	authed("POST /v1/tasks/{id}/complete", s.handleCompleteTask)
+	authed("POST /v1/tasks/{id}/reopen", s.handleReopenTask)
+	authed("DELETE /v1/tasks/{id}", s.handleDeleteTask)
 
 	authed("GET /v1/event-templates", s.handleListEventTemplates)
 	authed("POST /v1/event-templates", s.handleCreateEventTemplate)

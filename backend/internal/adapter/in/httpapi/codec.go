@@ -37,6 +37,23 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	return nil
 }
 
+// optionalField resolves the tri-state of a clearable PATCH field from a
+// pre-decoded JSON object (encoding/json alone collapses `null` and absent
+// for pointer fields): absent key → nil outer pointer (leave unchanged);
+// explicit JSON null → non-nil outer, nil inner (clear); a value → both
+// levels set. Feeds double-pointer patch fields such as domain.TaskPatch.
+func optionalField[T any](raw map[string]json.RawMessage, key string) (**T, error) {
+	msg, ok := raw[key]
+	if !ok {
+		return nil, nil
+	}
+	var inner *T
+	if err := json.Unmarshal(msg, &inner); err != nil {
+		return nil, fmt.Errorf("%w: invalid %q: %v", domain.ErrValidation, key, err)
+	}
+	return &inner, nil
+}
+
 // statusFor maps domain sentinel errors to HTTP status codes and stable
 // machine-readable error codes.
 func statusFor(err error) (int, string) {
