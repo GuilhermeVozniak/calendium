@@ -520,6 +520,26 @@ type CommentRepo interface {
 	SoftDelete(ctx context.Context, id string, at time.Time) error
 }
 
+// --- Integrations (M2.8 Task 9) ----------------------------------------------
+
+// IntegrationRepo persists per-user vendor OAuth connections
+// (Todoist/HubSpot). Implementations MUST store access/refresh tokens
+// encrypted at rest exactly like AccountRepo (AES-256-GCM with
+// config.Crypto.TokenEncryptionKey); TokenSet crosses this boundary in
+// plaintext only. Create returns domain.ErrConflict on a (user, vendor)
+// collision; lookups return domain.ErrNotFound when absent.
+type IntegrationRepo interface {
+	Create(ctx context.Context, c domain.IntegrationConnection) (domain.IntegrationConnection, error)
+	GetByID(ctx context.Context, id string) (domain.IntegrationConnection, error)
+	GetByVendor(ctx context.Context, userID string, vendor domain.IntegrationVendor) (domain.IntegrationConnection, error)
+	ListByUser(ctx context.Context, userID string) ([]domain.IntegrationConnection, error)
+	ListByVendor(ctx context.Context, vendor domain.IntegrationVendor) ([]domain.IntegrationConnection, error)
+	Update(ctx context.Context, c domain.IntegrationConnection) error
+	Delete(ctx context.Context, id string) error
+	SaveTokens(ctx context.Context, connectionID string, t TokenSet) error
+	GetTokens(ctx context.Context, connectionID string) (TokenSet, error)
+}
+
 // ---------------------------------------------------------------------------
 // Gateways (implemented by internal/adapter/out/{googleapi,msgraph,stripeapi,openrouter,push,authjwt})
 // ---------------------------------------------------------------------------

@@ -1099,6 +1099,113 @@ func (r *fakeOAuthStateRepo) Consume(_ context.Context, state string) (port.OAut
 
 var _ port.OAuthStateRepo = (*fakeOAuthStateRepo)(nil)
 
+// --- integration repo (M2.8 Task 9) ------------------------------------------
+
+// fakeIntegrationRepo persists integration connections in memory, mirroring
+// the DB's UNIQUE (user_id, vendor) on Create; tokens live in a parallel map
+// so tests can assert exactly what the service stored.
+type fakeIntegrationRepo struct {
+	byID    map[string]domain.IntegrationConnection
+	tokens  map[string]port.TokenSet
+	order   []string
+	created []domain.IntegrationConnection
+	updated []domain.IntegrationConnection
+	deleted []string
+}
+
+func newIntegrationRepo() *fakeIntegrationRepo {
+	return &fakeIntegrationRepo{
+		byID:   map[string]domain.IntegrationConnection{},
+		tokens: map[string]port.TokenSet{},
+	}
+}
+
+func (r *fakeIntegrationRepo) Create(_ context.Context, c domain.IntegrationConnection) (domain.IntegrationConnection, error) {
+	for _, existing := range r.byID {
+		if existing.UserID == c.UserID && existing.Vendor == c.Vendor {
+			return domain.IntegrationConnection{}, domain.ErrConflict
+		}
+	}
+	r.byID[c.ID] = c
+	r.order = append(r.order, c.ID)
+	r.created = append(r.created, c)
+	return c, nil
+}
+
+func (r *fakeIntegrationRepo) GetByID(_ context.Context, id string) (domain.IntegrationConnection, error) {
+	c, ok := r.byID[id]
+	if !ok {
+		return domain.IntegrationConnection{}, domain.ErrNotFound
+	}
+	return c, nil
+}
+
+func (r *fakeIntegrationRepo) GetByVendor(_ context.Context, userID string, vendor domain.IntegrationVendor) (domain.IntegrationConnection, error) {
+	for _, id := range r.order {
+		if c := r.byID[id]; c.UserID == userID && c.Vendor == vendor {
+			return c, nil
+		}
+	}
+	return domain.IntegrationConnection{}, domain.ErrNotFound
+}
+
+func (r *fakeIntegrationRepo) ListByUser(_ context.Context, userID string) ([]domain.IntegrationConnection, error) {
+	var out []domain.IntegrationConnection
+	for _, id := range r.order {
+		if c, ok := r.byID[id]; ok && c.UserID == userID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeIntegrationRepo) ListByVendor(_ context.Context, vendor domain.IntegrationVendor) ([]domain.IntegrationConnection, error) {
+	var out []domain.IntegrationConnection
+	for _, id := range r.order {
+		if c, ok := r.byID[id]; ok && c.Vendor == vendor {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeIntegrationRepo) Update(_ context.Context, c domain.IntegrationConnection) error {
+	if _, ok := r.byID[c.ID]; !ok {
+		return domain.ErrNotFound
+	}
+	r.byID[c.ID] = c
+	r.updated = append(r.updated, c)
+	return nil
+}
+
+func (r *fakeIntegrationRepo) Delete(_ context.Context, id string) error {
+	if _, ok := r.byID[id]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(r.byID, id)
+	delete(r.tokens, id)
+	r.deleted = append(r.deleted, id)
+	return nil
+}
+
+func (r *fakeIntegrationRepo) SaveTokens(_ context.Context, connectionID string, t port.TokenSet) error {
+	if _, ok := r.byID[connectionID]; !ok {
+		return domain.ErrNotFound
+	}
+	r.tokens[connectionID] = t
+	return nil
+}
+
+func (r *fakeIntegrationRepo) GetTokens(_ context.Context, connectionID string) (port.TokenSet, error) {
+	t, ok := r.tokens[connectionID]
+	if !ok {
+		return port.TokenSet{}, domain.ErrNotFound
+	}
+	return t, nil
+}
+
+var _ port.IntegrationRepo = (*fakeIntegrationRepo)(nil)
+
 // --- oauth gateway -----------------------------------------------------------
 
 // fakeOAuthGateway records the AuthURL/Exchange args and serves a programmable

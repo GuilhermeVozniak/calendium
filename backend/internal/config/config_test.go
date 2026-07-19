@@ -387,6 +387,41 @@ func TestFromEnvJoinsMultipleErrors(t *testing.T) {
 	}
 }
 
+// TestFromEnvIntegrationVendors covers the M2.8 per-user integration OAuth
+// apps (Todoist/HubSpot): parsed when set, empty (vendor unwired) otherwise.
+func TestFromEnvIntegrationVendors(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DATABASE_URL", "postgres://localhost/db")
+	t.Setenv("TOKEN_ENCRYPTION_KEY", validKeyHex)
+	t.Setenv("TODOIST_CLIENT_ID", "td-id")
+	t.Setenv("TODOIST_CLIENT_SECRET", "td-secret")
+	t.Setenv("HUBSPOT_CLIENT_ID", "hs-id")
+	t.Setenv("HUBSPOT_CLIENT_SECRET", "hs-secret")
+
+	c, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv() error = %v", err)
+	}
+	assertEq(t, "Todoist.ClientID", c.Todoist.ClientID, "td-id")
+	assertEq(t, "Todoist.ClientSecret", c.Todoist.ClientSecret, "td-secret")
+	assertEq(t, "HubSpot.ClientID", c.HubSpot.ClientID, "hs-id")
+	assertEq(t, "HubSpot.ClientSecret", c.HubSpot.ClientSecret, "hs-secret")
+}
+
+func TestFromEnvIntegrationVendorsDefaultEmpty(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DATABASE_URL", "postgres://localhost/db")
+	t.Setenv("TOKEN_ENCRYPTION_KEY", validKeyHex)
+
+	c, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv() error = %v", err)
+	}
+	if c.Todoist != (Todoist{}) || c.HubSpot != (HubSpot{}) {
+		t.Fatalf("vendors must default to unwired: todoist=%+v hubspot=%+v", c.Todoist, c.HubSpot)
+	}
+}
+
 func assertEq(t *testing.T, field, got, want string) {
 	t.Helper()
 	if got != want {

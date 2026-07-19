@@ -63,6 +63,21 @@ type Microsoft struct {
 	ClientSecret string // MS_CLIENT_SECRET
 }
 
+// Todoist configures the Todoist OAuth app for per-user task integrations
+// (M2.8). Unset leaves the vendor unwired: its endpoints answer 501 and
+// GET /v1/instance does not advertise it.
+type Todoist struct {
+	ClientID     string // TODOIST_CLIENT_ID
+	ClientSecret string // TODOIST_CLIENT_SECRET
+}
+
+// HubSpot configures the HubSpot OAuth app for per-user CRM integrations
+// (M2.8). Unset leaves the vendor unwired (501 + not advertised).
+type HubSpot struct {
+	ClientID     string // HUBSPOT_CLIENT_ID
+	ClientSecret string // HUBSPOT_CLIENT_SECRET
+}
+
 // Stripe configures billing (docs/payments.md).
 type Stripe struct {
 	SecretKey     string // STRIPE_SECRET_KEY
@@ -167,6 +182,8 @@ type Config struct {
 	Google     Google
 	Apple      Apple
 	Microsoft  Microsoft
+	Todoist    Todoist
+	HubSpot    HubSpot
 	Stripe     Stripe
 	Push       Push
 	OpenRouter OpenRouter
@@ -201,6 +218,14 @@ func FromEnv() (Config, error) {
 		Microsoft: Microsoft{
 			ClientID:     os.Getenv("MS_CLIENT_ID"),
 			ClientSecret: os.Getenv("MS_CLIENT_SECRET"),
+		},
+		Todoist: Todoist{
+			ClientID:     os.Getenv("TODOIST_CLIENT_ID"),
+			ClientSecret: os.Getenv("TODOIST_CLIENT_SECRET"),
+		},
+		HubSpot: HubSpot{
+			ClientID:     os.Getenv("HUBSPOT_CLIENT_ID"),
+			ClientSecret: os.Getenv("HUBSPOT_CLIENT_SECRET"),
 		},
 		Stripe: Stripe{
 			SecretKey:     os.Getenv("STRIPE_SECRET_KEY"),
