@@ -11,11 +11,15 @@ jest.mock('@/lib/server-config', () => ({
 
 const mockListAccounts = jest.fn();
 const mockGetSubscription = jest.fn();
+const mockSetSignature = jest.fn();
+const mockSetAutoBcc = jest.fn();
 jest.mock('@/lib/api', () => ({
   api: {
     listAccounts: (...args: unknown[]) => mockListAccounts(...args),
     getSubscription: (...args: unknown[]) => mockGetSubscription(...args),
     connectAccount: (...args: unknown[]) => jest.fn()(...args),
+    setSignature: (...args: unknown[]) => mockSetSignature(...args),
+    setAutoBcc: (...args: unknown[]) => mockSetAutoBcc(...args),
   },
 }));
 
@@ -43,7 +47,7 @@ jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
-import { act, render, screen } from '@testing-library/react-native';
+import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import SettingsScreen from './settings';
 
@@ -73,6 +77,19 @@ function renderScreen() {
     </QueryClientProvider>
   );
 }
+
+const ACCOUNT = {
+  id: 'acct_1',
+  provider: 'google' as const,
+  email: 'you@gmail.com',
+  status: 'active' as const,
+  scopes: [],
+  vipSenders: [],
+  signatureHtml: '<p>Best,<br/>Jordan</p>',
+  autoBcc: ['archive@example.com'],
+  lastSyncedAt: new Date().toISOString(),
+  createdAt: new Date().toISOString(),
+};
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -106,5 +123,88 @@ describe('SettingsScreen — AI classifiers row visibility', () => {
     await flush();
 
     expect(screen.queryByText('AI classifiers')).toBeNull();
+  });
+});
+
+describe('SettingsScreen — signature and auto-BCC editors', () => {
+  it('seeds each editor from the account (plain-text signature, comma-joined auto-BCC)', async () => {
+    mockListAccounts.mockResolvedValue([ACCOUNT]);
+    await renderScreen();
+    await flush();
+
+    expect(screen.getByDisplayValue('Best,\nJordan')).toBeTruthy();
+    expect(screen.getByDisplayValue('archive@example.com')).toBeTruthy();
+  });
+
+  it('saving calls both api.setSignature and api.setAutoBcc with the edited values', async () => {
+    mockListAccounts.mockResolvedValue([ACCOUNT]);
+    mockSetSignature.mockResolvedValue({ ...ACCOUNT, signatureHtml: '<br/>Best,<br/>Jordan R.' });
+    mockSetAutoBcc.mockResolvedValue({ ...ACCOUNT, autoBcc: ['archive@example.com', 'cc@example.com'] });
+    await renderScreen();
+    await flush();
+
+    await fireEvent.changeText(screen.getByTestId('signature-input-acct_1'), 'Best,\nJordan R.');
+    await fireEvent.changeText(
+      screen.getByTestId('auto-bcc-input-acct_1'),
+      'archive@example.com, cc@example.com'
+    );
+    await fireEvent.press(screen.getByTestId('save-mail-prefs-acct_1'));
+    await flush();
+
+    expect(mockSetSignature).toHaveBeenCalledWith('acct_1', 'Best,<br/>Jordan R.');
+    expect(mockSetAutoBcc).toHaveBeenCalledWith('acct_1', ['archive@example.com', 'cc@example.com']);
+  });
+
+  /**
+   * M2.5 review fix (MUST-FIX 2): the backend's account Update is a full-row
+   * read-modify-write, so firing setSignature and setAutoBcc concurrently
+   * (Promise.all) let one clobber the other — whichever write landed first
+   * got overwritten by the second request's read-before-either-write-lands
+   * snapshot. Sequencing (signature, then auto-BCC) fixes it; this proves
+   * both the call order and that the cache ends up holding the final
+   * response's account (with both fields updated, as the real backend would
+   * return once the writes are sequenced).
+   */
+  it('sequences setSignature before setAutoBcc and caches the final response with both fields', async () => {
+    mockListAccounts.mockResolvedValue([ACCOUNT]);
+    mockSetSignature.mockResolvedValue({ ...ACCOUNT, signatureHtml: '<br/>Best,<br/>Jordan R.' });
+    // Simulates the real backend's read-modify-write: by the time auto-BCC is
+    // saved (after signature, sequenced), the signature write has already
+    // been persisted, so the final response reflects both fields.
+    mockSetAutoBcc.mockResolvedValue({
+      ...ACCOUNT,
+      signatureHtml: '<br/>Best,<br/>Jordan R.',
+      autoBcc: ['archive@example.com', 'cc@example.com'],
+    });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    await render(
+      <QueryClientProvider client={client}>
+        <SettingsScreen />
+      </QueryClientProvider>
+    );
+    await flush();
+
+    await fireEvent.changeText(screen.getByTestId('signature-input-acct_1'), 'Best,\nJordan R.');
+    await fireEvent.changeText(
+      screen.getByTestId('auto-bcc-input-acct_1'),
+      'archive@example.com, cc@example.com'
+    );
+    await fireEvent.press(screen.getByTestId('save-mail-prefs-acct_1'));
+    await flush();
+
+    expect(mockSetSignature.mock.invocationCallOrder[0]).toBeLessThan(
+      mockSetAutoBcc.mock.invocationCallOrder[0]!
+    );
+    expect(mockSetSignature).toHaveBeenCalledWith('acct_1', 'Best,<br/>Jordan R.');
+    expect(mockSetAutoBcc).toHaveBeenCalledWith('acct_1', ['archive@example.com', 'cc@example.com']);
+    expect(client.getQueryData(['accounts'])).toEqual([
+      {
+        ...ACCOUNT,
+        signatureHtml: '<br/>Best,<br/>Jordan R.',
+        autoBcc: ['archive@example.com', 'cc@example.com'],
+      },
+    ]);
   });
 });

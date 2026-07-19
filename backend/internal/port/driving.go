@@ -52,6 +52,10 @@ type AccountService interface {
 	// to the "vip" split at ingest).
 	SetVipSenders(ctx context.Context, userID, accountID string, vipSenders []string) (domain.ConnectedAccount, error)
 	Disconnect(ctx context.Context, userID, accountID string) error
+	// SetSignature replaces the account's rich signature (sanitized HTML).
+	SetSignature(ctx context.Context, userID, accountID, signatureHTML string) (domain.ConnectedAccount, error)
+	// SetAutoBcc replaces the account's auto-BCC list applied at send.
+	SetAutoBcc(ctx context.Context, userID, accountID string, autoBcc []string) (domain.ConnectedAccount, error)
 }
 
 // DraftInput is the create/update draft payload (autosave-friendly).
@@ -140,6 +144,26 @@ type MailService interface {
 	// one-click when available, else a mailto send, else it reports the URL
 	// for the client to open. domain.ErrValidation when the thread has none.
 	UnsubscribeThread(ctx context.Context, userID, threadID string) (UnsubscribeResult, error)
+
+	ListOpens(ctx context.Context, userID, cursor string, limit int) (domain.Page[domain.OpenEvent], error)
+	// SuggestSendTime returns domain.ErrNotFound when history is too thin
+	// (fewer than 5 recorded opens for the recipient).
+	SuggestSendTime(ctx context.Context, userID, recipientEmail string) (domain.SendSuggestion, error)
+	SearchAttachments(ctx context.Context, userID string, q AttachmentQuery) (domain.Page[domain.AttachmentHit], error)
+	// GetAttachmentContent fetches an attachment body from the provider.
+	GetAttachmentContent(ctx context.Context, userID, attachmentID string) (data []byte, mimeType, filename string, err error)
+	GetContact(ctx context.Context, userID, email string) (domain.ContactSummary, error)
+	// ReactToMessage stores the reaction; when sendReply is true it also
+	// queues a tiny threaded reply through the scheduled-send pipeline.
+	ReactToMessage(ctx context.Context, userID, messageID, emoji string, sendReply bool) (ReactionResult, error)
+	RemoveReaction(ctx context.Context, userID, messageID, emoji string) error
+}
+
+// ReactionResult is a stored reaction plus the tiny-reply draft id when
+// the reaction was also queued for delivery (undo-send capable).
+type ReactionResult struct {
+	Reaction domain.Reaction `json:"reaction"`
+	DraftID  *string         `json:"draftId"`
 }
 
 // UnsubscribeResult reports how an unsubscribe was (or must be) performed:

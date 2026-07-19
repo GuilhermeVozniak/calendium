@@ -27,6 +27,8 @@ function seed(): SettingsStore {
         status: 'active',
         scopes: ['gmail.modify', 'gmail.send', 'calendar'],
         vipSenders: ['sam@sequoiacap.com', 'founders@calendium.app'],
+        signatureHtml: '<p>Guilherme Vozniak<br/>Calendium</p>',
+        autoBcc: ['archive@calendium.app'],
         lastSyncedAt: subMinutes(now, 2).toISOString(),
         createdAt: subDays(now, 84).toISOString(),
       },
@@ -37,6 +39,8 @@ function seed(): SettingsStore {
         status: 'reauth_required',
         scopes: ['Mail.ReadWrite', 'Mail.Send', 'Calendars.ReadWrite'],
         vipSenders: [],
+        signatureHtml: '',
+        autoBcc: [],
         lastSyncedAt: subDays(now, 3).toISOString(),
         createdAt: subDays(now, 30).toISOString(),
       },
@@ -102,6 +106,20 @@ export const settingsMock = {
     const account = getStore().accounts.find((a) => a.id === accountId);
     if (!account) throw new Error('Account not found');
     account.vipSenders = [...vipSenders];
+    return { ...account };
+  },
+
+  setSignature(accountId: string, signatureHtml: string): ConnectedAccount {
+    const account = getStore().accounts.find((a) => a.id === accountId);
+    if (!account) throw new Error('Account not found');
+    account.signatureHtml = signatureHtml;
+    return { ...account };
+  },
+
+  setAutoBcc(accountId: string, autoBcc: string[]): ConnectedAccount {
+    const account = getStore().accounts.find((a) => a.id === accountId);
+    if (!account) throw new Error('Account not found');
+    account.autoBcc = [...autoBcc];
     return { ...account };
   },
 

@@ -3,7 +3,9 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -535,9 +537,9 @@ func (r messageRepo) replaceAttachments(ctx context.Context, messageID string, a
 			a.ID = newID()
 		}
 		if _, err := r.q(ctx).ExecContext(ctx, `
-			INSERT INTO attachments (id, message_id, filename, mime_type, size_bytes)
-			VALUES ($1, $2, $3, $4, $5)`,
-			a.ID, messageID, a.Filename, a.MimeType, a.SizeBytes); err != nil {
+			INSERT INTO attachments (id, message_id, filename, mime_type, size_bytes, provider_attachment_id)
+			VALUES ($1, $2, $3, $4, $5, $6)`,
+			a.ID, messageID, a.Filename, a.MimeType, a.SizeBytes, a.ProviderAttachmentID); err != nil {
 			return err
 		}
 	}
@@ -656,13 +658,299 @@ func (r messageRepo) ListSentByAccount(ctx context.Context, accountID, accountEm
 	return msgs, nil
 }
 
+// --- M2.5 Compose & Contact --------------------------------------------------
+//
+// The methods below satisfy the widened port.MessageRepo interface so the
+// backend compiles once ports/domain land (this task). Real SQL — Recent
+// Opens keyset scan, open-hour histogram, attachment trigram search, and
+// contact aggregation — is implemented in later M2.5 tasks (3, 4, 5 in
+// docs/superpowers/plans/2026-07-17-m2-5-compose-contact.md).
+
+// ListOpens returns opened sent messages (from the account's own address),
+// newest open first, keyset-paginated on (opened_at, id) to stay stable
+// under exact-timestamp ties.
+func (r messageRepo) ListOpens(ctx context.Context, q port.OpensQuery) (domain.Page[domain.OpenEvent], error) {
+	var page domain.Page[domain.OpenEvent]
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	args := []any{q.UserID}
+	cursorPred := ""
+	if q.Cursor != "" {
+		at, id, err := decodeOpensCursor(q.Cursor)
+		if err != nil {
+			return page, err
+		}
+		args = append(args, at, id)
+		cursorPred = "AND (m.opened_at, m.id) < ($2, $3)"
+	}
+	args = append(args, limit+1)
+	rows, err := r.q(ctx).QueryContext(ctx, fmt.Sprintf(`
+		SELECT m.id, m.thread_id, m.account_id, m.subject, m.to_addrs,
+		       m.opened_at, m.sent_at
+		FROM messages m
+		JOIN connected_accounts ca ON ca.id = m.account_id
+		WHERE ca.user_id = $1
+		  AND m.opened_at IS NOT NULL
+		  AND lower(m.from_addr->>'email') = lower(ca.email)
+		  %s
+		ORDER BY m.opened_at DESC, m.id DESC
+		LIMIT $%d`, cursorPred, len(args)), args...)
+	if err != nil {
+		return page, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	items := []domain.OpenEvent{}
+	for rows.Next() {
+		var e domain.OpenEvent
+		var recipients []byte
+		if err := rows.Scan(&e.MessageID, &e.ThreadID, &e.AccountID,
+			&e.Subject, &recipients, &e.OpenedAt, &e.SentAt); err != nil {
+			return page, err
+		}
+		if err := unmarshalInto(recipients, &e.Recipients); err != nil {
+			return page, err
+		}
+		if e.Recipients == nil {
+			e.Recipients = []domain.EmailAddress{}
+		}
+		items = append(items, e)
+	}
+	if err := rows.Err(); err != nil {
+		return page, err
+	}
+	if len(items) > limit {
+		items = items[:limit]
+		last := items[limit-1]
+		cursor := encodeOpensCursor(last.OpenedAt, last.MessageID)
+		page.NextCursor = &cursor
+	}
+	page.Items = items
+	return page, nil
+}
+
+func (r messageRepo) OpenHourHistogram(ctx context.Context, userID, recipientEmail string) ([24]int, error) {
+	var hist [24]int
+	rows, err := r.q(ctx).QueryContext(ctx, `
+		SELECT extract(hour FROM m.opened_at AT TIME ZONE 'UTC')::int AS h, count(*)
+		FROM messages m
+		JOIN connected_accounts ca ON ca.id = m.account_id
+		WHERE ca.user_id = $1
+		  AND m.opened_at IS NOT NULL
+		  AND lower(m.from_addr->>'email') = lower(ca.email)
+		  AND EXISTS (
+			SELECT 1 FROM jsonb_array_elements(m.to_addrs) rcpt
+			WHERE lower(rcpt->>'email') = lower($2))
+		GROUP BY h`, userID, recipientEmail)
+	if err != nil {
+		return hist, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var h, c int
+		if err := rows.Scan(&h, &c); err != nil {
+			return hist, err
+		}
+		if h >= 0 && h < 24 {
+			hist[h] = c
+		}
+	}
+	return hist, rows.Err()
+}
+
+// encodeAttachmentCursor encodes the keyset position after (sentAt, attachmentID).
+func encodeAttachmentCursor(sentAt time.Time, attachmentID string) string {
+	raw := strconv.FormatInt(sentAt.UnixMicro(), 10) + ":" + attachmentID
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+func decodeAttachmentCursor(cursor string) (time.Time, string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("%w: malformed cursor", domain.ErrValidation)
+	}
+	micros, id, ok := strings.Cut(string(raw), ":")
+	if !ok {
+		return time.Time{}, "", fmt.Errorf("%w: malformed cursor", domain.ErrValidation)
+	}
+	n, err := strconv.ParseInt(micros, 10, 64)
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("%w: malformed cursor", domain.ErrValidation)
+	}
+	return time.UnixMicro(n).UTC(), id, nil
+}
+
+func (r messageRepo) SearchAttachments(ctx context.Context, q port.AttachmentQuery) (domain.Page[domain.AttachmentHit], error) {
+	var page domain.Page[domain.AttachmentHit]
+	if q.UserID == "" {
+		return page, fmt.Errorf("%w: attachment query requires a user id", domain.ErrValidation)
+	}
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+
+	where := []string{"ca.user_id = $1"}
+	args := []any{q.UserID}
+	if q.Query != "" {
+		args = append(args, q.Query)
+		where = append(where, fmt.Sprintf("a.filename ILIKE '%%' || $%d || '%%'", len(args)))
+	}
+	if q.ThreadID != "" {
+		args = append(args, q.ThreadID)
+		where = append(where, fmt.Sprintf("t.id = $%d", len(args)))
+	}
+	if q.Contact != "" {
+		args = append(args, q.Contact)
+		n := len(args)
+		where = append(where, fmt.Sprintf(`(
+			lower(m.from_addr->>'email') = lower($%d)
+			OR EXISTS (SELECT 1 FROM jsonb_array_elements(m.to_addrs) rcpt WHERE lower(rcpt->>'email') = lower($%d))
+			OR EXISTS (SELECT 1 FROM jsonb_array_elements(m.cc_addrs) rcpt WHERE lower(rcpt->>'email') = lower($%d)))`,
+			n, n, n))
+	}
+	if q.Cursor != "" {
+		ts, id, err := decodeAttachmentCursor(q.Cursor)
+		if err != nil {
+			return page, err
+		}
+		args = append(args, ts, id)
+		where = append(where, fmt.Sprintf("(m.sent_at, a.id) < ($%d, $%d)", len(args)-1, len(args)))
+	}
+	args = append(args, limit+1)
+
+	query := `
+		SELECT a.id, a.filename, a.mime_type, a.size_bytes, a.provider_attachment_id,
+		       m.id, m.thread_id, t.subject, m.from_addr, m.sent_at
+		FROM attachments a
+		JOIN messages m ON m.id = a.message_id
+		JOIN threads t ON t.id = m.thread_id
+		JOIN connected_accounts ca ON ca.id = m.account_id
+		WHERE ` + strings.Join(where, " AND ") +
+		fmt.Sprintf(" ORDER BY m.sent_at DESC, a.id DESC LIMIT $%d", len(args))
+
+	rows, err := r.q(ctx).QueryContext(ctx, query, args...)
+	if err != nil {
+		return page, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	items := []domain.AttachmentHit{}
+	for rows.Next() {
+		var hit domain.AttachmentHit
+		var from []byte
+		if err := rows.Scan(&hit.ID, &hit.Filename, &hit.MimeType, &hit.SizeBytes, &hit.ProviderAttachmentID,
+			&hit.MessageID, &hit.ThreadID, &hit.ThreadSubject, &from, &hit.SentAt); err != nil {
+			return page, err
+		}
+		if err := unmarshalInto(from, &hit.From); err != nil {
+			return page, err
+		}
+		items = append(items, hit)
+	}
+	if err := rows.Err(); err != nil {
+		return page, err
+	}
+	if len(items) > limit {
+		items = items[:limit]
+		last := items[limit-1]
+		cursor := encodeAttachmentCursor(last.SentAt, last.ID)
+		page.NextCursor = &cursor
+	}
+	page.Items = items
+	return page, nil
+}
+
+func (r messageRepo) GetAttachment(ctx context.Context, attachmentID string) (domain.Attachment, string, error) {
+	var a domain.Attachment
+	var messageID string
+	err := r.q(ctx).QueryRowContext(ctx, `
+		SELECT id, message_id, filename, mime_type, size_bytes, provider_attachment_id
+		FROM attachments WHERE id = $1`, attachmentID).
+		Scan(&a.ID, &messageID, &a.Filename, &a.MimeType, &a.SizeBytes, &a.ProviderAttachmentID)
+	if err != nil {
+		return domain.Attachment{}, "", notFound(err)
+	}
+	return a, messageID, nil
+}
+
+func (r messageRepo) ContactSummary(ctx context.Context, userID, email string) (domain.ContactSummary, error) {
+	c := domain.ContactSummary{Email: strings.ToLower(email), RecentThreads: []domain.Thread{}}
+	if i := strings.LastIndex(c.Email, "@"); i >= 0 {
+		c.Domain = c.Email[i+1:]
+	}
+
+	var name sql.NullString
+	var lastMessageAt sql.NullTime
+	err := r.q(ctx).QueryRowContext(ctx, `
+		SELECT count(*),
+		       max(m.sent_at),
+		       (SELECT m2.from_addr->>'name'
+		        FROM messages m2
+		        JOIN connected_accounts ca2 ON ca2.id = m2.account_id
+		        WHERE ca2.user_id = $1
+		          AND lower(m2.from_addr->>'email') = lower($2)
+		        ORDER BY m2.sent_at DESC LIMIT 1)
+		FROM messages m
+		JOIN connected_accounts ca ON ca.id = m.account_id
+		WHERE ca.user_id = $1
+		  AND (lower(m.from_addr->>'email') = lower($2)
+		       OR EXISTS (SELECT 1 FROM jsonb_array_elements(m.to_addrs) rcpt
+		                  WHERE lower(rcpt->>'email') = lower($2)))`,
+		userID, email).Scan(&c.MessageCount, &lastMessageAt, &name)
+	if err != nil {
+		return c, err
+	}
+	if name.Valid {
+		c.Name = &name.String
+	}
+	if lastMessageAt.Valid {
+		t := lastMessageAt.Time
+		c.LastMessageAt = &t
+	}
+
+	if err := r.q(ctx).QueryRowContext(ctx, `
+		SELECT count(*)
+		FROM threads t
+		JOIN connected_accounts ca ON ca.id = t.account_id
+		WHERE ca.user_id = $1
+		  AND EXISTS (SELECT 1 FROM jsonb_array_elements(t.participants) p
+		              WHERE lower(p->>'email') = lower($2))`,
+		userID, email).Scan(&c.ThreadCount); err != nil {
+		return c, err
+	}
+
+	// Recent threads via participants containment (thread repo columns reused).
+	rows, err := r.q(ctx).QueryContext(ctx, `
+		SELECT `+threadCols+`
+		FROM threads t
+		JOIN connected_accounts ca ON ca.id = t.account_id
+		WHERE ca.user_id = $1
+		  AND EXISTS (SELECT 1 FROM jsonb_array_elements(t.participants) p
+		              WHERE lower(p->>'email') = lower($2))
+		ORDER BY t.last_message_at DESC
+		LIMIT 5`, userID, email)
+	if err != nil {
+		return c, err
+	}
+	defer func() { _ = rows.Close() }()
+	threads, err := collectThreads(rows)
+	if err != nil {
+		return c, err
+	}
+	c.RecentThreads = threads
+	return c, nil
+}
+
 func (r messageRepo) attachmentsFor(ctx context.Context, messageIDs []string) (map[string][]domain.Attachment, error) {
 	ids, err := jsonArray(messageIDs)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := r.q(ctx).QueryContext(ctx, `
-		SELECT id, message_id, filename, mime_type, size_bytes FROM attachments
+		SELECT id, message_id, filename, mime_type, size_bytes, provider_attachment_id FROM attachments
 		WHERE message_id IN (SELECT jsonb_array_elements_text($1::jsonb))
 		ORDER BY id`, ids)
 	if err != nil {
@@ -674,7 +962,7 @@ func (r messageRepo) attachmentsFor(ctx context.Context, messageIDs []string) (m
 	for rows.Next() {
 		var a domain.Attachment
 		var messageID string
-		if err := rows.Scan(&a.ID, &messageID, &a.Filename, &a.MimeType, &a.SizeBytes); err != nil {
+		if err := rows.Scan(&a.ID, &messageID, &a.Filename, &a.MimeType, &a.SizeBytes, &a.ProviderAttachmentID); err != nil {
 			return nil, err
 		}
 		byMsg[messageID] = append(byMsg[messageID], a)

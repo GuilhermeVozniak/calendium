@@ -18,17 +18,18 @@ import (
 // Google mail provider + oauth gateway registered and a frozen clock. It is
 // SelfHosted so the paywall is bypassed (paywall is exercised elsewhere).
 type mailFixture struct {
-	svc      *MailService
-	accounts *fakeAccountRepo
-	threads  *fakeThreadRepo
-	messages *fakeMessageRepo
-	drafts   *fakeDraftRepo
-	snippets *fakeSnippetRepo
-	labels   *fakeLabelRepo
-	provider *fakeMailProvider
-	oauth    *fakeOAuthGateway
-	unsub    *fakeUnsubscriber
-	clock    *fakeClock
+	svc       *MailService
+	accounts  *fakeAccountRepo
+	threads   *fakeThreadRepo
+	messages  *fakeMessageRepo
+	drafts    *fakeDraftRepo
+	snippets  *fakeSnippetRepo
+	labels    *fakeLabelRepo
+	reactions *fakeReactionRepo
+	provider  *fakeMailProvider
+	oauth     *fakeOAuthGateway
+	unsub     *fakeUnsubscriber
+	clock     *fakeClock
 }
 
 func newMailFixture(t *testing.T) *mailFixture {
@@ -38,16 +39,17 @@ func newMailFixture(t *testing.T) *mailFixture {
 	labels := newLabelRepo()
 	labels.accounts = accounts
 	f := &mailFixture{
-		accounts: accounts,
-		threads:  newThreadRepo(),
-		messages: newMessageRepo(),
-		drafts:   newDraftRepo(accounts),
-		snippets: newSnippetRepo(),
-		labels:   labels,
-		provider: newMailProvider(),
-		oauth:    newOAuthGateway(),
-		unsub:    &fakeUnsubscriber{},
-		clock:    clk,
+		accounts:  accounts,
+		threads:   newThreadRepo(),
+		messages:  newMessageRepo(),
+		drafts:    newDraftRepo(accounts),
+		snippets:  newSnippetRepo(),
+		labels:    labels,
+		reactions: newReactionRepo(),
+		provider:  newMailProvider(),
+		oauth:     newOAuthGateway(),
+		unsub:     &fakeUnsubscriber{},
+		clock:     clk,
 	}
 	f.svc = NewMailService(MailServiceDeps{
 		Accounts:      f.accounts,
@@ -56,6 +58,7 @@ func newMailFixture(t *testing.T) *mailFixture {
 		Drafts:        f.drafts,
 		Snippets:      f.snippets,
 		Labels:        f.labels,
+		Reactions:     f.reactions,
 		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: f.provider},
 		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: f.oauth},
 		Unsubscriber:  f.unsub,
@@ -1740,4 +1743,670 @@ func TestUnsubscribeThreadMailtoEmptyRecipientIsValidationError(t *testing.T) {
 	if len(f.provider.sent) != 0 {
 		t.Fatal("empty recipient must not reach provider.Send")
 	}
+}
+
+// --- ListOpens / SuggestSendTime (Smart Send, task 8) -----------------------
+
+func TestListOpensAndSuggestSendTimeRequireEntitlement(t *testing.T) {
+	svc := NewMailService(MailServiceDeps{
+		Subscriptions: newSubscriptionRepo(), // empty -> GetByUserID ErrNotFound -> ErrPaymentRequired
+		Messages:      newMessageRepo(),
+		Clock:         newClock(time.Now()),
+	})
+	ctx := context.Background()
+	if _, err := svc.ListOpens(ctx, "u1", "", 10); !errors.Is(err, domain.ErrPaymentRequired) {
+		t.Fatalf("ListOpens err = %v, want ErrPaymentRequired", err)
+	}
+	if _, err := svc.SuggestSendTime(ctx, "u1", "a@b.com"); !errors.Is(err, domain.ErrPaymentRequired) {
+		t.Fatalf("SuggestSendTime err = %v, want ErrPaymentRequired", err)
+	}
+}
+
+func TestListOpensClampsLimitAndPassesThrough(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	cursor := "next-cursor"
+	want := domain.Page[domain.OpenEvent]{
+		Items:      []domain.OpenEvent{{MessageID: "m1", ThreadID: "t1"}},
+		NextCursor: &cursor,
+	}
+	f.messages.opensPage = want
+
+	got, err := f.svc.ListOpens(ctx, "u1", "cur0", 500)
+	if err != nil {
+		t.Fatalf("ListOpens: %v", err)
+	}
+	if len(got.Items) != 1 || got.Items[0].MessageID != "m1" {
+		t.Fatalf("Items = %+v, want passthrough of the repo page", got.Items)
+	}
+	if len(f.messages.opensCalls) != 1 {
+		t.Fatalf("ListOpens calls = %d, want 1", len(f.messages.opensCalls))
+	}
+	call := f.messages.opensCalls[0]
+	if call.UserID != "u1" || call.Cursor != "cur0" {
+		t.Fatalf("query = %+v, want UserID=u1 Cursor=cur0", call)
+	}
+	if call.Limit != maxOpensPageSize {
+		t.Fatalf("Limit = %d, want clamped to %d", call.Limit, maxOpensPageSize)
+	}
+
+	// A limit already under the cap passes through unchanged.
+	if _, err := f.svc.ListOpens(ctx, "u1", "", 10); err != nil {
+		t.Fatalf("ListOpens: %v", err)
+	}
+	if got := f.messages.opensCalls[1].Limit; got != 10 {
+		t.Fatalf("Limit = %d, want 10 (unclamped)", got)
+	}
+}
+
+func TestSuggestSendTimeMapsThinHistoryToNotFound(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	// histograms defaults to the zero value (no opens) for any email not seeded.
+
+	if _, err := f.svc.SuggestSendTime(ctx, "u1", "a@b.com"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSuggestSendTimeReturnsSuggestionFromHistogram(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	var hist [24]int
+	hist[14] = 10 // >= smartSendMinOpens, all at UTC 14
+	f.messages.histograms["a@b.com"] = hist
+
+	got, err := f.svc.SuggestSendTime(ctx, "u1", "a@b.com")
+	if err != nil {
+		t.Fatalf("SuggestSendTime: %v", err)
+	}
+	if got.Email != "a@b.com" {
+		t.Errorf("Email = %q, want a@b.com", got.Email)
+	}
+	if got.UTCOffsetHours != 4 {
+		t.Errorf("UTCOffsetHours = %d, want 4", got.UTCOffsetHours)
+	}
+	// f.clock is frozen at 2026-07-07 12:00 UTC, so the next 14:00 UTC is
+	// later the same day.
+	want := time.Date(2026, 7, 7, 14, 0, 0, 0, time.UTC)
+	if !got.SuggestedAt.Equal(want) {
+		t.Errorf("SuggestedAt = %v, want %v", got.SuggestedAt, want)
+	}
+}
+
+func TestValidateEmoji(t *testing.T) {
+	tests := []struct {
+		name    string
+		emoji   string
+		wantErr bool
+	}{
+		{"thumbs up accepted", "👍", false},
+		{"heart accepted", "❤️", false},
+		{"empty rejected", "", true},
+		{"ascii letters rejected", "abc", true},
+		{"over 16 bytes rejected", "👍👍👍👍👍", true}, // 5 × 4-byte emoji = 20 bytes
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateEmoji(tt.emoji)
+			if tt.wantErr && !errors.Is(err, domain.ErrValidation) {
+				t.Fatalf("validateEmoji(%q) err = %v, want ErrValidation", tt.emoji, err)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("validateEmoji(%q) err = %v, want nil", tt.emoji, err)
+			}
+		})
+	}
+}
+
+func TestReactToMessageRejectsInvalidEmoji(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	if _, err := f.svc.ReactToMessage(ctx, "u1", "m1", "abc", false); !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("err = %v, want ErrValidation", err)
+	}
+	grouped, err := f.reactions.ListByMessages(ctx, []string{"m1"})
+	if err != nil {
+		t.Fatalf("ListByMessages: %v", err)
+	}
+	if len(grouped["m1"]) != 0 {
+		t.Fatalf("invalid emoji must not be stored: %+v", grouped["m1"])
+	}
+}
+
+func TestReactToMessageLocalOnlyWhenSendReplyFalse(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	res, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", false)
+	if err != nil {
+		t.Fatalf("ReactToMessage: %v", err)
+	}
+	if res.Reaction.Delivery != "local" {
+		t.Fatalf("Delivery = %q, want local", res.Reaction.Delivery)
+	}
+	if res.DraftID != nil {
+		t.Fatalf("DraftID = %v, want nil (no tiny reply requested)", *res.DraftID)
+	}
+	if len(f.drafts.byID) != 0 {
+		t.Fatalf("no draft should have been created, got %d", len(f.drafts.byID))
+	}
+}
+
+// failingDraftCreateRepo wraps a DraftRepo and forces Create to always fail,
+// letting a test exercise ReactToMessage's drafts.Create error path without
+// modifying the shared fakeDraftRepo used across the package.
+type failingDraftCreateRepo struct {
+	port.DraftRepo
+	err error
+}
+
+func (r *failingDraftCreateRepo) Create(_ context.Context, _ domain.Draft) (domain.Draft, error) {
+	return domain.Draft{}, r.err
+}
+
+// draftExistsAtReactionCreateSpy wraps a ReactionRepo and records, at the
+// moment Create is invoked, whether a tiny-reply draft already exists —
+// proving the fix creates the draft BEFORE persisting the reaction so
+// Delivery reflects the OBSERVED outcome rather than a prediction.
+type draftExistsAtReactionCreateSpy struct {
+	port.ReactionRepo
+	drafts        *fakeDraftRepo
+	createCalls   int
+	draftsAtFirst int
+}
+
+func (s *draftExistsAtReactionCreateSpy) Create(ctx context.Context, react domain.Reaction) (domain.Reaction, error) {
+	s.createCalls++
+	if s.createCalls == 1 {
+		s.draftsAtFirst = len(s.drafts.byID)
+	}
+	return s.ReactionRepo.Create(ctx, react)
+}
+
+func TestReactToMessageDraftFailureRecordsLocalDelivery(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	f.svc = NewMailService(MailServiceDeps{
+		Accounts:      f.accounts,
+		Threads:       f.threads,
+		Messages:      f.messages,
+		Drafts:        &failingDraftCreateRepo{DraftRepo: f.drafts, err: errors.New("db unavailable")},
+		Snippets:      f.snippets,
+		Labels:        f.labels,
+		Reactions:     f.reactions,
+		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: f.provider},
+		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: f.oauth},
+		Unsubscriber:  f.unsub,
+		Clock:         f.clock,
+		SelfHosted:    true,
+		UndoSendGrace: 15 * time.Second,
+	})
+
+	res, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", true)
+	if err != nil {
+		t.Fatalf("ReactToMessage: %v (a draft failure must never fail the reaction)", err)
+	}
+	if res.Reaction.Delivery != "local" {
+		t.Fatalf("Delivery = %q, want local when the tiny-reply draft failed to queue", res.Reaction.Delivery)
+	}
+	if res.DraftID != nil {
+		t.Fatalf("DraftID = %v, want nil after a draft creation failure", *res.DraftID)
+	}
+	if len(f.drafts.byID) != 0 {
+		t.Fatalf("no draft should be persisted, got %d", len(f.drafts.byID))
+	}
+	grouped, err := f.reactions.ListByMessages(ctx, []string{"m1"})
+	if err != nil {
+		t.Fatalf("ListByMessages: %v", err)
+	}
+	if len(grouped["m1"]) != 1 || grouped["m1"][0].Delivery != "local" {
+		t.Fatalf("stored reaction = %+v, want exactly one reaction with Delivery=local", grouped["m1"])
+	}
+}
+
+func TestReactToMessageSendsGraceScheduledTinyReply(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	res, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", true)
+	if err != nil {
+		t.Fatalf("ReactToMessage: %v", err)
+	}
+	if res.Reaction.Delivery != "sent" {
+		t.Fatalf("Delivery = %q, want sent", res.Reaction.Delivery)
+	}
+	if res.DraftID == nil {
+		t.Fatal("DraftID = nil, want a queued tiny-reply draft id")
+	}
+	d, err := f.drafts.GetByID(ctx, *res.DraftID)
+	if err != nil {
+		t.Fatalf("GetByID(draft): %v", err)
+	}
+	if d.ThreadID == nil || *d.ThreadID != "t1" {
+		t.Fatalf("draft ThreadID = %v, want t1 (threaded reply)", d.ThreadID)
+	}
+	if len(d.To) != 1 || d.To[0].Email != "friend@example.com" {
+		t.Fatalf("draft To = %+v, want [friend@example.com]", d.To)
+	}
+	if d.Subject != "Re: Hi" {
+		t.Fatalf("draft Subject = %q, want %q", d.Subject, "Re: Hi")
+	}
+	if d.BodyHTML != "<p>👍</p>" {
+		t.Fatalf("draft BodyHTML = %q, want %q", d.BodyHTML, "<p>👍</p>")
+	}
+	wantSendAt := f.clock.Now().Add(f.svc.undoSendGrace)
+	if d.ScheduledAt == nil || !d.ScheduledAt.Equal(wantSendAt) {
+		t.Fatalf("draft ScheduledAt = %v, want now+grace %v", d.ScheduledAt, wantSendAt)
+	}
+}
+
+// TestReactToMessageRecordsDeliveryAfterDraftExists pins the corrected
+// ordering: the tiny-reply draft is created BEFORE the single
+// Reactions.Create call, so Delivery="sent" is only ever persisted once the
+// draft genuinely exists (never predicted ahead of the outcome).
+func TestReactToMessageRecordsDeliveryAfterDraftExists(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	spy := &draftExistsAtReactionCreateSpy{ReactionRepo: f.reactions, drafts: f.drafts}
+	f.svc = NewMailService(MailServiceDeps{
+		Accounts:      f.accounts,
+		Threads:       f.threads,
+		Messages:      f.messages,
+		Drafts:        f.drafts,
+		Snippets:      f.snippets,
+		Labels:        f.labels,
+		Reactions:     spy,
+		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: f.provider},
+		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: f.oauth},
+		Unsubscriber:  f.unsub,
+		Clock:         f.clock,
+		SelfHosted:    true,
+		UndoSendGrace: 15 * time.Second,
+	})
+
+	res, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", true)
+	if err != nil {
+		t.Fatalf("ReactToMessage: %v", err)
+	}
+	if res.Reaction.Delivery != "sent" {
+		t.Fatalf("Delivery = %q, want sent", res.Reaction.Delivery)
+	}
+	if spy.createCalls != 1 {
+		t.Fatalf("Reactions.Create called %d times, want exactly 1", spy.createCalls)
+	}
+	if spy.draftsAtFirst != 1 {
+		t.Fatalf("drafts persisted at Reactions.Create time = %d, want 1 (draft must exist first)", spy.draftsAtFirst)
+	}
+}
+
+func TestReactToMessageSelfMessageNeverSendsReply(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	acct := f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", acct.Email, "Hi")
+
+	res, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", true)
+	if err != nil {
+		t.Fatalf("ReactToMessage: %v", err)
+	}
+	if res.Reaction.Delivery != "local" {
+		t.Fatalf("Delivery = %q, want local (never reply-react to yourself)", res.Reaction.Delivery)
+	}
+	if res.DraftID != nil {
+		t.Fatalf("DraftID = %v, want nil", *res.DraftID)
+	}
+	if len(f.drafts.byID) != 0 {
+		t.Fatalf("no draft should have been created, got %d", len(f.drafts.byID))
+	}
+}
+
+func TestReactToMessageDuplicateIsIdempotent(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	first, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", false)
+	if err != nil {
+		t.Fatalf("first ReactToMessage: %v", err)
+	}
+	second, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", false)
+	if err != nil {
+		t.Fatalf("second ReactToMessage: %v", err)
+	}
+	if second.Reaction.ID != first.Reaction.ID {
+		t.Fatalf("duplicate reaction returned a different id: got %s want %s", second.Reaction.ID, first.Reaction.ID)
+	}
+	grouped, err := f.reactions.ListByMessages(ctx, []string{"m1"})
+	if err != nil {
+		t.Fatalf("ListByMessages: %v", err)
+	}
+	if len(grouped["m1"]) != 1 {
+		t.Fatalf("grouped[m1] = %+v, want exactly 1 stored reaction", grouped["m1"])
+	}
+}
+
+func TestReactToMessageForeignMessageIsNotFound(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	if _, err := f.svc.ReactToMessage(ctx, "intruder", "m1", "👍", false); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestGetThreadEmbedsReactions(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedThread(t, "t1", "a1", nil)
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+	f.seedMessage(t, "m2", "t1", "a1", "friend@example.com", "Yo")
+
+	if _, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", false); err != nil {
+		t.Fatalf("react m1: %v", err)
+	}
+	if _, err := f.svc.ReactToMessage(ctx, "u1", "m1", "🎉", false); err != nil {
+		t.Fatalf("react m1 again: %v", err)
+	}
+
+	_, msgs, err := f.svc.GetThread(ctx, "u1", "t1")
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("messages = %d, want 2", len(msgs))
+	}
+	if len(msgs[0].Reactions) != 2 {
+		t.Fatalf("m1 reactions = %+v, want 2", msgs[0].Reactions)
+	}
+	if msgs[1].Reactions == nil || len(msgs[1].Reactions) != 0 {
+		t.Fatalf("m2 reactions = %v, want non-nil empty slice", msgs[1].Reactions)
+	}
+}
+
+func TestRemoveReactionDeletes(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	if _, err := f.svc.ReactToMessage(ctx, "u1", "m1", "👍", false); err != nil {
+		t.Fatalf("react: %v", err)
+	}
+	if err := f.svc.RemoveReaction(ctx, "u1", "m1", "👍"); err != nil {
+		t.Fatalf("RemoveReaction: %v", err)
+	}
+	grouped, err := f.reactions.ListByMessages(ctx, []string{"m1"})
+	if err != nil {
+		t.Fatalf("ListByMessages: %v", err)
+	}
+	if len(grouped["m1"]) != 0 {
+		t.Fatalf("grouped[m1] = %+v, want empty after removal", grouped["m1"])
+	}
+
+	if err := f.svc.RemoveReaction(ctx, "u1", "m1", "👍"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("second remove err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestRemoveReactionForeignMessageIsNotFound(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	f.seedMessage(t, "m1", "t1", "a1", "friend@example.com", "Hi")
+
+	if err := f.svc.RemoveReaction(ctx, "intruder", "m1", "👍"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func (f *mailFixture) seedMessage(t *testing.T, id, threadID, accountID, fromEmail, subject string) domain.Message {
+	t.Helper()
+	m := domain.Message{
+		ID:        id,
+		ThreadID:  threadID,
+		AccountID: accountID,
+		From:      domain.EmailAddress{Email: fromEmail},
+		Subject:   subject,
+		SentAt:    f.clock.Now(),
+	}
+	got, err := f.messages.Upsert(context.Background(), m)
+	if err != nil {
+		t.Fatalf("seed message %s: %v", id, err)
+	}
+	return got
+}
+
+func TestSearchAttachmentsScopesToCallerAndClampsLimit(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+
+	t.Run("default limit when unset", func(t *testing.T) {
+		if _, err := f.svc.SearchAttachments(ctx, "u1", port.AttachmentQuery{}); err != nil {
+			t.Fatalf("SearchAttachments: %v", err)
+		}
+		if f.messages.lastSearchQuery.UserID != "u1" {
+			t.Fatalf("UserID = %q, want u1 (must be overwritten from userID)", f.messages.lastSearchQuery.UserID)
+		}
+		if f.messages.lastSearchQuery.Limit != 50 {
+			t.Fatalf("Limit = %d, want default 50", f.messages.lastSearchQuery.Limit)
+		}
+	})
+
+	t.Run("limit clamped to max 100", func(t *testing.T) {
+		if _, err := f.svc.SearchAttachments(ctx, "u1", port.AttachmentQuery{Limit: 500}); err != nil {
+			t.Fatalf("SearchAttachments: %v", err)
+		}
+		if f.messages.lastSearchQuery.Limit != 100 {
+			t.Fatalf("Limit = %d, want clamped 100", f.messages.lastSearchQuery.Limit)
+		}
+	})
+
+	t.Run("a caller-supplied UserID is overwritten, never trusted", func(t *testing.T) {
+		if _, err := f.svc.SearchAttachments(ctx, "u1", port.AttachmentQuery{UserID: "someone-else"}); err != nil {
+			t.Fatalf("SearchAttachments: %v", err)
+		}
+		if f.messages.lastSearchQuery.UserID != "u1" {
+			t.Fatalf("UserID = %q, want u1", f.messages.lastSearchQuery.UserID)
+		}
+	})
+
+	t.Run("empty result normalizes to a non-nil slice", func(t *testing.T) {
+		page, err := f.svc.SearchAttachments(ctx, "u1", port.AttachmentQuery{})
+		if err != nil {
+			t.Fatalf("SearchAttachments: %v", err)
+		}
+		if page.Items == nil {
+			t.Fatal("Items = nil, want non-nil empty slice")
+		}
+	})
+}
+
+func TestGetAttachmentContentRejectsForeignAttachment(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	att := domain.Attachment{ID: "att1", Filename: "report.pdf", MimeType: "application/pdf", ProviderAttachmentID: "prov-att1"}
+	f.seedOwnedAttachment(t, "a1", "owner", "m1", att)
+
+	_, _, _, err := f.svc.GetAttachmentContent(ctx, "intruder", "att1")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if f.provider.fetchAttachmentCalls != 0 {
+		t.Fatal("ownership check must happen before the provider is ever called")
+	}
+}
+
+func TestGetAttachmentContentUnknownIDIsNotFound(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+
+	if _, _, _, err := f.svc.GetAttachmentContent(ctx, "u1", "ghost"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestGetAttachmentContentInvokesProviderWithMirroredIDs(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	att := domain.Attachment{ID: "att1", Filename: "report.pdf", MimeType: "application/pdf", ProviderAttachmentID: "prov-att1"}
+	f.seedOwnedAttachment(t, "a1", "u1", "m1", att)
+	f.provider.fetchAttachmentData = []byte("PDF-BYTES")
+	f.provider.fetchAttachmentMimeType = "application/pdf"
+
+	data, mimeType, filename, err := f.svc.GetAttachmentContent(ctx, "u1", "att1")
+	if err != nil {
+		t.Fatalf("GetAttachmentContent: %v", err)
+	}
+	if string(data) != "PDF-BYTES" {
+		t.Fatalf("data = %q, want PDF-BYTES", data)
+	}
+	if mimeType != "application/pdf" {
+		t.Fatalf("mimeType = %q, want application/pdf", mimeType)
+	}
+	if filename != "report.pdf" {
+		t.Fatalf("filename = %q, want report.pdf", filename)
+	}
+	if f.provider.lastFetchAttachmentToken != "tok-a1" {
+		t.Fatalf("token = %q, want tok-a1", f.provider.lastFetchAttachmentToken)
+	}
+	if f.provider.lastFetchMessageID != "p-m1" {
+		t.Fatalf("providerMessageID = %q, want p-m1 (msg.ProviderMessageID)", f.provider.lastFetchMessageID)
+	}
+	if f.provider.lastFetchAttachmentID != "prov-att1" {
+		t.Fatalf("providerAttachmentID = %q, want prov-att1 (att.ProviderAttachmentID)", f.provider.lastFetchAttachmentID)
+	}
+}
+
+func TestGetAttachmentContentFallsBackToMirroredMimeType(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	att := domain.Attachment{ID: "att1", Filename: "photo.png", MimeType: "image/png", ProviderAttachmentID: "prov-att1"}
+	f.seedOwnedAttachment(t, "a1", "u1", "m1", att)
+	f.provider.fetchAttachmentData = []byte("PNG-BYTES")
+	// Provider mimeType left empty: the msgraph adapter and Gmail's metadata
+	// path can both return "", meaning the mirrored Attachment.MimeType wins.
+
+	_, mimeType, _, err := f.svc.GetAttachmentContent(ctx, "u1", "att1")
+	if err != nil {
+		t.Fatalf("GetAttachmentContent: %v", err)
+	}
+	if mimeType != "image/png" {
+		t.Fatalf("mimeType = %q, want image/png (mirrored fallback)", mimeType)
+	}
+}
+
+func TestGetAttachmentContentUnsyncedIsNotFound(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	att := domain.Attachment{ID: "att1", Filename: "report.pdf", MimeType: "application/pdf"} // no ProviderAttachmentID
+	f.seedOwnedAttachment(t, "a1", "u1", "m1", att)
+
+	if _, _, _, err := f.svc.GetAttachmentContent(ctx, "u1", "att1"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if f.provider.fetchAttachmentCalls != 0 {
+		t.Fatal("an unsynced attachment must never reach the provider")
+	}
+}
+
+func TestGetAttachmentContentProviderErrorPropagatesRaw(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	att := domain.Attachment{ID: "att1", Filename: "report.pdf", MimeType: "application/pdf", ProviderAttachmentID: "prov-att1"}
+	f.seedOwnedAttachment(t, "a1", "u1", "m1", att)
+	f.provider.fetchAttachmentErr = domain.ErrConflict
+
+	if _, _, _, err := f.svc.GetAttachmentContent(ctx, "u1", "att1"); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("err = %v, want the provider's raw ErrConflict sentinel preserved", err)
+	}
+}
+
+func TestGetContactValidatesEmail(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+
+	if _, err := f.svc.GetContact(ctx, "u1", "not-an-email"); !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("err = %v, want ErrValidation", err)
+	}
+}
+
+func TestGetContactReturnsRepoSummaryForCanonicalEmail(t *testing.T) {
+	f := newMailFixture(t)
+	ctx := context.Background()
+	f.seedAccount(t, "a1", "u1")
+	want := domain.ContactSummary{Email: "bob@x.com", MessageCount: 3}
+	f.messages.contactSummaryErr = nil
+	f.messages.contactSummaryResult = want
+
+	// A display-name-wrapped, mixed-case address must resolve to the bare,
+	// lowercased address before reaching the repo (mirrors canonicalEmail's
+	// use elsewhere in the package, e.g. booking/poll voter emails).
+	got, err := f.svc.GetContact(ctx, "u1", "Bob <BOB@X.com>")
+	if err != nil {
+		t.Fatalf("GetContact: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("summary = %+v, want %+v", got, want)
+	}
+	if f.messages.lastContactEmail != "bob@x.com" {
+		t.Fatalf("lastContactEmail = %q, want canonicalized bob@x.com", f.messages.lastContactEmail)
+	}
+}
+
+func TestGetContactRequiresEntitlement(t *testing.T) {
+	f := newMailFixture(t)
+	f.svc = NewMailService(MailServiceDeps{
+		Subscriptions: newSubscriptionRepo(), // unseeded: GetByUserID -> ErrNotFound
+		Accounts:      f.accounts,
+		Threads:       f.threads,
+		Messages:      f.messages,
+		Drafts:        f.drafts,
+		Snippets:      f.snippets,
+		Labels:        f.labels,
+		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: f.provider},
+		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: f.oauth},
+		Unsubscriber:  f.unsub,
+		Clock:         f.clock,
+		SelfHosted:    false, // paywall enforced; no subscription seeded
+	})
+
+	if _, err := f.svc.GetContact(context.Background(), "u1", "bob@x.com"); !errors.Is(err, domain.ErrPaymentRequired) {
+		t.Fatalf("err = %v, want ErrPaymentRequired", err)
+	}
+}
+
+func (f *mailFixture) seedOwnedAttachment(t *testing.T, accountID, userID, messageID string, att domain.Attachment) {
+	t.Helper()
+	f.seedAccount(t, accountID, userID)
+	msg := domain.Message{
+		ID:                messageID,
+		AccountID:         accountID,
+		ProviderMessageID: "p-" + messageID,
+		Attachments:       []domain.Attachment{att},
+	}
+	if _, err := f.messages.Upsert(context.Background(), msg); err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+	f.messages.seedAttachment(messageID, att)
 }

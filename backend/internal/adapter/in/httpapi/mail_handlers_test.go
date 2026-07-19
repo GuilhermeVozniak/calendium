@@ -505,3 +505,296 @@ func TestHandleBulkThreadActionsLabelDispatch(t *testing.T) {
 		}
 	})
 }
+
+// --- M2.5: opens, smart send, attachments, contacts, reactions -----------
+
+func TestHandleListOpens(t *testing.T) {
+	t.Run("success with cursor and limit", func(t *testing.T) {
+		h := newHarness(t)
+		next := "cur2"
+		h.mail.listOpensRet = domain.Page[domain.OpenEvent]{
+			Items:      []domain.OpenEvent{{MessageID: "m1", ThreadID: "th1"}},
+			NextCursor: &next,
+		}
+		rec := h.authed(http.MethodGet, "/v1/mail/opens?cursor=cur1&limit=10", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.mail.gotListOpensUser != defaultUserID || h.mail.gotListOpensCur != "cur1" || h.mail.gotListOpensLim != 10 {
+			t.Fatalf("got user=%q cursor=%q limit=%d", h.mail.gotListOpensUser, h.mail.gotListOpensCur, h.mail.gotListOpensLim)
+		}
+		var got domain.Page[domain.OpenEvent]
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(got.Items) != 1 || got.Items[0].MessageID != "m1" {
+			t.Fatalf("items = %+v", got.Items)
+		}
+	})
+
+	t.Run("no params leaves zero values", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodGet, "/v1/mail/opens", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.mail.gotListOpensCur != "" || h.mail.gotListOpensLim != 0 {
+			t.Fatalf("cursor=%q limit=%d, want zero values", h.mail.gotListOpensCur, h.mail.gotListOpensLim)
+		}
+	})
+
+	t.Run("non-numeric limit rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodGet, "/v1/mail/opens?limit=abc", nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if got := decodeErr(t, rec); got.Code != "validation_failed" {
+			t.Fatalf("code = %q, want validation_failed", got.Code)
+		}
+	})
+
+	t.Run("service error forwarded", func(t *testing.T) {
+		h := newHarness(t)
+		h.mail.listOpensErr = domain.ErrPaymentRequired
+		rec := h.authed(http.MethodGet, "/v1/mail/opens", nil)
+		if rec.Code != http.StatusPaymentRequired {
+			t.Fatalf("status = %d, want 402 (body=%s)", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestHandleSendSuggestion(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		h := newHarness(t)
+		h.mail.suggestSendRet = domain.SendSuggestion{Email: "a@b.com", Confidence: 0.8, SampleSize: 7}
+		rec := h.authed(http.MethodGet, "/v1/mail/send-suggestion?email=a@b.com", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.mail.gotSuggestSendUser != defaultUserID || h.mail.gotSuggestSendMail != "a@b.com" {
+			t.Fatalf("got user=%q email=%q", h.mail.gotSuggestSendUser, h.mail.gotSuggestSendMail)
+		}
+		var got domain.SendSuggestion
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.Email != "a@b.com" || got.SampleSize != 7 {
+			t.Fatalf("got = %+v", got)
+		}
+	})
+
+	t.Run("missing email rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodGet, "/v1/mail/send-suggestion", nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if got := decodeErr(t, rec); got.Code != "validation_failed" {
+			t.Fatalf("code = %q, want validation_failed", got.Code)
+		}
+		if h.mail.gotSuggestSendMail != "" {
+			t.Fatalf("SuggestSendTime called unexpectedly")
+		}
+	})
+
+	t.Run("thin history maps to 404, not an error toast", func(t *testing.T) {
+		h := newHarness(t)
+		h.mail.suggestSendErr = domain.ErrNotFound
+		rec := h.authed(http.MethodGet, "/v1/mail/send-suggestion?email=a@b.com", nil)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if got := decodeErr(t, rec); got.Code != "not_found" {
+			t.Fatalf("code = %q, want not_found", got.Code)
+		}
+	})
+}
+
+func TestHandleSearchAttachments(t *testing.T) {
+	t.Run("all filters parse", func(t *testing.T) {
+		h := newHarness(t)
+		h.mail.searchAttachmentsRet = domain.Page[domain.AttachmentHit]{Items: []domain.AttachmentHit{{MessageID: "m1"}}}
+		rec := h.authed(http.MethodGet, "/v1/mail/attachments?q=invoice&contact=a@b.com&threadId=th1&cursor=cur1&limit=5", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		q := h.mail.gotSearchAttachmentsQ
+		if q.Query != "invoice" || q.Contact != "a@b.com" || q.ThreadID != "th1" || q.Cursor != "cur1" || q.Limit != 5 {
+			t.Fatalf("q = %+v", q)
+		}
+		if h.mail.gotSearchAttachmentsUser != defaultUserID {
+			t.Fatalf("gotSearchAttachmentsUser = %q, want %q", h.mail.gotSearchAttachmentsUser, defaultUserID)
+		}
+	})
+
+	t.Run("no params leaves zero-valued query", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodGet, "/v1/mail/attachments", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if q := h.mail.gotSearchAttachmentsQ; q.Query != "" || q.Contact != "" || q.ThreadID != "" || q.Cursor != "" || q.Limit != 0 {
+			t.Fatalf("q = %+v, want zero-valued", q)
+		}
+	})
+
+	t.Run("non-numeric limit rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodGet, "/v1/mail/attachments?limit=abc", nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if got := decodeErr(t, rec); got.Code != "validation_failed" {
+			t.Fatalf("code = %q, want validation_failed", got.Code)
+		}
+	})
+}
+
+func TestHandleGetAttachmentContent(t *testing.T) {
+	t.Run("streams raw bytes with content headers", func(t *testing.T) {
+		h := newHarness(t)
+		h.mail.getAttachmentContentData = []byte("%PDF-1.4 fake pdf bytes")
+		h.mail.getAttachmentContentMimeType = "application/pdf"
+		h.mail.getAttachmentContentFilename = "invoice.pdf"
+		rec := h.authed(http.MethodGet, "/v1/mail/attachments/att1/content", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/pdf" {
+			t.Fatalf("Content-Type = %q, want application/pdf", ct)
+		}
+		if cd := rec.Header().Get("Content-Disposition"); cd != `inline; filename="invoice.pdf"` {
+			t.Fatalf("Content-Disposition = %q, want inline; filename=\"invoice.pdf\"", cd)
+		}
+		// M2.5 review fix (MINOR e): this endpoint serves arbitrary
+		// user-supplied attachment content — nosniff stops the browser from
+		// MIME-sniffing it into something more dangerous than the reported
+		// Content-Type.
+		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+		}
+		if rec.Body.String() != "%PDF-1.4 fake pdf bytes" {
+			t.Fatalf("body = %q, want raw bytes (no JSON envelope)", rec.Body.String())
+		}
+		if h.mail.gotGetAttachmentContentUser != defaultUserID || h.mail.gotGetAttachmentContentID != "att1" {
+			t.Fatalf("got user=%q id=%q", h.mail.gotGetAttachmentContentUser, h.mail.gotGetAttachmentContentID)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		h := newHarness(t)
+		h.mail.getAttachmentContentErr = domain.ErrNotFound
+		rec := h.authed(http.MethodGet, "/v1/mail/attachments/att1/content", nil)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestHandleGetContact(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		h := newHarness(t)
+		h.mail.getContactRet = domain.ContactSummary{Email: "a@b.com", ThreadCount: 3}
+		rec := h.authed(http.MethodGet, "/v1/mail/contacts/a@b.com", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.mail.gotGetContactUser != defaultUserID || h.mail.gotGetContactMail != "a@b.com" {
+			t.Fatalf("got user=%q email=%q", h.mail.gotGetContactUser, h.mail.gotGetContactMail)
+		}
+		var got domain.ContactSummary
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.Email != "a@b.com" || got.ThreadCount != 3 {
+			t.Fatalf("got = %+v", got)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		h := newHarness(t)
+		h.mail.getContactErr = domain.ErrNotFound
+		rec := h.authed(http.MethodGet, "/v1/mail/contacts/a@b.com", nil)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestHandleReactToMessage(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		h := newHarness(t)
+		draftID := "d1"
+		h.mail.reactRet = port.ReactionResult{Reaction: domain.Reaction{ID: "r1", Emoji: "👍"}, DraftID: &draftID}
+		rec := h.authed(http.MethodPost, "/v1/mail/messages/m1/reactions", jsonBody(t, map[string]any{"emoji": "👍", "sendReply": true}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.mail.gotReactUser != defaultUserID || h.mail.gotReactMessageID != "m1" || h.mail.gotReactEmoji != "👍" || !h.mail.gotReactSendReply {
+			t.Fatalf("got user=%q messageID=%q emoji=%q sendReply=%v",
+				h.mail.gotReactUser, h.mail.gotReactMessageID, h.mail.gotReactEmoji, h.mail.gotReactSendReply)
+		}
+		var got port.ReactionResult
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.Reaction.ID != "r1" || got.DraftID == nil || *got.DraftID != "d1" {
+			t.Fatalf("got = %+v", got)
+		}
+	})
+
+	t.Run("missing emoji rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPost, "/v1/mail/messages/m1/reactions", jsonBody(t, map[string]any{"sendReply": false}))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if got := decodeErr(t, rec); got.Code != "validation_failed" {
+			t.Fatalf("code = %q, want validation_failed", got.Code)
+		}
+		if h.mail.gotReactMessageID != "" {
+			t.Fatalf("ReactToMessage called unexpectedly")
+		}
+	})
+
+	t.Run("malformed JSON rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPost, "/v1/mail/messages/m1/reactions", strings.NewReader("{"))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+
+	t.Run("service error forwarded", func(t *testing.T) {
+		h := newHarness(t)
+		h.mail.reactErr = domain.ErrNotFound
+		rec := h.authed(http.MethodPost, "/v1/mail/messages/m1/reactions", jsonBody(t, map[string]any{"emoji": "👍"}))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestHandleRemoveReaction(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodDelete, "/v1/mail/messages/m1/reactions/%F0%9F%91%8D", nil)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.mail.gotRemoveReactionUser != defaultUserID || h.mail.gotRemoveReactionMessageID != "m1" || h.mail.gotRemoveReactionEmoji != "👍" {
+			t.Fatalf("got user=%q messageID=%q emoji=%q (want URL-decoded emoji)",
+				h.mail.gotRemoveReactionUser, h.mail.gotRemoveReactionMessageID, h.mail.gotRemoveReactionEmoji)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		h := newHarness(t)
+		h.mail.removeReactionErr = domain.ErrNotFound
+		rec := h.authed(http.MethodDelete, "/v1/mail/messages/m1/reactions/%F0%9F%91%8D", nil)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+		}
+	})
+}

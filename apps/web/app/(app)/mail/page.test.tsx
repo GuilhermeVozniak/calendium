@@ -106,6 +106,7 @@ vi.mock('@/lib/use-mail', () => ({
     markOpened: markOpenedMock,
     unsubscribe: unsubscribeMock,
   }),
+  useReactToMessage: () => ({ react: vi.fn(), removeReaction: vi.fn() }),
   useLabels: () => ({ data: { labels: [{ id: 'lbl1', accountId: 'acc_1', name: 'Updates', kind: 'user', color: null }] }, isLoading: false }),
   useDrafts: () => ({ data: { drafts: [] }, isLoading: false, isError: false }),
   useDraftActions: () => ({ remove: vi.fn() }),
@@ -145,6 +146,20 @@ vi.mock('@/components/app/calendar-peek', () => ({
       <div data-testid="calendar-peek-stub">
         <button type="button" onClick={() => onOpenChange(false)}>
           Close calendar peek
+        </button>
+      </div>
+    ) : null,
+}));
+
+// OpensFeed owns its own data-fetching (useInfiniteQuery) — covered by
+// opens-feed.test.tsx. Here we only care that the mail page wires
+// open/onOpenChange correctly, same reasoning as the CalendarPeek stub above.
+vi.mock('@/components/app/opens-feed', () => ({
+  OpensFeed: ({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) =>
+    open ? (
+      <div data-testid="opens-feed-stub">
+        <button type="button" onClick={() => onOpenChange(false)}>
+          Close opens feed
         </button>
       </div>
     ) : null,

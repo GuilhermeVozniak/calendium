@@ -6,16 +6,20 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format, formatDistanceToNow } from 'date-fns';
 import {
   Bell,
+  Bold,
   ChevronDown,
   ChevronUp,
   CreditCard,
   Crown,
   ExternalLink,
+  Italic,
   Layers,
   LayoutTemplate,
+  Link2,
   Loader2,
   Monitor,
   Moon,
+  PenLine,
   Plus,
   Sparkles,
   Sun,
@@ -28,6 +32,7 @@ import type {
   AccountStatus,
   AvailabilityWindow,
   ConnectedAccount,
+  EmailAddress,
   InboxSplit,
   Provider,
   Snippet,
@@ -37,6 +42,7 @@ import type {
 import { ApiRequestError } from '@calendium/shared';
 
 import { BookingLinks, localTimeZone, WindowsEditor } from '@/components/app/booking-links';
+import { ChipsRow } from '@/components/app/chips-row';
 import { SetSwitcher } from '@/components/app/calendar/set-switcher';
 import { TemplateManager } from '@/components/app/calendar/template-manager';
 import { MeetingPolls } from '@/components/app/meeting-polls';
@@ -78,6 +84,8 @@ import {
   fetchAccounts,
   fetchSnippets,
   fetchSubscription,
+  setAutoBccApi,
+  setSignatureApi,
   setVipSendersApi,
   startConnect,
 } from '@/lib/settings-data';
@@ -259,10 +267,11 @@ const STATUS_META: Record<AccountStatus, { label: string; dot: string }> = {
   disconnected: { label: 'Disconnected', dot: 'bg-muted-foreground' },
 };
 
-function AccountsSection() {
+export function AccountsSection() {
   const queryClient = useQueryClient();
   const accountsQuery = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts });
   const [vipAccount, setVipAccount] = React.useState<ConnectedAccount | null>(null);
+  const [composeAccount, setComposeAccount] = React.useState<ConnectedAccount | null>(null);
 
   const connect = useMutation({
     mutationFn: (provider: Provider) =>
@@ -339,6 +348,15 @@ function AccountsSection() {
               <Button
                 variant="ghost"
                 size="sm"
+                className="text-muted-foreground gap-1.5"
+                onClick={() => setComposeAccount(account)}
+              >
+                <PenLine className="size-3.5" />
+                Compose
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
                 className="text-muted-foreground hover:text-destructive"
                 onClick={() => disconnect.mutate(account.id)}
                 disabled={disconnect.isPending}
@@ -373,6 +391,14 @@ function AccountsSection() {
         account={vipAccount}
         onOpenChange={(open) => {
           if (!open) setVipAccount(null);
+        }}
+      />
+    )}
+    {composeAccount && (
+      <ComposeSettingsDialog
+        account={composeAccount}
+        onOpenChange={(open) => {
+          if (!open) setComposeAccount(null);
         }}
       />
     )}
@@ -467,6 +493,202 @@ function VipSendersDialog({
           <Button onClick={() => save.mutate()} disabled={save.isPending}>
             {save.isPending && <Loader2 className="animate-spin" />}
             Save VIP senders
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Compose settings (per-account signature + auto-BCC)
+// ---------------------------------------------------------------------------
+
+/**
+ * Lightweight rich-text signature editor: a contentEditable div with a
+ * Bold/Italic/Link toolbar driven by document.execCommand (same approach as
+ * the rest of the app's compose surface — no new rich-text dependency). The
+ * div's innerHTML is only set once on mount; subsequent keystrokes flow
+ * through onInput -> onChange so we never stomp the live DOM (and the
+ * caret position) by re-applying dangerouslySetInnerHTML while typing.
+ */
+function SignatureEditor({
+  signatureHtml,
+  onChange,
+}: {
+  signatureHtml: string;
+  onChange: (html: string) => void;
+}) {
+  const editorRef = React.useRef<HTMLDivElement>(null);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional mount-only hydration — re-running on signatureHtml changes would stomp the live DOM (and caret position) while the user is typing; see the editor's own doc comment above.
+  React.useEffect(() => {
+    if (editorRef.current) editorRef.current.innerHTML = signatureHtml;
+  }, []);
+
+  function exec(command: string, arg?: string) {
+    editorRef.current?.focus();
+    document.execCommand(command, false, arg);
+    onChange(editorRef.current?.innerHTML ?? '');
+  }
+
+  return (
+    <div className="grid gap-2">
+      <div className="flex items-center gap-1">
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="size-7"
+          onClick={() => exec('bold')}
+          aria-label="Bold"
+        >
+          <Bold className="size-3.5" />
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="size-7"
+          onClick={() => exec('italic')}
+          aria-label="Italic"
+        >
+          <Italic className="size-3.5" />
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="size-7"
+          onClick={() => {
+            const url = window.prompt('Link URL');
+            if (url) exec('createLink', url);
+          }}
+          aria-label="Insert link"
+        >
+          <Link2 className="size-3.5" />
+        </Button>
+      </div>
+      {/* biome-ignore lint/a11y/useSemanticElements: needs real rich-text formatting (Bold/Italic/Link via execCommand) that a plain <textarea> can't render — contentEditable + role="textbox" is the standard pattern for this. */}
+      <div
+        ref={editorRef}
+        contentEditable
+        suppressContentEditableWarning
+        role="textbox"
+        tabIndex={0}
+        aria-label="Signature"
+        aria-multiline="true"
+        onInput={() => onChange(editorRef.current?.innerHTML ?? '')}
+        className="min-h-24 rounded-md border px-3 py-2 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+      />
+      <div className="grid gap-1">
+        <span className="text-muted-foreground text-xs">Preview</span>
+        <div
+          className="rounded-md border border-dashed p-3 text-sm text-muted-foreground empty:text-muted-foreground/60"
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: signatureHtml is sanitized server-side by handleSetSignature (backend/internal/adapter/in/httpapi/sanitize.go's sanitizeSignatureHTML — strips script/style/iframe/object/embed, on* attributes, and javascript: URLs) before it is ever persisted, so what's fetched back and rendered here is already scrubbed. There is no client-side re-sanitization step; this preview trusts the server boundary.
+          dangerouslySetInnerHTML={{ __html: signatureHtml || '<span>No signature yet.</span>' }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ComposeSettingsDialog({
+  account,
+  onOpenChange,
+}: {
+  account: ConnectedAccount;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [signatureHtml, setSignatureHtml] = React.useState(account.signatureHtml);
+  const [autoBcc, setAutoBcc] = React.useState<string[]>(account.autoBcc);
+  const [bccError, setBccError] = React.useState<string | null>(null);
+
+  function applyAccountUpdate(updated: ConnectedAccount) {
+    queryClient.setQueryData<ConnectedAccount[]>(['accounts'], (prev) =>
+      prev?.map((a) => (a.id === updated.id ? updated : a))
+    );
+  }
+
+  const saveSignature = useMutation({
+    mutationFn: () => setSignatureApi(account.id, signatureHtml),
+    onSuccess: (updated) => {
+      applyAccountUpdate(updated);
+      toast.success('Signature saved');
+    },
+    onError: (err) => {
+      toast.error(
+        err instanceof ApiRequestError ? err.message : 'Could not save the signature'
+      );
+    },
+  });
+
+  const saveAutoBcc = useMutation({
+    mutationFn: () => setAutoBccApi(account.id, autoBcc),
+    onSuccess: (updated) => {
+      applyAccountUpdate(updated);
+      toast.success('Auto-BCC saved');
+      setBccError(null);
+    },
+    onError: (err) => {
+      if (err instanceof ApiRequestError && err.status === 400) {
+        setBccError(err.message);
+        return;
+      }
+      toast.error('Could not save auto-BCC');
+    },
+  });
+
+  const bccChips: EmailAddress[] = autoBcc.map((email) => ({ name: null, email }));
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Compose settings</DialogTitle>
+          <DialogDescription>
+            Signature and auto-BCC applied when sending from {account.email}.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-5">
+          <div className="grid gap-1.5">
+            <div className="flex items-center justify-between">
+              <Label>Signature</Label>
+              <Button size="sm" onClick={() => saveSignature.mutate()} disabled={saveSignature.isPending}>
+                {saveSignature.isPending && <Loader2 className="animate-spin" />}
+                Save signature
+              </Button>
+            </div>
+            <SignatureEditor signatureHtml={signatureHtml} onChange={setSignatureHtml} />
+          </div>
+          <div className="grid gap-1.5">
+            <div className="flex items-center justify-between">
+              <Label>Auto-BCC</Label>
+              <Button size="sm" onClick={() => saveAutoBcc.mutate()} disabled={saveAutoBcc.isPending}>
+                {saveAutoBcc.isPending && <Loader2 className="animate-spin" />}
+                Save auto-BCC
+              </Button>
+            </div>
+            <p className="text-muted-foreground text-xs">
+              Every address here is silently BCC'd on messages sent from this account.
+            </p>
+            <div className="rounded-md border">
+              <ChipsRow
+                label="Bcc"
+                chips={bccChips}
+                onChange={(chips) => {
+                  setAutoBcc(chips.map((c) => c.email));
+                  setBccError(null);
+                }}
+              />
+            </div>
+            {bccError && <p className="text-destructive text-xs">{bccError}</p>}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Close
           </Button>
         </DialogFooter>
       </DialogContent>

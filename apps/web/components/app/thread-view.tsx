@@ -17,13 +17,16 @@ import {
   Send,
   Sparkles,
   Star,
+  User,
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { useCompose } from '@/components/app/compose';
+import { ContactPane } from '@/components/app/contact-pane';
 import { TimePickerDialog } from '@/components/app/snooze-menu';
 import { InstantReplies } from '@/components/mail/instant-replies';
+import { MessageReactions } from '@/components/mail/message-reactions';
 import { ThreadSummary } from '@/components/mail/thread-summary';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -45,9 +48,15 @@ import {
   snoozeOptions,
 } from '@/lib/mail-utils';
 import { useSelfEmails } from '@/lib/use-identity';
-import { useShortcuts } from '@/lib/shortcuts';
+import { useChords, useShortcuts } from '@/lib/shortcuts';
 import { useInstance } from '@/lib/use-instance';
-import { runAiAsk, runAiSummarize, useMailActions, useThreadDetail } from '@/lib/use-mail';
+import {
+  runAiAsk,
+  runAiSummarize,
+  useMailActions,
+  useReactToMessage,
+  useThreadDetail,
+} from '@/lib/use-mail';
 import { teachShortcut } from '@/lib/shortcut-hints';
 import { cn } from '@/lib/utils';
 
@@ -190,6 +199,7 @@ interface ThreadViewProps {
 export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEvent }: ThreadViewProps) {
   const { data, isLoading } = useThreadDetail(threadId);
   const { act, snooze, remind, markOpened, unsubscribe } = useMailActions();
+  const { react: reactToMessage, removeReaction } = useReactToMessage();
   const { openCompose } = useCompose();
   const selfEmails = useSelfEmails();
   const isMe = React.useCallback<IsMe>(
@@ -202,10 +212,12 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
   const [quotedShown, setQuotedShown] = React.useState<Set<string>>(new Set());
   const [snoozeOpen, setSnoozeOpen] = React.useState(false);
   const [remindOpen, setRemindOpen] = React.useState(false);
+  const [contactPaneOpen, setContactPaneOpen] = React.useState(false);
 
   const thread = data?.thread ?? null;
   const messages = React.useMemo(() => data?.messages ?? [], [data]);
   const lastMessage = messages[messages.length - 1] ?? null;
+  const contactEmail = thread?.participants.find((p) => !isMe(p))?.email ?? null;
 
   // Expand the newest message whenever the thread changes.
   React.useEffect(() => {
@@ -273,6 +285,15 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
     { keys: 'f', description: 'Forward', handler: () => openReply('forward') },
   ]);
 
+  useChords([
+    {
+      keys: 'o c',
+      description: 'Toggle contact pane',
+      enabled: !!contactEmail,
+      handler: () => setContactPaneOpen((open) => !open),
+    },
+  ]);
+
   if (isLoading) {
     return (
       <div className="flex h-full flex-col gap-4 p-6">
@@ -295,7 +316,8 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
   }
 
   return (
-    <div className="flex h-full min-w-0 flex-col">
+    <div className="relative flex h-full min-w-0 flex-row">
+    <div className="flex h-full min-w-0 flex-1 flex-col">
       {/* Header */}
       <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2.5">
         <Tooltip>
@@ -402,6 +424,25 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
               Star <Kbd size="sm">S</Kbd>
             </TooltipContent>
           </Tooltip>
+          {contactEmail && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  aria-label="Toggle contact pane"
+                  aria-pressed={contactPaneOpen}
+                  onClick={() => setContactPaneOpen((open) => !open)}
+                >
+                  <User className={cn('size-4', contactPaneOpen && 'text-primary')} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                Contact <KbdGroup size="sm" keys={['O', 'C']} />
+              </TooltipContent>
+            </Tooltip>
+          )}
           {aiEnabled && onProposeEvent && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -476,7 +517,7 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
                     </span>
                   </button>
                 ) : (
-                  <div className="px-2 py-4">
+                  <div className="group px-2 py-4">
                     <div className="flex items-start gap-3">
                       <Avatar className="mt-0.5 size-8">
                         <AvatarFallback className="text-xs">
@@ -535,6 +576,12 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
                         Seen {formatListTime(message.openedAt)}
                       </p>
                     )}
+
+                    <MessageReactions
+                      message={message}
+                      onReact={(emoji) => void reactToMessage(thread.id, message.id, emoji, !mine)}
+                      onRemove={(emoji) => void removeReaction(thread.id, message.id, emoji)}
+                    />
                   </div>
                 )}
               </div>
@@ -610,6 +657,10 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
           toast.success(`Reminder set for ${formatOptionTime(when)}`);
         }}
       />
+    </div>
+      {contactPaneOpen && contactEmail && (
+        <ContactPane email={contactEmail} onClose={() => setContactPaneOpen(false)} />
+      )}
     </div>
   );
 }

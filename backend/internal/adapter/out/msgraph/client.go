@@ -120,6 +120,60 @@ func (c *Client) doJSON(ctx context.Context, method, url, accessToken string, bo
 	return nil
 }
 
+// maxAttachmentBytes caps raw attachment downloads defensively — well above
+// any legitimate email attachment (Outlook/Graph attachments top out around
+// 150MB via upload sessions, but ordinary mail attachments are far smaller)
+// while still bounding memory use against a misbehaving or malicious
+// response.
+const maxAttachmentBytes = 64 << 20
+
+// doRaw performs an authenticated Graph request expecting a non-JSON body
+// (attachment content) and returns the raw bytes plus the response
+// Content-Type header. Non-2xx responses still arrive as the standard
+// Graph JSON error envelope and are mapped via the same *httpError as
+// doJSON.
+func (c *Client) doRaw(ctx context.Context, method, url, accessToken string) ([]byte, string, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("msgraph: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	res, err := c.hc.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("msgraph: %s %s: %w", method, url, err)
+	}
+	defer func() { _ = res.Body.Close() }()
+
+	// Read one byte past the cap: a body that reads exactly maxAttachmentBytes
+	// is ambiguous (it might be truncated right at the boundary), but reading
+	// maxAttachmentBytes+1 and finding more than maxAttachmentBytes bytes is
+	// unambiguous proof the real body exceeds the limit — so it can be
+	// rejected outright instead of returned as a silently truncated success.
+	raw, err := io.ReadAll(io.LimitReader(res.Body, maxAttachmentBytes+1))
+	if err != nil {
+		return nil, "", fmt.Errorf("msgraph: read response: %w", err)
+	}
+	if len(raw) > maxAttachmentBytes {
+		return nil, "", fmt.Errorf("msgraph: attachment content exceeds the %d byte limit", maxAttachmentBytes)
+	}
+	if res.StatusCode < 200 || res.StatusCode > 299 {
+		var ge struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(raw, &ge)
+		msg := ge.Error.Message
+		if msg == "" && len(raw) > 0 {
+			msg = truncate(string(raw), 200)
+		}
+		return nil, "", &httpError{StatusCode: res.StatusCode, Code: ge.Error.Code, Message: msg}
+	}
+	return raw, res.Header.Get("Content-Type"), nil
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

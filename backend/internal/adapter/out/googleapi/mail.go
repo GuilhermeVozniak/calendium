@@ -203,6 +203,30 @@ func (c *Client) ModifyLabels(ctx context.Context, accessToken, providerThreadID
 	return c.doJSON(ctx, http.MethodPost, endpoint, accessToken, body, nil)
 }
 
+// FetchAttachment downloads one attachment body via
+// users.messages.attachments.get. The response envelope carries the size
+// and a base64url-encoded payload but no mime type, so mimeType is always
+// returned empty — callers fall back to the mime type mirrored from
+// message metadata at ingest time. Uses maxAttachmentBytes (64MB) rather
+// than doJSON's default 8MB cap, since the base64url payload inflates the
+// original attachment size by ~33%.
+func (c *Client) FetchAttachment(ctx context.Context, accessToken, providerMessageID, providerAttachmentID string) ([]byte, string, error) {
+	endpoint := gmailBase + "/messages/" + url.PathEscape(providerMessageID) +
+		"/attachments/" + url.PathEscape(providerAttachmentID)
+	var res struct {
+		Size int64  `json:"size"`
+		Data string `json:"data"`
+	}
+	if err := c.doJSONLimit(ctx, http.MethodGet, endpoint, accessToken, nil, &res, maxAttachmentBytes); err != nil {
+		return nil, "", err
+	}
+	data, err := base64.URLEncoding.WithPadding(base64.NoPadding).DecodeString(strings.TrimRight(res.Data, "="))
+	if err != nil {
+		return nil, "", fmt.Errorf("googleapi: decode attachment data: %w", err)
+	}
+	return data, "", nil
+}
+
 // buildRFC2822 assembles a multipart/alternative MIME message.
 func buildRFC2822(msg port.OutgoingMessage) ([]byte, error) {
 	var b bytes.Buffer

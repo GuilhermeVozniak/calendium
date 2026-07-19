@@ -451,6 +451,15 @@ func TestAuthedRoutesRequireToken(t *testing.T) {
 	}{
 		{"me", http.MethodGet, "/v1/me"},
 		{"mail threads", http.MethodGet, "/v1/mail/threads"},
+		{"mail opens", http.MethodGet, "/v1/mail/opens"},
+		{"mail send-suggestion", http.MethodGet, "/v1/mail/send-suggestion?email=a@b.com"},
+		{"mail attachments search", http.MethodGet, "/v1/mail/attachments"},
+		{"mail attachment content", http.MethodGet, "/v1/mail/attachments/att1/content"},
+		{"mail contact", http.MethodGet, "/v1/mail/contacts/a@b.com"},
+		{"mail react to message", http.MethodPost, "/v1/mail/messages/m1/reactions"},
+		{"mail remove reaction", http.MethodDelete, "/v1/mail/messages/m1/reactions/%F0%9F%91%8D"},
+		{"account signature", http.MethodPut, "/v1/accounts/acc1/signature"},
+		{"account auto-bcc", http.MethodPut, "/v1/accounts/acc1/auto-bcc"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

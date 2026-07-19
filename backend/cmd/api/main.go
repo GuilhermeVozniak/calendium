@@ -119,12 +119,14 @@ func run(logger *slog.Logger) error {
 		Drafts:        store.Drafts(),
 		Snippets:      store.Snippets(),
 		Labels:        store.Labels(),
+		Reactions:     store.Reactions(),
 		MailProviders: mailProviders,
 		OAuth:         oauth,
 		Unsubscriber:  unsubscribe.New(),
 		Clock:         clock,
 		SelfHosted:    cfg.Instance.SelfHosted,
 		UndoSendGrace: cfg.Mail.UndoSendGrace,
+		Logger:        logger,
 	})
 	calendars := service.NewCalendarService(service.CalendarServiceDeps{
 		Subscriptions:     store.Subscriptions(),

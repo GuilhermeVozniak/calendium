@@ -125,6 +125,10 @@ type Attachment struct {
 	Filename  string `json:"filename"`
 	MimeType  string `json:"mimeType"`
 	SizeBytes int64  `json:"sizeBytes"`
+	// ProviderAttachmentID is the provider-native attachment id (Gmail
+	// body.attachmentId / Graph attachment id) used to fetch the body on
+	// demand. Never serialized to clients.
+	ProviderAttachmentID string `json:"-"`
 }
 
 // Message is a single mail message within a thread.
@@ -145,6 +149,63 @@ type Message struct {
 	IsDraft           bool           `json:"isDraft"`
 	// OpenedAt is read-status tracking (Superhuman read receipts).
 	OpenedAt *time.Time `json:"openedAt"`
+	// Reactions is populated by the service on GetThread; empty slice
+	// otherwise (never nil, never omitted).
+	Reactions []Reaction `json:"reactions"`
+}
+
+// Reaction is a lightweight emoji reaction on a message. Stored locally;
+// Delivery records whether it was also sent as a tiny reply.
+type Reaction struct {
+	ID        string    `json:"id"`
+	MessageID string    `json:"messageId"`
+	UserID    string    `json:"-"`
+	Emoji     string    `json:"emoji"`
+	Delivery  string    `json:"delivery"` // "local" | "sent"
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// OpenEvent is one row of the Recent Opens feed: a sent message a
+// recipient has opened, newest first.
+type OpenEvent struct {
+	MessageID  string         `json:"messageId"`
+	ThreadID   string         `json:"threadId"`
+	AccountID  string         `json:"accountId"`
+	Subject    string         `json:"subject"`
+	Recipients []EmailAddress `json:"recipients"`
+	OpenedAt   time.Time      `json:"openedAt"`
+	SentAt     time.Time      `json:"sentAt"`
+}
+
+// AttachmentHit is an attachment search result with message context.
+type AttachmentHit struct {
+	Attachment
+	MessageID     string       `json:"messageId"`
+	ThreadID      string       `json:"threadId"`
+	ThreadSubject string       `json:"threadSubject"`
+	From          EmailAddress `json:"from"`
+	SentAt        time.Time    `json:"sentAt"`
+}
+
+// SendSuggestion is the Smart Send recommendation for one recipient,
+// inferred from their historical open times.
+type SendSuggestion struct {
+	Email          string    `json:"email"`
+	SuggestedAt    time.Time `json:"suggestedAt"`
+	UTCOffsetHours int       `json:"utcOffsetHours"` // inferred, [-12, 13]
+	Confidence     float64   `json:"confidence"`     // 0..1 share of opens near the peak
+	SampleSize     int       `json:"sampleSize"`
+}
+
+// ContactSummary aggregates everything the local mirror knows about a sender.
+type ContactSummary struct {
+	Email         string     `json:"email"`
+	Name          *string    `json:"name"` // from the most recent message
+	Domain        string     `json:"domain"`
+	ThreadCount   int        `json:"threadCount"`
+	MessageCount  int        `json:"messageCount"`
+	LastMessageAt *time.Time `json:"lastMessageAt"`
+	RecentThreads []Thread   `json:"recentThreads"` // newest 5
 }
 
 // Draft is an unsent message. Sending is always scheduled: "send now" sets

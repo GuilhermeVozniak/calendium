@@ -134,6 +134,23 @@ type ThreadRepo interface {
 	SetReminderIfUnset(ctx context.Context, threadID string, remindAt time.Time) error
 }
 
+// OpensQuery pages the Recent Opens feed (keyset on opened_at DESC, id DESC).
+type OpensQuery struct {
+	UserID string
+	Cursor string
+	Limit  int
+}
+
+// AttachmentQuery filters the attachment quick-access search.
+type AttachmentQuery struct {
+	UserID   string
+	Query    string // filename substring (ILIKE, trigram-backed)
+	Contact  string // restrict to messages involving this email
+	ThreadID string
+	Cursor   string
+	Limit    int
+}
+
 // MessageRepo persists mirrored mail messages.
 type MessageRepo interface {
 	Upsert(ctx context.Context, m domain.Message) (domain.Message, error)
@@ -143,6 +160,27 @@ type MessageRepo interface {
 	// ListSentByAccount returns the newest messages sent from the account's
 	// own address (from_addr email match), newest first.
 	ListSentByAccount(ctx context.Context, accountID, accountEmail string, limit int) ([]domain.Message, error)
+	// ListOpens returns opened sent messages, newest open first.
+	ListOpens(ctx context.Context, q OpensQuery) (domain.Page[domain.OpenEvent], error)
+	// OpenHourHistogram buckets opens of mail the user sent to
+	// recipientEmail by UTC hour of opened_at.
+	OpenHourHistogram(ctx context.Context, userID, recipientEmail string) ([24]int, error)
+	// SearchAttachments searches mirrored attachment metadata.
+	SearchAttachments(ctx context.Context, q AttachmentQuery) (domain.Page[domain.AttachmentHit], error)
+	// GetAttachment returns one attachment plus its owning message id.
+	GetAttachment(ctx context.Context, attachmentID string) (domain.Attachment, string, error)
+	// ContactSummary aggregates sender info from the local mirror.
+	ContactSummary(ctx context.Context, userID, email string) (domain.ContactSummary, error)
+}
+
+// ReactionRepo persists emoji reactions.
+type ReactionRepo interface {
+	// Create is idempotent on (message_id, user_id, emoji): re-reacting
+	// returns the existing row.
+	Create(ctx context.Context, r domain.Reaction) (domain.Reaction, error)
+	ListByMessages(ctx context.Context, messageIDs []string) (map[string][]domain.Reaction, error)
+	// DeleteByEmoji removes the user's reaction; ErrNotFound when absent.
+	DeleteByEmoji(ctx context.Context, messageID, userID, emoji string) error
 }
 
 // DraftRepo persists drafts, including scheduled (Send Later / undo-send
@@ -466,6 +504,8 @@ type MailProvider interface {
 	// ModifyLabels adds/removes canonical label keys (LabelKey*) or
 	// provider label ids on a thread.
 	ModifyLabels(ctx context.Context, accessToken, providerThreadID string, add, remove []string) error
+	// FetchAttachment downloads one attachment body on demand.
+	FetchAttachment(ctx context.Context, accessToken, providerMessageID, providerAttachmentID string) (data []byte, mimeType string, err error)
 }
 
 // CalendarSyncPage is one page of incremental event sync for one calendar.

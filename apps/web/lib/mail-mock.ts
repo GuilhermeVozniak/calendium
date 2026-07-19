@@ -3,11 +3,16 @@ import type {
   AiComposeResponse,
   AiEventProposal,
   AiSource,
+  AttachmentHit,
+  ContactSummary,
   EmailAddress,
   InboxSplit,
   Label,
   Message,
+  OpenEvent,
   Page,
+  Reaction,
+  SendSuggestion,
   Thread,
   ThreadAction,
   UnsubscribeResult,
@@ -120,6 +125,7 @@ function build(spec: ThreadSpec): ThreadRecord {
     sentAt: hoursAgo(m.hoursAgo),
     isDraft: false,
     openedAt: m.openedHoursAgo !== undefined ? hoursAgo(m.openedHoursAgo) : null,
+    reactions: [],
   }));
   const last = messages[messages.length - 1]!;
   return {
@@ -623,6 +629,43 @@ export function getMockThread(threadId: string): { thread: Thread; messages: Mes
   return { thread: { ...record.thread }, messages: record.messages.map((m) => ({ ...m })) };
 }
 
+/**
+ * Demo-mode fallback for GET /v1/mail/contacts/{email} — aggregates the local
+ * sample dataset the same way the backend's mirror does: every thread the
+ * address participated in, newest five surfaced, counts over all of them.
+ * Returns null when the address never appears (honest "no data" — the pane
+ * shows an empty state rather than a fabricated summary).
+ */
+export function getMockContact(email: string): ContactSummary | null {
+  const target = email.trim().toLowerCase();
+  const records = [...store.values()].filter(
+    (r) =>
+      !r.trashed &&
+      (r.thread.participants.some((p) => p.email.toLowerCase() === target) ||
+        r.messages.some((m) => m.from.email.toLowerCase() === target))
+  );
+  if (records.length === 0) return null;
+
+  const sorted = [...records].sort(
+    (a, b) => new Date(b.thread.lastMessageAt).getTime() - new Date(a.thread.lastMessageAt).getTime()
+  );
+  const messageCount = records.reduce((sum, r) => sum + r.messages.length, 0);
+  const fromMessage = sorted
+    .flatMap((r) => r.messages)
+    .find((m) => m.from.email.toLowerCase() === target);
+  const asParticipant = sorted[0]!.thread.participants.find((p) => p.email.toLowerCase() === target);
+
+  return {
+    email: target,
+    name: fromMessage?.from.name ?? asParticipant?.name ?? null,
+    domain: target.split('@')[1] ?? '',
+    threadCount: records.length,
+    messageCount,
+    lastMessageAt: sorted[0]!.thread.lastMessageAt,
+    recentThreads: sorted.slice(0, 5).map((r) => ({ ...r.thread })),
+  };
+}
+
 export function applyMockAction(threadId: string, action: ThreadAction): void {
   const record = store.get(threadId);
   if (!record) return;
@@ -661,6 +704,47 @@ export function mockSnoozeThread(threadId: string, until: string | null): void {
 export function mockRemindThread(threadId: string, remindAt: string | null): void {
   const record = store.get(threadId);
   if (record) record.thread.remindAt = remindAt;
+}
+
+/**
+ * Reacts to a message in the demo store. Mirrors the backend's honesty
+ * contract (backend/internal/service/mail.go ReactToMessage): duplicate
+ * react on an emoji already present is idempotent (returns the existing row,
+ * no new draft); a tiny-reply draft is only "created" — and Delivery only
+ * ever reported "sent" — when sendReply is true AND the message isn't from
+ * the demo account itself (no replying to your own message).
+ */
+export function mockReactToMessage(
+  messageId: string,
+  emoji: string,
+  sendReply: boolean
+): { reaction: Reaction; draftId: string | null } {
+  for (const record of store.values()) {
+    const msg = record.messages.find((m) => m.id === messageId);
+    if (!msg) continue;
+    const existing = msg.reactions.find((r) => r.emoji === emoji);
+    if (existing) return { reaction: existing, draftId: null };
+    const willReply = sendReply && msg.from.email !== MOCK_ME.email;
+    const reaction: Reaction = {
+      id: `rx_${messageId}_${msg.reactions.length}`,
+      messageId,
+      emoji,
+      delivery: willReply ? 'sent' : 'local',
+      createdAt: new Date().toISOString(),
+    };
+    msg.reactions = [...msg.reactions, reaction];
+    return { reaction, draftId: willReply ? `draft_demo_${messageId}_${msg.reactions.length}` : null };
+  }
+  throw new Error(`Message not found: ${messageId}`);
+}
+
+export function mockRemoveReaction(messageId: string, emoji: string): void {
+  for (const record of store.values()) {
+    const msg = record.messages.find((m) => m.id === messageId);
+    if (!msg) continue;
+    msg.reactions = msg.reactions.filter((r) => r.emoji !== emoji);
+    return;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -783,6 +867,35 @@ export function mockAiAskCited(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Smart Send (M2.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Local fallback for GET /v1/mail/send-suggestion when the API is
+ * unreachable. Mirrors the real 404-when-thin-data behavior: only a couple
+ * of demo contacts have "enough history", everyone else gets `null` so the
+ * nudge stays honestly absent rather than inventing a time.
+ */
+export function mockSendSuggestion(email: string): SendSuggestion | null {
+  const KNOWN: Record<string, { hour: number; offsetHours: number; confidence: number; sampleSize: number }> = {
+    [sofia.email]: { hour: 14, offsetHours: -5, confidence: 0.72, sampleSize: 18 },
+    [daniel.email]: { hour: 9, offsetHours: 9, confidence: 0.45, sampleSize: 9 },
+  };
+  const entry = KNOWN[email.toLowerCase()];
+  if (!entry) return null;
+  const next = new Date(NOW);
+  next.setUTCHours(entry.hour, 0, 0, 0);
+  if (next.getTime() <= NOW + 5 * 60_000) next.setUTCDate(next.getUTCDate() + 1);
+  return {
+    email,
+    suggestedAt: next.toISOString(),
+    utcOffsetHours: entry.offsetHours,
+    confidence: entry.confidence,
+    sampleSize: entry.sampleSize,
+  };
+}
+
 /** Local fallback for POST /v1/ai/event-proposal when the API is unreachable. */
 export function mockProposeEvent(threadId: string): AiEventProposal {
   const record = store.get(threadId);
@@ -797,5 +910,174 @@ export function mockProposeEvent(threadId: string): AiEventProposal {
     start: start.toISOString(),
     end: end.toISOString(),
     notes: 'Proposed from thread context (demo mode).',
+  };
+}
+
+/**
+ * Offline demo dataset — used whenever the Calendium API is unreachable so the
+ * whole mail client stays explorable. Mutations (archive, star, snooze…) are
+ * applied to this in-memory store, so demo state survives refetches within a
+ * session.
+ */
+
+/** Every sent message with a real openedAt (read receipt), newest first. */
+function computeMockOpens(): OpenEvent[] {
+  const events: OpenEvent[] = [];
+  for (const record of store.values()) {
+    for (const message of record.messages) {
+      if (message.from.email === MOCK_ME.email && message.openedAt) {
+        events.push({
+          messageId: message.id,
+          threadId: message.threadId,
+          accountId: message.accountId,
+          subject: record.thread.subject,
+          recipients: message.to,
+          openedAt: message.openedAt,
+          sentAt: message.sentAt,
+        });
+      }
+    }
+  }
+  return events.sort((a, b) => b.openedAt.localeCompare(a.openedAt));
+}
+
+/**
+ * Local fallback for GET /v1/mail/opens when the API is unreachable. Honors
+ * the same cursor contract as the real endpoint: `cursor` is the last
+ * messageId the caller already has, and the response's `nextCursor` is null
+ * once there is nothing left to page through.
+ */
+export function getMockOpens(params: { cursor?: string; limit?: number }): Page<OpenEvent> {
+  const all = computeMockOpens();
+  const limit = params.limit ?? 25;
+  const startIndex = params.cursor
+    ? Math.max(0, all.findIndex((e) => e.messageId === params.cursor) + 1)
+    : 0;
+  const items = all.slice(startIndex, startIndex + limit);
+  const hasMore = startIndex + items.length < all.length;
+  const nextCursor = hasMore ? (items[items.length - 1]?.messageId ?? null) : null;
+  return { items, nextCursor };
+}
+
+// ---------------------------------------------------------------------------
+// Attachment quick access (M2.5, Task 16) — demo fixtures
+// ---------------------------------------------------------------------------
+
+/**
+ * A tiny, real, single-page PDF ("Calendium demo attachment"), base64-encoded.
+ * Decodes to genuine PDF bytes so the inline preview renders something real in
+ * demo mode — never a fabricated placeholder (honesty policy).
+ */
+const DEMO_PDF_BASE64 =
+  'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAyMDAgMjAwXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggNTggPj4Kc3RyZWFtCkJUIC9GMSAxOCBUZiAyMCAxMDAgVGQgKENhbGVuZGl1bSBkZW1vIGF0dGFjaG1lbnQpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjAKJSVFT0YK';
+
+interface MockAttachmentSpec {
+  id: string;
+  threadId: string;
+  messageId: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  base64: string;
+}
+
+const MOCK_ATTACHMENTS: MockAttachmentSpec[] = [
+  {
+    id: 'att_renewal_summary',
+    threadId: 'thr_02',
+    messageId: 'thr_02_m1',
+    filename: 'FY27-Renewal-Summary.pdf',
+    mimeType: 'application/pdf',
+    sizeBytes: 412_600,
+    base64: DEMO_PDF_BASE64,
+  },
+  {
+    id: 'att_board_deck',
+    threadId: 'thr_08',
+    messageId: 'thr_08_m1',
+    filename: 'Board-Deck-v3.pdf',
+    mimeType: 'application/pdf',
+    sizeBytes: 3_215_800,
+    base64: DEMO_PDF_BASE64,
+  },
+  {
+    id: 'att_comp_bands',
+    threadId: 'thr_04',
+    messageId: 'thr_04_m1',
+    filename: 'Comp-Bands-L5.xlsx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    sizeBytes: 28_400,
+    base64: 'Q2FsZW5kaXVtIGRlbW8gc3ByZWFkc2hlZXQgYnl0ZXMuIE5vdCBhIHJlYWwgLnhsc3ggZmlsZS4=',
+  },
+];
+
+/** Builds attachment search hits from the fixture set + current thread/message store. */
+function mockAttachmentHits(): AttachmentHit[] {
+  return MOCK_ATTACHMENTS.map((spec) => {
+    const record = store.get(spec.threadId);
+    const message = record?.messages.find((m) => m.id === spec.messageId) ?? record?.messages[0];
+    return {
+      id: spec.id,
+      filename: spec.filename,
+      mimeType: spec.mimeType,
+      sizeBytes: spec.sizeBytes,
+      messageId: spec.messageId,
+      threadId: spec.threadId,
+      threadSubject: record?.thread.subject ?? spec.filename,
+      from: message?.from ?? MOCK_ME,
+      sentAt: message?.sentAt ?? hoursAgo(24),
+    };
+  });
+}
+
+/**
+ * Local fallback for GET /v1/mail/attachments when the API is unreachable.
+ * Supports q (filename/subject substring), contact (exact from email),
+ * threadId, and id-based cursor pagination over the fixed demo set.
+ */
+export function searchMockAttachments(
+  params: { q?: string; contact?: string; threadId?: string },
+  cursor?: string,
+  limit = 30
+): Page<AttachmentHit> {
+  let hits = mockAttachmentHits();
+  const q = params.q?.trim().toLowerCase();
+  if (q) {
+    hits = hits.filter(
+      (h) => h.filename.toLowerCase().includes(q) || h.threadSubject.toLowerCase().includes(q)
+    );
+  }
+  if (params.contact) {
+    const contact = params.contact.toLowerCase();
+    hits = hits.filter((h) => h.from.email.toLowerCase() === contact);
+  }
+  if (params.threadId) {
+    hits = hits.filter((h) => h.threadId === params.threadId);
+  }
+  hits.sort((a, b) => b.sentAt.localeCompare(a.sentAt));
+
+  const startIndex = cursor ? Math.max(hits.findIndex((h) => h.id === cursor) + 1, 0) : 0;
+  const page = hits.slice(startIndex, startIndex + limit);
+  const nextCursor = startIndex + limit < hits.length ? (page[page.length - 1]?.id ?? null) : null;
+  return { items: page, nextCursor };
+}
+
+/**
+ * Local fallback for GET .../attachments/{id}/content when the API is
+ * unreachable: decodes the fixture's base64 payload into real bytes (never
+ * fabricates success — returns null for an unknown id).
+ */
+export function getMockAttachmentBlob(
+  attachmentId: string
+): { blob: Blob; filename: string; mimeType: string } | null {
+  const spec = MOCK_ATTACHMENTS.find((a) => a.id === attachmentId);
+  if (!spec) return null;
+  const binary = atob(spec.base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return {
+    blob: new Blob([bytes], { type: spec.mimeType }),
+    filename: spec.filename,
+    mimeType: spec.mimeType,
   };
 }

@@ -6,26 +6,36 @@ import type {
   AiEditAction,
   AiEventProposal,
   AiSource,
+  AttachmentHit,
   BulkAction,
+  ContactSummary,
   Draft,
   InboxSplit,
   Label,
   Message,
+  OpenEvent,
   Page,
+  Reaction,
+  SendSuggestion,
   Thread,
   ThreadAction,
   UnsubscribeResult,
 } from '@calendium/shared';
 import { ApiRequestError, UndoStack } from '@calendium/shared';
-import { useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { toast } from 'sonner';
 
 import { getApiClient } from '@/lib/api';
+import { getAccessToken } from '@/lib/auth-client';
 import { DEMO_MODE } from '@/lib/demo';
+import { env } from '@/lib/env';
 import {
   applyMockAction,
   applyMockLabel,
+  getMockAttachmentBlob,
+  getMockContact,
   getMockLabels,
+  getMockOpens,
   getMockThread,
   getMockThreads,
   mockAiAskCited,
@@ -34,10 +44,14 @@ import {
   mockBulkAction,
   mockInstantReplies,
   mockProposeEvent,
+  mockReactToMessage,
   mockRemindThread,
+  mockRemoveReaction,
+  mockSendSuggestion,
   mockSnoozeThread,
   mockUnsnoozeThread,
   mockUnsubscribe,
+  searchMockAttachments,
 } from '@/lib/mail-mock';
 import { fetchSnippets } from '@/lib/settings-data';
 import type { MailboxView } from '@/lib/mail-utils';
@@ -79,9 +93,40 @@ export interface DraftListResult {
   source: DataSource;
 }
 
+export interface ContactResult {
+  contact: ContactSummary;
+  source: DataSource;
+}
+
 /** Outcome of a bulk mutation — callers derive the succeeded count from it. */
 export interface BulkActResult {
   failedCount: number;
+}
+
+/**
+ * Aggregated sender insights for the contact pane (GET /v1/mail/contacts/{email}).
+ * Outside demo mode this surfaces genuine loading/error/empty states — a
+ * contact with no shared history resolves to `null` rather than a fabricated
+ * summary. `email` may be blank while the caller hasn't resolved a contact yet.
+ */
+export function useContact(email: string | null) {
+  return useQuery({
+    queryKey: ['contact', email ?? null],
+    enabled: !!email,
+    queryFn: async (): Promise<ContactResult | null> => {
+      if (!email) return null;
+      try {
+        const contact = await getApiClient().getContact(email);
+        return { contact, source: 'api' };
+      } catch (err) {
+        if (DEMO_MODE) {
+          const contact = getMockContact(email);
+          return contact ? { contact, source: 'demo' } : null;
+        }
+        throw err;
+      }
+    },
+  });
 }
 
 /** Lightweight reachability probe driving the offline/demo banner. */
@@ -176,6 +221,31 @@ export function useSnippets() {
   });
 }
 
+/**
+ * Smart Send recommendation for a recipient (M2.5). A 404 means the backend
+ * doesn't have enough open-time history yet — the NORMAL case for most
+ * recipients — so it resolves to `null` rather than surfacing an error;
+ * callers render nothing rather than inventing a send time. Any other
+ * failure is treated the same way (quietly absent), outside DEMO_MODE where
+ * a couple of seeded contacts have a scripted suggestion.
+ */
+export function useSendSuggestion(email: string | null) {
+  return useQuery({
+    queryKey: ['send-suggestion', email],
+    enabled: email !== null && email !== '',
+    staleTime: 5 * 60_000,
+    retry: false,
+    queryFn: async (): Promise<SendSuggestion | null> => {
+      try {
+        return await getApiClient().getSendSuggestion(email!);
+      } catch {
+        if (DEMO_MODE) return mockSendSuggestion(email!);
+        return null;
+      }
+    },
+  });
+}
+
 export function useLabels() {
   return useQuery({
     queryKey: ['labels'],
@@ -188,6 +258,31 @@ export function useLabels() {
         throw err;
       }
     },
+  });
+}
+
+/**
+ * Recent Opens feed (M2.5, task 15): sent messages the recipient has opened,
+ * newest first, paged via the server's keyset cursor. `fetchNextPage` fetches
+ * the next real page and appends it — it never refetches from the top and
+ * pretends to append, so a load-more failure just leaves the already-loaded
+ * pages in place. Outside DEMO_MODE, a 402 (no active subscription) propagates
+ * as an ApiRequestError so the panel can show the upgrade prompt instead of a
+ * generic error.
+ */
+export function useOpensFeed() {
+  return useInfiniteQuery({
+    queryKey: ['opens'],
+    initialPageParam: undefined as string | undefined,
+    queryFn: async ({ pageParam }): Promise<Page<OpenEvent>> => {
+      try {
+        return await getApiClient().listOpens({ cursor: pageParam, limit: 25 });
+      } catch (err) {
+        if (DEMO_MODE) return getMockOpens({ cursor: pageParam, limit: 25 });
+        throw err;
+      }
+    },
+    getNextPageParam: (lastPage) => lastPage.nextCursor || undefined,
   });
 }
 
@@ -610,6 +705,130 @@ export function useMailActions() {
 }
 
 // ---------------------------------------------------------------------------
+// Emoji reactions (M2.5) — honesty policy: chips render from real data +
+// mutation RESPONSES only. The optimistic patch below never claims
+// delivery: "sent" ahead of the server's answer, and a failed request
+// reverts it rather than leaving a fabricated chip behind.
+// ---------------------------------------------------------------------------
+
+function upsertReaction(m: Message, reaction: Reaction): Message {
+  return { ...m, reactions: [...m.reactions.filter((r) => r.emoji !== reaction.emoji), reaction] };
+}
+
+function dropReaction(m: Message, emoji: string): Message {
+  return { ...m, reactions: m.reactions.filter((r) => r.emoji !== emoji) };
+}
+
+/**
+ * Undoes a just-sent tiny reply. On success, `onUndone` flips the reaction
+ * chip's cached `delivery` back to 'local' — the message is back in drafts,
+ * so the chip claiming it was "sent" would now be a lie (M2.5 review fix,
+ * MINOR f).
+ */
+async function undoTinyReply(draftId: string, onUndone: () => void): Promise<void> {
+  try {
+    await getApiClient().unsendDraft(draftId);
+    toast.success('Send undone — the message is back in your drafts.');
+    onUndone();
+  } catch (err) {
+    if (err instanceof ApiRequestError && err.status === 409) {
+      toast.error('Too late — that message already went out.');
+    } else {
+      toast.error('Could not undo the send.');
+    }
+  }
+}
+
+/**
+ * Surfaces the undo-capable toast the moment a reaction's response reports a
+ * real tiny-reply send — draftId is only ever non-null when the backend's
+ * OBSERVED delivery was "sent" (see mail.go ReactToMessage), so this never
+ * fires on a merely-requested-but-undelivered reply. `onUndone` is forwarded
+ * to undoTinyReply to reconcile the chip if the undo succeeds.
+ */
+function notifyTinyReply(draftId: string | null, onUndone: () => void): void {
+  if (!draftId) return;
+  toast.success('Sent a tiny reply', {
+    action: { label: 'Undo', onClick: () => void undoTinyReply(draftId, onUndone) },
+  });
+}
+
+export function useReactToMessage() {
+  const queryClient = useQueryClient();
+
+  function patchMessage(threadId: string, messageId: string, patch: (m: Message) => Message) {
+    queryClient.setQueryData<ThreadDetailResult | null | undefined>(['thread', threadId], (data) =>
+      data ? { ...data, messages: data.messages.map((m) => (m.id === messageId ? patch(m) : m)) } : data
+    );
+  }
+
+  /**
+   * Adds (or replaces) a reaction on a message. Optimistically shows a
+   * `delivery: 'local'` chip immediately — never `'sent'`, since whether a
+   * tiny reply actually went out is the server's call, not a client guess —
+   * then reconciles with the real ReactionResult once it resolves. Only the
+   * resolved response's `draftId` (which the backend only sets when delivery
+   * really is "sent") triggers the undo-capable toast.
+   */
+  async function react(
+    threadId: string,
+    messageId: string,
+    emoji: string,
+    sendReply: boolean
+  ): Promise<void> {
+    const previous = queryClient.getQueryData<ThreadDetailResult | null | undefined>([
+      'thread',
+      threadId,
+    ]);
+    const pending: Reaction = {
+      id: `pending:${messageId}:${emoji}`,
+      messageId,
+      emoji,
+      delivery: 'local',
+      createdAt: new Date().toISOString(),
+    };
+    patchMessage(threadId, messageId, (m) => upsertReaction(m, pending));
+    if (DEMO_MODE) {
+      const result = mockReactToMessage(messageId, emoji, sendReply);
+      patchMessage(threadId, messageId, (m) => upsertReaction(m, result.reaction));
+      notifyTinyReply(result.draftId, () =>
+        patchMessage(threadId, messageId, (m) => upsertReaction(m, { ...result.reaction, delivery: 'local' }))
+      );
+    }
+    try {
+      const result = await getApiClient().reactToMessage(messageId, emoji, sendReply);
+      patchMessage(threadId, messageId, (m) => upsertReaction(m, result.reaction));
+      notifyTinyReply(result.draftId, () =>
+        patchMessage(threadId, messageId, (m) => upsertReaction(m, { ...result.reaction, delivery: 'local' }))
+      );
+    } catch {
+      if (DEMO_MODE) return;
+      queryClient.setQueryData(['thread', threadId], previous);
+      toast.error('Could not add the reaction.');
+    }
+  }
+
+  /** Removes a reaction; reverts the optimistic removal on a real failure. */
+  async function removeReaction(threadId: string, messageId: string, emoji: string): Promise<void> {
+    const previous = queryClient.getQueryData<ThreadDetailResult | null | undefined>([
+      'thread',
+      threadId,
+    ]);
+    patchMessage(threadId, messageId, (m) => dropReaction(m, emoji));
+    if (DEMO_MODE) mockRemoveReaction(messageId, emoji);
+    try {
+      await getApiClient().removeReaction(messageId, emoji);
+    } catch {
+      if (DEMO_MODE) return;
+      queryClient.setQueryData(['thread', threadId], previous);
+      toast.error('Could not remove the reaction.');
+    }
+  }
+
+  return { react, removeReaction };
+}
+
+// ---------------------------------------------------------------------------
 // AI (real API; demo fallback only in DEMO_MODE)
 // ---------------------------------------------------------------------------
 
@@ -723,6 +942,111 @@ export async function runProposeEvent(
     return { ...res, source: 'api' };
   } catch (err) {
     if (DEMO_MODE) return { ...mockProposeEvent(threadId), source: 'demo' };
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Attachments (M2.5) — quick access + inline preview (Task 16)
+// ---------------------------------------------------------------------------
+
+export interface AttachmentSearchParams {
+  q?: string;
+  contact?: string;
+  threadId?: string;
+}
+
+export interface AttachmentSearchPage {
+  page: Page<AttachmentHit>;
+  source: DataSource;
+}
+
+const ATTACHMENT_PAGE_LIMIT = 30;
+
+/**
+ * Cursor-paginated attachment search (GET /v1/mail/attachments) as an infinite
+ * query — `fetchNextPage` walks the keyset cursor the backend returns. Demo
+ * fallback only kicks in (DEMO_MODE) when the real request fails, same as
+ * every other hook in this module.
+ */
+export function useAttachmentSearch(params: AttachmentSearchParams) {
+  return useInfiniteQuery({
+    queryKey: ['attachments', params.q ?? '', params.contact ?? '', params.threadId ?? ''],
+    queryFn: async ({ pageParam }: { pageParam?: string }): Promise<AttachmentSearchPage> => {
+      try {
+        const page = await getApiClient().searchAttachments({
+          q: params.q || undefined,
+          contact: params.contact || undefined,
+          threadId: params.threadId || undefined,
+          cursor: pageParam || undefined,
+          limit: ATTACHMENT_PAGE_LIMIT,
+        });
+        return { page, source: 'api' };
+      } catch (err) {
+        if (DEMO_MODE) {
+          return {
+            page: searchMockAttachments(params, pageParam, ATTACHMENT_PAGE_LIMIT),
+            source: 'demo',
+          };
+        }
+        throw err;
+      }
+    },
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.page.nextCursor ?? undefined,
+  });
+}
+
+/**
+ * Parses filename="..." out of a Content-Disposition header value (RFC 6266
+ * quoted-string form — matches escapeQuotedString on the backend). Exported
+ * for direct unit testing (see use-mail-attachments.test.ts).
+ */
+export function parseContentDispositionFilename(header: string | null): string | null {
+  if (!header) return null;
+  const match = header.match(/filename="((?:[^"\\]|\\.)*)"/);
+  if (!match) return null;
+  return match[1]!.replace(/\\(.)/g, '$1');
+}
+
+export interface AttachmentBlobResult {
+  blobUrl: string;
+  filename: string;
+  mimeType: string;
+}
+
+/**
+ * Fetches an attachment's real bytes (authed GET of attachmentContentPath)
+ * and wraps them as an object URL for inline preview or download. Outside
+ * demo mode this always hits the real API; DEMO_MODE only kicks in as a
+ * fallback when the fetch fails, mirroring every other data-layer function
+ * here. Callers must revoke the returned blobUrl once done with it.
+ */
+export async function fetchAttachmentBlob(attachmentId: string): Promise<AttachmentBlobResult> {
+  try {
+    const token = await getAccessToken();
+    const res = await fetch(`${env.apiUrl}${getApiClient().attachmentContentPath(attachmentId)}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    });
+    if (!res.ok) {
+      throw new ApiRequestError(res.status, 'unknown', `Request failed with status ${res.status}`);
+    }
+    const blob = await res.blob();
+    const filename =
+      parseContentDispositionFilename(res.headers.get('Content-Disposition')) ?? 'attachment';
+    const mimeType = res.headers.get('Content-Type') || blob.type || 'application/octet-stream';
+    return { blobUrl: URL.createObjectURL(blob), filename, mimeType };
+  } catch (err) {
+    if (DEMO_MODE) {
+      const mock = getMockAttachmentBlob(attachmentId);
+      if (mock) {
+        return {
+          blobUrl: URL.createObjectURL(mock.blob),
+          filename: mock.filename,
+          mimeType: mock.mimeType,
+        };
+      }
+    }
     throw err;
   }
 }

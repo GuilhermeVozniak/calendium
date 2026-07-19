@@ -400,9 +400,29 @@ var _ port.ThreadRepo = (*fakeThreadRepo)(nil)
 type fakeMessageRepo struct {
 	byID  map[string]domain.Message
 	order []string
+
+	// opensPage/opensErr configure ListOpens; opensCalls captures every
+	// query for assertions (entitlement/clamping/passthrough).
+	opensPage  domain.Page[domain.OpenEvent]
+	opensErr   error
+	opensCalls []port.OpensQuery
+
+	// histograms configures OpenHourHistogram keyed by recipient email;
+	// histogramErr forces an error return.
+	histograms   map[string][24]int
+	histogramErr error
+
+	attachmentByID          map[string]fakeAttachmentRecord
+	searchAttachmentsResult domain.Page[domain.AttachmentHit]
+	lastSearchQuery         port.AttachmentQuery
+	contactSummaryResult    domain.ContactSummary
+	contactSummaryErr       error
+	lastContactEmail        string
 }
 
-func newMessageRepo() *fakeMessageRepo { return &fakeMessageRepo{byID: map[string]domain.Message{}} }
+func newMessageRepo() *fakeMessageRepo {
+	return &fakeMessageRepo{byID: map[string]domain.Message{}, attachmentByID: map[string]fakeAttachmentRecord{}, histograms: map[string][24]int{}}
+}
 
 func (r *fakeMessageRepo) Upsert(_ context.Context, m domain.Message) (domain.Message, error) {
 	if _, ok := r.byID[m.ID]; !ok {
@@ -455,6 +475,49 @@ func (r *fakeMessageRepo) ListSentByAccount(_ context.Context, accountID, accoun
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+// ListOpens and OpenHourHistogram are configurable via opensPage/opensErr
+// and histograms/histogramErr (task 8). SearchAttachments, GetAttachment,
+// and ContactSummary remain M2.5 stubs (real Postgres queries land in later
+// tasks); they return zero values so the package compiles.
+func (r *fakeMessageRepo) ListOpens(_ context.Context, q port.OpensQuery) (domain.Page[domain.OpenEvent], error) {
+	r.opensCalls = append(r.opensCalls, q)
+	if r.opensErr != nil {
+		return domain.Page[domain.OpenEvent]{}, r.opensErr
+	}
+	if r.opensPage.Items == nil {
+		return domain.Page[domain.OpenEvent]{Items: []domain.OpenEvent{}}, nil
+	}
+	return r.opensPage, nil
+}
+
+func (r *fakeMessageRepo) OpenHourHistogram(_ context.Context, _, recipientEmail string) ([24]int, error) {
+	if r.histogramErr != nil {
+		return [24]int{}, r.histogramErr
+	}
+	return r.histograms[recipientEmail], nil
+}
+
+func (r *fakeMessageRepo) SearchAttachments(_ context.Context, q port.AttachmentQuery) (domain.Page[domain.AttachmentHit], error) {
+	r.lastSearchQuery = q
+	return r.searchAttachmentsResult, nil
+}
+
+func (r *fakeMessageRepo) GetAttachment(_ context.Context, attachmentID string) (domain.Attachment, string, error) {
+	rec, ok := r.attachmentByID[attachmentID]
+	if !ok {
+		return domain.Attachment{}, "", domain.ErrNotFound
+	}
+	return rec.att, rec.messageID, nil
+}
+
+func (r *fakeMessageRepo) ContactSummary(_ context.Context, userID, email string) (domain.ContactSummary, error) {
+	r.lastContactEmail = email
+	if r.contactSummaryErr != nil {
+		return domain.ContactSummary{}, r.contactSummaryErr
+	}
+	return r.contactSummaryResult, nil
 }
 
 var _ port.MessageRepo = (*fakeMessageRepo)(nil)
@@ -1064,6 +1127,9 @@ type fakeMailProvider struct {
 	sentResult      port.SentMessage
 	sendErr         error
 	modifyLabelsErr error
+	// fetchAttachmentErr overrides FetchAttachment's default
+	// domain.ErrNotImplemented return; nil keeps the default.
+	fetchAttachmentErr error
 
 	// recording
 	sent               []port.OutgoingMessage
@@ -1075,6 +1141,13 @@ type fakeMailProvider struct {
 	lastModifyThreadID string
 	lastModifyAdd      []string
 	lastModifyRemove   []string
+
+	fetchAttachmentData      []byte
+	fetchAttachmentMimeType  string
+	fetchAttachmentCalls     int
+	lastFetchAttachmentToken string
+	lastFetchMessageID       string // providerMessageID arg on the last FetchAttachment call
+	lastFetchAttachmentID    string // providerAttachmentID arg on the last FetchAttachment call
 }
 
 func newMailProvider() *fakeMailProvider { return &fakeMailProvider{} }
@@ -1105,6 +1178,25 @@ func (p *fakeMailProvider) ModifyLabels(_ context.Context, accessToken, provider
 	p.lastModifyAdd = add
 	p.lastModifyRemove = remove
 	return p.modifyLabelsErr
+}
+
+// FetchAttachment is an M2.5 stub (real provider fetch lands in a later
+// task); it returns domain.ErrNotImplemented by default, consistent with the
+// package-level errNotImplemented used by the other M2.5 stubs, so tests can
+// errors.Is against a shared sentinel rather than a bare nil-nil result.
+// fetchAttachmentErr lets a test override the returned error.
+func (p *fakeMailProvider) FetchAttachment(_ context.Context, accessToken, providerMessageID, providerAttachmentID string) ([]byte, string, error) {
+	p.fetchAttachmentCalls++
+	p.lastFetchAttachmentToken = accessToken
+	p.lastFetchMessageID = providerMessageID
+	p.lastFetchAttachmentID = providerAttachmentID
+	if p.fetchAttachmentErr != nil {
+		return nil, "", p.fetchAttachmentErr
+	}
+	if p.fetchAttachmentData != nil || p.fetchAttachmentMimeType != "" {
+		return p.fetchAttachmentData, p.fetchAttachmentMimeType, nil
+	}
+	return nil, "", domain.ErrNotImplemented
 }
 
 var _ port.MailProvider = (*fakeMailProvider)(nil)
@@ -2083,3 +2175,76 @@ func (r *fakeUserSettingsRepo) Upsert(_ context.Context, s domain.UserSettings) 
 }
 
 var _ port.UserSettingsRepo = (*fakeUserSettingsRepo)(nil)
+
+// --- reaction repo -----------------------------------------------------------
+
+// fakeReactionRepo mirrors the real postgres adapter's semantics: Create is
+// idempotent on (message_id, user_id, emoji) — re-reacting returns the
+// existing row's stored Delivery/CreatedAt rather than the caller's new
+// values (matching the ON CONFLICT DO UPDATE SET emoji = emoji no-op in
+// reaction.go, which never rewrites Delivery on a duplicate Create).
+// DeleteByEmoji reports domain.ErrNotFound when nothing matched.
+type fakeReactionRepo struct {
+	byID  map[string]domain.Reaction
+	order []string
+}
+
+func newReactionRepo() *fakeReactionRepo {
+	return &fakeReactionRepo{byID: map[string]domain.Reaction{}}
+}
+
+func (r *fakeReactionRepo) Create(_ context.Context, react domain.Reaction) (domain.Reaction, error) {
+	for _, id := range r.order {
+		existing := r.byID[id]
+		if existing.MessageID == react.MessageID && existing.UserID == react.UserID && existing.Emoji == react.Emoji {
+			return existing, nil
+		}
+	}
+	if react.ID == "" {
+		react.ID = newID()
+	}
+	if react.Delivery == "" {
+		react.Delivery = "local"
+	}
+	r.byID[react.ID] = react
+	r.order = append(r.order, react.ID)
+	return react, nil
+}
+
+func (r *fakeReactionRepo) ListByMessages(_ context.Context, messageIDs []string) (map[string][]domain.Reaction, error) {
+	want := map[string]struct{}{}
+	for _, id := range messageIDs {
+		want[id] = struct{}{}
+	}
+	out := map[string][]domain.Reaction{}
+	for _, id := range r.order {
+		react := r.byID[id]
+		if _, ok := want[react.MessageID]; ok {
+			out[react.MessageID] = append(out[react.MessageID], react)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeReactionRepo) DeleteByEmoji(_ context.Context, messageID, userID, emoji string) error {
+	for i, id := range r.order {
+		react := r.byID[id]
+		if react.MessageID == messageID && react.UserID == userID && react.Emoji == emoji {
+			delete(r.byID, id)
+			r.order = append(r.order[:i:i], r.order[i+1:]...)
+			return nil
+		}
+	}
+	return domain.ErrNotFound
+}
+
+var _ port.ReactionRepo = (*fakeReactionRepo)(nil)
+
+type fakeAttachmentRecord struct {
+	att       domain.Attachment
+	messageID string
+}
+
+func (r *fakeMessageRepo) seedAttachment(messageID string, att domain.Attachment) {
+	r.attachmentByID[att.ID] = fakeAttachmentRecord{att: att, messageID: messageID}
+}

@@ -130,6 +130,103 @@ func TestHandleSetVipSenders(t *testing.T) {
 	})
 }
 
+func TestHandleSetSignature(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		h := newHarness(t)
+		h.accounts.sigRet = domain.ConnectedAccount{ID: "acc1"}
+		rec := h.authed(http.MethodPut, "/v1/accounts/acc1/signature", jsonBody(t, map[string]string{"signatureHtml": "<p>Best,<br>Me</p>"}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.accounts.gotSigID != "acc1" || h.accounts.gotSig != "<p>Best,<br>Me</p>" {
+			t.Fatalf("gotSigID=%q gotSig=%q", h.accounts.gotSigID, h.accounts.gotSig)
+		}
+		var got domain.ConnectedAccount
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.ID != "acc1" {
+			t.Fatalf("got = %+v", got)
+		}
+	})
+
+	t.Run("other user's account not found", func(t *testing.T) {
+		h := newHarness(t)
+		h.accounts.sigErr = domain.ErrNotFound
+		rec := h.authed(http.MethodPut, "/v1/accounts/acc1/signature", jsonBody(t, map[string]string{"signatureHtml": "<p>x</p>"}))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("malformed JSON rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPut, "/v1/accounts/acc1/signature", strings.NewReader("{"))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+
+	// M2.5 review fix (MUST-FIX 1): nothing sanitized signature HTML before
+	// storage — the web preview's biome-ignore comment and
+	// AccountService.SetSignature's doc comment both *claimed* sanitization
+	// happened "at the HTTP boundary", but no boundary code actually did it.
+	// This proves the handler now does, before the service ever sees the
+	// value.
+	t.Run("sanitizes a script-bearing signature before it reaches the service", func(t *testing.T) {
+		h := newHarness(t)
+		h.accounts.sigRet = domain.ConnectedAccount{ID: "acc1"}
+		payload := `<p>Best,<br>Me</p><script>alert(document.cookie)</script>` +
+			`<img src="x" onerror="alert(1)"><a href="javascript:alert(2)">click</a>`
+		rec := h.authed(http.MethodPut, "/v1/accounts/acc1/signature", jsonBody(t, map[string]string{"signatureHtml": payload}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		got := h.accounts.gotSig
+		if strings.Contains(got, "<script") || strings.Contains(got, "onerror") || strings.Contains(got, "javascript:") {
+			t.Fatalf("gotSig = %q, want script/onerror/javascript: stripped before SetSignature", got)
+		}
+		if !strings.Contains(got, "<p>Best,<br>Me</p>") {
+			t.Fatalf("gotSig = %q, want the benign markup preserved", got)
+		}
+	})
+}
+
+func TestHandleSetAutoBcc(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		h := newHarness(t)
+		h.accounts.autoBccRet = domain.ConnectedAccount{ID: "acc1"}
+		rec := h.authed(http.MethodPut, "/v1/accounts/acc1/auto-bcc", jsonBody(t, map[string][]string{"autoBcc": {"archive@x.com"}}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.accounts.gotAutoBccID != "acc1" {
+			t.Fatalf("gotAutoBccID = %q, want acc1", h.accounts.gotAutoBccID)
+		}
+		want := []string{"archive@x.com"}
+		if !reflect.DeepEqual(h.accounts.gotAutoBcc, want) {
+			t.Fatalf("gotAutoBcc = %v, want %v", h.accounts.gotAutoBcc, want)
+		}
+	})
+
+	t.Run("other user's account not found", func(t *testing.T) {
+		h := newHarness(t)
+		h.accounts.autoBccErr = domain.ErrNotFound
+		rec := h.authed(http.MethodPut, "/v1/accounts/acc1/auto-bcc", jsonBody(t, map[string][]string{"autoBcc": {"archive@x.com"}}))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("malformed JSON rejected", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPut, "/v1/accounts/acc1/auto-bcc", strings.NewReader("{"))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
+}
+
 func TestHandleDisconnectAccount(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		h := newHarness(t)

@@ -23,6 +23,7 @@ package service
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1110,6 +1111,87 @@ func TestProcessDueWorkSkipsUnclaimedDraft(t *testing.T) {
 	}
 	if _, err := drafts.GetByID(ctx, "d1"); err != nil {
 		t.Fatalf("unclaimed draft must survive, got err %v", err)
+	}
+}
+
+// TestDeliverDraftMergesAutoBcc (Task 7): the account's configured auto-BCC
+// addresses are merged into the outgoing message at delivery, skipping any
+// address already present on the draft's own To/Cc/Bcc; the stored mirror
+// message keeps the draft's original Bcc verbatim, since auto-BCC is a
+// delivery concern and must never surface as visible thread content.
+func TestDeliverDraftMergesAutoBcc(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
+	clock := newClock(now)
+
+	accounts := newAccountRepo()
+	if _, err := accounts.Create(ctx, domain.ConnectedAccount{
+		ID: "a1", UserID: "u1", Provider: domain.ProviderGoogle, Email: "me@acme.com",
+		AutoBcc: []string{"crm@log.example", "dup@x.com"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.SaveTokens(ctx, "a1", port.TokenSet{AccessToken: "at", ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	threads := newThreadRepo()
+	if _, err := threads.Upsert(ctx, domain.Thread{ID: "t1", AccountID: "a1", ProviderThreadID: "pt1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	drafts := newDraftRepo(accounts)
+	past := now.Add(-time.Minute)
+	tid := "t1"
+	draft := domain.Draft{
+		ID: "d1", AccountID: "a1", ThreadID: &tid,
+		To:      []domain.EmailAddress{{Email: "friend@example.org"}},
+		Bcc:     []domain.EmailAddress{{Email: "dup@x.com"}}, // already BCCs one of the auto-BCC addresses
+		Subject: "hi", ScheduledAt: &past,
+	}
+	if _, err := drafts.Create(ctx, draft); err != nil {
+		t.Fatal(err)
+	}
+	drafts.claimOutcome["d1"] = true
+	drafts.scheduledDue = []domain.Draft{draft}
+
+	mail := newMailProvider()
+	mail.sentResult = port.SentMessage{ProviderMessageID: "pm1", ProviderThreadID: "pt1", SentAt: now}
+	messages := newMessageRepo()
+
+	svc := NewSyncService(SyncServiceDeps{
+		Accounts: accounts, Threads: threads, Messages: messages, Drafts: drafts,
+		MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
+		OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+		Clock:         clock,
+	})
+
+	if err := svc.ProcessDueWork(ctx); err != nil {
+		t.Fatalf("ProcessDueWork: %v", err)
+	}
+
+	if len(mail.sent) != 1 {
+		t.Fatalf("Send calls = %d, want 1", len(mail.sent))
+	}
+	// Exactly one BCC added (crm@log.example); dup@x.com was already present
+	// on the draft so it must not be duplicated.
+	wantOutgoingBcc := []domain.EmailAddress{{Email: "dup@x.com"}, {Email: "crm@log.example"}}
+	if !reflect.DeepEqual(mail.sent[0].Bcc, wantOutgoingBcc) {
+		t.Fatalf("provider Bcc = %+v, want %+v", mail.sent[0].Bcc, wantOutgoingBcc)
+	}
+
+	msgs, err := messages.ListByThread(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("thread messages = %+v, want exactly one", msgs)
+	}
+	// The stored mirror keeps the draft's original Bcc -- auto-BCC never
+	// becomes thread content.
+	wantMirrorBcc := []domain.EmailAddress{{Email: "dup@x.com"}}
+	if !reflect.DeepEqual(msgs[0].Bcc, wantMirrorBcc) {
+		t.Fatalf("stored mirror Bcc = %+v, want %+v (auto-BCC must not leak into thread content)", msgs[0].Bcc, wantMirrorBcc)
 	}
 }
 

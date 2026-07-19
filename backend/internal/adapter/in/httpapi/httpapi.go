@@ -92,6 +92,8 @@ func New(deps Deps) http.Handler {
 	authed("GET /v1/accounts", s.handleListAccounts)
 	authed("POST /v1/accounts/connect/{provider}", s.handleConnectAccount)
 	authed("PUT /v1/accounts/{id}/vip-senders", s.handleSetVipSenders)
+	authed("PUT /v1/accounts/{id}/signature", s.handleSetSignature)
+	authed("PUT /v1/accounts/{id}/auto-bcc", s.handleSetAutoBcc)
 	authed("DELETE /v1/accounts/{id}", s.handleDisconnectAccount)
 
 	authed("GET /v1/mail/threads", s.handleListThreads)
@@ -121,6 +123,16 @@ func New(deps Deps) http.Handler {
 	authed("POST /v1/mail/snippets", s.handleCreateSnippet)
 	authed("PUT /v1/mail/snippets/{id}", s.handleUpdateSnippet)
 	authed("DELETE /v1/mail/snippets/{id}", s.handleDeleteSnippet)
+
+	// M2.5: Recent Opens feed, Smart Send, attachment quick-access, contact
+	// summary, and emoji reactions.
+	authed("GET /v1/mail/opens", s.handleListOpens)
+	authed("GET /v1/mail/send-suggestion", s.handleSendSuggestion)
+	authed("GET /v1/mail/attachments", s.handleSearchAttachments)
+	authed("GET /v1/mail/attachments/{id}/content", s.handleGetAttachmentContent)
+	authed("GET /v1/mail/contacts/{email}", s.handleGetContact)
+	authed("POST /v1/mail/messages/{id}/reactions", s.handleReactToMessage)
+	authed("DELETE /v1/mail/messages/{id}/reactions/{emoji}", s.handleRemoveReaction)
 
 	authed("GET /v1/calendars", s.handleListCalendars)
 	authed("PATCH /v1/calendars/{id}", s.handleUpdateCalendar)

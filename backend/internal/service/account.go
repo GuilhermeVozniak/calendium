@@ -193,6 +193,77 @@ func (s *AccountService) SetVipSenders(ctx context.Context, userID, accountID st
 	return a, nil
 }
 
+// maxSignatureBytes bounds SetSignature's stored HTML (M2.5 task brief's
+// 100 KB cap); oversized payloads are rejected outright rather than silently
+// truncated, so the client sees an explicit error instead of a corrupted
+// signature.
+const maxSignatureBytes = 100 * 1024
+
+// SetSignature replaces the account's rich signature. Sanitization of the
+// HTML happens at the HTTP boundary — handleSetSignature in
+// adapter/in/httpapi runs it through sanitizeSignatureHTML before calling
+// this method — so the service stores it as given, trusting that boundary.
+func (s *AccountService) SetSignature(ctx context.Context, userID, accountID, signatureHTML string) (domain.ConnectedAccount, error) {
+	a, err := ownedAccount(ctx, s.accounts, userID, accountID)
+	if err != nil {
+		return domain.ConnectedAccount{}, err
+	}
+	if len(signatureHTML) > maxSignatureBytes {
+		return domain.ConnectedAccount{}, fmt.Errorf("%w: signature exceeds %d bytes", domain.ErrValidation, maxSignatureBytes)
+	}
+	a.SignatureHTML = signatureHTML
+	if err := s.accounts.Update(ctx, a); err != nil {
+		return domain.ConnectedAccount{}, err
+	}
+	return a, nil
+}
+
+// SetAutoBcc replaces the account's auto-BCC list applied at send.
+func (s *AccountService) SetAutoBcc(ctx context.Context, userID, accountID string, autoBcc []string) (domain.ConnectedAccount, error) {
+	a, err := ownedAccount(ctx, s.accounts, userID, accountID)
+	if err != nil {
+		return domain.ConnectedAccount{}, err
+	}
+	normalized, err := normalizeAutoBcc(autoBcc)
+	if err != nil {
+		return domain.ConnectedAccount{}, err
+	}
+	a.AutoBcc = normalized
+	if err := s.accounts.Update(ctx, a); err != nil {
+		return domain.ConnectedAccount{}, err
+	}
+	return a, nil
+}
+
+// normalizeAutoBcc validates and canonicalizes each auto-BCC entry: trimmed,
+// parsed as an RFC 5322 address (net/mail), reduced to its bare lowercased
+// address (discarding any display name -- "Bob <bob@x.com>" parses as
+// syntactically valid but only "bob@x.com" may ever reach a provider as a
+// BCC target), de-duplicated, and empties skipped. Anything that fails to
+// parse as an address is rejected with domain.ErrValidation rather than
+// persisted un-parsed (a display-name-wrapped or malformed entry would
+// otherwise reach providers as a literal invalid address at send).
+func normalizeAutoBcc(in []string) ([]string, error) {
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, raw := range in {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		addr, err := canonicalEmail(trimmed)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid auto-BCC address %q", domain.ErrValidation, raw)
+		}
+		if _, dup := seen[addr]; dup {
+			continue
+		}
+		seen[addr] = struct{}{}
+		out = append(out, addr)
+	}
+	return out, nil
+}
+
 func normalizeVipSenders(in []string) []string {
 	seen := map[string]struct{}{}
 	out := []string{}

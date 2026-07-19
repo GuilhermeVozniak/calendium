@@ -1,13 +1,22 @@
 import { Button } from '@/components/ui/button';
 import { Icon } from '@/components/ui/icon';
+import { Input } from '@/components/ui/input';
 import { Text } from '@/components/ui/text';
 import useAuth from '@/context/auth';
 import { api } from '@/lib/api';
 import { formatDate } from '@/lib/format';
 import { useServerConfig } from '@/lib/server-config';
-import { isApiUnreachable, mockAccounts, mockSubscription, withMockFallback } from '@/lib/mock';
+import {
+  isApiUnreachable,
+  mockAccounts,
+  mockSetAutoBcc,
+  mockSetSignature,
+  mockSubscription,
+  withMockFallback,
+} from '@/lib/mock';
+import { htmlToPlainText, plainTextToHtml } from '@/lib/mail-extras';
 import type { ConnectedAccount, Provider, Subscription } from '@calendium/shared';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
@@ -42,10 +51,18 @@ const ACCOUNT_STATUS_LABEL: Record<ConnectedAccount['status'], string> = {
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { user, signOut } = useAuth();
   const { config, clear: clearServer } = useServerConfig();
   const { colorScheme, toggleColorScheme } = useColorScheme();
   const [connecting, setConnecting] = React.useState<Provider | null>(null);
+  // Per-account signature/auto-BCC edit buffers (M2.5), keyed by account id.
+  // Plain inputs only — mobile has no rich-text editor, so the stored (rich)
+  // signatureHtml is shown/edited as plain text (htmlToPlainText) and
+  // converted back to simple HTML on save (plainTextToHtml).
+  const [drafts, setDrafts] = React.useState<
+    Record<string, { signature: string; autoBcc: string }>
+  >({});
 
   const isSelfHost = config?.mode === 'self_host';
   const aiEnabled = config?.features?.ai ?? false;
@@ -66,6 +83,74 @@ export default function SettingsScreen() {
         () => api.listAccounts(),
         () => mockAccounts
       ),
+  });
+
+  // Seed each account's edit buffer the first time it's seen, so a background
+  // refetch never clobbers text the user is actively editing.
+  React.useEffect(() => {
+    const accounts = accountsQuery.data ?? [];
+    if (accounts.length === 0) return;
+    setDrafts((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const account of accounts) {
+        if (!(account.id in next)) {
+          next[account.id] = {
+            signature: htmlToPlainText(account.signatureHtml),
+            autoBcc: account.autoBcc.join(', '),
+          };
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [accountsQuery.data]);
+
+  const updateAccountCache = (updated: ConnectedAccount) => {
+    queryClient.setQueryData<ConnectedAccount[]>(['accounts'], (data) =>
+      data ? data.map((a) => (a.id === updated.id ? updated : a)) : data
+    );
+  };
+
+  const saveMailPrefsMutation = useMutation({
+    // Sequenced, not Promise.all: the backend's Update is a full-row
+    // read-modify-write, so two concurrent PUTs (signature, auto-BCC) each
+    // read the row before either write lands and the second write clobbers
+    // the first's change (lost update). Awaiting signature first means its
+    // write is committed before auto-BCC reads the row, so the final
+    // response — cached below — reflects both fields.
+    //
+    // The payload is computed at the call site (see saveMailPrefs below) and
+    // passed in here rather than read from `drafts` inside this closure:
+    // react-query applies a fresh mutationFn to its observer via a
+    // useEffect, so a mutationFn that reads component state directly can
+    // observe a render that is one commit behind the button press that
+    // triggered it. Accepting the already-computed values sidesteps that
+    // staleness entirely.
+    mutationFn: async (input: { accountId: string; signatureHtml: string; autoBcc: string[] }) => {
+      await withMockFallback(
+        () => api.setSignature(input.accountId, input.signatureHtml),
+        () => mockSetSignature(input.accountId, input.signatureHtml)
+      );
+      return withMockFallback(
+        () => api.setAutoBcc(input.accountId, input.autoBcc),
+        () => mockSetAutoBcc(input.accountId, input.autoBcc)
+      );
+    },
+    onSuccess: (account) => {
+      updateAccountCache(account);
+      Alert.alert('Saved', 'Signature and auto-BCC updated.');
+    },
+    onError: (error) => {
+      Alert.alert(
+        'Could not save',
+        isApiUnreachable(error)
+          ? 'Reach the Calendium API to update signature and auto-BCC.'
+          : error instanceof Error
+            ? error.message
+            : 'Unknown error'
+      );
+    },
   });
 
   const subscriptionQuery = useQuery({
@@ -158,6 +243,65 @@ export default function SettingsScreen() {
                     {PROVIDER_LABEL[account.provider]} · {ACCOUNT_STATUS_LABEL[account.status]}
                   </Text>
                 </View>
+              </View>
+              <View className="gap-2 border-t border-border p-4">
+                <View className="gap-1.5">
+                  <Text className="text-xs font-medium text-muted-foreground">Signature</Text>
+                  <Input
+                    value={drafts[account.id]?.signature ?? ''}
+                    onChangeText={(signature) =>
+                      setDrafts((prev) => ({
+                        ...prev,
+                        [account.id]: { ...(prev[account.id] ?? { autoBcc: '' }), signature },
+                      }))
+                    }
+                    placeholder={'Best,\nYour name'}
+                    multiline
+                    className="h-auto py-2.5"
+                    style={{ textAlignVertical: 'top' }}
+                    testID={`signature-input-${account.id}`}
+                  />
+                </View>
+                <View className="gap-1.5">
+                  <Text className="text-xs font-medium text-muted-foreground">
+                    Auto-BCC (comma-separated)
+                  </Text>
+                  <Input
+                    value={drafts[account.id]?.autoBcc ?? ''}
+                    onChangeText={(autoBcc) =>
+                      setDrafts((prev) => ({
+                        ...prev,
+                        [account.id]: { ...(prev[account.id] ?? { signature: '' }), autoBcc },
+                      }))
+                    }
+                    placeholder="archive@example.com"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="email-address"
+                    testID={`auto-bcc-input-${account.id}`}
+                  />
+                </View>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-row gap-2 self-start"
+                  onPress={() => {
+                    const draft = drafts[account.id] ?? { signature: '', autoBcc: '' };
+                    const autoBcc = draft.autoBcc
+                      .split(/[,;\s]+/)
+                      .map((email) => email.trim())
+                      .filter(Boolean);
+                    saveMailPrefsMutation.mutate({
+                      accountId: account.id,
+                      signatureHtml: plainTextToHtml(draft.signature),
+                      autoBcc,
+                    });
+                  }}
+                  disabled={saveMailPrefsMutation.isPending}
+                  testID={`save-mail-prefs-${account.id}`}>
+                  {saveMailPrefsMutation.isPending ? <ActivityIndicator size="small" /> : null}
+                  <Text>Save</Text>
+                </Button>
               </View>
             </View>
           ))

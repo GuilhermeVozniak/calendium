@@ -31,8 +31,12 @@ test.describe('AI suite', () => {
     await chip.click();
 
     await expect(page.getByText('Reply', { exact: true })).toBeVisible();
+    // M2.5 per-account signatures (components/app/compose.tsx) now
+    // auto-append the from-account's signature to every compose body,
+    // replies included — so the instant-reply text is the prefix, not the
+    // whole value.
     await expect(page.getByPlaceholder(/Write your message/)).toHaveValue(
-      'Thanks for the update — looks resolved.'
+      /^Thanks for the update — looks resolved\.\n\n-- \nGuilherme Vozniak\nCalendium$/
     );
   });
 

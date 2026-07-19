@@ -3,9 +3,9 @@ import { Icon } from '@/components/ui/icon';
 import { Text } from '@/components/ui/text';
 import { api } from '@/lib/api';
 import { relativeTime } from '@/lib/format';
-import { isDemoMode, mockThreadPage, withMockFallback } from '@/lib/mock';
+import { isDemoMode, mockOpens, mockThreadPage, withMockFallback } from '@/lib/mock';
 import { cn } from '@/lib/utils';
-import type { InboxSplit, Page, Thread, ThreadAction } from '@calendium/shared';
+import type { InboxSplit, OpenEvent, Page, Thread, ThreadAction } from '@calendium/shared';
 import {
   useInfiniteQuery,
   useMutation,
@@ -17,6 +17,7 @@ import {
   ArchiveIcon,
   ClockIcon,
   EllipsisVerticalIcon,
+  EyeIcon,
   InboxIcon,
   SparklesIcon,
   SquarePenIcon,
@@ -55,6 +56,7 @@ export default function InboxScreen() {
   const queryClient = useQueryClient();
   const [split, setSplit] = React.useState<InboxSplit>('important');
   const [selected, setSelected] = React.useState<Thread | null>(null);
+  const [opensOpen, setOpensOpen] = React.useState(false);
 
   const threadsQuery = useInfiniteQuery({
     queryKey: ['threads', split],
@@ -70,6 +72,24 @@ export default function InboxScreen() {
   const threads = React.useMemo(
     () => threadsQuery.data?.pages.flatMap((page) => page.items) ?? [],
     [threadsQuery.data]
+  );
+
+  // Recent Opens sheet (M2.5): sent messages the recipient has opened,
+  // newest first. Only fetched once the sheet is actually opened.
+  const opensQuery = useInfiniteQuery({
+    queryKey: ['opens'],
+    enabled: opensOpen,
+    queryFn: ({ pageParam }) =>
+      withMockFallback(
+        () => api.listOpens({ limit: 20, cursor: pageParam ?? undefined }),
+        () => mockOpens()
+      ),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+  });
+  const opens = React.useMemo(
+    () => opensQuery.data?.pages.flatMap((page) => page.items) ?? [],
+    [opensQuery.data]
   );
 
   const updateList = React.useCallback(
@@ -221,6 +241,14 @@ export default function InboxScreen() {
       <View className="flex-row items-center justify-between px-4 pb-2 pt-1">
         <Text variant="h3">Inbox</Text>
         <View className="flex-row items-center gap-1">
+          <Button
+            size="icon"
+            variant="ghost"
+            className="rounded-full"
+            onPress={() => setOpensOpen(true)}
+            testID="open-opens-sheet">
+            <Icon as={EyeIcon} className="size-5" />
+          </Button>
           <Button size="icon" variant="ghost" className="rounded-full" onPress={promptGetMeToZero}>
             <Icon as={EllipsisVerticalIcon} className="size-5" />
           </Button>
@@ -361,6 +389,70 @@ export default function InboxScreen() {
           <Button size="icon" variant="ghost" onPress={() => setSelected(null)}>
             <Icon as={XIcon} className="size-5 text-muted-foreground" />
           </Button>
+        </View>
+      )}
+
+      {/* Recent Opens sheet (M2.5): a full-screen overlay, matching the
+          absolute-overlay convention already used above for the long-press
+          action bar, rather than introducing React Native's Modal API. */}
+      {opensOpen && (
+        <View className="absolute inset-0 bg-background" style={{ paddingTop: insets.top }}>
+          <View className="flex-row items-center justify-between border-b border-border px-4 pb-2 pt-1">
+            <Text variant="h3">Recent opens</Text>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="rounded-full"
+              onPress={() => setOpensOpen(false)}
+              testID="close-opens-sheet">
+              <Icon as={XIcon} className="size-5" />
+            </Button>
+          </View>
+          {opensQuery.isLoading ? (
+            <View className="flex-1 items-center justify-center">
+              <ActivityIndicator size="large" />
+            </View>
+          ) : (
+            <FlatList
+              testID="opens-list"
+              data={opens}
+              keyExtractor={(o) => o.messageId}
+              contentContainerClassName="pb-8"
+              ItemSeparatorComponent={() => <View className="ml-4 h-px bg-border" />}
+              onEndReachedThreshold={0.5}
+              onEndReached={() => {
+                if (opensQuery.hasNextPage && !opensQuery.isFetchingNextPage) {
+                  opensQuery.fetchNextPage();
+                }
+              }}
+              ListFooterComponent={
+                opensQuery.isFetchingNextPage ? (
+                  <View className="py-6">
+                    <ActivityIndicator />
+                  </View>
+                ) : null
+              }
+              ListEmptyComponent={
+                <View className="items-center gap-2 px-8 pt-24">
+                  <Icon as={EyeIcon} className="size-8 text-muted-foreground" />
+                  <Text className="text-center text-sm text-muted-foreground">
+                    {opensQuery.isError ? "Couldn't load recent opens." : 'No opens yet.'}
+                  </Text>
+                </View>
+              }
+              renderItem={({ item }: { item: OpenEvent }) => (
+                <View className="gap-1 px-4 py-3">
+                  <Text numberOfLines={1} className="text-sm font-medium">
+                    {item.subject}
+                  </Text>
+                  <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+                    Opened {relativeTime(item.openedAt)} by{' '}
+                    {item.recipients.map((r) => r.name ?? r.email).join(', ') || 'recipient'}
+                  </Text>
+                </View>
+              )}
+            />
+          )}
         </View>
       )}
     </View>

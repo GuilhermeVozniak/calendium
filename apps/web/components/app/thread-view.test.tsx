@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Message, Thread } from '@calendium/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,6 +15,8 @@ const snoozeMock = vi.fn().mockResolvedValue(true);
 const remindMock = vi.fn().mockResolvedValue(undefined);
 const markOpenedMock = vi.fn().mockResolvedValue(undefined);
 const unsubscribeMock = vi.fn();
+const reactMock = vi.fn().mockResolvedValue(undefined);
+const removeReactionMock = vi.fn().mockResolvedValue(undefined);
 
 const toastSuccess = vi.fn();
 const toastError = vi.fn();
@@ -35,7 +37,14 @@ vi.mock('@/lib/use-mail', () => ({
     markOpened: markOpenedMock,
     unsubscribe: unsubscribeMock,
   }),
-  useThreadDetail: () => ({ data: { thread: THREAD, messages: MESSAGES, source: 'demo' }, isLoading: false }),
+  useReactToMessage: () => ({
+    react: reactMock,
+    removeReaction: removeReactionMock,
+  }),
+  useThreadDetail: () => ({
+    data: { thread: THREAD, messages: currentMessages, source: 'demo' },
+    isLoading: false,
+  }),
   runAiAsk: vi.fn(),
   runAiSummarize: vi.fn(),
 }));
@@ -51,6 +60,17 @@ vi.mock('@/lib/use-instance', () => ({
 const openComposeMock = vi.fn();
 vi.mock('@/components/app/compose', () => ({
   useCompose: () => ({ openCompose: openComposeMock }),
+}));
+
+vi.mock('@/components/app/contact-pane', () => ({
+  ContactPane: ({ email, onClose }: { email: string; onClose: () => void }) => (
+    <div data-testid="contact-pane-stub">
+      <span>{email}</span>
+      <button type="button" onClick={onClose}>
+        Close contact stub
+      </button>
+    </div>
+  ),
 }));
 
 // ---------------------------------------------------------------------------
@@ -93,8 +113,37 @@ const MESSAGES: Message[] = [
     sentAt: new Date().toISOString(),
     isDraft: false,
     openedAt: null,
+    reactions: [
+      { id: 'rx1', messageId: 'thr_1_m1', emoji: '👍', delivery: 'local', createdAt: new Date().toISOString() },
+    ],
   },
 ];
+
+const OWN_MESSAGE: Message[] = [
+  {
+    id: 'thr_1_m2',
+    threadId: 'thr_1',
+    accountId: 'acc_1',
+    from: { name: 'You', email: 'me@calendium.app' },
+    to: [{ name: 'Daniel Cho', email: 'daniel@northwind.com' }],
+    cc: [],
+    bcc: [],
+    subject: 'Renewal terms for FY27',
+    bodyHtml: '<p>Thanks, approved.</p>',
+    bodyText: 'Thanks, approved.',
+    attachments: [],
+    sentAt: new Date().toISOString(),
+    isDraft: false,
+    openedAt: null,
+    reactions: [],
+  },
+];
+
+// Mutable so individual tests can swap in a fixture where the last (default
+// -expanded) message is the account owner's own, without re-mocking the
+// whole module. Read lazily inside the useThreadDetail mock above, so this
+// declaration only needs to run before render() is called (see beforeEach).
+let currentMessages: Message[] = MESSAGES;
 
 function renderThreadView(props: Partial<React.ComponentProps<typeof ThreadView>> = {}) {
   const onClose = vi.fn();
@@ -110,7 +159,47 @@ beforeEach(() => {
   actMock.mockResolvedValue(true);
   snoozeMock.mockResolvedValue(true);
   unsubscribeMock.mockClear();
+  reactMock.mockResolvedValue(undefined);
+  removeReactionMock.mockResolvedValue(undefined);
+  currentMessages = MESSAGES;
   resetShortcutHints();
+});
+
+describe('ThreadView — message reactions (message-row wiring)', () => {
+  it('renders the hover reaction bar and the existing reaction chip for the message', async () => {
+    renderThreadView();
+
+    expect(await screen.findByRole('button', { name: 'React with ❤️' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove 👍 reaction' })).toBeInTheDocument();
+  });
+
+  it('reacting to a message from someone else calls reactToMessage with sendReply=true', async () => {
+    const user = userEvent.setup();
+    renderThreadView();
+
+    await user.click(await screen.findByRole('button', { name: 'React with 🎉' }));
+
+    expect(reactMock).toHaveBeenCalledWith(THREAD.id, 'thr_1_m1', '🎉', true);
+  });
+
+  it('clicking an existing own-reaction chip calls removeReaction', async () => {
+    const user = userEvent.setup();
+    renderThreadView();
+
+    await user.click(await screen.findByRole('button', { name: 'Remove 👍 reaction' }));
+
+    expect(removeReactionMock).toHaveBeenCalledWith(THREAD.id, 'thr_1_m1', '👍');
+  });
+
+  it('reacting to your own message calls reactToMessage with sendReply=false', async () => {
+    const user = userEvent.setup();
+    currentMessages = OWN_MESSAGE;
+    renderThreadView();
+
+    await user.click(await screen.findByRole('button', { name: 'React with 👍' }));
+
+    expect(reactMock).toHaveBeenCalledWith(THREAD.id, 'thr_1_m2', '👍', false);
+  });
 });
 
 describe('ThreadView — onSnooze contract (mirrors onArchive)', () => {
@@ -224,6 +313,33 @@ describe('ThreadView — single unsubscribe (handleUnsubscribe)', () => {
     expect(toastSuccess).not.toHaveBeenCalledWith('Unsubscribed — the sender has been asked to stop');
 
     windowOpenMock.mockRestore();
+  });
+});
+
+describe('ThreadView — contact pane toggle', () => {
+  it('toggles the contact pane via the header button, scoped to the thread counterpart', async () => {
+    const user = userEvent.setup();
+    renderThreadView();
+
+    expect(screen.queryByTestId('contact-pane-stub')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Toggle contact pane' }));
+    const pane = screen.getByTestId('contact-pane-stub');
+    expect(pane).toBeInTheDocument();
+    expect(within(pane).getByText('daniel@northwind.com')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Toggle contact pane' }));
+    expect(screen.queryByTestId('contact-pane-stub')).not.toBeInTheDocument();
+  });
+
+  it('closes via the pane\'s own onClose callback', async () => {
+    const user = userEvent.setup();
+    renderThreadView();
+
+    await user.click(screen.getByRole('button', { name: 'Toggle contact pane' }));
+    await user.click(screen.getByText('Close contact stub'));
+
+    expect(screen.queryByTestId('contact-pane-stub')).not.toBeInTheDocument();
   });
 });
 

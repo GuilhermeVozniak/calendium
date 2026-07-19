@@ -17,7 +17,7 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | Bulk triage actions | Select ranges of emails and archive / mark read / label in bulk with keyboard shortcuts | P1 | scaffolded | web, desktop |
 | One-click and bulk unsubscribe | Unsubscribe from senders instantly and bulk-archive their past mail in the same action | P1 | scaffolded | web, desktop, mobile |
 | Inbox zero celebration design | An empty inbox reveals rotating imagery, making inbox zero a rewarding destination | P1 | scaffolded | web, desktop, mobile |
-| Contact pane with social insights | Sidebar with sender photo, role, company, location, bio, social links, and recent conversations | P1 | planned | web, desktop |
+| Contact pane with social insights | Sidebar with sender photo, role, company, location, bio, social links, and recent conversations; `ContactPane` (avatar via gravatar→favicon→initials, company from domain, aggregate stats, 5 most recent conversations) sourced from `GET /v1/mail/contacts/{email}` | P1 | scaffolded | web, desktop |
 | Auto-advance | After acting on an email the next conversation opens automatically, keeping triage in flow | P2 | scaffolded | web, desktop, mobile |
 | Reorderable splits | Reorder all Split Inboxes (incl. Inbox, Important, Other, Reminders) to match your workflow | P2 | scaffolded | web, desktop, mobile |
 | Stars and labels via shortcuts | Star, label, and move conversations entirely from the keyboard (actions API exists; shortcut surface planned) | P2 | scaffolded | web, desktop |
@@ -26,13 +26,13 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | Send Later | Schedule any message to send at a chosen future time with natural-language input; `scheduledAt` on drafts + worker scheduled-send loop | P0 | scaffolded | web, desktop, mobile |
 | Undo Send | A 10-second window (hit Z) to recall a just-sent email before it actually leaves | P0 | scaffolded | web, desktop, mobile |
 | Read statuses | See when recipients open your emails, how many times, on which device; `openedAt` on messages | P0 | scaffolded | web, desktop, mobile |
-| Smart Send | Recommends the best send time from the recipient's activity patterns and time zone | P1 | planned | web, desktop, mobile |
-| Instant Intro | One command replies to an introduction, thanks the introducer, moves them to BCC | P1 | planned | web, desktop |
-| Recent Opens feed | Live feed of who recently opened your emails, for well-timed follow-ups | P1 | planned | web, desktop, mobile |
-| Auto Bcc | Automatically BCC a configured address (e.g. CRM logging) on every outgoing email | P2 | planned | web, desktop, mobile |
-| Emoji reactions | React to emails with emoji for lightweight acknowledgment without a full reply | P2 | planned | web, desktop, mobile |
-| Per-account signatures | Rich-text signatures configured per connected account and applied automatically | P2 | planned | web, desktop, mobile |
-| Attachment quick access | Search and browse all attachments from a conversation or contact via a command | P2 | planned | web, desktop, mobile |
+| Smart Send | Recommends the best send time from the recipient's activity patterns and time zone; `GET /v1/mail/send-suggestion` feeds a debounced compose nudge bucketed into the recipient's local morning/afternoon/evening | P1 | scaffolded | web, desktop, mobile |
+| Instant Intro | One command replies to an introduction, thanks the introducer, moves them to BCC; `buildInstantIntro` (`@calendium/shared`) drafts the reply from thread context | P1 | scaffolded | web, desktop |
+| Recent Opens feed | Live feed of who recently opened your emails, for well-timed follow-ups; `OpensFeed` right-side panel (`G O`) pages `GET /v1/mail/opens` via a keyset cursor | P1 | scaffolded | web, desktop, mobile |
+| Auto Bcc | Automatically BCC a configured address (e.g. CRM logging) on every outgoing email; per-account `autoBcc` applied server-side at delivery (canonicalized) | P2 | scaffolded | web, desktop, mobile |
+| Emoji reactions | React to emails with emoji for lightweight acknowledgment without a full reply; `message_reactions` with truthful local/sent delivery and optional tiny-reply drafts through the undo-send grace window | P2 | scaffolded | web, desktop, mobile |
+| Per-account signatures | Rich-text signatures configured per connected account and applied automatically; `connected_accounts.signature_html`, auto-applied in compose and sent as real HTML | P2 | scaffolded | web, desktop, mobile |
+| Attachment quick access | Search and browse all attachments from a conversation or contact via a command; `GET /v1/mail/attachments` (trigram filename search) + on-demand content fetch (Gmail 64MB cap, Graph) | P2 | scaffolded | web, desktop, mobile |
 | **AI** | | | | |
 | Ask AI | Natural-language questions over inbox and calendar with cited source emails, budget-gated; `POST /v1/ai/ask` (`ApiClient.aiAskCited`) is surfaced by a persistent sidebar (web), a thread-scoped dialog (desktop), and a modal (mobile) | P0 | scaffolded | web, desktop, mobile |
 | Write with AI | Jot a few phrases and AI expands them into a full email in your voice; `POST /v1/ai/compose` via OpenRouter | P0 | scaffolded | web, desktop, mobile |
@@ -77,7 +77,7 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | Multiple account switching | Connect several accounts and jump between them instantly with shortcuts (`ConnectedAccount` model supports many) | P1 | planned | web, desktop, mobile |
 | Concierge onboarding | White-glove 1:1 coaching session teaching shortcuts and reaching inbox zero | P1 | planned | web, desktop |
 | CRM integrations | HubSpot / Salesforce / Pipedrive records shown and updated from the inbox, auto-logged emails | P1 | planned | web, desktop |
-| Attachment previews | PDFs preview inline; other file types open with system previews without leaving the inbox | P2 | planned | web, desktop, mobile |
+| Attachment previews | PDFs preview inline; other file types open with system previews without leaving the inbox; web renders PDFs via a native `<iframe>` and images via `<img>` from the fetched attachment bytes, everything else downloads | P2 | scaffolded | web, desktop, mobile |
 | Themes and dark mode | Multiple polished themes switchable from the palette (light+dark neutral token set already ships in the design system; named themes planned) | P2 | planned | web, desktop, mobile |
 | Web app | Browser-based access to the full experience without installing the desktop client (Next.js `(app)` route group) | P2 | planned | web |
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -30,6 +31,7 @@ type MailServiceDeps struct {
 	Drafts        port.DraftRepo
 	Snippets      port.SnippetRepo
 	Labels        port.LabelRepo
+	Reactions     port.ReactionRepo
 	MailProviders map[domain.Provider]port.MailProvider
 	OAuth         map[domain.Provider]port.OAuthGateway
 	// Unsubscriber performs the RFC 8058 one-click POST; nil disables the
@@ -40,6 +42,9 @@ type MailServiceDeps struct {
 	SelfHosted bool
 	// UndoSendGrace <= 0 falls back to DefaultUndoSendGrace.
 	UndoSendGrace time.Duration
+	// Logger receives best-effort operational logging (tiny-reply delivery
+	// failures). Defaults to slog.Default() when nil.
+	Logger *slog.Logger
 }
 
 // MailService implements port.MailService.
@@ -51,11 +56,13 @@ type MailService struct {
 	drafts        port.DraftRepo
 	snippets      port.SnippetRepo
 	labels        port.LabelRepo
+	reactions     port.ReactionRepo
 	mail          map[domain.Provider]port.MailProvider
 	tokens        tokenSource
 	unsubscriber  port.UnsubscribeGateway
 	clock         port.Clock
 	undoSendGrace time.Duration
+	logger        *slog.Logger
 }
 
 var _ port.MailService = (*MailService)(nil)
@@ -65,6 +72,10 @@ func NewMailService(d MailServiceDeps) *MailService {
 	if grace <= 0 {
 		grace = DefaultUndoSendGrace
 	}
+	logger := d.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &MailService{
 		ent:           entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
 		accounts:      d.Accounts,
@@ -73,11 +84,13 @@ func NewMailService(d MailServiceDeps) *MailService {
 		drafts:        d.Drafts,
 		snippets:      d.Snippets,
 		labels:        d.Labels,
+		reactions:     d.Reactions,
 		mail:          d.MailProviders,
 		tokens:        tokenSource{accounts: d.Accounts, oauth: d.OAuth, clock: d.Clock},
 		unsubscriber:  d.Unsubscriber,
 		clock:         d.Clock,
 		undoSendGrace: grace,
+		logger:        logger,
 	}
 }
 
@@ -119,7 +132,34 @@ func (s *MailService) GetThread(ctx context.Context, userID, threadID string) (d
 	if msgs == nil {
 		msgs = []domain.Message{}
 	}
+	if err := s.attachReactions(ctx, msgs); err != nil {
+		return domain.Thread{}, nil, err
+	}
 	return t, msgs, nil
+}
+
+// attachReactions fills each message's Reactions in place with a single
+// ReactionRepo.ListByMessages call, defaulting to an empty (never nil) slice.
+func (s *MailService) attachReactions(ctx context.Context, msgs []domain.Message) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	ids := make([]string, len(msgs))
+	for i, m := range msgs {
+		ids[i] = m.ID
+	}
+	byMessage, err := s.reactions.ListByMessages(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for i := range msgs {
+		reactions := byMessage[msgs[i].ID]
+		if reactions == nil {
+			reactions = []domain.Reaction{}
+		}
+		msgs[i].Reactions = reactions
+	}
+	return nil
 }
 
 func (s *MailService) ActOnThread(ctx context.Context, userID, threadID string, action domain.ThreadAction) (domain.Thread, error) {
@@ -775,4 +815,237 @@ func emptyIfNil(addrs []domain.EmailAddress) []domain.EmailAddress {
 		return []domain.EmailAddress{}
 	}
 	return addrs
+}
+
+// --- M2.5 Compose & Contact --------------------------------------------------
+//
+// The methods below satisfy the widened port.MailService interface so the
+// backend compiles once ports/domain land (this task). Real behavior —
+// attachment quick access, contact summary, and emoji reactions — is
+// implemented in later M2.5 tasks (9, 10 in
+// docs/superpowers/plans/2026-07-17-m2-5-compose-contact.md). Recent Opens
+// and Smart Send (below) are implemented here (task 8); the heuristic itself
+// lives in smartsend.go.
+
+// maxOpensPageSize caps GET /v1/mail/opens page size.
+const maxOpensPageSize = 100
+
+// ListOpens returns the Recent Opens feed: sent messages the recipient has
+// opened, newest open first, keyset-paginated.
+func (s *MailService) ListOpens(ctx context.Context, userID, cursor string, limit int) (domain.Page[domain.OpenEvent], error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.Page[domain.OpenEvent]{}, err
+	}
+	if limit > maxOpensPageSize {
+		limit = maxOpensPageSize
+	}
+	page, err := s.messages.ListOpens(ctx, port.OpensQuery{UserID: userID, Cursor: cursor, Limit: limit})
+	if err != nil {
+		return domain.Page[domain.OpenEvent]{}, err
+	}
+	if page.Items == nil {
+		page.Items = []domain.OpenEvent{}
+	}
+	return page, nil
+}
+
+// SuggestSendTime infers a Smart Send suggestion for recipientEmail from
+// their historical open-hour distribution. domain.ErrNotFound when the
+// recorded history is too thin (see smartSendMinOpens).
+func (s *MailService) SuggestSendTime(ctx context.Context, userID, recipientEmail string) (domain.SendSuggestion, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.SendSuggestion{}, err
+	}
+	hist, err := s.messages.OpenHourHistogram(ctx, userID, recipientEmail)
+	if err != nil {
+		return domain.SendSuggestion{}, err
+	}
+	suggestion, ok := suggestFromHistogram(hist, recipientEmail, s.clock.Now().UTC())
+	if !ok {
+		return domain.SendSuggestion{}, domain.ErrNotFound
+	}
+	return suggestion, nil
+}
+
+const (
+	defaultAttachmentPageSize = 50
+	maxAttachmentPageSize     = 100
+)
+
+func (s *MailService) SearchAttachments(ctx context.Context, userID string, q port.AttachmentQuery) (domain.Page[domain.AttachmentHit], error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.Page[domain.AttachmentHit]{}, err
+	}
+	q.UserID = userID
+	if q.Limit <= 0 {
+		q.Limit = defaultAttachmentPageSize
+	}
+	if q.Limit > maxAttachmentPageSize {
+		q.Limit = maxAttachmentPageSize
+	}
+	page, err := s.messages.SearchAttachments(ctx, q)
+	if err != nil {
+		return domain.Page[domain.AttachmentHit]{}, err
+	}
+	if page.Items == nil {
+		page.Items = []domain.AttachmentHit{}
+	}
+	return page, nil
+}
+
+func (s *MailService) GetAttachmentContent(ctx context.Context, userID, attachmentID string) ([]byte, string, string, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return nil, "", "", err
+	}
+	att, messageID, err := s.messages.GetAttachment(ctx, attachmentID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	msg, err := s.messages.GetByID(ctx, messageID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	acct, err := ownedAccount(ctx, s.accounts, userID, msg.AccountID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if att.ProviderAttachmentID == "" {
+		return nil, "", "", fmt.Errorf("%w: attachment content not synced", domain.ErrNotFound)
+	}
+	provider, ok := s.mail[acct.Provider]
+	if !ok {
+		return nil, "", "", fmt.Errorf("%w: no mail provider for account", domain.ErrValidation)
+	}
+	token, err := s.tokens.accessToken(ctx, acct)
+	if err != nil {
+		return nil, "", "", err
+	}
+	// Provider errors propagate raw (sentinel-preserving): no fmt.Errorf wrap.
+	data, mimeType, err := provider.FetchAttachment(ctx, token, msg.ProviderMessageID, att.ProviderAttachmentID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if mimeType == "" {
+		mimeType = att.MimeType
+	}
+	return data, mimeType, att.Filename, nil
+}
+
+func (s *MailService) GetContact(ctx context.Context, userID, email string) (domain.ContactSummary, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.ContactSummary{}, err
+	}
+	canonical, err := canonicalEmail(email)
+	if err != nil {
+		return domain.ContactSummary{}, fmt.Errorf("%w: invalid email %q", domain.ErrValidation, email)
+	}
+	return s.messages.ContactSummary(ctx, userID, canonical)
+}
+
+// ReactToMessage stores an emoji reaction on messageID (idempotent per
+// (message, user, emoji)) and, when sendReply requests it and the message
+// isn't from the account owner themselves (never reply-react to yourself),
+// also queues a tiny threaded reply through the normal scheduled-send
+// pipeline (grace-delayed, undo-send capable, delivered by the worker).
+//
+// The reaction row persists first with its final Delivery value; queuing the
+// tiny-reply draft is then attempted best-effort (M2.4 Book/ConfirmPoll
+// convention): a failure is logged and discarded, never rolled back against
+// the already-stored reaction.
+func (s *MailService) ReactToMessage(ctx context.Context, userID, messageID, emoji string, sendReply bool) (port.ReactionResult, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return port.ReactionResult{}, err
+	}
+	msg, acct, err := ownedMessage(ctx, s.messages, s.accounts, userID, messageID)
+	if err != nil {
+		return port.ReactionResult{}, err
+	}
+	if err := validateEmoji(emoji); err != nil {
+		return port.ReactionResult{}, err
+	}
+
+	// Never reply-react to your own message: the account owner sent it, so a
+	// threaded "reply" back to themselves makes no sense.
+	willReply := sendReply && !strings.EqualFold(msg.From.Email, acct.Email)
+
+	// When a tiny-reply is wanted, create the draft FIRST: it's fast local DB
+	// work, not an external call, and Delivery's truth depends on whether it
+	// actually lands. Deciding Delivery up front and writing it in a single
+	// Reactions.Create (the repo has no Update; ON CONFLICT preserves the
+	// existing delivery) would leave a permanently false Delivery="sent" row
+	// with no queued draft on a rare drafts.Create failure. So Delivery
+	// below reflects the OBSERVED outcome, not a prediction.
+	var draftID *string
+	delivery := "local"
+	if willReply {
+		now := s.clock.Now()
+		sendAt := now.Add(s.undoSendGrace)
+		draft := domain.Draft{
+			ID:          newID(),
+			AccountID:   acct.ID,
+			ThreadID:    &msg.ThreadID,
+			To:          []domain.EmailAddress{msg.From},
+			Subject:     "Re: " + msg.Subject,
+			BodyHTML:    "<p>" + emoji + "</p>",
+			ScheduledAt: &sendAt,
+			UpdatedAt:   now,
+		}
+		created, err := s.drafts.Create(ctx, draft)
+		if err != nil {
+			// Best-effort: a failed draft never fails the reaction; it is
+			// logged and discarded rather than rolled back, and simply
+			// leaves the reaction recorded as "local" below.
+			s.logger.Warn("tiny-reply draft creation failed", "message", messageID, "error", err)
+		} else {
+			id := created.ID
+			draftID = &id
+			delivery = "sent"
+		}
+	}
+
+	react, err := s.reactions.Create(ctx, domain.Reaction{
+		MessageID: messageID,
+		UserID:    userID,
+		Emoji:     emoji,
+		Delivery:  delivery,
+	})
+	if err != nil {
+		return port.ReactionResult{}, err
+	}
+	return port.ReactionResult{Reaction: react, DraftID: draftID}, nil
+}
+
+// RemoveReaction deletes the caller's reaction from messageID.
+// domain.ErrNotFound when it doesn't exist.
+func (s *MailService) RemoveReaction(ctx context.Context, userID, messageID, emoji string) error {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return err
+	}
+	if _, _, err := ownedMessage(ctx, s.messages, s.accounts, userID, messageID); err != nil {
+		return err
+	}
+	return s.reactions.DeleteByEmoji(ctx, messageID, userID, emoji)
+}
+
+// maxEmojiBytes bounds a stored reaction's emoji: generous enough for any
+// real emoji (including multi-codepoint ZWJ sequences like "👨‍👩‍👧‍👦") while
+// rejecting arbitrary text.
+const maxEmojiBytes = 16
+
+// validateEmoji rejects anything that isn't a short, letter/digit-free emoji:
+// empty, over maxEmojiBytes, or containing an ASCII letter or digit (which
+// would make it plain text, not an emoji).
+func validateEmoji(emoji string) error {
+	if emoji == "" {
+		return fmt.Errorf("%w: emoji is required", domain.ErrValidation)
+	}
+	if len(emoji) > maxEmojiBytes {
+		return fmt.Errorf("%w: emoji must be at most %d bytes", domain.ErrValidation, maxEmojiBytes)
+	}
+	for _, r := range emoji {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return fmt.Errorf("%w: emoji must not contain ASCII letters or digits", domain.ErrValidation)
+		}
+	}
+	return nil
 }

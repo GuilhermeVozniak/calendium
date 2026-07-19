@@ -4,7 +4,7 @@ import * as React from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { Draft, InboxSplit, Label, Thread } from '@calendium/shared';
 import { EMPTY_SELECTION, clearSelection, extendSelection, nextAfterRemoval, toggleSelected } from '@calendium/shared';
-import { Loader2, Search, Sparkles, Star, Trash2 } from 'lucide-react';
+import { Loader2, MailOpen, Search, Sparkles, Star, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { BulkBar } from '@/components/app/bulk-bar';
@@ -13,13 +13,16 @@ import { htmlToText, useCompose } from '@/components/app/compose';
 import { GetMeToZero } from '@/components/app/get-me-to-zero';
 import { InboxZero } from '@/components/app/inbox-zero';
 import { LabelPicker } from '@/components/app/label-picker';
+import { OpensFeed } from '@/components/app/opens-feed';
 import { TimePickerDialog } from '@/components/app/snooze-menu';
 import { ThreadView } from '@/components/app/thread-view';
 import { AiDraftBadge } from '@/components/mail/ai-draft-badge';
 import { ProposeEventDialog } from '@/components/mail/propose-event-dialog';
+import { Button } from '@/components/ui/button';
 import { Kbd, KbdGroup } from '@/components/ui/kbd';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { getApiClient } from '@/lib/api';
 import { sharedLabelIds } from '@/lib/mail-helpers';
 import {
@@ -37,7 +40,7 @@ import {
 } from '@/lib/mail-utils';
 import { usePrefs } from '@/lib/prefs-data';
 import { useSelfEmails } from '@/lib/use-identity';
-import { MOD_KEY, useShortcuts } from '@/lib/shortcuts';
+import { MOD_KEY, useChords, useShortcuts } from '@/lib/shortcuts';
 import { useDraftActions, useDrafts, useLabels, useMailActions, useThreadList } from '@/lib/use-mail';
 import { cn } from '@/lib/utils';
 
@@ -187,6 +190,11 @@ function MailClient() {
   // localStorage isn't available.
   const [peekOpen, setPeekOpen] = React.useState(false);
   React.useEffect(() => setPeekOpen(readStoredCalendarPeekOpen()), []);
+
+  // Recent Opens feed (M2.5, task 15): a right-side panel showing sent
+  // messages that have been opened, toggled the same way as CalendarPeek
+  // above — a page-local boolean, no cross-route persistence.
+  const [opensOpen, setOpensOpen] = React.useState(false);
 
   const undo = React.useCallback(() => {
     void undoLast().then((did) => {
@@ -484,6 +492,8 @@ function MailClient() {
     },
   ]);
 
+  useChords([{ keys: 'g o', description: 'Toggle Recent Opens', handler: () => setOpensOpen((o) => !o) }]);
+
   // --- Command palette bridge ----------------------------------------------
   // Same-route commands arrive as a DOM event; cross-route commands are queued
   // (lib/mail-utils) and consumed here on mount, so neither is dropped by a
@@ -572,7 +582,24 @@ function MailClient() {
               </TabsList>
             </Tabs>
           )}
-          <div className="relative ml-auto min-w-32 flex-1 sm:max-w-56">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="ml-auto size-8"
+                aria-label="Toggle Recent Opens"
+                aria-pressed={opensOpen}
+                onClick={() => setOpensOpen((o) => !o)}
+              >
+                <MailOpen className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              Recent opens <KbdGroup size="sm" keys={['G', 'O']} />
+            </TooltipContent>
+          </Tooltip>
+          <div className="relative min-w-32 flex-1 sm:max-w-56">
             <Search className="text-muted-foreground absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
             <input
               ref={searchRef}
@@ -681,6 +708,7 @@ function MailClient() {
       )}
 
       <CalendarPeek open={peekOpen} onOpenChange={setPeekOpen} />
+      <OpensFeed open={opensOpen} onOpenChange={setOpensOpen} />
       <ProposeEventDialog
         threadId={openThreadId}
         open={proposeEventOpen}

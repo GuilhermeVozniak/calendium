@@ -25,10 +25,12 @@ vi.mock('@/lib/settings-data', () => ({
 const useSnippetsMock = vi.fn();
 const runAiComposeMock = vi.fn();
 const aiErrorMessageMock = vi.fn((..._args: unknown[]) => 'AI is unavailable right now. Please try again.');
+const useSendSuggestionMock = vi.fn();
 vi.mock('@/lib/use-mail', () => ({
   useSnippets: () => useSnippetsMock(),
   runAiCompose: (...args: unknown[]) => runAiComposeMock(...args),
   aiErrorMessage: (...args: unknown[]) => aiErrorMessageMock(...args),
+  useSendSuggestion: (...args: unknown[]) => useSendSuggestionMock(...args),
 }));
 
 const useInstanceMock = vi.fn();
@@ -69,8 +71,26 @@ const ACCOUNT: ConnectedAccount = {
   status: 'active',
   scopes: [],
   vipSenders: [],
+  signatureHtml: '',
+  autoBcc: [],
   lastSyncedAt: null,
   createdAt: new Date().toISOString(),
+};
+
+const SIGNATURE_BLOCK = '\n\n-- \nJane Doe\nAcme Inc';
+
+const ACCOUNT_WITH_SIGNATURE: ConnectedAccount = {
+  ...ACCOUNT,
+  id: 'acc-sig-1',
+  email: 'acme@example.com',
+  signatureHtml: '<p>Jane Doe<br/>Acme Inc</p>',
+};
+
+const ACCOUNT_WITH_SIGNATURE_2: ConnectedAccount = {
+  ...ACCOUNT,
+  id: 'acc-sig-2',
+  email: 'bob@example.com',
+  signatureHtml: '<p>Bob Smith</p>',
 };
 
 function Harness({ initial }: { initial?: ComposeInitial }) {
@@ -113,6 +133,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   fetchAccountsMock.mockResolvedValue([ACCOUNT]);
   useSnippetsMock.mockReturnValue({ data: [] as Snippet[] });
+  useSendSuggestionMock.mockReturnValue({ data: null });
   useInstanceMock.mockReturnValue({
     data: { features: { ai: false }, undoSendSeconds: 15 },
   });
@@ -472,6 +493,145 @@ describe('ComposeForm — send flow', () => {
     );
     // Dialog stays open with the composed text intact — never fakes success.
     expect(screen.getByPlaceholderText('Subject')).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ComposeForm — signature auto-apply (M2.5)
+// ---------------------------------------------------------------------------
+
+describe('ComposeForm — signature auto-apply', () => {
+  it('appends the account signature as plain text after "--" once', async () => {
+    fetchAccountsMock.mockResolvedValue([ACCOUNT_WITH_SIGNATURE]);
+    renderCompose();
+    await waitForAccountsLoaded(ACCOUNT_WITH_SIGNATURE.email);
+    const bodyInput = await screen.findByPlaceholderText(/Write your message/);
+    await waitFor(() => expect(bodyInput).toHaveValue(SIGNATURE_BLOCK));
+    // Settling again must not duplicate the block.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(bodyInput).toHaveValue(SIGNATURE_BLOCK);
+  });
+
+  it('swaps the previous account signature for the new one on account switch', async () => {
+    fetchAccountsMock.mockResolvedValue([ACCOUNT_WITH_SIGNATURE, ACCOUNT_WITH_SIGNATURE_2]);
+    const user = userEvent.setup();
+    renderCompose();
+    await waitForAccountsLoaded(ACCOUNT_WITH_SIGNATURE.email);
+    const bodyInput = await screen.findByPlaceholderText(/Write your message/);
+    await waitFor(() => expect(bodyInput).toHaveValue(SIGNATURE_BLOCK));
+
+    await user.click(screen.getByRole('button', { name: ACCOUNT_WITH_SIGNATURE.email }));
+    await user.click(screen.getByText(ACCOUNT_WITH_SIGNATURE_2.email));
+
+    await waitFor(() => expect(bodyInput).toHaveValue('\n\n-- \nBob Smith'));
+  });
+
+  it('does not append anything when the account has no signature', async () => {
+    fetchAccountsMock.mockResolvedValue([ACCOUNT]);
+    renderCompose();
+    await waitForAccountsLoaded(ACCOUNT.email);
+    const bodyInput = await screen.findByPlaceholderText(/Write your message/);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(bodyInput).toHaveValue('');
+  });
+
+  it('sends the rich signatureHtml (not the plain-text placeholder) in the sent bodyHtml', async () => {
+    fetchAccountsMock.mockResolvedValue([ACCOUNT_WITH_SIGNATURE]);
+    const user = userEvent.setup();
+    renderCompose();
+    await waitForAccountsLoaded(ACCOUNT_WITH_SIGNATURE.email);
+
+    const toInput = await screen.findByPlaceholderText('name@example.com');
+    await user.type(toInput, 'a@b.co{Enter}');
+    const bodyInput = screen.getByPlaceholderText(/Write your message/);
+    await waitFor(() => expect(bodyInput).toHaveValue(SIGNATURE_BLOCK));
+    fireEvent.change(bodyInput, { target: { value: `Hello there${SIGNATURE_BLOCK}` } });
+
+    fireEvent.keyDown(bodyInput, { key: 'Enter', ctrlKey: true, metaKey: true });
+
+    await waitFor(() => expect(saveDraftMock).toHaveBeenCalledTimes(1));
+    const input = saveDraftMock.mock.calls[0]![0];
+    expect(input.bodyHtml).toBe('<p>Hello there</p><p>--</p><p>Jane Doe<br/>Acme Inc</p>');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ComposeForm — Smart Send nudge (M2.5)
+// ---------------------------------------------------------------------------
+
+describe('ComposeForm — Smart Send nudge', () => {
+  const SUGGESTION = {
+    email: 'a@b.co',
+    suggestedAt: '2026-07-20T14:00:00.000Z',
+    utcOffsetHours: -5,
+    confidence: 0.72,
+    sampleSize: 12,
+  };
+
+  it('debounces the recipient email by 500ms before querying a suggestion', async () => {
+    useSendSuggestionMock.mockReturnValue({ data: null });
+    const user = userEvent.setup();
+    renderCompose();
+    await waitForAccountsLoaded(ACCOUNT.email);
+    const toInput = await screen.findByPlaceholderText('name@example.com');
+    await user.type(toInput, 'a@b.co{Enter}');
+
+    expect(useSendSuggestionMock).not.toHaveBeenCalledWith('a@b.co');
+    await waitFor(() => expect(useSendSuggestionMock).toHaveBeenCalledWith('a@b.co'), {
+      timeout: 1000,
+    });
+  });
+
+  it('renders a dismissible chip and schedules the send on click', async () => {
+    useSendSuggestionMock.mockReturnValue({ data: SUGGESTION });
+    const user = userEvent.setup();
+    renderCompose();
+    await waitForAccountsLoaded(ACCOUNT.email);
+    const toInput = await screen.findByPlaceholderText('name@example.com');
+    await user.type(toInput, 'a@b.co{Enter}');
+
+    // 14:00 UTC shifted by -5h offset = 09:00 local = morning.
+    const chip = await screen.findByText(/Best time:.*their morning/);
+    await user.click(chip);
+
+    expect(await screen.findByRole('button', { name: /Schedule/ })).toBeInTheDocument();
+  });
+
+  it('dismisses the chip without scheduling', async () => {
+    useSendSuggestionMock.mockReturnValue({ data: SUGGESTION });
+    const user = userEvent.setup();
+    renderCompose();
+    await waitForAccountsLoaded(ACCOUNT.email);
+    const toInput = await screen.findByPlaceholderText('name@example.com');
+    await user.type(toInput, 'a@b.co{Enter}');
+
+    await screen.findByText(/Best time:/);
+    await user.click(screen.getByRole('button', { name: 'Dismiss suggested send time' }));
+
+    expect(screen.queryByText(/Best time:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Sends /)).not.toBeInTheDocument();
+  });
+
+  it('renders nothing when confidence is below 0.3', async () => {
+    useSendSuggestionMock.mockReturnValue({ data: { ...SUGGESTION, confidence: 0.2 } });
+    const user = userEvent.setup();
+    renderCompose();
+    await waitForAccountsLoaded(ACCOUNT.email);
+    const toInput = await screen.findByPlaceholderText('name@example.com');
+    await user.type(toInput, 'a@b.co{Enter}');
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(screen.queryByText(/Best time:/)).not.toBeInTheDocument();
+  });
+
+  it('renders nothing when the hook resolves null (404 / insufficient data)', async () => {
+    useSendSuggestionMock.mockReturnValue({ data: null });
+    const user = userEvent.setup();
+    renderCompose();
+    await waitForAccountsLoaded(ACCOUNT.email);
+    const toInput = await screen.findByPlaceholderText('name@example.com');
+    await user.type(toInput, 'a@b.co{Enter}');
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(screen.queryByText(/Best time:/)).not.toBeInTheDocument();
   });
 });
 

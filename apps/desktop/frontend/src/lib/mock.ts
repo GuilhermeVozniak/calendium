@@ -2,13 +2,20 @@ import type {
   AiClassifier,
   AiEventProposal,
   AiSource,
+  AttachmentHit,
   Calendar,
   ClassifierInput,
   ConnectedAccount,
+  ContactSummary,
+  EmailAddress,
   Event,
   EventInput,
   InboxSplit,
   Message,
+  OpenEvent,
+  Reaction,
+  ReactionResult,
+  SendSuggestion,
   Subscription,
   Thread,
   User,
@@ -31,7 +38,7 @@ export const mockUser: User = {
   createdAt: iso(subDays(now, 42)),
 };
 
-export const mockAccounts: ConnectedAccount[] = [
+export let mockAccounts: ConnectedAccount[] = [
   {
     id: 'acc_google',
     provider: 'google',
@@ -39,6 +46,8 @@ export const mockAccounts: ConnectedAccount[] = [
     status: 'active',
     scopes: ['gmail', 'calendar'],
     vipSenders: [],
+    signatureHtml: '<p>Ada Lovelace<br>Calendium</p>',
+    autoBcc: [],
     lastSyncedAt: iso(subMinutes(now, 2)),
     createdAt: iso(subDays(now, 42)),
   },
@@ -49,10 +58,24 @@ export const mockAccounts: ConnectedAccount[] = [
     status: 'syncing',
     scopes: ['mail.read', 'calendars.readwrite'],
     vipSenders: [],
+    signatureHtml: '',
+    autoBcc: [],
     lastSyncedAt: null,
     createdAt: iso(subDays(now, 3)),
   },
 ];
+
+/** Local fallback for PUT .../signature when no server is configured (M2.5). */
+export function updateMockSignature(accountId: string, signatureHtml: string): ConnectedAccount {
+  mockAccounts = mockAccounts.map((a) => (a.id === accountId ? { ...a, signatureHtml } : a));
+  return { ...mockAccounts.find((a) => a.id === accountId)! };
+}
+
+/** Local fallback for PUT .../auto-bcc when no server is configured (M2.5). */
+export function updateMockAutoBcc(accountId: string, autoBcc: string[]): ConnectedAccount {
+  mockAccounts = mockAccounts.map((a) => (a.id === accountId ? { ...a, autoBcc } : a));
+  return { ...mockAccounts.find((a) => a.id === accountId)! };
+}
 
 interface ThreadSeed {
   id: string;
@@ -68,6 +91,8 @@ interface ThreadSeed {
   summary?: string;
   /** Scripted AI instant-reply suggestions. */
   instantReplies?: string[];
+  /** Attached to the thread's oldest (inbound) message. */
+  attachments?: { filename: string; mimeType: string; sizeBytes: number }[];
 }
 
 const threadSeeds: ThreadSeed[] = [
@@ -88,7 +113,7 @@ const threadSeeds: ThreadSeed[] = [
       'Approved — let’s move forward.',
     ],
   },
-  { id: 'thr_2', split: 'important', subject: 'Contract renewal — signature needed', snippet: 'The updated MSA is attached. One change to §4.2 (net-30 → net-45), everything else…', from: { name: 'Margaret Hamilton', email: 'margaret@apollo.dev' }, agoMinutes: 95, unread: true, starred: true, messageCount: 2 },
+  { id: 'thr_2', split: 'important', subject: 'Contract renewal — signature needed', snippet: 'The updated MSA is attached. One change to §4.2 (net-30 → net-45), everything else…', from: { name: 'Margaret Hamilton', email: 'margaret@apollo.dev' }, agoMinutes: 95, unread: true, starred: true, messageCount: 2, attachments: [{ filename: 'MSA-v3.pdf', mimeType: 'application/pdf', sizeBytes: 245_760 }] },
   { id: 'thr_3', split: 'vip', subject: 'Intro: Katherine ↔ Ada', snippet: 'Ada, meet Katherine — she led the trajectory work I mentioned. I think a 30-min…', from: { name: 'Dorothy Vaughan', email: 'dorothy@nasa.gov' }, agoMinutes: 240, messageCount: 3 },
   { id: 'thr_4', split: 'team', subject: 'Standup notes — Wednesday', snippet: 'Shipped: split-inbox classifier v2. Blocked: Graph delta tokens expiring early, needs…', from: { name: 'Alan Turing', email: 'alan@team.calendium.app' }, agoMinutes: 300, unread: true, messageCount: 1 },
   { id: 'thr_5', split: 'important', subject: 'Re: Latency budget for thread list', snippet: 'Got p95 under 80ms by mirroring bodies into Postgres and precomputing the split…', from: { name: 'Barbara Liskov', email: 'barbara@abstractions.org' }, agoMinutes: 26 * 60, starred: true, messageCount: 7 },
@@ -135,8 +160,9 @@ export function mockThread(threadId: string): { thread: Thread; messages: Messag
   const messages: Message[] = Array.from({ length: count }, (_, i) => {
     const fromMe = i % 2 === 1;
     const sender = fromMe ? { name: mockUser.name, email: mockUser.email } : seed.from;
+    const id = `${seed.id}_msg_${i + 1}`;
     return {
-      id: `${seed.id}_msg_${i + 1}`,
+      id,
       threadId: seed.id,
       accountId: 'acc_google',
       from: sender,
@@ -146,13 +172,169 @@ export function mockThread(threadId: string): { thread: Thread; messages: Messag
       subject: seed.subject,
       bodyHtml: `<p>${seed.snippet}</p><p>— ${sender.name}</p>`,
       bodyText: `${seed.snippet}\n\nHappy to walk through the details whenever suits — my calendar is up to date, grab any slot.\n\n— ${sender.name}`,
-      attachments: [],
+      attachments:
+        i === 0
+          ? (seed.attachments ?? []).map((a, ai) => ({ id: `${seed.id}_att_${ai + 1}`, ...a }))
+          : [],
       sentAt: iso(subMinutes(now, seed.agoMinutes + (count - 1 - i) * 45)),
       isDraft: false,
       openedAt: fromMe ? iso(subMinutes(now, seed.agoMinutes)) : null,
+      reactions: reactionsForMessage(id),
     };
   });
   return { thread, messages };
+}
+
+// --- Reactions (M2.5) — module state so a reaction added via the UI persists
+// for the rest of the demo session, the same pattern as mockClassifiers. -----
+
+let mockReactionsState: Record<string, Reaction[]> = {};
+let nextMockReactionId = 1;
+
+function reactionsForMessage(messageId: string): Reaction[] {
+  return mockReactionsState[messageId] ?? [];
+}
+
+/** Local fallback for POST .../reactions when no server is configured. */
+export function mockReactToMessage(messageId: string, emoji: string, sendReply = false): ReactionResult {
+  const reaction: Reaction = {
+    id: `rxn_local_${nextMockReactionId++}`,
+    messageId,
+    emoji,
+    delivery: sendReply ? 'sent' : 'local',
+    createdAt: iso(new Date()),
+  };
+  mockReactionsState = {
+    ...mockReactionsState,
+    [messageId]: [...reactionsForMessage(messageId).filter((r) => r.emoji !== emoji), reaction],
+  };
+  return { reaction, draftId: sendReply ? `draft_local_reaction_${reaction.id}` : null };
+}
+
+/** Local fallback for DELETE .../reactions/{emoji} when no server is configured. */
+export function mockRemoveReaction(messageId: string, emoji: string): void {
+  mockReactionsState = {
+    ...mockReactionsState,
+    [messageId]: reactionsForMessage(messageId).filter((r) => r.emoji !== emoji),
+  };
+}
+
+// --- Recent Opens feed (M2.5) -----------------------------------------------
+
+interface OpenSeed {
+  messageId: string;
+  threadId: string;
+  subject: string;
+  recipients: EmailAddress[];
+  sentMinutesAgo: number;
+  openedMinutesAgo: number;
+}
+
+const openSeeds: OpenSeed[] = [
+  {
+    messageId: 'thr_2_msg_2',
+    threadId: 'thr_2',
+    subject: 'Re: Contract renewal — signature needed',
+    recipients: [{ name: 'Margaret Hamilton', email: 'margaret@apollo.dev' }],
+    sentMinutesAgo: 130,
+    openedMinutesAgo: 40,
+  },
+  {
+    messageId: 'thr_5_msg_2',
+    threadId: 'thr_5',
+    subject: 'Re: Latency budget for thread list',
+    recipients: [{ name: 'Barbara Liskov', email: 'barbara@abstractions.org' }],
+    sentMinutesAgo: 26 * 60 + 10,
+    openedMinutesAgo: 25 * 60,
+  },
+  {
+    messageId: 'thr_10_msg_2',
+    threadId: 'thr_10',
+    subject: 'Re: Dinner Friday?',
+    recipients: [{ name: 'Charles Babbage', email: 'charles@difference.engine' }],
+    sentMinutesAgo: 9 * 60,
+    openedMinutesAgo: 60,
+  },
+];
+
+/** Local fallback for GET /v1/mail/opens when no server is configured. */
+export function mockOpens(): OpenEvent[] {
+  return openSeeds
+    .map((s) => ({
+      messageId: s.messageId,
+      threadId: s.threadId,
+      accountId: 'acc_google',
+      subject: s.subject,
+      recipients: s.recipients,
+      sentAt: iso(subMinutes(now, s.sentMinutesAgo)),
+      openedAt: iso(subMinutes(now, s.openedMinutesAgo)),
+    }))
+    .sort((a, b) => new Date(b.openedAt).getTime() - new Date(a.openedAt).getTime());
+}
+
+// --- Smart Send (M2.5) ------------------------------------------------------
+
+const SEND_SUGGESTIONS: Record<string, Omit<SendSuggestion, 'email' | 'suggestedAt'>> = {
+  'grace@compilers.io': { utcOffsetHours: -5, confidence: 0.82, sampleSize: 14 },
+  'margaret@apollo.dev': { utcOffsetHours: 1, confidence: 0.67, sampleSize: 6 },
+};
+
+/**
+ * Local fallback for GET /v1/mail/send-suggestion. Returns null for contacts
+ * with no scripted history — mirrors the backend's 404 when history is too
+ * thin, so the Smart Send chip stays honestly hidden rather than guessing.
+ */
+export function mockSendSuggestion(email: string): SendSuggestion | null {
+  const match = SEND_SUGGESTIONS[email.toLowerCase()];
+  if (!match) return null;
+  const suggested = setMinutes(setHours(startOfDay(addDays(now, 1)), 9), 0);
+  return { email, suggestedAt: iso(suggested), ...match };
+}
+
+// --- Attachments (M2.5) -----------------------------------------------------
+
+/** Local fallback for GET /v1/mail/attachments?threadId=… when no server is configured. */
+export function mockAttachmentsForThread(threadId: string): AttachmentHit[] {
+  const seed = threadSeeds.find((s) => s.id === threadId);
+  if (!seed?.attachments?.length) return [];
+  return seed.attachments.map((a, i) => ({
+    id: `${seed.id}_att_${i + 1}`,
+    filename: a.filename,
+    mimeType: a.mimeType,
+    sizeBytes: a.sizeBytes,
+    messageId: `${seed.id}_msg_1`,
+    threadId: seed.id,
+    threadSubject: seed.subject,
+    from: seed.from,
+    sentAt: iso(subMinutes(now, seed.agoMinutes)),
+  }));
+}
+
+/** Local fallback for GET .../attachments/{id}/content when no server is configured. */
+export function mockAttachmentBlob(_attachmentId: string): Blob {
+  return new Blob(['%PDF-1.4\n%%EOF'], { type: 'application/pdf' });
+}
+
+// --- Contact summary (M2.5) -------------------------------------------------
+
+/** Local fallback for GET /v1/mail/contacts/{email} when no server is configured. */
+export function mockContactSummary(email: string): ContactSummary | null {
+  const normalized = email.toLowerCase();
+  const matches = threadSeeds.filter((s) => s.from.email.toLowerCase() === normalized);
+  if (matches.length === 0) return null;
+  const threads = matches
+    .map(seedToThread)
+    .sort((a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime());
+  const messageCount = matches.reduce((sum, s) => sum + (s.messageCount ?? 1), 0);
+  return {
+    email: matches[0]!.from.email,
+    name: matches[0]!.from.name,
+    domain: matches[0]!.from.email.split('@')[1] ?? '',
+    threadCount: matches.length,
+    messageCount,
+    lastMessageAt: threads[0]?.lastMessageAt ?? null,
+    recentThreads: threads.slice(0, 5),
+  };
 }
 
 export const mockCalendars: Calendar[] = [
