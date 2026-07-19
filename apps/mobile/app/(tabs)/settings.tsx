@@ -113,24 +113,29 @@ export default function SettingsScreen() {
   };
 
   const saveMailPrefsMutation = useMutation({
-    mutationFn: async (accountId: string) => {
-      const draft = drafts[accountId] ?? { signature: '', autoBcc: '' };
-      const signatureHtml = plainTextToHtml(draft.signature);
-      const autoBcc = draft.autoBcc
-        .split(/[,;\s]+/)
-        .map((email) => email.trim())
-        .filter(Boolean);
-      const [, autoBccAccount] = await Promise.all([
-        withMockFallback(
-          () => api.setSignature(accountId, signatureHtml),
-          () => mockSetSignature(accountId, signatureHtml)
-        ),
-        withMockFallback(
-          () => api.setAutoBcc(accountId, autoBcc),
-          () => mockSetAutoBcc(accountId, autoBcc)
-        ),
-      ]);
-      return autoBccAccount;
+    // Sequenced, not Promise.all: the backend's Update is a full-row
+    // read-modify-write, so two concurrent PUTs (signature, auto-BCC) each
+    // read the row before either write lands and the second write clobbers
+    // the first's change (lost update). Awaiting signature first means its
+    // write is committed before auto-BCC reads the row, so the final
+    // response — cached below — reflects both fields.
+    //
+    // The payload is computed at the call site (see saveMailPrefs below) and
+    // passed in here rather than read from `drafts` inside this closure:
+    // react-query applies a fresh mutationFn to its observer via a
+    // useEffect, so a mutationFn that reads component state directly can
+    // observe a render that is one commit behind the button press that
+    // triggered it. Accepting the already-computed values sidesteps that
+    // staleness entirely.
+    mutationFn: async (input: { accountId: string; signatureHtml: string; autoBcc: string[] }) => {
+      await withMockFallback(
+        () => api.setSignature(input.accountId, input.signatureHtml),
+        () => mockSetSignature(input.accountId, input.signatureHtml)
+      );
+      return withMockFallback(
+        () => api.setAutoBcc(input.accountId, input.autoBcc),
+        () => mockSetAutoBcc(input.accountId, input.autoBcc)
+      );
     },
     onSuccess: (account) => {
       updateAccountCache(account);
@@ -280,7 +285,18 @@ export default function SettingsScreen() {
                   variant="outline"
                   size="sm"
                   className="flex-row gap-2 self-start"
-                  onPress={() => saveMailPrefsMutation.mutate(account.id)}
+                  onPress={() => {
+                    const draft = drafts[account.id] ?? { signature: '', autoBcc: '' };
+                    const autoBcc = draft.autoBcc
+                      .split(/[,;\s]+/)
+                      .map((email) => email.trim())
+                      .filter(Boolean);
+                    saveMailPrefsMutation.mutate({
+                      accountId: account.id,
+                      signatureHtml: plainTextToHtml(draft.signature),
+                      autoBcc,
+                    });
+                  }}
                   disabled={saveMailPrefsMutation.isPending}
                   testID={`save-mail-prefs-${account.id}`}>
                   {saveMailPrefsMutation.isPending ? <ActivityIndicator size="small" /> : null}
