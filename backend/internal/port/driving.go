@@ -553,3 +553,12 @@ type CollabService interface {
 	// DeleteComment: the author, or a team admin+ (soft delete).
 	DeleteComment(ctx context.Context, userID, commentID string) error
 }
+
+// --- Weather (M2.8 Task 13) --------------------------------------------------
+
+// WeatherService serves inline day forecasts for calendar surfaces
+// (GET /v1/weather). Entitlement-gated like every other product surface.
+type WeatherService interface {
+	// Forecast serves up to 14 days; cached ~30 minutes per location.
+	Forecast(ctx context.Context, userID string, lat, lon float64, timeZone string, days int) ([]domain.DayForecast, error)
+}

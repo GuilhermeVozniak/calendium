@@ -4,13 +4,14 @@ import * as React from 'react';
 import { addDays, addMinutes, endOfDay, format, isSameDay, isToday, startOfDay } from 'date-fns';
 import { X } from 'lucide-react';
 
-import type { Calendar as CalendarModel, Event } from '@calendium/shared';
+import type { Calendar as CalendarModel, DayForecast, Event } from '@calendium/shared';
 
 import { hourLabelInZone, tzAbbrev, zoneCaption } from '@/lib/timezones';
 import { cn } from '@/lib/utils';
 
 import { FALLBACK_COLOR, withAlpha } from './event-render';
 import { JoinButton } from './join-button';
+import { WeatherChip } from './weather-chip';
 
 /** Event blocks at/above this height (px) have room for a second text row (time range + Join). */
 const JOIN_BUTTON_MIN_HEIGHT = 40;
@@ -128,6 +129,8 @@ export interface TimeGridProps {
   timeTravelZone?: string | null;
   /** Clears the Time Travel overlay from its gutter's own exit control (mirrors Esc, wired in components/app/time-travel.tsx). */
   onExitTimeTravel?: () => void;
+  /** Day-keyed (yyyy-MM-dd) forecasts (M2.8 Task 13); absent → no weather chips. */
+  weatherByDate?: Map<string, DayForecast>;
   onSlotClick: (start: Date) => void;
   onEventClick: (event: Event) => void;
 }
@@ -141,6 +144,7 @@ export function TimeGrid({
   pinnedZones = [],
   timeTravelZone = null,
   onExitTimeTravel,
+  weatherByDate,
   onSlotClick,
   onEventClick,
 }: TimeGridProps) {
@@ -213,6 +217,10 @@ export function TimeGrid({
                   >
                     {format(day, 'd')}
                   </div>
+                  <WeatherChip
+                    forecast={weatherByDate?.get(format(day, 'yyyy-MM-dd'))}
+                    className="mt-0.5"
+                  />
                   {dayAllDay.slice(0, 2).map((event) => {
                     const color = calendarById.get(event.calendarId)?.color ?? FALLBACK_COLOR;
                     return (

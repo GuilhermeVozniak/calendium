@@ -57,6 +57,10 @@ type Deps struct {
 	// TeamActivity serves teammate read/reply indicators (M2.7 Task 10);
 	// when nil the team-activity route answers 501.
 	TeamActivity port.TeamActivityService
+	// Weather serves inline day forecasts for calendar surfaces (M2.8 Task
+	// 13, Open-Meteo). When nil — no vendor configured — GET /v1/weather
+	// answers 501 and clients hide the weather chips.
+	Weather port.WeatherService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -269,6 +273,10 @@ func New(deps Deps) http.Handler {
 	authed("POST /v1/delegations/{id}/accept", s.handleAcceptDelegation)
 	authed("DELETE /v1/delegations/{id}", s.handleRevokeDelegation)
 	authed("GET /v1/delegations/audit", s.handleDelegationAudit)
+
+	// M2.8 Task 13: inline weather on calendar days. Best-effort decoration:
+	// its own endpoint, never on a calendar request's critical path.
+	authed("GET /v1/weather", s.handleGetWeather)
 
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins)

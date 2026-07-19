@@ -712,3 +712,15 @@ type EventBus interface {
 	// cancel func. The channel closes on cancel.
 	Subscribe(topics []string) (<-chan CollabEvent, func())
 }
+
+// ---------------------------------------------------------------------------
+// Weather (M2.8 Task 13, implemented by internal/adapter/out/openmeteo)
+// ---------------------------------------------------------------------------
+
+// WeatherProvider fetches a multi-day daily forecast for one location.
+// Weather is best-effort decoration on calendar surfaces: implementations
+// must use a short timeout, and callers must degrade gracefully (hide the
+// chip) on any error — a vendor failure never fails a calendar request.
+type WeatherProvider interface {
+	DailyForecast(ctx context.Context, lat, lon float64, timeZone string, days int) ([]domain.DayForecast, error)
+}

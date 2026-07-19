@@ -1965,3 +1965,43 @@ describe('calendar shares & team availability', () => {
     ).rejects.toMatchObject({ status: 404, code: 'not_found' });
   });
 });
+
+describe('weather (M2.8 Task 13)', () => {
+  const rows = [
+    { date: '2026-07-19', code: 3, highCelsius: 24.6, lowCelsius: 13.1, precipChance: 20 },
+    { date: '2026-07-20', code: 61, highCelsius: 19.2, lowCelsius: 12.4, precipChance: 85 },
+  ];
+
+  it('requests GET /v1/weather with lat/lon/tz/days and returns the rows', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: rows }] });
+    const got = await client.getWeather(52.52, 13.405, 'Europe/Berlin', 5);
+    expect(got).toEqual(rows);
+    expect(calls[0]!.method).toBe('GET');
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe('/v1/weather');
+    expect(searchParamsToObject(url.searchParams)).toEqual({
+      lat: '52.52',
+      lon: '13.405',
+      tz: 'Europe/Berlin',
+      days: '5',
+    });
+  });
+
+  it('defaults days to 7', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: [] }] });
+    await client.getWeather(0, 0, 'UTC');
+    expect(new URL(calls[0]!.url).searchParams.get('days')).toBe('7');
+  });
+
+  it('maps a 501 unconfigured response to ApiRequestError(501, not_implemented)', async () => {
+    const { client } = makeClient({
+      responses: [
+        { status: 501, body: { error: { code: 'not_implemented', message: 'no vendor' } } },
+      ],
+    });
+    await expect(client.getWeather(0, 0, 'UTC')).rejects.toMatchObject({
+      status: 501,
+      code: 'not_implemented',
+    });
+  });
+});

@@ -1,4 +1,4 @@
-import { addDays, addMinutes, setHours, setMinutes, startOfDay, startOfWeek } from 'date-fns';
+import { addDays, addMinutes, format, setHours, setMinutes, startOfDay, startOfWeek } from 'date-fns';
 
 import type {
   Attendee,
@@ -6,6 +6,7 @@ import type {
   Calendar,
   CalendarSet,
   CalendarSetInput,
+  DayForecast,
   Event,
   EventInput,
   EventPatch,
@@ -604,3 +605,27 @@ export const calendarMock = {
     s.sets = s.sets.filter((x) => x.id !== id);
   },
 };
+
+// ---------------------------------------------------------------------------
+// Weather (M2.8 Task 13) — demo forecast. Served only behind explicit demo
+// mode (lib/demo.ts honesty policy): lib/use-weather.ts falls back to this
+// when DEMO_MODE is on and the real GET /v1/weather is unreachable.
+// ---------------------------------------------------------------------------
+
+/** WMO codes cycled through so the demo shows a varied but stable week. */
+const DEMO_WEATHER_CODES = [0, 1, 2, 3, 61, 71, 95];
+
+/**
+ * Deterministic day forecasts starting at `from` (default today), clamped to
+ * 1..14 days — the same window GET /v1/weather serves.
+ */
+export function mockForecast(days: number, from: Date = new Date()): DayForecast[] {
+  const count = Math.max(1, Math.min(14, days));
+  return Array.from({ length: count }, (_, i) => ({
+    date: format(addDays(startOfDay(from), i), 'yyyy-MM-dd'),
+    code: DEMO_WEATHER_CODES[i % DEMO_WEATHER_CODES.length] ?? 0,
+    highCelsius: 18 + ((i * 3) % 9),
+    lowCelsius: 9 + ((i * 2) % 7),
+    precipChance: (i * 13) % 101,
+  }));
+}

@@ -30,6 +30,7 @@ import type {
   CommentInput,
   ConnectedAccount,
   ContactSummary,
+  DayForecast,
   DevicePlatform,
   Draft,
   DraftInput,
@@ -807,6 +808,22 @@ export class ApiClient {
       'GET',
       `/v1/teams/${encodeURIComponent(teamId)}/availability?${qs}`
     );
+  }
+
+  // --- Weather (M2.8 Task 13) ---
+  /**
+   * Up to 14 days of daily forecast for a location (GET /v1/weather).
+   * Throws ApiRequestError(501, 'not_implemented') when the server has no
+   * weather vendor configured — callers treat that as "hide the weather UI".
+   */
+  getWeather(lat: number, lon: number, tz: string, days = 7): Promise<DayForecast[]> {
+    const qs = new URLSearchParams({
+      lat: String(lat),
+      lon: String(lon),
+      tz,
+      days: String(days),
+    });
+    return this.request<DayForecast[]>('GET', `/v1/weather?${qs}`);
   }
 }
 

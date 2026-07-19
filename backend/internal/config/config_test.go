@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/hex"
+	"os"
 	"testing"
 	"time"
 )
@@ -25,6 +26,7 @@ var configEnvKeys = []string{
 	"HTTP_ADDR", "PORT", "TOKEN_ENCRYPTION_KEY", "UNDO_SEND_SECONDS",
 	"INSTANCE_NAME", "PUBLIC_WEB_URL", "APP_URL", "PUBLIC_API_URL", "APP_BASE_URL",
 	"SELF_HOSTED", "OAUTH_ALLOWED_REDIRECT_URIS", "CORS_ALLOWED_ORIGINS",
+	"OPEN_METEO_URL",
 }
 
 // clearEnv blanks every config env var for the duration of the test; t.Setenv
@@ -385,6 +387,51 @@ func TestFromEnvJoinsMultipleErrors(t *testing.T) {
 	if !bytes.Equal(c.Crypto.TokenEncryptionKey, nil) || c.HTTP.Addr != "" || c.Instance.Name != "" {
 		t.Fatalf("FromEnv() returned a non-zero Config on error path: %+v", c)
 	}
+}
+
+// TestWeatherFromEnv covers OPEN_METEO_URL's three-way semantics (M2.8 Task
+// 13): unset → public Open-Meteo default (keyless vendor, on by default),
+// set → override (trimmed), explicitly empty → weather disabled.
+func TestWeatherFromEnv(t *testing.T) {
+	setBase := func(t *testing.T) {
+		t.Helper()
+		clearEnv(t)
+		for k, v := range withBase(nil) {
+			t.Setenv(k, v)
+		}
+	}
+
+	t.Run("defaults to the public Open-Meteo API when unset", func(t *testing.T) {
+		setBase(t)
+		// clearEnv blanked OPEN_METEO_URL (registering the restore); genuinely
+		// unset it so the LookupEnv "unset means default" path is exercised.
+		_ = os.Unsetenv("OPEN_METEO_URL")
+		c, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv() unexpected error: %v", err)
+		}
+		assertEq(t, "Weather.BaseURL", c.Weather.BaseURL, "https://api.open-meteo.com")
+	})
+
+	t.Run("OPEN_METEO_URL overrides the origin and trims", func(t *testing.T) {
+		setBase(t)
+		t.Setenv("OPEN_METEO_URL", " https://meteo.internal/ ")
+		c, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv() unexpected error: %v", err)
+		}
+		assertEq(t, "Weather.BaseURL", c.Weather.BaseURL, "https://meteo.internal")
+	})
+
+	t.Run("explicitly empty disables weather", func(t *testing.T) {
+		setBase(t)
+		t.Setenv("OPEN_METEO_URL", "")
+		c, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv() unexpected error: %v", err)
+		}
+		assertEq(t, "Weather.BaseURL", c.Weather.BaseURL, "")
+	})
 }
 
 func assertEq(t *testing.T, field, got, want string) {
