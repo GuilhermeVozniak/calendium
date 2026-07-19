@@ -748,6 +748,46 @@ func TestTeamGrantAppliesToAllMembers(t *testing.T) {
 	}
 }
 
+// TestTeamGrantDormantAfterOwnerLeavesTeam: team-audience grants are
+// membership-checked at resolution time, not just at grant time — the owner
+// leaving the team cuts the whole team's view immediately (no manual revoke
+// needed), while direct user grants are unaffected.
+func TestTeamGrantDormantAfterOwnerLeavesTeam(t *testing.T) {
+	f := newShareFixture(t)
+	ctx := context.Background()
+	f.seedSecretEvent("ev1")
+	f.share(t, port.CalendarShareInput{GranteeTeamID: "t1", Permission: "editor"})
+	from, to := f.window()
+
+	// Precondition: member u2 sees the calendar via the live team grant.
+	if cals, err := f.svc.ListCalendars(ctx, "u2"); err != nil || len(cals) != 1 {
+		t.Fatalf("precondition calendars = %+v, %v; want 1", cals, err)
+	}
+
+	// Owner u1 leaves team t1.
+	if err := f.teams.RemoveMember(ctx, "t1", "u1"); err != nil {
+		t.Fatalf("remove owner from team: %v", err)
+	}
+
+	// u2 loses access immediately: no listing, no events, 404 on write.
+	if cals, err := f.svc.ListCalendars(ctx, "u2"); err != nil || len(cals) != 0 {
+		t.Fatalf("post-leave calendars = %+v, %v; want none", cals, err)
+	}
+	if evs, err := f.svc.ListEvents(ctx, "u2", from, to, nil); err != nil || len(evs) != 0 {
+		t.Fatalf("post-leave events = %+v, %v; want none", evs, err)
+	}
+	if _, err := f.svc.UpdateEvent(ctx, "u2", "ev1", domain.EventPatch{Title: ptr("X")}); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("post-leave write err = %v, want ErrNotFound", err)
+	}
+
+	// A direct user grant is untouched by the owner's team departure.
+	f.share(t, port.CalendarShareInput{GranteeUserID: "u2", Permission: "reader"})
+	cals, err := f.svc.ListCalendars(ctx, "u2")
+	if err != nil || len(cals) != 1 || cals[0].SharedPermission == nil || *cals[0].SharedPermission != domain.PermissionReader {
+		t.Fatalf("direct-grant calendars = %+v, %v; want reader grant intact", cals, err)
+	}
+}
+
 func TestMostPermissiveGrantWins(t *testing.T) {
 	f := newShareFixture(t)
 	ctx := context.Background()

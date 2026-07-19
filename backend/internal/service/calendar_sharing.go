@@ -180,7 +180,35 @@ func (s *CalendarService) grantsFor(ctx context.Context, viewerID string) (map[s
 		return nil, err
 	}
 	out := map[string]domain.CalendarPermission{}
+	memberOK := map[string]bool{} // "teamID\x00ownerID" -> still a member
 	for _, sh := range shares {
+		if sh.GranteeTeamID != nil {
+			// A team grant is live only while the sharer (CreatedBy — always
+			// the calendar owner) still belongs to the team: "any team the
+			// viewer shares with the owner" is resolved now, not at grant
+			// time, so an owner leaving the team cuts the team's view
+			// immediately without a manual revoke.
+			if s.teams == nil {
+				continue // no membership oracle — fail closed
+			}
+			key := *sh.GranteeTeamID + "\x00" + sh.CreatedBy
+			ok, seen := memberOK[key]
+			if !seen {
+				_, err := s.teams.GetMember(ctx, *sh.GranteeTeamID, sh.CreatedBy)
+				switch {
+				case err == nil:
+					ok = true
+				case errors.Is(err, domain.ErrNotFound):
+					ok = false
+				default:
+					return nil, err // fail closed on lookup errors
+				}
+				memberOK[key] = ok
+			}
+			if !ok {
+				continue // owner left the team: grant is dormant
+			}
+		}
 		if cur, ok := out[sh.CalendarID]; !ok || sh.Permission.MorePermissive(cur) {
 			out[sh.CalendarID] = sh.Permission
 		}
