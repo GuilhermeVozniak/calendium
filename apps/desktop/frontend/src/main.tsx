@@ -9,6 +9,7 @@ import { Loader2 } from 'lucide-react';
 
 import App from './App';
 import { useSession } from './lib/auth';
+import { initNamedTheme } from './lib/named-theme';
 import { startOutboxReplay } from './lib/offline';
 import { ServerConfigProvider, useServerConfig } from './lib/server-config';
 import { ConnectView } from './views/ConnectView';
@@ -23,6 +24,11 @@ const applyTheme = () => {
 };
 applyTheme();
 media.addEventListener('change', applyTheme);
+
+// Named palette (data-theme on <html>, M2.6 Task 13): apply the locally
+// stored preference before first render; the Settings view re-syncs it from
+// the server.
+initNamedTheme();
 
 // Persisted query cache (M2.6): the last-known server data survives restarts
 // so the app opens instantly offline. gcTime must outlive maxAge or persisted

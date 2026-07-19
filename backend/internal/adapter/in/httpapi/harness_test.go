@@ -69,6 +69,13 @@ type fakeUserService struct {
 
 	getRet domain.User
 	getErr error
+
+	prefsRet         port.UserPreferences
+	prefsErr         error
+	updatePrefsRet   port.UserPreferences
+	updatePrefsErr   error
+	gotPrefs         port.UserPreferences
+	updatePrefsCalls int
 }
 
 func (f *fakeUserService) EnsureUser(ctx context.Context, id port.Identity) (domain.User, error) {
@@ -78,6 +85,14 @@ func (f *fakeUserService) EnsureUser(ctx context.Context, id port.Identity) (dom
 }
 func (f *fakeUserService) GetUser(ctx context.Context, userID string) (domain.User, error) {
 	return f.getRet, f.getErr
+}
+func (f *fakeUserService) GetPreferences(ctx context.Context, userID string) (port.UserPreferences, error) {
+	return f.prefsRet, f.prefsErr
+}
+func (f *fakeUserService) UpdatePreferences(ctx context.Context, userID string, p port.UserPreferences) (port.UserPreferences, error) {
+	f.updatePrefsCalls++
+	f.gotPrefs = p
+	return f.updatePrefsRet, f.updatePrefsErr
 }
 
 // --- BillingService ----------------------------------------------------------

@@ -18,6 +18,12 @@ jest.mock('nativewind', () => ({
   useColorScheme: () => ({ colorScheme: 'light' }),
 }));
 
+// lib/theme (named-theme store, M2.6 Task 13) persists to AsyncStorage, whose
+// native module doesn't exist under Jest — same mock as settings.test.tsx.
+jest.mock('@react-native-async-storage/async-storage', () =>
+  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
+);
+
 // Stands in for the real bottom-tab navigator: renders one Text node per
 // screen actually passed as a child, keyed by its `name`. Good enough to
 // assert which tabs the layout wires up without pulling in

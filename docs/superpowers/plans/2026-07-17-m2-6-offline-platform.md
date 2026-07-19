@@ -519,7 +519,9 @@ with `runOptimistic` gaining an `offlineAction: OutboxAction` parameter supplied
 - [ ] Write + run `e2e/offline.spec.ts`: `cd apps/web && bun run e2e -- offline.spec.ts`.
 - [ ] `cd apps/web && bun run test && bun run typecheck && bunx biome check .` — green. Commit: `feat(web): offline outbox for triage and compose with replay on reconnect`.
 
----### Task 5: Desktop frontend — persist + outbox (parity with web)
+---
+
+### Task 5: Desktop frontend — persist + outbox (parity with web)
 
 **Files:**
 - `apps/desktop/frontend/package.json` (add the two persist deps + `fake-indexeddb` dev)

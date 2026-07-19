@@ -39,7 +39,7 @@ export const viewport: Viewport = {
  * Applies the persisted (or system) theme before first paint to avoid a flash
  * of the wrong theme. Mirrors the logic in components/theme-provider.tsx.
  */
-const themeInitScript = `(function(){try{var t=localStorage.getItem("calendium-theme");var d=t==="dark"||(t!=="light"&&window.matchMedia("(prefers-color-scheme: dark)").matches);var r=document.documentElement;r.classList.toggle("dark",d);r.style.colorScheme=d?"dark":"light"}catch(e){}})();`;
+const themeInitScript = `(function(){try{var t=localStorage.getItem("calendium-theme");var d=t==="dark"||(t!=="light"&&window.matchMedia("(prefers-color-scheme: dark)").matches);var r=document.documentElement;r.classList.toggle("dark",d);r.style.colorScheme=d?"dark":"light";var n=localStorage.getItem("calendium-named-theme");if(n==="ocean"||n==="forest"||n==="sunset"){r.dataset.theme=n}}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

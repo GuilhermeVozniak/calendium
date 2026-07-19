@@ -56,6 +56,14 @@ import {
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
+import {
+  getStoredNamedTheme,
+  setNamedTheme,
+  syncNamedThemeFromServer,
+  THEME_NAMES,
+  THEME_SWATCHES,
+  type ThemeName,
+} from '@/lib/named-theme';
 
 const SPLIT_OPTIONS: InboxSplit[] = ['important', 'vip', 'team', 'calendar', 'news', 'social', 'other'];
 const MAX_CLASSIFIERS = 20;
@@ -349,6 +357,60 @@ function AccountPreferences({ account }: { account: ConnectedAccount }) {
   );
 }
 
+const THEME_LABEL: Record<ThemeName, string> = {
+  neutral: 'Neutral',
+  ocean: 'Ocean',
+  forest: 'Forest',
+  sunset: 'Sunset',
+};
+
+/**
+ * Named-theme picker (M2.6 Task 13). Swatches derive from THEME_SWATCHES —
+ * the canonical --primary token per palette, verbatim from the styles.css
+ * token blocks — not ad-hoc approximations.
+ */
+function AppearanceSection() {
+  const [namedTheme, setNamedThemeState] = useState<ThemeName>(() => getStoredNamedTheme());
+
+  // Server preference wins over localStorage when they differ (localStorage
+  // is the offline fallback).
+  useEffect(() => {
+    void syncNamedThemeFromServer().then((server) => {
+      if (server) setNamedThemeState(server);
+    });
+  }, []);
+
+  const dark = document.documentElement.classList.contains('dark');
+
+  return (
+    <Section title="Appearance">
+      <div className="flex flex-wrap gap-2 p-3">
+        {THEME_NAMES.map((name) => (
+          <button
+            key={name}
+            type="button"
+            aria-pressed={namedTheme === name}
+            onClick={() => {
+              setNamedThemeState(name);
+              setNamedTheme(name);
+            }}
+            className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm transition-colors hover:bg-accent ${
+              namedTheme === name ? 'border-ring ring-1 ring-ring' : 'border-input'
+            }`}
+          >
+            <span
+              aria-hidden
+              className="size-3 rounded-full"
+              style={{ background: THEME_SWATCHES[name][dark ? 'dark' : 'light'] }}
+            />
+            {THEME_LABEL[name]}
+          </button>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
 /**
  * Auto-join meetings (M2.6 Task 11): persisted in localStorage and pushed to
  * the Go host (SetAutoJoin) on every change; App.tsx re-pushes it on startup.
@@ -574,6 +636,7 @@ export function SettingsView() {
             </Button>
           </div>
         </Section>
+        <AppearanceSection />
 
         <Section title="Connected accounts">
           {accounts.length > 0 && (

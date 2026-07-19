@@ -1490,6 +1490,24 @@ var _ port.UnsubscribeGateway = (*fakeUnsubscriber)(nil)
 
 // --- prefs repo --------------------------------------------------------------
 
+type fakeUserPreferencesRepo struct{ byUser map[string]port.UserPreferences }
+
+func newUserPreferencesRepo() *fakeUserPreferencesRepo {
+	return &fakeUserPreferencesRepo{byUser: map[string]port.UserPreferences{}}
+}
+
+func (r *fakeUserPreferencesRepo) Get(_ context.Context, userID string) (port.UserPreferences, error) {
+	if p, ok := r.byUser[userID]; ok {
+		return p, nil
+	}
+	return port.UserPreferences{Theme: port.DefaultTheme}, nil
+}
+
+func (r *fakeUserPreferencesRepo) Put(_ context.Context, userID string, p port.UserPreferences) error {
+	r.byUser[userID] = p
+	return nil
+}
+
 type fakePrefsRepo struct{ byUser map[string]domain.UserPrefs }
 
 func newPrefsRepo() *fakePrefsRepo { return &fakePrefsRepo{byUser: map[string]domain.UserPrefs{}} }

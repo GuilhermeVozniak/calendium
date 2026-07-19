@@ -45,7 +45,11 @@ vi.mock('@/lib/use-identity', () => ({
   useSelfEmails: () => useSelfEmailsMock(),
 }));
 
-let themeState = { resolvedTheme: 'light' as 'light' | 'dark', setTheme: vi.fn() };
+let themeState = {
+  resolvedTheme: 'light' as 'light' | 'dark',
+  setTheme: vi.fn(),
+  setNamedTheme: vi.fn(),
+};
 vi.mock('@/components/theme-provider', () => ({
   useTheme: () => themeState,
 }));
@@ -119,7 +123,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   currentPathname = '/mail';
   currentThreadIdParam = null;
-  themeState = { resolvedTheme: 'light', setTheme: vi.fn() };
+  themeState = { resolvedTheme: 'light', setTheme: vi.fn(), setNamedTheme: vi.fn() };
   aiEnabled = false;
   fetchSearchMock.mockResolvedValue({ threads: [], events: [] });
   fetchEventTemplatesMock.mockResolvedValue([]);
@@ -184,6 +188,19 @@ describe('CommandPalette — opening', () => {
     expect(screen.getByText('Go to Calendar')).toBeInTheDocument();
     expect(screen.getByText('Toggle theme')).toBeInTheDocument();
     expect(screen.getByText('Sign out')).toBeInTheDocument();
+  });
+
+  it('lists the four named-theme commands and switches on selection', async () => {
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    expect(screen.getByText('Theme: Neutral')).toBeInTheDocument();
+    expect(screen.getByText('Theme: Ocean')).toBeInTheDocument();
+    expect(screen.getByText('Theme: Forest')).toBeInTheDocument();
+    expect(screen.getByText('Theme: Sunset')).toBeInTheDocument();
+
+    await user.click(screen.getByText('Theme: Ocean'));
+    expect(themeState.setNamedTheme).toHaveBeenCalledWith('ocean');
   });
 
   it('shows the H hint on Snooze and the ⇧H hint on the reminder item', async () => {

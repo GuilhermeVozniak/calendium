@@ -16,6 +16,13 @@ type UserService interface {
 	// request creates it) and returns the current user.
 	EnsureUser(ctx context.Context, id Identity) (domain.User, error)
 	GetUser(ctx context.Context, userID string) (domain.User, error)
+	// GetPreferences returns the user's cross-device preferences (named
+	// theme), defaulting the theme to DefaultTheme when unset.
+	GetPreferences(ctx context.Context, userID string) (UserPreferences, error)
+	// UpdatePreferences validates (theme must be in ThemeNames →
+	// domain.ErrValidation otherwise) and stores the preference document,
+	// returning what was saved.
+	UpdatePreferences(ctx context.Context, userID string, prefs UserPreferences) (UserPreferences, error)
 }
 
 // BillingService implements the $50/yr Stripe flow (docs/payments.md).

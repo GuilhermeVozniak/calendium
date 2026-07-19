@@ -52,6 +52,7 @@ import type {
   TimeProposalInput,
   UnsubscribeResult,
   User,
+  UserPreferences,
   UserPrefs,
   UserSettings,
 } from './types';
@@ -295,6 +296,13 @@ export class ApiClient {
   }
   updatePrefs(prefs: UserPrefs) {
     return this.request<UserPrefs>('PUT', '/v1/prefs', prefs);
+  }
+  /** Cross-device user preferences (named theme, M2.6 Task 13). */
+  getPreferences() {
+    return this.request<UserPreferences>('GET', '/v1/me/preferences');
+  }
+  updatePreferences(prefs: UserPreferences) {
+    return this.request<UserPreferences>('PUT', '/v1/me/preferences', prefs);
   }
 
   // --- Mail (M2.5) — Recent Opens, Smart Send, attachments, contacts, reactions ---

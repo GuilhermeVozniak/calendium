@@ -958,6 +958,19 @@ const methodCases: MethodCase[] = [
     path: '/v1/prefs',
     body: { splitOrder: ['vip', 'important'] },
   },
+  {
+    name: 'getPreferences',
+    call: (c) => c.getPreferences(),
+    method: 'GET',
+    path: '/v1/me/preferences',
+  },
+  {
+    name: 'updatePreferences',
+    call: (c) => c.updatePreferences({ theme: 'ocean' }),
+    method: 'PUT',
+    path: '/v1/me/preferences',
+    body: { theme: 'ocean' },
+  },
 
   // --- Event templates ---
   {
