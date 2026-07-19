@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -28,6 +29,13 @@ type CalendarServiceDeps struct {
 	Settings port.UserSettingsRepo
 	// SelfHosted unlocks the paywall (open-core self-hosted mode).
 	SelfHosted bool
+
+	// --- Shared calendars (M2.7 Task 12). All four are optional: left nil,
+	// sharing is disabled and personal-calendar behavior is unchanged. ---
+	Shares port.CalendarShareRepo
+	Audit  port.AuditRepo
+	Teams  port.TeamRepo
+	Users  port.UserRepo
 }
 
 // CalendarService implements port.CalendarService. Event mutations write
@@ -43,6 +51,10 @@ type CalendarService struct {
 	tokens    tokenSource
 	clock     port.Clock
 	settings  port.UserSettingsRepo
+	shares    port.CalendarShareRepo
+	audit     port.AuditRepo
+	teams     port.TeamRepo
+	users     port.UserRepo
 }
 
 var _ port.CalendarService = (*CalendarService)(nil)
@@ -59,6 +71,10 @@ func NewCalendarService(d CalendarServiceDeps) *CalendarService {
 		tokens:    tokenSource{accounts: d.Accounts, oauth: d.OAuth, clock: d.Clock},
 		clock:     d.Clock,
 		settings:  d.Settings,
+		shares:    d.Shares,
+		audit:     d.Audit,
+		teams:     d.Teams,
+		users:     d.Users,
 	}
 }
 
@@ -72,6 +88,13 @@ func (s *CalendarService) ListCalendars(ctx context.Context, userID string) ([]d
 	}
 	if cals == nil {
 		cals = []domain.Calendar{}
+	}
+	if s.shares != nil {
+		shared, err := s.sharedCalendars(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		cals = append(cals, shared...)
 	}
 	return cals, nil
 }
@@ -112,6 +135,21 @@ func (s *CalendarService) ListEvents(ctx context.Context, userID string, from, t
 	if evs == nil {
 		evs = []domain.Event{}
 	}
+	if s.shares != nil {
+		shared, err := s.sharedEvents(ctx, userID, from, to, calendarIDs)
+		if err != nil {
+			return nil, err
+		}
+		if len(shared) > 0 {
+			evs = append(evs, shared...)
+			sort.Slice(evs, func(i, j int) bool {
+				if evs[i].Start.Equal(evs[j].Start) {
+					return evs[i].ID < evs[j].ID
+				}
+				return evs[i].Start.Before(evs[j].Start)
+			})
+		}
+	}
 	return evs, nil
 }
 
@@ -130,6 +168,11 @@ func (s *CalendarService) CreateEvent(ctx context.Context, userID string, in dom
 	}
 	c, acct, err := s.ownedCalendar(ctx, userID, in.CalendarID)
 	if err != nil {
+		// Not the owner's calendar: it may be shared with the caller as
+		// editor (enforced in createSharedEvent; no share stays a 404).
+		if s.shares != nil && errors.Is(err, domain.ErrNotFound) {
+			return s.createSharedEvent(ctx, userID, in)
+		}
 		return domain.Event{}, err
 	}
 	if !c.CanWrite {
@@ -159,6 +202,9 @@ func (s *CalendarService) UpdateEvent(ctx context.Context, userID, eventID strin
 	}
 	ev, c, acct, err := s.ownedEvent(ctx, userID, eventID)
 	if err != nil {
+		if s.shares != nil && errors.Is(err, domain.ErrNotFound) {
+			return s.updateSharedEvent(ctx, userID, eventID, patch)
+		}
 		return domain.Event{}, err
 	}
 	if !c.CanWrite {
@@ -191,6 +237,9 @@ func (s *CalendarService) DeleteEvent(ctx context.Context, userID, eventID strin
 	}
 	ev, c, acct, err := s.ownedEvent(ctx, userID, eventID)
 	if err != nil {
+		if s.shares != nil && errors.Is(err, domain.ErrNotFound) {
+			return s.deleteSharedEvent(ctx, userID, eventID)
+		}
 		return err
 	}
 	if !c.CanWrite {

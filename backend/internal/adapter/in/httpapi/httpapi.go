@@ -22,10 +22,13 @@ type Deps struct {
 	Accounts  port.AccountService
 	Mail      port.MailService
 	Calendars port.CalendarService
-	Search    port.SearchService
-	AI        port.AIService
-	Devices   port.DeviceService
-	Prefs     port.PrefsService
+	// CalendarShares manages calendar sharing grants (M2.7 Task 12). When
+	// nil the share routes answer 501.
+	CalendarShares port.CalendarSharingService
+	Search         port.SearchService
+	AI             port.AIService
+	Devices        port.DeviceService
+	Prefs          port.PrefsService
 	// Scheduling covers booking links, bookings, meeting polls,
 	// propose-new-time, and guest free/busy (owner-authenticated surface;
 	// the public booking/poll routes live behind their own rate limiter).
@@ -159,6 +162,12 @@ func New(deps Deps) http.Handler {
 
 	authed("GET /v1/calendars", s.handleListCalendars)
 	authed("PATCH /v1/calendars/{id}", s.handleUpdateCalendar)
+
+	// M2.7 Task 12: shared calendars with granular permissions.
+	authed("GET /v1/calendars/{id}/shares", s.handleListCalendarShares)
+	authed("POST /v1/calendars/{id}/shares", s.handleShareCalendar)
+	authed("PATCH /v1/calendars/{id}/shares/{shareId}", s.handleUpdateCalendarShare)
+	authed("DELETE /v1/calendars/{id}/shares/{shareId}", s.handleRevokeCalendarShare)
 
 	authed("GET /v1/events", s.handleListEvents)
 	authed("POST /v1/events", s.handleCreateEvent)
