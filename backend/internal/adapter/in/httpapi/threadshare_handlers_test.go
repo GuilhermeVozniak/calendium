@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +40,10 @@ type fakeCollabService struct {
 	gotViewToken  string
 	gotViewViewer *string
 
+	// resolveMu guards the resolve fields: the shared-thread stream handler
+	// re-calls ResolveShare on every keepalive tick while tests flip
+	// resolveErr from the test goroutine.
+	resolveMu        sync.Mutex
 	resolveID        string
 	resolveErr       error
 	gotResolveToken  string
@@ -84,8 +89,16 @@ func (f *fakeCollabService) GetSharedThread(_ context.Context, rawToken string, 
 	return f.viewRet, f.viewErr
 }
 func (f *fakeCollabService) ResolveShare(_ context.Context, rawToken string, viewer *string) (string, error) {
+	f.resolveMu.Lock()
+	defer f.resolveMu.Unlock()
 	f.gotResolveToken, f.gotResolveViewer = rawToken, viewer
 	return f.resolveID, f.resolveErr
+}
+
+func (f *fakeCollabService) setResolveErr(err error) {
+	f.resolveMu.Lock()
+	defer f.resolveMu.Unlock()
+	f.resolveErr = err
 }
 
 func collabHarness(t *testing.T) (*harness, *fakeCollabService) {
@@ -281,6 +294,50 @@ func TestSharedThreadStreamDeliversShareEvents(t *testing.T) {
 		}
 		if strings.HasPrefix(line, "event: share.updated") {
 			sawEvent = true
+		}
+	}
+}
+
+// TestSharedThreadStreamEndsWhenShareRevokedOnTick proves a live share
+// stream does not outlive revocation: the handler re-authorizes the token
+// on every keepalive tick and terminates once ResolveShare fails.
+func TestSharedThreadStreamEndsWhenShareRevokedOnTick(t *testing.T) {
+	old := keepaliveInterval
+	keepaliveInterval = 10 * time.Millisecond
+	defer func() { keepaliveInterval = old }()
+
+	h, f := collabHarness(t)
+	f.resolveID = "sh1"
+	srv := httptest.NewServer(h.handler())
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/shared/threads/tok123/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	waitFor(t, "subscription", func() bool { return h.events.activeSubscribers() == 1 })
+
+	// Revoke: the very next tick fails ResolveShare and ends the stream.
+	f.setResolveErr(domain.ErrNotFound)
+	waitFor(t, "stream teardown after revocation", func() bool {
+		return h.events.activeSubscribers() == 0
+	})
+
+	// The body reaches EOF (no infinite keepalives on a revoked share).
+	reader := bufio.NewReader(resp.Body)
+	for {
+		if _, err := reader.ReadString('\n'); err != nil {
+			break
 		}
 	}
 }

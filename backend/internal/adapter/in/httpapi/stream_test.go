@@ -173,6 +173,62 @@ func TestCollabStreamNilTeamsSubscribesUserTopicOnly(t *testing.T) {
 	}
 }
 
+// TestCollabStreamDropsRemovedTeamOnKeepaliveTick proves stream
+// authorization is not frozen at connect: once the caller is removed from a
+// team, the next keepalive tick re-resolves memberships, re-subscribes with
+// the narrowed topic set, and that team's events stop arriving.
+func TestCollabStreamDropsRemovedTeamOnKeepaliveTick(t *testing.T) {
+	old := keepaliveInterval
+	keepaliveInterval = 10 * time.Millisecond
+	defer func() { keepaliveInterval = old }()
+
+	h := newHarness(t)
+	h.teams.setTeams([]domain.Team{{ID: "team_1", Name: "Ops"}})
+	srv := httptest.NewServer(h.handler())
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/collab/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+defaultToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	reader := bufio.NewReader(resp.Body)
+
+	// Team events flow while the caller is a member.
+	h.events.Publish(port.CollabEvent{Topic: "team:team_1", Type: "comment.created", Payload: json.RawMessage(`{"id":"c1"}`)})
+	if ev, _ := readSSEEvent(t, reader); ev.Topic != "team:team_1" {
+		t.Fatalf("member did not receive team event: %+v", ev)
+	}
+
+	// Remove the caller from the team; a keepalive tick re-resolves and
+	// re-subscribes without the team topic.
+	h.teams.setTeams(nil)
+	waitFor(t, "narrowed resubscription", func() bool {
+		tops := h.events.subscribedTopics()
+		last := tops[len(tops)-1]
+		return len(last) == 1 && last[0] == "user:"+defaultUserID
+	})
+
+	// A team event published after removal must never arrive; the user
+	// event published after it is the next delivered frame.
+	h.events.Publish(port.CollabEvent{Topic: "team:team_1", Type: "comment.created", Payload: json.RawMessage(`{"secret":true}`)})
+	h.events.Publish(port.CollabEvent{Topic: "user:" + defaultUserID, Type: "mention", Payload: json.RawMessage(`{}`)})
+	ev, _ := readSSEEvent(t, reader)
+	if ev.Topic != "user:"+defaultUserID {
+		t.Fatalf("removed member still received team event: %+v", ev)
+	}
+	if got := h.events.activeSubscribers(); got != 1 {
+		t.Fatalf("active subscriptions = %d, want 1 (old subscription dropped)", got)
+	}
+}
+
 func TestCollabStreamKeepaliveTicks(t *testing.T) {
 	old := keepaliveInterval
 	keepaliveInterval = 10 * time.Millisecond

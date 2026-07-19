@@ -113,6 +113,10 @@ func (s *server) handleSharedThreadStream(w http.ResponseWriter, r *http.Request
 	events, cancel := s.deps.Events.Subscribe([]string{"share:" + shareID})
 	defer cancel()
 
+	// The share is re-authorized on every keepalive tick below — a revoked
+	// or expired share stops streaming within one tick instead of living
+	// until disconnect.
+
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
@@ -141,6 +145,9 @@ func (s *server) handleSharedThreadStream(w http.ResponseWriter, r *http.Request
 				return
 			}
 			flusher.Flush()
+			if _, err := s.deps.Collab.ResolveShare(r.Context(), r.PathValue("token"), viewer); err != nil {
+				return // fail closed: revocation/expiry ends the stream
+			}
 		}
 	}
 }
