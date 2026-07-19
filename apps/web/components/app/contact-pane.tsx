@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Mail, Paperclip, X } from 'lucide-react';
 
 import { useCompose } from '@/components/app/compose';
+import { CrmCard } from '@/components/app/crm-card';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -179,6 +180,9 @@ export function ContactPane({ email, onClose }: ContactPaneProps) {
                   Search attachments from
                 </Button>
               </div>
+
+              {/* CRM context (M2.8) — renders nothing without a connected CRM. */}
+              <CrmCard email={contact.email} />
 
               {contact.recentThreads.length > 0 && (
                 <div className="flex flex-col gap-1">

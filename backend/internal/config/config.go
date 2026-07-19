@@ -63,6 +63,12 @@ type Microsoft struct {
 	ClientSecret string // MS_CLIENT_SECRET
 }
 
+// HubSpot configures the HubSpot CRM integration OAuth app (M2.8).
+type HubSpot struct {
+	ClientID     string // HUBSPOT_CLIENT_ID
+	ClientSecret string // HUBSPOT_CLIENT_SECRET
+}
+
 // Stripe configures billing (docs/payments.md).
 type Stripe struct {
 	SecretKey     string // STRIPE_SECRET_KEY
@@ -167,6 +173,7 @@ type Config struct {
 	Google     Google
 	Apple      Apple
 	Microsoft  Microsoft
+	HubSpot    HubSpot
 	Stripe     Stripe
 	Push       Push
 	OpenRouter OpenRouter
@@ -201,6 +208,10 @@ func FromEnv() (Config, error) {
 		Microsoft: Microsoft{
 			ClientID:     os.Getenv("MS_CLIENT_ID"),
 			ClientSecret: os.Getenv("MS_CLIENT_SECRET"),
+		},
+		HubSpot: HubSpot{
+			ClientID:     os.Getenv("HUBSPOT_CLIENT_ID"),
+			ClientSecret: os.Getenv("HUBSPOT_CLIENT_SECRET"),
 		},
 		Stripe: Stripe{
 			SecretKey:     os.Getenv("STRIPE_SECRET_KEY"),

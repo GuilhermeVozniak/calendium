@@ -298,6 +298,7 @@ func run(logger *slog.Logger) error {
 			Microsoft: cfg.Microsoft.ClientID != "",
 			AI:        cfg.OpenRouter.APIKey != "",
 			Push:      pushConfigured,
+			HubSpot:   cfg.HubSpot.ClientID != "",
 		},
 	}
 
@@ -328,7 +329,16 @@ func run(logger *slog.Logger) error {
 		// M2.7 Task 15: EA delegation grants + act-as + audit surface.
 		Delegations: delegations,
 		// M2.7 Task 10: teammate read/reply indicators.
-		TeamActivity:       teamActivitySvc,
+		TeamActivity: teamActivitySvc,
+		// M2.8 Task 16: CRM contact context + explicit email logging. The CRM
+		// service consumes the per-user integration-connection store built by
+		// M2.8's integration-OAuth task (integration_connections, connect/
+		// callback, AES-GCM tokens), which is not composed here yet — so Crm
+		// stays nil and the /v1/crm routes answer 501. To wire at integration:
+		// gate on cfg.HubSpot.ClientID != "" and pass service.NewCrmService
+		// with hubspot.NewClient(hc) under domain.IntegrationVendorHubSpot
+		// plus that task's connection repo and HubSpot OAuth gateway.
+		Crm:                nil,
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 	})

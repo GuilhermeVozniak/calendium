@@ -57,6 +57,10 @@ type Deps struct {
 	// TeamActivity serves teammate read/reply indicators (M2.7 Task 10);
 	// when nil the team-activity route answers 501.
 	TeamActivity port.TeamActivityService
+	// Crm serves CRM contact context and explicit per-message email logging
+	// (M2.8 Task 16). When nil (vendor unconfigured, or the integration-
+	// connection repo not composed) the /v1/crm routes answer 501.
+	Crm port.CrmService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -269,6 +273,10 @@ func New(deps Deps) http.Handler {
 	authed("POST /v1/delegations/{id}/accept", s.handleAcceptDelegation)
 	authed("DELETE /v1/delegations/{id}", s.handleRevokeDelegation)
 	authed("GET /v1/delegations/audit", s.handleDelegationAudit)
+
+	// M2.8 Task 16: CRM contact context + explicit email logging.
+	authed("GET /v1/crm/context", s.handleCrmContext)
+	authed("POST /v1/crm/log", s.handleCrmLog)
 
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins)

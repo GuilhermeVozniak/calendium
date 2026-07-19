@@ -27,6 +27,7 @@ import { toast } from 'sonner';
 import { CommentsPanel } from '@/components/app/comments-panel';
 import { useCompose } from '@/components/app/compose';
 import { ContactPane } from '@/components/app/contact-pane';
+import { MessageCrmMenu } from '@/components/app/crm-log-menu';
 import { SHARE_THREAD_EVENT, ShareDialog } from '@/components/app/share-dialog';
 import { TimePickerDialog } from '@/components/app/snooze-menu';
 import { TeamActivityChips } from '@/components/app/team-activity-chips';
@@ -578,6 +579,12 @@ export function ThreadView({ threadId, onClose, onArchive, onSnooze, onProposeEv
                           <span className="text-muted-foreground shrink-0 text-xs">
                             {formatFullTime(message.sentAt)}
                           </span>
+                          <MessageCrmMenu
+                            message={message}
+                            subject={thread.subject}
+                            contactEmail={mine ? contactEmail : message.from.email}
+                            direction={mine ? 'outbound' : 'inbound'}
+                          />
                         </div>
                         <p className="text-muted-foreground truncate text-xs">
                           {recipientsLine(message, isMe)}

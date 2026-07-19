@@ -30,6 +30,8 @@ import type {
   CommentInput,
   ConnectedAccount,
   ContactSummary,
+  CrmContext,
+  CrmEmailLogInput,
   DevicePlatform,
   Draft,
   DraftInput,
@@ -807,6 +809,21 @@ export class ApiClient {
       'GET',
       `/v1/teams/${encodeURIComponent(teamId)}/availability?${qs}`
     );
+  }
+
+  // --- CRM integrations (M2.8) ---
+  /**
+   * CRM context for one email address: one entry per connected CRM vendor.
+   * Empty array when no CRM is connected (clients hide the CRM section);
+   * 501 when the instance has no CRM integration configured at all.
+   */
+  getCrmContext(email: string) {
+    const qs = new URLSearchParams({ email });
+    return this.request<CrmContext[]>('GET', `/v1/crm/context?${qs}`);
+  }
+  /** Explicitly log one email to the connected CRM (per-message user action). */
+  logCrmEmail(input: CrmEmailLogInput) {
+    return this.request<void>('POST', '/v1/crm/log', input);
   }
 }
 

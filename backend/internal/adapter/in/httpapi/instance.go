@@ -39,6 +39,9 @@ type InstanceFeatures struct {
 	Microsoft bool `json:"microsoft"`
 	AI        bool `json:"ai"`
 	Push      bool `json:"push"`
+	// HubSpot reports whether the HubSpot CRM integration is configured
+	// (HUBSPOT_CLIENT_ID) so clients can hide the CRM surface (M2.8).
+	HubSpot bool `json:"hubspot"`
 }
 
 // Instance mode string values.

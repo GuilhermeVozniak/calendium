@@ -806,6 +806,8 @@ export interface InstanceFeatures {
   microsoft: boolean;
   ai: boolean;
   push: boolean;
+  /** HubSpot CRM integration (M2.8) is configured on this deployment. */
+  hubspot?: boolean;
 }
 
 /**
@@ -1044,4 +1046,56 @@ export interface Calendar {
 export interface Event {
   /** True when the event was redacted for a free_busy viewer (title "Busy", details zeroed). */
   freeBusyOnly?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// CRM integrations (M2.8) — mirrors backend/internal/domain/crm.go.
+// ---------------------------------------------------------------------------
+
+/** Third-party integration vendor connected per user. */
+export type IntegrationVendor = 'hubspot';
+
+/** A CRM-side person record resolved by email address. */
+export interface CrmContact {
+  id: string;
+  email: string;
+  name: string;
+  company: string;
+  title: string;
+  phone: string;
+  owner: string;
+  /** Deep link into the CRM record. */
+  vendorUrl: string;
+}
+
+/** A deal/opportunity associated with a CRM contact. */
+export interface CrmDeal {
+  id: string;
+  name: string;
+  stage: string;
+  amount: number | null;
+  closeDate: string | null;
+  vendorUrl: string;
+}
+
+/** Everything the contact pane shows for one email address, per vendor. */
+export interface CrmContext {
+  vendor: IntegrationVendor;
+  /** Null = the address is not in this CRM. */
+  contact: CrmContact | null;
+  deals: CrmDeal[];
+}
+
+/**
+ * One email engagement to record on the CRM contact's timeline. Logging is
+ * always an explicit per-message user action ("Log to HubSpot") — mail is
+ * never exported to a CRM implicitly or in bulk.
+ */
+export interface CrmEmailLogInput {
+  contactEmail: string;
+  subject: string;
+  bodyText: string;
+  /** RFC 3339. */
+  sentAt: string;
+  direction: 'inbound' | 'outbound';
 }
