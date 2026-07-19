@@ -35,6 +35,7 @@ import type {
   DraftInput,
   Event,
   EventInput,
+  EventNote,
   EventPatch,
   EventTemplate,
   EventTemplateInput,
@@ -807,6 +808,25 @@ export class ApiClient {
       'GET',
       `/v1/teams/${encodeURIComponent(teamId)}/availability?${qs}`
     );
+  }
+
+  // --- Event notes (M2.8 Task 4) ---
+  /**
+   * The event's local-only note. A missing note comes back as an empty note
+   * (200, never 404), so callers need no special case.
+   */
+  getEventNote(eventId: string) {
+    return this.request<EventNote>('GET', `/v1/events/${encodeURIComponent(eventId)}/note`);
+  }
+  /**
+   * Replaces the event's note wholesale; an empty body with no links deletes
+   * it server-side. Links must be absolute http(s) URLs.
+   */
+  putEventNote(eventId: string, bodyMd: string, links: string[]) {
+    return this.request<EventNote>('PUT', `/v1/events/${encodeURIComponent(eventId)}/note`, {
+      bodyMd,
+      links,
+    });
   }
 }
 

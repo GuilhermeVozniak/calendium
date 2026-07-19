@@ -114,6 +114,38 @@ func (s *server) handleRsvp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, event)
 }
 
+// --- Event notes (M2.8 Task 4) ----------------------------------------------
+//
+// Note bodies are markdown treated as plain text end-to-end (the web client
+// renders them in a textarea / as text, never as HTML), so no HTML
+// sanitization applies here; link URLs are scheme-validated in the service.
+
+func (s *server) handleGetEventNote(w http.ResponseWriter, r *http.Request) {
+	note, err := s.deps.Calendars.GetEventNote(r.Context(), userFrom(r).ID, r.PathValue("id"))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, note)
+}
+
+func (s *server) handlePutEventNote(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		BodyMD string   `json:"bodyMd"`
+		Links  []string `json:"links"`
+	}
+	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	note, err := s.deps.Calendars.PutEventNote(r.Context(), userFrom(r).ID, r.PathValue("id"), in.BodyMD, in.Links)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, note)
+}
+
 func (s *server) handleAvailability(w http.ResponseWriter, r *http.Request) {
 	qs := r.URL.Query()
 	from, to, err := timeRange(qs.Get("from"), qs.Get("to"))

@@ -255,6 +255,13 @@ type EventRepo interface {
 	Search(ctx context.Context, userID, query string, limit int) ([]domain.Event, error)
 }
 
+// EventNoteRepo persists local-only notes attached to events (M2.8 Task 4).
+type EventNoteRepo interface {
+	// Upsert replaces the note for (eventID); empty BodyMD+Links deletes it.
+	Upsert(ctx context.Context, n domain.EventNote) (domain.EventNote, error)
+	GetByEventID(ctx context.Context, eventID string) (domain.EventNote, error)
+}
+
 // EventTemplateRepo persists per-user saved event defaults.
 type EventTemplateRepo interface {
 	Create(ctx context.Context, userID string, t domain.EventTemplate) (domain.EventTemplate, error)

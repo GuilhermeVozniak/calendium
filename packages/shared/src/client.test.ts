@@ -1965,3 +1965,57 @@ describe('calendar shares & team availability', () => {
     ).rejects.toMatchObject({ status: 404, code: 'not_found' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Event notes (M2.8 Task 4)
+// ---------------------------------------------------------------------------
+
+describe('event notes', () => {
+  const NOTE = {
+    eventId: 'ev1',
+    bodyMd: '# Prep\n- read the doc',
+    links: ['https://notion.so/doc'],
+    updatedAt: '2026-07-20T12:00:00Z',
+  };
+
+  it('getEventNote GETs /v1/events/{id}/note with the id percent-encoded', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: NOTE }] });
+    const result = await client.getEventNote('ev 1');
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/events/ev%201/note`);
+    expect(calls[0]!.headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(result).toEqual(NOTE);
+  });
+
+  it('getEventNote resolves an empty note for events without one (200, never 404)', async () => {
+    const empty = { eventId: 'ev1', bodyMd: '', links: [], updatedAt: '0001-01-01T00:00:00Z' };
+    const { client } = makeClient({ responses: [{ status: 200, body: empty }] });
+    await expect(client.getEventNote('ev1')).resolves.toEqual(empty);
+  });
+
+  it('putEventNote PUTs the { bodyMd, links } payload and returns the stored note', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: NOTE }] });
+    const result = await client.putEventNote('ev1', '# Prep\n- read the doc', [
+      'https://notion.so/doc',
+    ]);
+    expect(calls[0]!.method).toBe('PUT');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/events/ev1/note`);
+    expect(calls[0]!.body).toEqual({
+      bodyMd: '# Prep\n- read the doc',
+      links: ['https://notion.so/doc'],
+    });
+    expect(result).toEqual(NOTE);
+  });
+
+  it('maps a rejected link to ApiRequestError(400)', async () => {
+    const { client } = makeClient({
+      responses: [
+        { status: 400, body: { error: { code: 'validation_failed', message: 'bad link' } } },
+      ],
+    });
+    await expect(client.putEventNote('ev1', 'x', ['javascript:alert(1)'])).rejects.toMatchObject({
+      status: 400,
+      code: 'validation_failed',
+    });
+  });
+});

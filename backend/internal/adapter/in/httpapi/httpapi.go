@@ -182,6 +182,9 @@ func New(deps Deps) http.Handler {
 	authed("PATCH /v1/events/{id}", s.handleUpdateEvent)
 	authed("DELETE /v1/events/{id}", s.handleDeleteEvent)
 	authed("POST /v1/events/{id}/rsvp", s.handleRsvp)
+	// M2.8 Task 4: local-only docs/notes attached to events.
+	authed("GET /v1/events/{id}/note", s.handleGetEventNote)
+	authed("PUT /v1/events/{id}/note", s.handlePutEventNote)
 	authed("GET /v1/availability", s.handleAvailability)
 
 	authed("GET /v1/event-templates", s.handleListEventTemplates)

@@ -7,7 +7,9 @@ import {
   AlignLeft,
   Bell,
   BookmarkPlus,
+  ExternalLink,
   LayoutTemplate,
+  Link2,
   MapPin,
   Plus,
   Repeat,
@@ -51,10 +53,13 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import {
   createEventApi,
   deleteEventApi,
+  fetchEventNoteApi,
+  putEventNoteApi,
   sendRsvpApi,
   updateEventApi,
 } from '@/lib/calendar-data';
@@ -157,6 +162,9 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
   const [meet, setMeet] = React.useState(false);
   const [reminders, setReminders] = React.useState<number[]>([10]);
   const [rsvpChoice, setRsvpChoice] = React.useState<RsvpStatus>('needs_action');
+  // Notes tab (M2.8 Task 4) exists only in edit mode: a note is keyed by an
+  // event id, which a not-yet-created event doesn't have.
+  const [activeTab, setActiveTab] = React.useState<'details' | 'notes'>('details');
 
   const selfEmails = useSelfEmails();
   const writableCalendars = calendars.filter((c) => c.canWrite);
@@ -189,6 +197,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
 
   React.useEffect(() => {
     if (!open) return;
+    setActiveTab('details');
     if (event) {
       const startDate = new Date(event.start);
       const endDate = new Date(event.end);
@@ -484,7 +493,20 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
           </div>
         )}
 
-        <div className="grid gap-3">
+        {event && (
+          <Tabs
+            value={activeTab}
+            onValueChange={(v) => setActiveTab(v as 'details' | 'notes')}
+          >
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="details">Details</TabsTrigger>
+              <TabsTrigger value="notes">Notes</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        )}
+
+        {/* Hidden (not unmounted) on the Notes tab so in-progress edits survive tab switches. */}
+        <div className={cn('grid gap-3', event != null && activeTab !== 'details' && 'hidden')}>
           <Input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -742,6 +764,8 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
           </FieldRow>
         </div>
 
+        {event && activeTab === 'notes' && <EventNotesPanel eventId={event.id} />}
+
         <DialogFooter>
           {event && (
             <Button
@@ -771,5 +795,153 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Notes tab (M2.8 Task 4)
+// ---------------------------------------------------------------------------
+
+const NOTE_AUTOSAVE_MS = 800;
+
+/**
+ * Local-only markdown notes + doc links attached to the event. Edits are
+ * optimistic (local state is the source of truth while typing, same spirit as
+ * the thread-action pattern) and autosave with an 800ms debounce; notes never
+ * reach the calendar provider or the attendees.
+ */
+function EventNotesPanel({ eventId }: { eventId: string }) {
+  const queryClient = useQueryClient();
+  const noteQuery = useQuery({
+    queryKey: ['event-note', eventId],
+    queryFn: () => fetchEventNoteApi(eventId),
+  });
+
+  const [bodyMd, setBodyMd] = React.useState('');
+  const [links, setLinks] = React.useState<string[]>([]);
+  const [linkDraft, setLinkDraft] = React.useState('');
+  const [hydratedFor, setHydratedFor] = React.useState<string | null>(null);
+  const saveTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Hydrate the editable state once per event from the fetched note; later
+  // refetches must not clobber in-progress typing.
+  React.useEffect(() => {
+    if (noteQuery.data && hydratedFor !== eventId) {
+      setBodyMd(noteQuery.data.bodyMd);
+      setLinks(noteQuery.data.links);
+      setHydratedFor(eventId);
+    }
+  }, [noteQuery.data, eventId, hydratedFor]);
+
+  React.useEffect(
+    () => () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    },
+    []
+  );
+
+  const save = useMutation({
+    mutationFn: (next: { bodyMd: string; links: string[] }) =>
+      putEventNoteApi(eventId, next.bodyMd, next.links),
+    onSuccess: (saved) => queryClient.setQueryData(['event-note', eventId], saved),
+    onError: () => toast.error('Could not save the note'),
+  });
+
+  const scheduleSave = (nextBody: string, nextLinks: string[]) => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      save.mutate({ bodyMd: nextBody, links: nextLinks });
+    }, NOTE_AUTOSAVE_MS);
+  };
+
+  const addLink = () => {
+    const url = linkDraft.trim();
+    if (!url) return;
+    if (!/^https?:\/\/\S+$/i.test(url)) {
+      toast.error('Links must be full http(s) URLs');
+      return;
+    }
+    setLinkDraft('');
+    if (links.includes(url)) return;
+    const next = [...links, url];
+    setLinks(next);
+    scheduleSave(bodyMd, next);
+  };
+
+  const removeLink = (url: string) => {
+    const next = links.filter((l) => l !== url);
+    setLinks(next);
+    scheduleSave(bodyMd, next);
+  };
+
+  return (
+    <div className="grid gap-3">
+      <Textarea
+        value={bodyMd}
+        onChange={(e) => {
+          setBodyMd(e.target.value);
+          scheduleSave(e.target.value, links);
+        }}
+        placeholder="Add meeting notes (markdown)"
+        aria-label="Event notes"
+        className="min-h-40"
+        disabled={noteQuery.isLoading}
+      />
+
+      <FieldRow icon={Link2}>
+        <div className="grid gap-1.5">
+          {links.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {links.map((url) => (
+                <Badge key={url} variant="secondary" className="max-w-full gap-1 font-normal">
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex min-w-0 items-center gap-1 hover:underline"
+                    aria-label={`Open ${url}`}
+                  >
+                    <span className="truncate">{url.replace(/^https?:\/\//i, '')}</span>
+                    <ExternalLink className="size-3 shrink-0 opacity-60" />
+                  </a>
+                  <button
+                    type="button"
+                    aria-label={`Remove link ${url}`}
+                    className="opacity-60 hover:opacity-100"
+                    onClick={() => removeLink(url)}
+                  >
+                    <X className="size-3" />
+                  </button>
+                </Badge>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-1.5">
+            <Input
+              value={linkDraft}
+              onChange={(e) => setLinkDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  addLink();
+                }
+              }}
+              placeholder="Attach a doc link (https://...)"
+              aria-label="Add doc link"
+              className="h-8"
+            />
+            <Button type="button" variant="outline" size="sm" className="h-8" onClick={addLink}>
+              Add
+            </Button>
+          </div>
+        </div>
+      </FieldRow>
+
+      <p className="text-xs text-muted-foreground" aria-live="polite">
+        {save.isPending
+          ? 'Saving…'
+          : 'Notes save automatically and stay in Calendium — never sent to attendees.'}
+      </p>
+    </div>
   );
 }
