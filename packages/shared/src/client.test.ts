@@ -1779,6 +1779,30 @@ describe('ApiClient.actAs', () => {
     }
   });
 
+  it('omits the header on denied team/collab sub-paths under delegable prefixes', async () => {
+    const { client, calls } = makeClient({
+      responses: [
+        { status: 201, body: { share: {}, token: 'tok' } },
+        { status: 200, body: [] },
+        { status: 200, body: { comments: [] } },
+        { status: 200, body: [] },
+        { status: 200, body: [] },
+        { status: 200, body: [] },
+      ],
+    });
+    const acting = client.actAs('user_principal');
+    await acting.shareThread('t1', { audience: 'external' } as ShareThreadInput);
+    await acting.listThreadShares('t1');
+    await acting.listComments('t1', 'team_1');
+    await acting.teamThreadActivity('t1');
+    await acting.listSnippets();
+    await acting.listCalendarShares('c1');
+    expect(calls.length).toBe(6);
+    for (const call of calls) {
+      expect(call.headers['X-Calendium-Act-As'], call.url).toBeUndefined();
+    }
+  });
+
   it('keeps the Authorization bearer token on delegated requests', async () => {
     const { client, calls } = makeClient();
     await client.actAs('user_principal').actOnThread('t1', 'archive');
@@ -1814,6 +1838,17 @@ describe('isDelegablePath', () => {
       expect(isDelegablePath(path), path).toBe(true);
     }
     const notDelegable = [
+      // Team/collab sub-surfaces under the delegable prefixes (I1 fix).
+      '/v1/mail/threads/t1/share',
+      '/v1/mail/threads/t1/shares',
+      '/v1/mail/threads/t1/shares/sh1',
+      '/v1/mail/threads/t1/comments',
+      '/v1/mail/threads/t1/team-activity',
+      '/v1/mail/snippets',
+      '/v1/mail/snippets/sn1',
+      '/v1/calendars/c1/shares',
+      '/v1/calendars/c1/shares/sh1',
+      '/v1/comments/cm1',
       '/v1/teams',
       '/v1/delegations',
       '/v1/delegations/audit',

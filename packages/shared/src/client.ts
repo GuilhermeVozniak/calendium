@@ -912,9 +912,23 @@ export const ACT_AS_HEADER = 'X-Calendium-Act-As';
  * of the backend's delegationScopeForRoute route groups. Anything else
  * (teams, billing, accounts, devices, delegations, …) rejects act-as outright
  * server-side, so the header must never be attached there.
+ *
+ * Team/collaboration sub-surfaces that sit under the delegable mail/calendar
+ * prefixes (thread shares, comments, team activity, snippets, calendar-share
+ * management) are denied too — the backend 403s them under act-as (an
+ * assistant must never mint share tokens or self-grant shares on the
+ * principal's behalf), so the header is never attached there either.
  */
 export function isDelegablePath(pathname: string): boolean {
   const path = pathname.split('?')[0];
+  if (
+    path === '/v1/mail/snippets' ||
+    path.startsWith('/v1/mail/snippets/') ||
+    /^\/v1\/mail\/threads\/[^/]+\/(share$|shares($|\/)|comments$|team-activity$)/.test(path) ||
+    /^\/v1\/calendars\/[^/]+\/shares($|\/)/.test(path)
+  ) {
+    return false;
+  }
   return (
     path === '/v1/search' ||
     path === '/v1/mail' ||

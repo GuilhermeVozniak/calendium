@@ -131,6 +131,27 @@ func TestDelegationScopeForRoute(t *testing.T) {
 		{http.MethodPost, "/v1/devices", "", "", false},
 		{http.MethodGet, "/v1/delegations", "", "", false},
 		{http.MethodDelete, "/v1/delegations/d1", "", "", false},
+		// Collaboration sub-surfaces under delegable prefixes are denied
+		// (I1 fix): shares, comments, team activity, snippets, calendar
+		// share management.
+		{http.MethodPost, "/v1/mail/threads/t1/share", "", "", false},
+		{http.MethodGet, "/v1/mail/threads/t1/shares", "", "", false},
+		{http.MethodDelete, "/v1/mail/threads/t1/shares/sh1", "", "", false},
+		{http.MethodGet, "/v1/mail/threads/t1/comments", "", "", false},
+		{http.MethodPost, "/v1/mail/threads/t1/comments", "", "", false},
+		{http.MethodGet, "/v1/mail/threads/t1/team-activity", "", "", false},
+		{http.MethodGet, "/v1/mail/snippets", "", "", false},
+		{http.MethodPost, "/v1/mail/snippets", "", "", false},
+		{http.MethodPut, "/v1/mail/snippets/sn1", "", "", false},
+		{http.MethodDelete, "/v1/mail/snippets/sn1", "", "", false},
+		{http.MethodGet, "/v1/calendars/c1/shares", "", "", false},
+		{http.MethodPost, "/v1/calendars/c1/shares", "", "", false},
+		{http.MethodPatch, "/v1/calendars/c1/shares/sh1", "", "", false},
+		{http.MethodDelete, "/v1/calendars/c1/shares/sh1", "", "", false},
+		{http.MethodPatch, "/v1/comments/cm1", "", "", false},
+		{http.MethodDelete, "/v1/comments/cm1", "", "", false},
+		// But sibling thread sub-routes stay delegable.
+		{http.MethodPost, "/v1/mail/threads/t1/snooze", domain.ScopeMailWrite, "mail", true},
 		// Fail closed on everything else.
 		{http.MethodPost, "/v1/ai/compose", "", "", false},
 		{http.MethodGet, "/v1/me", "", "", false},
@@ -197,6 +218,50 @@ func TestActAsNonDelegableRouteIsForbiddenOutright(t *testing.T) {
 	}
 	if len(fd.recorded) != 0 {
 		t.Fatalf("rejected request recorded %d audit entries, want 0", len(fd.recorded))
+	}
+}
+
+// TestActAsDeniedCollabSubpathsAreForbidden drives every denied team/collab
+// sub-path through the full stack under act-as: each must 403 before any
+// grant lookup, so a delegated assistant can never mint share tokens,
+// self-grant calendar shares, touch team comments/activity, or read/edit
+// snippets on the principal's behalf.
+func TestActAsDeniedCollabSubpathsAreForbidden(t *testing.T) {
+	denied := []struct{ method, path string }{
+		{http.MethodPost, "/v1/mail/threads/t1/share"},
+		{http.MethodGet, "/v1/mail/threads/t1/shares"},
+		{http.MethodDelete, "/v1/mail/threads/t1/shares/sh1"},
+		{http.MethodGet, "/v1/mail/threads/t1/comments"},
+		{http.MethodPost, "/v1/mail/threads/t1/comments"},
+		{http.MethodGet, "/v1/mail/threads/t1/team-activity"},
+		{http.MethodGet, "/v1/mail/snippets"},
+		{http.MethodPost, "/v1/mail/snippets"},
+		{http.MethodPut, "/v1/mail/snippets/sn1"},
+		{http.MethodDelete, "/v1/mail/snippets/sn1"},
+		{http.MethodGet, "/v1/calendars/c1/shares"},
+		{http.MethodPost, "/v1/calendars/c1/shares"},
+		{http.MethodPatch, "/v1/calendars/c1/shares/sh1"},
+		{http.MethodDelete, "/v1/calendars/c1/shares/sh1"},
+		{http.MethodPatch, "/v1/comments/cm1"},
+		{http.MethodDelete, "/v1/comments/cm1"},
+	}
+	for _, tc := range denied {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			h, fd := delegHarness(t)
+			rec := actAs(h, "principal_1", tc.method, tc.path, nil)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403 (body=%s)", rec.Code, rec.Body.String())
+			}
+			if got := decodeErr(t, rec).Code; got != "forbidden" {
+				t.Fatalf("error code = %q, want forbidden", got)
+			}
+			if fd.authorizeCalls != 0 {
+				t.Fatal("denied sub-path must be rejected before any grant lookup")
+			}
+			if len(fd.recorded) != 0 {
+				t.Fatalf("denied request recorded %d audit entries, want 0", len(fd.recorded))
+			}
+		})
 	}
 }
 

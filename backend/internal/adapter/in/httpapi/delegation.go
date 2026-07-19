@@ -36,6 +36,9 @@ func actorFrom(r *http.Request) (domain.User, bool) {
 // teams, billing, accounts, devices, delegations, and anything not
 // explicitly a mail/calendar surface reject act-as outright (fail closed).
 func delegationScopeForRoute(method, path string) (domain.DelegationScope, string, bool) {
+	if delegationDeniedSubpath(path) {
+		return "", "", false
+	}
 	read := method == http.MethodGet || method == http.MethodHead
 	switch {
 	case path == "/v1/search":
@@ -61,6 +64,38 @@ func delegationScopeForRoute(method, path string) (domain.DelegationScope, strin
 		return domain.ScopeCalendarWrite, "calendar", true
 	}
 	return "", "", false
+}
+
+// delegationDeniedSubpath reports whether path is a team/collaboration
+// sub-surface that must never be reachable through act-as even though it
+// sits under a delegable mail/calendar prefix. A delegated assistant must
+// not mint external thread-share tokens (durable access surviving
+// revocation), manage thread or calendar shares (incl. self-granting a
+// calendar share), read or post team comments, read team activity, or read
+// or mutate snippets (team snippet bodies are a team surface and the list
+// endpoint cannot be split by scope at the path level — fail closed).
+// /v1/comments/{id} is already non-delegable (no matching prefix).
+func delegationDeniedSubpath(path string) bool {
+	if path == "/v1/mail/snippets" || strings.HasPrefix(path, "/v1/mail/snippets/") {
+		return true
+	}
+	if rest, ok := strings.CutPrefix(path, "/v1/mail/threads/"); ok {
+		if _, sub, ok := strings.Cut(rest, "/"); ok {
+			switch {
+			case sub == "share", sub == "shares", strings.HasPrefix(sub, "shares/"),
+				sub == "comments", sub == "team-activity":
+				return true
+			}
+		}
+	}
+	if rest, ok := strings.CutPrefix(path, "/v1/calendars/"); ok {
+		if _, sub, ok := strings.Cut(rest, "/"); ok {
+			if sub == "shares" || strings.HasPrefix(sub, "shares/") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // auditRoute renders the matched route pattern ("/v1/mail/threads/{id}/actions")
