@@ -51,7 +51,7 @@ func TestDelegationRepoCRUD(t *testing.T) {
 		t.Fatalf("missing id: want ErrNotFound, got %v", err)
 	}
 
-	// Unique (principal, assistant): a duplicate grant conflicts.
+	// One live grant per (principal, assistant): a duplicate conflicts.
 	_, err = repo.Create(ctx, domain.Delegation{
 		PrincipalID: "principal_1", AssistantID: "assistant_1",
 		Scopes: []domain.DelegationScope{domain.ScopeMailRead},
@@ -116,6 +116,51 @@ func TestDelegationRepoGetActiveTracksStatus(t *testing.T) {
 	}
 	if _, err := repo.GetActive(ctx, "principal_1", "assistant_1"); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("revoked: want ErrNotFound, got %v", err)
+	}
+}
+
+// TestDelegationRepoRegrantAfterRevoke proves revocation is not permanent:
+// the unique index is partial (live rows only), so once a grant is revoked
+// the same (principal, assistant) pair can be granted again.
+func TestDelegationRepoRegrantAfterRevoke(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	repo := NewDelegationRepo(st)
+	seedUser(t, st, "principal_1")
+	seedUser(t, st, "assistant_1")
+
+	d := seedDelegation(t, st, "principal_1", "assistant_1", domain.DelegationPending, domain.ScopeMailRead)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	d.Status = domain.DelegationRevoked
+	d.RevokedAt = &now
+	if err := repo.Update(ctx, d); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	// Re-grant succeeds and the revoked row stays behind as history.
+	redo := seedDelegation(t, st, "principal_1", "assistant_1", domain.DelegationPending, domain.ScopeMailRead)
+	if redo.ID == d.ID {
+		t.Fatal("re-grant reused the revoked row's id")
+	}
+	redo.Status = domain.DelegationActive
+	redo.AcceptedAt = &now
+	if err := repo.Update(ctx, redo); err != nil {
+		t.Fatalf("activate re-grant: %v", err)
+	}
+	got, err := repo.GetActive(ctx, "principal_1", "assistant_1")
+	if err != nil {
+		t.Fatalf("active re-grant not visible: %v", err)
+	}
+	if got.ID != redo.ID {
+		t.Fatalf("GetActive = %q, want the re-granted row %q", got.ID, redo.ID)
+	}
+
+	// A second live grant still conflicts.
+	if _, err := repo.Create(ctx, domain.Delegation{
+		PrincipalID: "principal_1", AssistantID: "assistant_1",
+		Scopes: []domain.DelegationScope{domain.ScopeMailRead},
+	}); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("second live grant: want ErrConflict, got %v", err)
 	}
 }
 

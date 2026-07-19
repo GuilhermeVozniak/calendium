@@ -42,8 +42,9 @@ func scanDelegation(r rowScanner) (domain.Delegation, error) {
 	return d, nil
 }
 
-// Create inserts a grant. A second grant for the same (principal, assistant)
-// pair violates the unique constraint and maps to domain.ErrConflict.
+// Create inserts a grant. A second LIVE (pending or active) grant for the
+// same (principal, assistant) pair violates the partial unique index and
+// maps to domain.ErrConflict; revoked rows never block a re-grant.
 func (r *DelegationRepo) Create(ctx context.Context, d domain.Delegation) (domain.Delegation, error) {
 	if d.ID == "" {
 		d.ID = newID()

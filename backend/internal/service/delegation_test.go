@@ -28,8 +28,11 @@ func newDelegRepoFake() *delegRepoFake {
 }
 
 func (f *delegRepoFake) Create(_ context.Context, d domain.Delegation) (domain.Delegation, error) {
+	// Mirrors the partial unique index (0017): only a LIVE (non-revoked)
+	// row for the pair conflicts — revocation never blocks a re-grant.
 	for _, existing := range f.byID {
-		if existing.PrincipalID == d.PrincipalID && existing.AssistantID == d.AssistantID {
+		if existing.PrincipalID == d.PrincipalID && existing.AssistantID == d.AssistantID &&
+			existing.Status != domain.DelegationRevoked {
 			return domain.Delegation{}, domain.ErrConflict
 		}
 	}
@@ -208,6 +211,33 @@ func TestDelegationCreate(t *testing.T) {
 		}
 		if _, err := svc.Create(ctx, "principal_1", "assistant@example.com", scopes); !errors.Is(err, domain.ErrConflict) {
 			t.Fatalf("want ErrConflict, got %v", err)
+		}
+	})
+
+	t.Run("grant, revoke, grant again succeeds", func(t *testing.T) {
+		svc, _, _, _ := newDelegService()
+		scopes := []domain.DelegationScope{domain.ScopeMailRead}
+		d := grantActive(t, svc, scopes...)
+		if err := svc.Revoke(ctx, "principal_1", d.ID); err != nil {
+			t.Fatalf("revoke: %v", err)
+		}
+		// Revocation is not permanent: the same assistant can be granted
+		// again, accepted, and authorized.
+		redo, err := svc.Create(ctx, "principal_1", "assistant@example.com", scopes)
+		if err != nil {
+			t.Fatalf("re-grant after revoke: %v", err)
+		}
+		if redo.ID == d.ID {
+			t.Fatal("re-grant reused the revoked grant's id")
+		}
+		if redo.Status != domain.DelegationPending {
+			t.Fatalf("re-grant status = %q, want pending", redo.Status)
+		}
+		if _, err := svc.Accept(ctx, "assistant_1", redo.ID); err != nil {
+			t.Fatalf("accept re-grant: %v", err)
+		}
+		if err := svc.Authorize(ctx, "assistant_1", "principal_1", domain.ScopeMailRead); err != nil {
+			t.Fatalf("authorize after re-grant: %v", err)
 		}
 	})
 }
