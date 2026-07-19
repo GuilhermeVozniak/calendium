@@ -465,3 +465,27 @@ type TeamService interface {
 	// return ErrNotFound (no oracle).
 	AcceptInvitation(ctx context.Context, userID, token string) (domain.Team, error)
 }
+
+// --- Team comments (M2.7 Task 9) ---
+
+// CommentInput is the add-comment payload.
+type CommentInput struct {
+	TeamID string `json:"teamId"`
+	Body   string `json:"body"`
+}
+
+// CollabService is the team-collaboration surface on mail threads (M2.7):
+// comments with @mentions. Commenting requires (a) team membership and (b)
+// the thread being visible to that team — the caller owns it, or an
+// unrevoked team-audience share exists (comments piggyback on the explicit
+// share; they never expose a thread by themselves). Authorization lives
+// here: non-members and invisible threads are ErrNotFound (never an
+// oracle); an under-privileged known member is ErrForbidden.
+type CollabService interface {
+	ListComments(ctx context.Context, userID, threadID, teamID string) ([]domain.Comment, error)
+	AddComment(ctx context.Context, userID, threadID string, in CommentInput) (domain.Comment, error)
+	// UpdateComment: author only (team admins may delete, not edit).
+	UpdateComment(ctx context.Context, userID, commentID, body string) (domain.Comment, error)
+	// DeleteComment: the author, or a team admin+ (soft delete).
+	DeleteComment(ctx context.Context, userID, commentID string) error
+}

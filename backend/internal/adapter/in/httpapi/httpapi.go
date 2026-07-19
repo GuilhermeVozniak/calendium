@@ -44,6 +44,9 @@ type Deps struct {
 	// to the caller's team topics. Optional until the M2.7 team service is
 	// wired: when nil the stream carries only user:<id> events.
 	Teams TeamLister
+	// Collab is the M2.7 team-comments surface. Optional until the collab
+	// service is wired: when nil the comment routes answer 501.
+	Collab port.CollabService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -207,8 +210,12 @@ func New(deps Deps) http.Handler {
 	authed("GET /v1/settings", s.handleGetSettings)
 	authed("PUT /v1/settings", s.handleUpdateSettings)
 
-	// M2.7: realtime collaboration stream (SSE).
+	// M2.7: realtime collaboration stream (SSE) and team thread-comments.
 	authed("GET /v1/collab/stream", s.handleCollabStream)
+	authed("GET /v1/mail/threads/{id}/comments", s.handleListComments)
+	authed("POST /v1/mail/threads/{id}/comments", s.handleAddComment)
+	authed("PATCH /v1/comments/{id}", s.handleUpdateComment)
+	authed("DELETE /v1/comments/{id}", s.handleDeleteComment)
 
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins)
