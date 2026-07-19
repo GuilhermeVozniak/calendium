@@ -82,6 +82,10 @@ type SnippetInput struct {
 	Name     string  `json:"name"`
 	Shortcut *string `json:"shortcut"`
 	BodyHTML string  `json:"bodyHtml"`
+	// TeamID scopes a NEW snippet to a team the caller belongs to (any
+	// role). Create only — a snippet's scope is immutable afterwards, so
+	// update ignores it. Nil creates a personal snippet.
+	TeamID *string `json:"teamId"`
 }
 
 // BulkActionResult reports a bulk mutation: mutated threads plus the ids

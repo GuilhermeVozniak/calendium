@@ -233,8 +233,11 @@ type Draft struct {
 
 // Snippet is a reusable canned response with an optional keyboard shortcut.
 type Snippet struct {
-	ID         string  `json:"id"`
-	UserID     string  `json:"-"`
+	ID     string `json:"id"`
+	UserID string `json:"-"`
+	// TeamID scopes the snippet to a team (M2.7 team snippets); nil means
+	// personal. Team snippets are visible to every team member.
+	TeamID     *string `json:"teamId"`
 	Name       string  `json:"name"`
 	Shortcut   *string `json:"shortcut"`
 	BodyHTML   string  `json:"bodyHtml"`

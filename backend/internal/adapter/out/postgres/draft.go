@@ -184,14 +184,15 @@ func draftAddrs(d domain.Draft) (to, cc, bcc string, err error) {
 
 // --- port.SnippetRepo --------------------------------------------------------
 
-const snippetCols = `id, user_id, name, shortcut, body_html, usage_count`
+const snippetCols = `id, user_id, team_id, name, shortcut, body_html, usage_count`
 
 func scanSnippet(r rowScanner) (domain.Snippet, error) {
 	var s domain.Snippet
-	var shortcut sql.NullString
-	if err := r.Scan(&s.ID, &s.UserID, &s.Name, &shortcut, &s.BodyHTML, &s.UsageCount); err != nil {
+	var teamID, shortcut sql.NullString
+	if err := r.Scan(&s.ID, &s.UserID, &teamID, &s.Name, &shortcut, &s.BodyHTML, &s.UsageCount); err != nil {
 		return domain.Snippet{}, notFound(err)
 	}
+	s.TeamID = strPtr(teamID)
 	s.Shortcut = strPtr(shortcut)
 	return s, nil
 }
@@ -201,9 +202,9 @@ func (r snippetRepo) Create(ctx context.Context, s domain.Snippet) (domain.Snipp
 		s.ID = newID()
 	}
 	_, err := r.q(ctx).ExecContext(ctx, `
-		INSERT INTO snippets (id, user_id, name, shortcut, body_html, usage_count)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		s.ID, s.UserID, s.Name, nullStrPtr(s.Shortcut), s.BodyHTML, s.UsageCount)
+		INSERT INTO snippets (id, user_id, team_id, name, shortcut, body_html, usage_count)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		s.ID, s.UserID, nullStrPtr(s.TeamID), s.Name, nullStrPtr(s.Shortcut), s.BodyHTML, s.UsageCount)
 	if err != nil {
 		return domain.Snippet{}, err
 	}
@@ -216,13 +217,34 @@ func (r snippetRepo) GetByID(ctx context.Context, id string) (domain.Snippet, er
 	return scanSnippet(row)
 }
 
+// ListByUser returns the user's personal snippets; team snippets (M2.7)
+// are excluded and reached through ListByTeams.
 func (r snippetRepo) ListByUser(ctx context.Context, userID string) ([]domain.Snippet, error) {
 	rows, err := r.q(ctx).QueryContext(ctx,
-		`SELECT `+snippetCols+` FROM snippets WHERE user_id = $1 ORDER BY name`, userID)
+		`SELECT `+snippetCols+` FROM snippets WHERE user_id = $1 AND team_id IS NULL ORDER BY name`, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
+	return collectSnippets(rows)
+}
+
+// ListByTeams returns every snippet scoped to any of teamIDs (M2.7 team
+// snippets), ordered by name.
+func (r snippetRepo) ListByTeams(ctx context.Context, teamIDs []string) ([]domain.Snippet, error) {
+	if len(teamIDs) == 0 {
+		return []domain.Snippet{}, nil
+	}
+	rows, err := r.q(ctx).QueryContext(ctx,
+		`SELECT `+snippetCols+` FROM snippets WHERE team_id = ANY($1) ORDER BY name`, teamIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return collectSnippets(rows)
+}
+
+func collectSnippets(rows *sql.Rows) ([]domain.Snippet, error) {
 	snippets := []domain.Snippet{}
 	for rows.Next() {
 		s, err := scanSnippet(rows)

@@ -208,11 +208,16 @@ type DraftRepo interface {
 	GetAiGeneratedByThread(ctx context.Context, threadID string) (domain.Draft, error)
 }
 
-// SnippetRepo persists per-user canned responses.
+// SnippetRepo persists canned responses, personal (team_id NULL) or
+// team-scoped (M2.7 team snippets).
 type SnippetRepo interface {
 	Create(ctx context.Context, s domain.Snippet) (domain.Snippet, error)
 	GetByID(ctx context.Context, id string) (domain.Snippet, error)
+	// ListByUser returns the user's PERSONAL (non-team) snippets; team
+	// snippets are reached through ListByTeams.
 	ListByUser(ctx context.Context, userID string) ([]domain.Snippet, error)
+	// ListByTeams returns every snippet scoped to any of teamIDs.
+	ListByTeams(ctx context.Context, teamIDs []string) ([]domain.Snippet, error)
 	Update(ctx context.Context, s domain.Snippet) error
 	Delete(ctx context.Context, id string) error
 }

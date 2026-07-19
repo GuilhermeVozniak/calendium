@@ -663,8 +663,26 @@ func (r *fakeSnippetRepo) GetByID(_ context.Context, id string) (domain.Snippet,
 func (r *fakeSnippetRepo) ListByUser(_ context.Context, userID string) ([]domain.Snippet, error) {
 	out := []domain.Snippet{}
 	for _, id := range r.order {
-		if s, ok := r.byID[id]; ok && s.UserID == userID {
+		// Personal snippets only — mirrors the SQL repo's team_id IS NULL.
+		if s, ok := r.byID[id]; ok && s.UserID == userID && s.TeamID == nil {
 			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeSnippetRepo) ListByTeams(_ context.Context, teamIDs []string) ([]domain.Snippet, error) {
+	out := []domain.Snippet{}
+	for _, id := range r.order {
+		s, ok := r.byID[id]
+		if !ok || s.TeamID == nil {
+			continue
+		}
+		for _, tid := range teamIDs {
+			if *s.TeamID == tid {
+				out = append(out, s)
+				break
+			}
 		}
 	}
 	return out, nil

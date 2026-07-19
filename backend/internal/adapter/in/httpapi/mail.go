@@ -324,6 +324,10 @@ func (s *server) handleCreateSnippet(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	// Snippet bodies are stored HTML rendered in composers — for TEAM
+	// snippets (M2.7) in OTHER members' composers — so they are scrubbed at
+	// the HTTP boundary like signatures (sanitize.go precedent).
+	in.BodyHTML = sanitizeSignatureHTML(in.BodyHTML)
 	snippet, err := s.deps.Mail.CreateSnippet(r.Context(), userFrom(r).ID, in)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -338,6 +342,8 @@ func (s *server) handleUpdateSnippet(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	// Same sanitization boundary as handleCreateSnippet.
+	in.BodyHTML = sanitizeSignatureHTML(in.BodyHTML)
 	snippet, err := s.deps.Mail.UpdateSnippet(r.Context(), userFrom(r).ID, r.PathValue("id"), in)
 	if err != nil {
 		s.writeError(w, r, err)

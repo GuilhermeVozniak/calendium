@@ -119,6 +119,8 @@ func run(logger *slog.Logger) error {
 		Messages:      store.Messages(),
 		Drafts:        store.Drafts(),
 		Snippets:      store.Snippets(),
+		// Team-scoped snippets (M2.7 Task 11).
+		Teams:         postgres.NewTeamRepo(store),
 		Labels:        store.Labels(),
 		Reactions:     store.Reactions(),
 		MailProviders: mailProviders,

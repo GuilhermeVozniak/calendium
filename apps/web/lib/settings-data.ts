@@ -93,7 +93,7 @@ export async function fetchSnippets(): Promise<Snippet[]> {
 }
 
 export async function createSnippetApi(
-  input: Pick<Snippet, 'name' | 'shortcut' | 'bodyHtml'>
+  input: Pick<Snippet, 'name' | 'shortcut' | 'bodyHtml' | 'teamId'>
 ): Promise<Snippet> {
   try {
     return await getApiClient().createSnippet(input);
