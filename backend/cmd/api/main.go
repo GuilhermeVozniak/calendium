@@ -247,6 +247,14 @@ func run(logger *slog.Logger) error {
 		Clock:       clock,
 	})
 
+	// M2.8: first-class tasks (local todos + mirrored provider todos).
+	tasksSvc := service.NewTaskService(service.TaskServiceDeps{
+		Subscriptions: store.Subscriptions(),
+		Tasks:         store.Tasks(),
+		Clock:         clock,
+		SelfHosted:    cfg.Instance.SelfHosted,
+	})
+
 	// M2.7 Task 10: teammate read/reply indicators.
 	teamActivitySvc := service.NewTeamActivityService(service.TeamActivityServiceDeps{
 		Subscriptions: store.Subscriptions(),
@@ -328,7 +336,9 @@ func run(logger *slog.Logger) error {
 		// M2.7 Task 15: EA delegation grants + act-as + audit surface.
 		Delegations: delegations,
 		// M2.7 Task 10: teammate read/reply indicators.
-		TeamActivity:       teamActivitySvc,
+		TeamActivity: teamActivitySvc,
+		// M2.8: first-class tasks.
+		Tasks:              tasksSvc,
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 	})

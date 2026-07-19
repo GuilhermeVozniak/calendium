@@ -2495,3 +2495,123 @@ func (r *fakeTeamInvitationRepo) Update(_ context.Context, inv domain.TeamInvita
 }
 
 var _ port.TeamInvitationRepo = (*fakeTeamInvitationRepo)(nil)
+
+// --- task repo (M2.8) --------------------------------------------------------
+
+// fakeTaskRepo is map-backed and mirrors the postgres repo's List semantics:
+// completed excluded unless IncludeCompleted, scheduled overlap with
+// [ScheduledFrom, ScheduledTo), due range [DueFrom, DueTo), ordered by
+// (position, createdAt, id).
+type fakeTaskRepo struct {
+	byID map[string]domain.Task
+	seq  int
+
+	// programmable
+	createErr error
+	listErr   error
+	updateErr error
+
+	// recording
+	lastQuery   port.TaskQuery
+	updateCalls int
+}
+
+func newTaskRepo() *fakeTaskRepo { return &fakeTaskRepo{byID: map[string]domain.Task{}} }
+
+func (r *fakeTaskRepo) Create(_ context.Context, t domain.Task) (domain.Task, error) {
+	if r.createErr != nil {
+		return domain.Task{}, r.createErr
+	}
+	if t.ID == "" {
+		r.seq++
+		t.ID = fmt.Sprintf("task_%d", r.seq)
+	}
+	if t.Source == "" {
+		t.Source = domain.TaskSourceLocal
+	}
+	r.byID[t.ID] = t
+	return t, nil
+}
+
+func (r *fakeTaskRepo) GetByID(_ context.Context, id string) (domain.Task, error) {
+	t, ok := r.byID[id]
+	if !ok {
+		return domain.Task{}, domain.ErrNotFound
+	}
+	return t, nil
+}
+
+func (r *fakeTaskRepo) GetByExternalID(_ context.Context, userID string, source domain.TaskSource, externalID string) (domain.Task, error) {
+	for _, t := range r.byID {
+		if t.UserID == userID && t.Source == source && t.ExternalID == externalID {
+			return t, nil
+		}
+	}
+	return domain.Task{}, domain.ErrNotFound
+}
+
+func (r *fakeTaskRepo) List(_ context.Context, q port.TaskQuery) ([]domain.Task, error) {
+	r.lastQuery = q
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+	out := []domain.Task{}
+	for _, t := range r.byID {
+		switch {
+		case t.UserID != q.UserID:
+		case q.Source != "" && t.Source != q.Source:
+		case !q.IncludeCompleted && t.Completed():
+		case !q.ScheduledFrom.IsZero() && (t.ScheduledEnd == nil || !t.ScheduledEnd.After(q.ScheduledFrom)):
+		case !q.ScheduledTo.IsZero() && (t.ScheduledStart == nil || !t.ScheduledStart.Before(q.ScheduledTo)):
+		case !q.DueFrom.IsZero() && (t.Due == nil || t.Due.Before(q.DueFrom)):
+		case !q.DueTo.IsZero() && (t.Due == nil || !t.Due.Before(q.DueTo)):
+		case q.UnscheduledOnly && t.ScheduledStart != nil:
+		default:
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Position != out[j].Position {
+			return out[i].Position < out[j].Position
+		}
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	if q.Limit > 0 && len(out) > q.Limit {
+		out = out[:q.Limit]
+	}
+	return out, nil
+}
+
+func (r *fakeTaskRepo) Update(_ context.Context, t domain.Task) error {
+	r.updateCalls++
+	if r.updateErr != nil {
+		return r.updateErr
+	}
+	if _, ok := r.byID[t.ID]; !ok {
+		return domain.ErrNotFound
+	}
+	r.byID[t.ID] = t
+	return nil
+}
+
+func (r *fakeTaskRepo) Delete(_ context.Context, id string) error {
+	if _, ok := r.byID[id]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(r.byID, id)
+	return nil
+}
+
+func (r *fakeTaskRepo) DeleteBySource(_ context.Context, userID string, source domain.TaskSource) error {
+	for id, t := range r.byID {
+		if t.UserID == userID && t.Source == source {
+			delete(r.byID, id)
+		}
+	}
+	return nil
+}
+
+var _ port.TaskRepo = (*fakeTaskRepo)(nil)
