@@ -199,8 +199,10 @@ func (s *AccountService) SetVipSenders(ctx context.Context, userID, accountID st
 // signature.
 const maxSignatureBytes = 100 * 1024
 
-// SetSignature replaces the account's rich signature (sanitization of the
-// HTML happens at the HTTP boundary; the service stores it as given).
+// SetSignature replaces the account's rich signature. Sanitization of the
+// HTML happens at the HTTP boundary — handleSetSignature in
+// adapter/in/httpapi runs it through sanitizeSignatureHTML before calling
+// this method — so the service stores it as given, trusting that boundary.
 func (s *AccountService) SetSignature(ctx context.Context, userID, accountID, signatureHTML string) (domain.ConnectedAccount, error) {
 	a, err := ownedAccount(ctx, s.accounts, userID, accountID)
 	if err != nil {

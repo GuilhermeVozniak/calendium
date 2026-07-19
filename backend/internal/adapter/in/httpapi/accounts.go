@@ -58,7 +58,10 @@ func (s *server) handleSetVipSenders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, account)
 }
 
-// handleSetSignature replaces the account's rich signature.
+// handleSetSignature replaces the account's rich signature. The HTML is run
+// through sanitizeSignatureHTML (see sanitize.go) before it ever reaches the
+// service/storage layer — this is the sanitization boundary
+// AccountService.SetSignature's own doc comment refers to.
 func (s *server) handleSetSignature(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		SignatureHTML string `json:"signatureHtml"`
@@ -67,7 +70,7 @@ func (s *server) handleSetSignature(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	account, err := s.deps.Accounts.SetSignature(r.Context(), userFrom(r).ID, r.PathValue("id"), in.SignatureHTML)
+	account, err := s.deps.Accounts.SetSignature(r.Context(), userFrom(r).ID, r.PathValue("id"), sanitizeSignatureHTML(in.SignatureHTML))
 	if err != nil {
 		s.writeError(w, r, err)
 		return

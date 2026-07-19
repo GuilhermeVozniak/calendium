@@ -166,6 +166,30 @@ func TestHandleSetSignature(t *testing.T) {
 			t.Fatalf("status = %d, want 400", rec.Code)
 		}
 	})
+
+	// M2.5 review fix (MUST-FIX 1): nothing sanitized signature HTML before
+	// storage — the web preview's biome-ignore comment and
+	// AccountService.SetSignature's doc comment both *claimed* sanitization
+	// happened "at the HTTP boundary", but no boundary code actually did it.
+	// This proves the handler now does, before the service ever sees the
+	// value.
+	t.Run("sanitizes a script-bearing signature before it reaches the service", func(t *testing.T) {
+		h := newHarness(t)
+		h.accounts.sigRet = domain.ConnectedAccount{ID: "acc1"}
+		payload := `<p>Best,<br>Me</p><script>alert(document.cookie)</script>` +
+			`<img src="x" onerror="alert(1)"><a href="javascript:alert(2)">click</a>`
+		rec := h.authed(http.MethodPut, "/v1/accounts/acc1/signature", jsonBody(t, map[string]string{"signatureHtml": payload}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		got := h.accounts.gotSig
+		if strings.Contains(got, "<script") || strings.Contains(got, "onerror") || strings.Contains(got, "javascript:") {
+			t.Fatalf("gotSig = %q, want script/onerror/javascript: stripped before SetSignature", got)
+		}
+		if !strings.Contains(got, "<p>Best,<br>Me</p>") {
+			t.Fatalf("gotSig = %q, want the benign markup preserved", got)
+		}
+	})
 }
 
 func TestHandleSetAutoBcc(t *testing.T) {

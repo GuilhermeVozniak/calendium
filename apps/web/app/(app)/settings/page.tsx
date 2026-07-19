@@ -585,7 +585,7 @@ function SignatureEditor({
         <span className="text-muted-foreground text-xs">Preview</span>
         <div
           className="rounded-md border border-dashed p-3 text-sm text-muted-foreground empty:text-muted-foreground/60"
-          // biome-ignore lint/security/noDangerouslySetInnerHtml: signatureHtml is sanitized server-side at the HTTP boundary before storage (see backend/internal/service/account.go SetSignature) — this is the owner's own already-sanitized signature, not third-party input.
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: signatureHtml is sanitized server-side by handleSetSignature (backend/internal/adapter/in/httpapi/sanitize.go's sanitizeSignatureHTML — strips script/style/iframe/object/embed, on* attributes, and javascript: URLs) before it is ever persisted, so what's fetched back and rendered here is already scrubbed. There is no client-side re-sanitization step; this preview trusts the server boundary.
           dangerouslySetInnerHTML={{ __html: signatureHtml || '<span>No signature yet.</span>' }}
         />
       </div>
