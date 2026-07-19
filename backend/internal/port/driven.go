@@ -490,6 +490,21 @@ type TeamInvitationRepo interface {
 	Update(ctx context.Context, inv domain.TeamInvitation) error
 }
 
+// --- Shared conversations (M2.7 Task 7) --------------------------------------
+
+// ThreadShareRepo persists tokenized live thread shares (table
+// thread_shares; token stored hashed — raw tokens never cross this
+// boundary).
+type ThreadShareRepo interface {
+	Create(ctx context.Context, s domain.ThreadShare) (domain.ThreadShare, error)
+	GetByID(ctx context.Context, id string) (domain.ThreadShare, error)
+	// GetByTokenHash is the share-link lookup; domain.ErrNotFound when absent.
+	GetByTokenHash(ctx context.Context, tokenHash string) (domain.ThreadShare, error)
+	ListByThread(ctx context.Context, threadID string) ([]domain.ThreadShare, error)
+	// Revoke stamps revoked_at; domain.ErrNotFound when the share is missing.
+	Revoke(ctx context.Context, id string, at time.Time) error
+}
+
 // ---------------------------------------------------------------------------
 // Gateways (implemented by internal/adapter/out/{googleapi,msgraph,stripeapi,openrouter,push,authjwt})
 // ---------------------------------------------------------------------------

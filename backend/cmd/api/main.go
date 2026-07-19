@@ -199,6 +199,18 @@ func run(logger *slog.Logger) error {
 		AppBaseURL:  cfg.Instance.AppBaseURL,
 	})
 
+	// M2.7 Task 7: shared conversations (tokenized live thread shares).
+	collab := service.NewCollabService(service.CollabServiceDeps{
+		Shares:   postgres.NewThreadShareRepo(store),
+		Teams:    postgres.NewTeamRepo(store),
+		Threads:  store.Threads(),
+		Messages: store.Messages(),
+		Accounts: store.Accounts(),
+		Subs:     store.Subscriptions(),
+		Clock:    clock,
+		SelfHost: cfg.Instance.SelfHosted,
+	})
+
 	// --- instance discovery document (GET /v1/instance) ---
 	mode := httpapi.ModeCloud
 	if cfg.Instance.SelfHosted {
@@ -257,6 +269,7 @@ func run(logger *slog.Logger) error {
 		Prefs:      prefs,
 		Scheduling: scheduling,
 		Settings:   settingsSvc,
+		Collab:     collab,
 		Payments:   stripe,
 		// M2.7 collaboration: team service + in-process SSE fan-out. The
 		// stream scopes each subscriber to user:<id> plus the caller's real

@@ -469,3 +469,43 @@ type TeamService interface {
 	// return ErrNotFound (no oracle).
 	AcceptInvitation(ctx context.Context, userID, token string) (domain.Team, error)
 }
+
+// --- Shared conversations (M2.7 Task 7) --------------------------------------
+
+// ShareThreadInput creates a live share link for a thread.
+type ShareThreadInput struct {
+	Audience domain.ShareAudience `json:"audience"` // "team" | "external"
+	TeamID   string               `json:"teamId,omitempty"`
+	// ExpiresAt optionally bounds the link's life; nil = until revoked.
+	ExpiresAt *time.Time `json:"expiresAt"`
+}
+
+// SharedThreadView is the read-only projection served to share viewers:
+// thread metadata + messages, with recipients' Bcc stripped and no
+// labels/split/snooze state (owner-private triage data never leaves).
+type SharedThreadView struct {
+	Subject   string               `json:"subject"`
+	Audience  domain.ShareAudience `json:"audience"`
+	Messages  []domain.Message     `json:"messages"`
+	UpdatedAt time.Time            `json:"updatedAt"`
+}
+
+// CollabService — share surface (grown in Tasks 9-10). All authorization
+// lives here: sharing requires thread ownership + entitlement, team-audience
+// shares require the sharer's membership of TeamID, and viewers of
+// revoked/expired/unknown tokens uniformly get ErrNotFound (no oracle).
+type CollabService interface {
+	// ShareThread creates a live share link; the raw token is returned
+	// exactly once — only its hash is stored.
+	ShareThread(ctx context.Context, userID, threadID string, in ShareThreadInput) (share domain.ThreadShare, rawToken string, err error)
+	ListThreadShares(ctx context.Context, userID, threadID string) ([]domain.ThreadShare, error)
+	RevokeThreadShare(ctx context.Context, userID, threadID, shareID string) error
+	// GetSharedThread serves a share view. viewerUserID is nil for
+	// unauthenticated (external) viewers; team-audience shares require a
+	// viewer who is a member of the share's team.
+	GetSharedThread(ctx context.Context, rawToken string, viewerUserID *string) (SharedThreadView, error)
+	// ResolveShare authorizes a raw share token with GetSharedThread's exact
+	// fail-closed semantics and returns just the share id — the SSE stream
+	// endpoint's subscription topic ("share:<id>") needs no projection.
+	ResolveShare(ctx context.Context, rawToken string, viewerUserID *string) (shareID string, err error)
+}

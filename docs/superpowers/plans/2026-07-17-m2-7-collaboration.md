@@ -502,7 +502,9 @@ GET    /v1/shared/threads/{token}/stream       (SSE; same auth semantics; subscr
 - [ ] **Step 5: Shared client** — `shareThread`, `listThreadShares`, `revokeThreadShare`, `getSharedThread`; types; tests.
 - [ ] **Step 6: Full gates + commit** — `feat(backend): tokenized live thread shares (team + external)`.
 
----### Task 8: Shared conversation web page (read-only live view)
+---
+
+### Task 8: Shared conversation web page (read-only live view)
 
 **Files:**
 - Create: `apps/web/app/(share)/shared/[token]/page.tsx` (public route — no `(app)` auth shell)
