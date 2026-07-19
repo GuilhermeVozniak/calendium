@@ -136,6 +136,15 @@ var defaultRedirectAllowlist = []string{
 	"calendium://",
 }
 
+// Weather configures the Open-Meteo forecast adapter (M2.8 Task 13).
+// Open-Meteo is keyless, so weather defaults to ON; setting OPEN_METEO_URL
+// to an empty value disables it (adapter unwired, GET /v1/weather → 501).
+type Weather struct {
+	// BaseURL is the Open-Meteo API origin (OPEN_METEO_URL, default
+	// https://api.open-meteo.com). Empty disables weather.
+	BaseURL string
+}
+
 // Instance describes the deployment mode surfaced to clients via the public
 // GET /v1/instance discovery endpoint (open-core: self-hosted vs. cloud).
 type Instance struct {
@@ -174,6 +183,7 @@ type Config struct {
 	Mail       Mail
 	OAuth      OAuth
 	Instance   Instance
+	Weather    Weather
 }
 
 // FromEnv builds a Config from environment variables. DATABASE_URL and a
@@ -304,6 +314,15 @@ func FromEnv() (Config, error) {
 		} else {
 			cfg.Instance.SelfHosted = b
 		}
+	}
+
+	// Weather (M2.8 Task 13): keyless vendor, so the default is on. LookupEnv
+	// (not Getenv) so an explicitly empty OPEN_METEO_URL means "disable",
+	// while an unset one means "use the public API".
+	if v, ok := os.LookupEnv("OPEN_METEO_URL"); ok {
+		cfg.Weather.BaseURL = strings.TrimRight(strings.TrimSpace(v), "/")
+	} else {
+		cfg.Weather.BaseURL = "https://api.open-meteo.com"
 	}
 
 	cfg.OAuth.AllowedRedirectURIs = append([]string(nil), defaultRedirectAllowlist...)

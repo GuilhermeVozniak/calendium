@@ -29,6 +29,9 @@ type InstanceInfo struct {
 	// web push is configured; clients subscribe the service worker with it.
 	VapidPublicKey string           `json:"vapidPublicKey,omitempty"`
 	Features       InstanceFeatures `json:"features"`
+	// Capabilities lists optional third-party integrations (M2.8) so
+	// clients can hide unavailable surfaces without probing endpoints.
+	Capabilities InstanceCapabilities `json:"capabilities"`
 }
 
 // InstanceFeatures reports which optional capabilities are wired on this
@@ -39,6 +42,15 @@ type InstanceFeatures struct {
 	Microsoft bool `json:"microsoft"`
 	AI        bool `json:"ai"`
 	Push      bool `json:"push"`
+}
+
+// InstanceCapabilities reports which optional third-party integrations
+// (M2.8) are wired on this deployment. Mirrors the `capabilities` block of
+// InstanceInfo in packages/shared/src/types.ts — keep the two in sync.
+type InstanceCapabilities struct {
+	// Weather is true when an Open-Meteo base URL is configured and
+	// GET /v1/weather is served (M2.8 Task 13).
+	Weather bool `json:"weather"`
 }
 
 // Instance mode string values.

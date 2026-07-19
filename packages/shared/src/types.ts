@@ -1166,3 +1166,37 @@ export interface TaskPatch {
   scheduledEnd?: string | null;
   position?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Weather (M2.8 Task 13) — mirrors backend/internal/domain/weather.go and
+// the `capabilities` block of GET /v1/instance.
+// ---------------------------------------------------------------------------
+
+/** One day of forecast for one location (GET /v1/weather), best-effort calendar decoration. */
+export interface DayForecast {
+  /** YYYY-MM-DD in the requested time zone. */
+  date: string;
+  /** WMO weather interpretation code. */
+  code: number;
+  highCelsius: number;
+  lowCelsius: number;
+  /** Max precipitation probability for the day, 0..100. */
+  precipChance: number;
+}
+
+/**
+ * Optional third-party integration capabilities advertised by
+ * GET /v1/instance (M2.8). Every field is optional so clients keep working
+ * against older servers that don't send the block (treat absence as
+ * "probe the endpoint and fall back on its 501").
+ */
+export interface InstanceCapabilities {
+  /** GET /v1/weather is served (an Open-Meteo base URL is configured). */
+  weather?: boolean;
+}
+
+// Declaration-merged augmentation (add-only): TypeScript merges this into
+// the InstanceInfo interface declared earlier in this file.
+export interface InstanceInfo {
+  capabilities?: InstanceCapabilities;
+}

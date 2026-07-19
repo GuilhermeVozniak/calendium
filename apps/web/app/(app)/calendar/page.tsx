@@ -60,6 +60,7 @@ import { VIEW_KEYS, rangeLabel, stepAnchor, viewRange } from '@/lib/calendar-vie
 import { nextHalfHour } from '@/lib/quick-add';
 import { fetchAccounts } from '@/lib/settings-data';
 import { useShortcuts } from '@/lib/shortcuts';
+import { useWeather } from '@/lib/use-weather';
 import { applyTemplate, fetchEventTemplates, recordTemplateUsage } from '@/lib/template-data';
 import { getPinnedTimeZones, setPinnedTimeZones, zoneCaption } from '@/lib/timezones';
 
@@ -179,6 +180,15 @@ export default function CalendarPage() {
     queryKey: ['busy-events', range.from.toISOString(), range.to.toISOString()],
     queryFn: () => fetchBusyEvents(range.from, range.to),
   });
+
+  // Inline day forecasts (M2.8 Task 13), fetched only for the views that
+  // render chips (day/week grid headers + the agenda strip). `byDate` is
+  // undefined whenever weather is hidden — no location, weather pref off,
+  // server capability off / endpoint 501, or a vendor failure — and the
+  // views render no chips (best-effort decoration, never an error state).
+  const { byDate: weatherByDate } = useWeather(
+    view === 'day' || view === 'week' || view === 'ticker'
+  );
 
   const calendars = React.useMemo(
     () => calendarsQuery.data ?? [],
@@ -647,6 +657,7 @@ export default function CalendarPage() {
               calendarById={calendarById}
               onAnchorChange={setAnchor}
               onEventClick={handleEventClick}
+              weatherByDate={weatherByDate}
             />
           ) : view === 'month' ? (
             <MonthView
@@ -690,6 +701,7 @@ export default function CalendarPage() {
               pinnedZones={pinnedZones}
               timeTravelZone={timeTravelZone}
               onExitTimeTravel={() => changeTimeTravelZone(null)}
+              weatherByDate={weatherByDate}
               onSlotClick={handleSlotClick}
               onEventClick={handleEventClick}
             />

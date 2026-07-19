@@ -582,3 +582,12 @@ type TaskService interface {
 	ReopenTask(ctx context.Context, userID, taskID string) (domain.Task, error)
 	DeleteTask(ctx context.Context, userID, taskID string) error
 }
+
+// --- Weather (M2.8 Task 13) --------------------------------------------------
+
+// WeatherService serves inline day forecasts for calendar surfaces
+// (GET /v1/weather). Entitlement-gated like every other product surface.
+type WeatherService interface {
+	// Forecast serves up to 14 days; cached ~30 minutes per location.
+	Forecast(ctx context.Context, userID string, lat, lon float64, timeZone string, days int) ([]domain.DayForecast, error)
+}

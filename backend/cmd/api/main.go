@@ -22,6 +22,7 @@ import (
 	"calendium/backend/internal/adapter/out/eventbus"
 	"calendium/backend/internal/adapter/out/googleapi"
 	"calendium/backend/internal/adapter/out/msgraph"
+	"calendium/backend/internal/adapter/out/openmeteo"
 	"calendium/backend/internal/adapter/out/openrouter"
 	"calendium/backend/internal/adapter/out/postgres"
 	"calendium/backend/internal/adapter/out/push"
@@ -268,6 +269,19 @@ func run(logger *slog.Logger) error {
 		SelfHosted:    cfg.Instance.SelfHosted,
 	})
 
+	// M2.8 Task 13: inline weather (Open-Meteo, keyless — on unless
+	// OPEN_METEO_URL is explicitly emptied). Left nil when disabled:
+	// GET /v1/weather answers 501 and capabilities.weather reads false.
+	var weatherSvc port.WeatherService
+	if cfg.Weather.BaseURL != "" {
+		weatherSvc = service.NewWeatherService(service.WeatherServiceDeps{
+			Provider:      openmeteo.New(cfg.Weather.BaseURL),
+			Subscriptions: store.Subscriptions(),
+			Clock:         clock,
+			SelfHosted:    cfg.Instance.SelfHosted,
+		})
+	}
+
 	// --- instance discovery document (GET /v1/instance) ---
 	mode := httpapi.ModeCloud
 	if cfg.Instance.SelfHosted {
@@ -309,6 +323,9 @@ func run(logger *slog.Logger) error {
 			AI:        cfg.OpenRouter.APIKey != "",
 			Push:      pushConfigured,
 		},
+		Capabilities: httpapi.InstanceCapabilities{
+			Weather: cfg.Weather.BaseURL != "",
+		},
 	}
 
 	// --- HTTP server ---
@@ -340,7 +357,9 @@ func run(logger *slog.Logger) error {
 		// M2.7 Task 10: teammate read/reply indicators.
 		TeamActivity: teamActivitySvc,
 		// M2.8: first-class tasks.
-		Tasks:              tasksSvc,
+		Tasks: tasksSvc,
+		// M2.8 Task 13: inline weather (nil when disabled → 501).
+		Weather:            weatherSvc,
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 	})
