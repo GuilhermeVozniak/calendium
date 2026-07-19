@@ -609,7 +609,7 @@ func TestUserServiceEnsureUser(t *testing.T) {
 
 	t.Run("empty subject is unauthorized", func(t *testing.T) {
 		users := newUserRepo()
-		svc := NewUserService(users, newClock(base))
+		svc := NewUserService(users, newUserPreferencesRepo(), newClock(base))
 
 		_, err := svc.EnsureUser(context.Background(), port.Identity{Subject: "", Email: "x@y.com"})
 		if !errors.Is(err, domain.ErrUnauthorized) {
@@ -622,7 +622,7 @@ func TestUserServiceEnsureUser(t *testing.T) {
 
 	t.Run("full identity sets both pointers", func(t *testing.T) {
 		users := newUserRepo()
-		svc := NewUserService(users, newClock(base))
+		svc := NewUserService(users, newUserPreferencesRepo(), newClock(base))
 
 		u, err := svc.EnsureUser(context.Background(), port.Identity{
 			Subject:   "sub-1",
@@ -661,7 +661,7 @@ func TestUserServiceEnsureUser(t *testing.T) {
 
 	t.Run("sparse identity leaves pointers nil", func(t *testing.T) {
 		users := newUserRepo()
-		svc := NewUserService(users, newClock(base))
+		svc := NewUserService(users, newUserPreferencesRepo(), newClock(base))
 
 		u, err := svc.EnsureUser(context.Background(), port.Identity{Subject: "sub-2", Email: "c@d.com"})
 		if err != nil {
@@ -676,6 +676,49 @@ func TestUserServiceEnsureUser(t *testing.T) {
 	})
 }
 
+// TestUserServicePreferences covers the named-theme preference document
+// (M2.6 Task 13): default when unset, upsert round-trip, and validation.
+func TestUserServicePreferences(t *testing.T) {
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+
+	t.Run("missing prefs default to neutral", func(t *testing.T) {
+		svc := NewUserService(newUserRepo(), newUserPreferencesRepo(), newClock(base))
+		got, err := svc.GetPreferences(ctx, "u1")
+		if err != nil {
+			t.Fatalf("GetPreferences: %v", err)
+		}
+		if got.Theme != "neutral" {
+			t.Fatalf("Theme = %q, want neutral", got.Theme)
+		}
+	})
+
+	t.Run("update persists and second update overwrites", func(t *testing.T) {
+		svc := NewUserService(newUserRepo(), newUserPreferencesRepo(), newClock(base))
+		saved, err := svc.UpdatePreferences(ctx, "u1", port.UserPreferences{Theme: "ocean"})
+		if err != nil {
+			t.Fatalf("UpdatePreferences: %v", err)
+		}
+		if saved.Theme != "ocean" {
+			t.Fatalf("saved.Theme = %q, want ocean", saved.Theme)
+		}
+		if _, err := svc.UpdatePreferences(ctx, "u1", port.UserPreferences{Theme: "sunset"}); err != nil {
+			t.Fatalf("UpdatePreferences overwrite: %v", err)
+		}
+		got, err := svc.GetPreferences(ctx, "u1")
+		if err != nil || got.Theme != "sunset" {
+			t.Fatalf("GetPreferences = %+v, %v — want sunset", got, err)
+		}
+	})
+
+	t.Run("unknown theme is a validation error", func(t *testing.T) {
+		svc := NewUserService(newUserRepo(), newUserPreferencesRepo(), newClock(base))
+		if _, err := svc.UpdatePreferences(ctx, "u1", port.UserPreferences{Theme: "bogus"}); !errors.Is(err, domain.ErrValidation) {
+			t.Fatalf("err = %v, want ErrValidation", err)
+		}
+	})
+}
+
 // TestUserServiceGetUser is a straight passthrough to UserRepo.GetByID.
 func TestUserServiceGetUser(t *testing.T) {
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
@@ -683,7 +726,7 @@ func TestUserServiceGetUser(t *testing.T) {
 	t.Run("existing user", func(t *testing.T) {
 		users := newUserRepo()
 		users.byID["sub-1"] = domain.User{ID: "sub-1", Email: "a@b.com"}
-		svc := NewUserService(users, newClock(base))
+		svc := NewUserService(users, newUserPreferencesRepo(), newClock(base))
 
 		got, err := svc.GetUser(context.Background(), "sub-1")
 		if err != nil {
@@ -696,7 +739,7 @@ func TestUserServiceGetUser(t *testing.T) {
 
 	t.Run("unknown user", func(t *testing.T) {
 		users := newUserRepo()
-		svc := NewUserService(users, newClock(base))
+		svc := NewUserService(users, newUserPreferencesRepo(), newClock(base))
 
 		_, err := svc.GetUser(context.Background(), "nope")
 		if !errors.Is(err, domain.ErrNotFound) {

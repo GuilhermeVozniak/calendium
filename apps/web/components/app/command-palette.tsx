@@ -20,6 +20,7 @@ import {
   MessageSquareText,
   Monitor,
   Moon,
+  Palette,
   PanelRight,
   Paperclip,
   PenLine,
@@ -95,7 +96,7 @@ export function CommandPalette() {
   const router = useRouter();
   const pathname = usePathname();
   const { openCompose } = useCompose();
-  const { setTheme, resolvedTheme } = useTheme();
+  const { setTheme, resolvedTheme, setNamedTheme } = useTheme();
   const { openSidebar } = useAskSidebar();
   const { open: openAttachments } = useAttachmentsPane();
   const aiEnabled = useInstance().data?.features.ai ?? false;
@@ -523,6 +524,12 @@ export function CommandPalette() {
             <Monitor />
             System theme
           </CommandItem>
+          {(['neutral', 'ocean', 'forest', 'sunset'] as const).map((name) => (
+            <CommandItem key={name} onSelect={() => run(() => setNamedTheme(name))}>
+              <Palette />
+              {`Theme: ${name.charAt(0).toUpperCase()}${name.slice(1)}`}
+            </CommandItem>
+          ))}
         </CommandGroup>
 
         <CommandSeparator />

@@ -92,6 +92,20 @@ vi.mock('@/lib/toast', () => ({
   errorMessage: (e: unknown) => (e instanceof Error ? e.message : 'error'),
 }));
 
+const setNamedThemeMock = vi.fn();
+vi.mock('@/lib/named-theme', () => ({
+  THEME_NAMES: ['neutral', 'ocean', 'forest', 'sunset'],
+  THEME_SWATCHES: {
+    neutral: { light: 'hsl(0 0% 9%)', dark: 'hsl(0 0% 98%)' },
+    ocean: { light: 'hsl(217 72% 46%)', dark: 'hsl(213 80% 66%)' },
+    forest: { light: 'hsl(158 55% 34%)', dark: 'hsl(152 45% 60%)' },
+    sunset: { light: 'hsl(24 82% 48%)', dark: 'hsl(27 90% 62%)' },
+  },
+  getStoredNamedTheme: () => 'neutral',
+  setNamedTheme: (...args: unknown[]) => setNamedThemeMock(...args),
+  syncNamedThemeFromServer: () => Promise.resolve(null),
+}));
+
 import { SettingsView } from './SettingsView';
 
 function makeAccount(overrides: Partial<ConnectedAccount> = {}): ConnectedAccount {
@@ -118,6 +132,24 @@ function renderSettings() {
     </QueryClientProvider>
   );
 }
+
+describe('SettingsView — named theme picker', () => {
+  beforeEach(() => {
+    setNamedThemeMock.mockReset();
+  });
+
+  it('lists the four palettes and switches on click', async () => {
+    renderSettings();
+    await screen.findByText('Appearance');
+
+    for (const label of ['Neutral', 'Ocean', 'Forest', 'Sunset']) {
+      expect(screen.getByRole('button', { name: label })).toBeTruthy();
+    }
+
+    await userEvent.click(screen.getByRole('button', { name: 'Ocean' }));
+    expect(setNamedThemeMock).toHaveBeenCalledWith('ocean');
+  });
+});
 
 describe('SettingsView — signature & auto-BCC', () => {
   beforeEach(() => {

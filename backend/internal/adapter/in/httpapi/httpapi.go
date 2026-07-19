@@ -84,6 +84,8 @@ func New(deps Deps) http.Handler {
 	}
 
 	authed("GET /v1/me", s.handleMe)
+	authed("GET /v1/me/preferences", s.handleGetPreferences)
+	authed("PUT /v1/me/preferences", s.handleUpdatePreferences)
 
 	authed("GET /v1/billing/subscription", s.handleGetSubscription)
 	authed("POST /v1/billing/checkout", s.handleCreateCheckout)

@@ -215,6 +215,30 @@ export interface UserPrefs {
   splitOrder: InboxSplit[];
 }
 
+/** Named UI theme (curated token palettes); 'neutral' is the default. */
+export type ThemeName = 'neutral' | 'ocean' | 'forest' | 'sunset';
+
+/** The allowed named-theme set, shared by pickers and client-side validation. */
+export const THEME_NAMES: readonly ThemeName[] = ['neutral', 'ocean', 'forest', 'sunset'];
+
+/**
+ * Canonical `--primary` token per named theme (light/dark), verbatim from the
+ * CSS token blocks (apps/web/app/globals.css / apps/desktop styles.css) and
+ * apps/mobile/lib/theme.ts. Pickers use these for swatches so previews derive
+ * from the real token values.
+ */
+export const THEME_SWATCHES: Record<ThemeName, { light: string; dark: string }> = {
+  neutral: { light: 'hsl(0 0% 9%)', dark: 'hsl(0 0% 98%)' },
+  ocean: { light: 'hsl(217 72% 46%)', dark: 'hsl(213 80% 66%)' },
+  forest: { light: 'hsl(158 55% 34%)', dark: 'hsl(152 45% 60%)' },
+  sunset: { light: 'hsl(24 82% 48%)', dark: 'hsl(27 90% 62%)' },
+};
+
+/** Per-user cross-device preferences (GET/PUT /v1/me/preferences). */
+export interface UserPreferences {
+  theme: ThemeName;
+}
+
 // ---------------------------------------------------------------------------
 // Calendar
 // ---------------------------------------------------------------------------

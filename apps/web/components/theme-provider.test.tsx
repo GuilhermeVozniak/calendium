@@ -4,7 +4,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ThemeProvider, useTheme } from '@/components/theme-provider';
 
+const { getPreferencesMock, updatePreferencesMock, toastErrorMock } = vi.hoisted(() => ({
+  getPreferencesMock: vi.fn(),
+  updatePreferencesMock: vi.fn(),
+  toastErrorMock: vi.fn(),
+}));
+
+vi.mock('@/lib/api', () => ({
+  getApiClient: () => ({
+    getPreferences: getPreferencesMock,
+    updatePreferences: updatePreferencesMock,
+  }),
+}));
+
+vi.mock('sonner', () => ({
+  toast: { error: toastErrorMock },
+}));
+
 const STORAGE_KEY = 'calendium-theme';
+const NAMED_THEME_STORAGE_KEY = 'calendium-named-theme';
 
 /** Builds a `matchMedia` stub whose `matches` and change-listener are controllable. */
 function mockMatchMedia(initialMatches: boolean) {
@@ -37,11 +55,12 @@ function mockMatchMedia(initialMatches: boolean) {
 }
 
 function Consumer() {
-  const { theme, resolvedTheme, setTheme } = useTheme();
+  const { theme, resolvedTheme, setTheme, namedTheme, setNamedTheme } = useTheme();
   return (
     <div>
       <span data-testid="theme">{theme}</span>
       <span data-testid="resolved">{resolvedTheme}</span>
+      <span data-testid="named">{namedTheme}</span>
       <button type="button" onClick={() => setTheme('light')}>
         set-light
       </button>
@@ -50,6 +69,15 @@ function Consumer() {
       </button>
       <button type="button" onClick={() => setTheme('system')}>
         set-system
+      </button>
+      <button type="button" onClick={() => setNamedTheme('ocean')}>
+        set-ocean
+      </button>
+      <button type="button" onClick={() => setNamedTheme('sunset')}>
+        set-sunset
+      </button>
+      <button type="button" onClick={() => setNamedTheme('neutral')}>
+        set-neutral
       </button>
     </div>
   );
@@ -64,6 +92,10 @@ beforeEach(() => {
   window.localStorage.clear();
   document.documentElement.classList.remove('dark');
   document.documentElement.style.colorScheme = '';
+  delete document.documentElement.dataset.theme;
+  // Default: signed out / offline — the provider must fall back to localStorage.
+  getPreferencesMock.mockRejectedValue(new Error('offline'));
+  updatePreferencesMock.mockResolvedValue({ theme: 'neutral' });
 });
 
 afterEach(() => {
@@ -188,6 +220,72 @@ describe('ThemeProvider — persistence', () => {
     await user.click(screen.getByText('set-system'));
     await waitFor(() => expect(window.localStorage.getItem(STORAGE_KEY)).toBe('system'));
     expect(screen.getByTestId('theme')).toHaveTextContent('system');
+  });
+
+  it('setNamedTheme applies data-theme, persists locally, and PUTs to the server', async () => {
+    mockMatchMedia(false);
+    const user = userEvent.setup();
+    render(
+      <ThemeProvider>
+        <Consumer />
+      </ThemeProvider>
+    );
+    await waitFor(() => expect(screen.getByTestId('named')).toHaveTextContent('neutral'));
+
+    await user.click(screen.getByText('set-ocean'));
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe('ocean'));
+    expect(window.localStorage.getItem(NAMED_THEME_STORAGE_KEY)).toBe('ocean');
+    expect(screen.getByTestId('named')).toHaveTextContent('ocean');
+    await waitFor(() => expect(updatePreferencesMock).toHaveBeenCalledWith({ theme: 'ocean' }));
+  });
+
+  it('setNamedTheme(neutral) removes the data-theme attribute', async () => {
+    mockMatchMedia(false);
+    window.localStorage.setItem(NAMED_THEME_STORAGE_KEY, 'ocean');
+    const user = userEvent.setup();
+    render(
+      <ThemeProvider>
+        <Consumer />
+      </ThemeProvider>
+    );
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe('ocean'));
+
+    await user.click(screen.getByText('set-neutral'));
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBeUndefined());
+    expect(window.localStorage.getItem(NAMED_THEME_STORAGE_KEY)).toBe('neutral');
+    expect(screen.getByTestId('named')).toHaveTextContent('neutral');
+  });
+
+  it('the server preference fetched on mount wins over localStorage', async () => {
+    mockMatchMedia(false);
+    window.localStorage.setItem(NAMED_THEME_STORAGE_KEY, 'ocean');
+    getPreferencesMock.mockResolvedValue({ theme: 'forest' });
+    render(
+      <ThemeProvider>
+        <Consumer />
+      </ThemeProvider>
+    );
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe('forest'));
+    expect(window.localStorage.getItem(NAMED_THEME_STORAGE_KEY)).toBe('forest');
+    expect(screen.getByTestId('named')).toHaveTextContent('forest');
+  });
+
+  it('a failed PUT toasts and keeps the locally applied theme (no fake success)', async () => {
+    mockMatchMedia(false);
+    updatePreferencesMock.mockRejectedValue(new Error('500'));
+    const user = userEvent.setup();
+    render(
+      <ThemeProvider>
+        <Consumer />
+      </ThemeProvider>
+    );
+    await waitFor(() => expect(screen.getByTestId('named')).toHaveTextContent('neutral'));
+
+    await user.click(screen.getByText('set-sunset'));
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalled());
+    // The local theme survives the failed sync.
+    expect(document.documentElement.dataset.theme).toBe('sunset');
+    expect(window.localStorage.getItem(NAMED_THEME_STORAGE_KEY)).toBe('sunset');
   });
 
   it('still applies the theme for the session when localStorage throws', async () => {

@@ -15,7 +15,14 @@ import {
   withMockFallback,
 } from '@/lib/mock';
 import { htmlToPlainText, plainTextToHtml } from '@/lib/mail-extras';
-import type { ConnectedAccount, Provider, Subscription } from '@calendium/shared';
+import { applyNamedTheme, THEMES, useNamedTheme } from '@/lib/theme';
+import {
+  THEME_NAMES,
+  type ConnectedAccount,
+  type Provider,
+  type Subscription,
+  type ThemeName,
+} from '@calendium/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
@@ -55,6 +62,7 @@ export default function SettingsScreen() {
   const { user, signOut } = useAuth();
   const { config, clear: clearServer } = useServerConfig();
   const { colorScheme, toggleColorScheme } = useColorScheme();
+  const namedTheme = useNamedTheme();
   const [connecting, setConnecting] = React.useState<Provider | null>(null);
   // Per-account signature/auto-BCC edit buffers (M2.5), keyed by account id.
   // Plain inputs only — mobile has no rich-text editor, so the stored (rich)
@@ -65,6 +73,7 @@ export default function SettingsScreen() {
   >({});
 
   const isSelfHost = config?.mode === 'self_host';
+  const demoMode = config?.demoMode ?? false;
   const aiEnabled = config?.features?.ai ?? false;
   // Only offer mail providers the server can actually connect (features flags).
   const connectProviders = (['google', 'microsoft'] as const).filter(
@@ -172,6 +181,24 @@ export default function SettingsScreen() {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase())
     .join('');
+
+  // Named palette switch (M2.6 Task 13): applies + persists locally first,
+  // then syncs to the server — a failed PUT keeps the local theme (honest
+  // offline fallback), and demo mode never talks to a server.
+  const choosePalette = (name: ThemeName) => {
+    applyNamedTheme(name);
+    if (demoMode) return;
+    api.updatePreferences({ theme: name }).catch((error) => {
+      Alert.alert(
+        'Could not save theme',
+        isApiUnreachable(error)
+          ? 'The theme is applied on this device and can sync once the server is reachable.'
+          : error instanceof Error
+            ? error.message
+            : 'Unknown error'
+      );
+    });
+  };
 
   const connectAccount = async (provider: Provider) => {
     setConnecting(provider);
@@ -412,6 +439,28 @@ export default function SettingsScreen() {
             {colorScheme ?? 'light'}
           </Text>
         </Pressable>
+        <View className="gap-2 border-t border-border p-4">
+          <Text className="text-xs font-medium text-muted-foreground">Palette</Text>
+          <View className="flex-row flex-wrap gap-2">
+            {THEME_NAMES.map((name) => (
+              <Pressable
+                key={name}
+                testID={`theme-${name}`}
+                accessibilityState={{ selected: namedTheme === name }}
+                onPress={() => choosePalette(name)}
+                className={`flex-row items-center gap-2 rounded-md border px-3 py-2 active:bg-accent ${
+                  namedTheme === name ? 'border-ring' : 'border-border'
+                }`}>
+                {/* Swatch derives from the real palette token (THEMES map). */}
+                <View
+                  className="size-3 rounded-full"
+                  style={{ backgroundColor: THEMES[name][colorScheme ?? 'light'].primary }}
+                />
+                <Text className="text-sm capitalize">{name}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
       </Section>
 
       <Button variant="outline" className="flex-row gap-2" onPress={() => signOut()}>

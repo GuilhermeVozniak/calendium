@@ -301,6 +301,38 @@ type PrefsRepo interface {
 	Save(ctx context.Context, userID string, p domain.UserPrefs) error
 }
 
+// UserPreferences is the per-user, cross-device preference document (named
+// theme, M2.6 Task 13). Distinct from domain.UserPrefs (inbox split layout):
+// this document is served at GET/PUT /v1/me/preferences.
+type UserPreferences struct {
+	Theme string `json:"theme"`
+}
+
+// DefaultTheme is the named theme applied when a user has no stored preference.
+const DefaultTheme = "neutral"
+
+// ThemeNames is the allowed named-theme set (curated token palettes).
+var ThemeNames = []string{"neutral", "ocean", "forest", "sunset"}
+
+// ValidTheme reports whether name is one of ThemeNames.
+func ValidTheme(name string) bool {
+	for _, t := range ThemeNames {
+		if t == name {
+			return true
+		}
+	}
+	return false
+}
+
+// UserPreferencesRepo persists the cross-device preference document.
+type UserPreferencesRepo interface {
+	// Get returns the user's preferences, with Theme defaulted to
+	// DefaultTheme when absent (never ErrNotFound).
+	Get(ctx context.Context, userID string) (UserPreferences, error)
+	// Put upserts the preference document.
+	Put(ctx context.Context, userID string, prefs UserPreferences) error
+}
+
 // StripeEventRepo records processed Stripe webhook event ids for idempotency.
 type StripeEventRepo interface {
 	// Record inserts the event id; firstTime is false when it was already

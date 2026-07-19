@@ -78,7 +78,7 @@ Calendium is a keyboard-first email + calendar manager targeting **full feature 
 | Concierge onboarding | White-glove 1:1 coaching session teaching shortcuts and reaching inbox zero | P1 | planned | web, desktop |
 | CRM integrations | HubSpot / Salesforce / Pipedrive records shown and updated from the inbox, auto-logged emails | P1 | planned | web, desktop |
 | Attachment previews | PDFs preview inline; other file types open with system previews without leaving the inbox; web renders PDFs via a native `<iframe>` and images via `<img>` from the fetched attachment bytes, everything else downloads | P2 | scaffolded | web, desktop, mobile |
-| Themes and dark mode | Multiple polished themes switchable from the palette (light+dark neutral token set already ships in the design system; named themes planned) | P2 | planned | web, desktop, mobile |
+| Themes and dark mode | Multiple polished themes switchable from the palette (light+dark neutral token set plus named Ocean/Forest/Sunset palettes; per-user persistence via GET/PUT /v1/me/preferences with local offline fallback; pickers in the web command palette, desktop Settings, and mobile Settings) | P2 | scaffolded | web, desktop, mobile |
 | Web app | Browser-based access to the full experience without installing the desktop client (Next.js `(app)` route group) | P2 | planned | web |
 
 ## Best-in-class calendar
