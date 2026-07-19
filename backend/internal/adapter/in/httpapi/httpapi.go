@@ -44,6 +44,10 @@ type Deps struct {
 	// to the caller's team topics. Optional until the M2.7 team service is
 	// wired: when nil the stream carries only user:<id> events.
 	Teams TeamLister
+	// Delegations manages EA grants and authorizes X-Calendium-Act-As
+	// delegated requests (M2.7 Task 15). When nil the delegation routes
+	// answer 501 and any act-as request is rejected (fail closed).
+	Delegations port.DelegationService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -87,7 +91,7 @@ func New(deps Deps) http.Handler {
 
 	// Authenticated surface.
 	authed := func(pattern string, h http.HandlerFunc) {
-		mux.Handle(pattern, s.requireAuth(h))
+		mux.Handle(pattern, s.requireAuth(s.withActAs(h)))
 	}
 
 	authed("GET /v1/me", s.handleMe)
@@ -209,6 +213,13 @@ func New(deps Deps) http.Handler {
 
 	// M2.7: realtime collaboration stream (SSE).
 	authed("GET /v1/collab/stream", s.handleCollabStream)
+
+	// M2.7 Task 15: EA delegation grants + audit log.
+	authed("POST /v1/delegations", s.handleCreateDelegation)
+	authed("GET /v1/delegations", s.handleListDelegations)
+	authed("POST /v1/delegations/{id}/accept", s.handleAcceptDelegation)
+	authed("DELETE /v1/delegations/{id}", s.handleRevokeDelegation)
+	authed("GET /v1/delegations/audit", s.handleDelegationAudit)
 
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins)

@@ -181,6 +181,12 @@ func run(logger *slog.Logger) error {
 		Logger:            logger,
 	})
 	settingsSvc := service.NewSettingsService(store.UserSettings())
+	delegations := service.NewDelegationService(service.DelegationServiceDeps{
+		Delegations: postgres.NewDelegationRepo(store),
+		Audit:       postgres.NewAuditLogRepo(store),
+		Users:       postgres.NewUserDirectory(store),
+		Clock:       clock,
+	})
 
 	// --- instance discovery document (GET /v1/instance) ---
 	mode := httpapi.ModeCloud
@@ -245,6 +251,7 @@ func run(logger *slog.Logger) error {
 		// Teams is left nil until the team service lands — the stream then
 		// carries only user:<id> events.
 		Events:             eventbus.New(),
+		Delegations:        delegations,
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 	})
