@@ -68,6 +68,19 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     if (!isPending && !session) router.replace('/signin');
   }, [isPending, session, router]);
 
+  // Eager service-worker registration so static-asset caching works before any
+  // push opt-in (lib/web-push.ts reuses this same registration — no double
+  // registration). Production builds only: under `next dev` the cache-first
+  // /_next/static strategy would serve stale HMR chunks.
+  React.useEffect(() => {
+    if (process.env.NODE_ENV !== 'production') return;
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // Registration failure only disables offline asset caching; the app
+      // itself is unaffected.
+    });
+  }, []);
+
   if (isPending || !session) return <Splash />;
 
   return (
