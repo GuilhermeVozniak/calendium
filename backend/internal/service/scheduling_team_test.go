@@ -311,6 +311,65 @@ func TestTeamLinkCollectiveSlotsIntersectMembers(t *testing.T) {
 	}
 }
 
+// TestTeamLinkGrantRevocationStopsBusyLeak proves the calendar-share opt-in
+// is re-checked at slot time, not only at link creation: a member who
+// revokes their team calendar grant stops contributing busy blocks to the
+// public, unauthenticated slot computation on the very next request — and
+// is no longer auto-invited on later bookings.
+func TestTeamLinkGrantRevocationStopsBusyLeak(t *testing.T) {
+	ctx := context.Background()
+	f := newTeamLinkFixture(t)
+	link, err := f.svc.CreateLink(ctx, "u1", teamLinkInput())
+	if err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+
+	busyStart := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
+	f.seedMemberEvent("ev-member", busyStart, busyStart.Add(30*time.Minute))
+	from := time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC)
+	to := from.AddDate(0, 0, 1)
+
+	slots, err := f.svc.PublicSlots(ctx, link.Slug, from, to)
+	if err != nil {
+		t.Fatalf("PublicSlots: %v", err)
+	}
+	if containsStart(slots, busyStart) {
+		t.Fatalf("granted member's busy %v not intersected", busyStart)
+	}
+
+	// u2 revokes their team calendar share — still a member, but the
+	// opt-in behind collective availability is gone.
+	if err := f.shares.Delete(ctx, f.shareID); err != nil {
+		t.Fatalf("revoke share: %v", err)
+	}
+	slots, err = f.svc.PublicSlots(ctx, link.Slug, from, to)
+	if err != nil {
+		t.Fatalf("PublicSlots after revocation: %v", err)
+	}
+	if !containsStart(slots, busyStart) {
+		t.Fatalf("revoked grant still leaks u2's busy at %v through public slots", busyStart)
+	}
+
+	// And a booking no longer auto-invites the opted-out member.
+	got, err := f.svc.Book(ctx, "team-intro", port.BookingRequest{
+		Start:        time.Date(2026, 8, 4, 9, 0, 0, 0, time.UTC),
+		InviteeName:  "Ivy Invitee",
+		InviteeEmail: "ivy@example.com",
+		InviteeTZ:    "UTC",
+	})
+	if err != nil {
+		t.Fatalf("Book: %v", err)
+	}
+	if got.Status != domain.BookingConfirmed {
+		t.Fatalf("Status = %q, want confirmed", got.Status)
+	}
+	for _, e := range f.calProv.lastCreateInput.AttendeeEmails {
+		if e == "member@x.com" {
+			t.Fatalf("opted-out member still auto-invited: %v", f.calProv.lastCreateInput.AttendeeEmails)
+		}
+	}
+}
+
 // --- booking confirmation ------------------------------------------------------
 
 func TestTeamLinkBookInvitesMembersOnCreatorCalendar(t *testing.T) {
