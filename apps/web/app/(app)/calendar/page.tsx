@@ -33,6 +33,7 @@ import { TemplateManager } from '@/components/app/calendar/template-manager';
 import { TimeGrid } from '@/components/app/calendar/time-grid';
 import { YearView } from '@/components/app/calendar/year-view';
 import { EventDialog, SubscriptionEventDialog } from '@/components/app/event-dialog';
+import { InsightsPanel } from '@/components/app/insights-panel';
 import { TaskRail } from '@/components/app/task-rail';
 import { Button } from '@/components/ui/button';
 import {
@@ -90,6 +91,8 @@ export default function CalendarPage() {
   const [templateManagerOpen, setTemplateManagerOpen] = React.useState(false);
   const [setSwitcherOpen, setSetSwitcherOpen] = React.useState(false);
   const [taskRailOpen, setTaskRailOpen] = React.useState(true);
+  // Time insights sheet (M2.8 Task 17): ⇧I / palette "Time insights".
+  const [insightsOpen, setInsightsOpen] = React.useState(false);
 
   // Time Travel (Task 16): overlays one city's clock on the grid without
   // changing your own timezone, persisted separately from pinnedZones above
@@ -382,6 +385,9 @@ export default function CalendarPage() {
           if (timeTravelZone) changeTimeTravelZone(null);
           else setTimeTravelPickerOpen(true);
           break;
+        case 'time-insights':
+          setInsightsOpen((prev) => !prev);
+          break;
       }
     },
     [goToday, goNext, goPrev, openCreate, applyTemplateById, toggleCalendarSet, timeTravelZone, changeTimeTravelZone]
@@ -433,6 +439,11 @@ export default function CalendarPage() {
       keys: 'shift+t',
       description: 'Toggle task rail',
       handler: () => setTaskRailOpen((v) => !v),
+    },
+    {
+      keys: 'shift+i',
+      description: 'Time insights',
+      handler: () => runCalendarCommand({ type: 'time-insights' }),
     },
     {
       keys: '/',
@@ -782,6 +793,12 @@ export default function CalendarPage() {
       />
       <TemplateManager open={templateManagerOpen} onOpenChange={setTemplateManagerOpen} />
       <SetSwitcher open={setSwitcherOpen} onOpenChange={setSetSwitcherOpen} />
+      <InsightsPanel
+        open={insightsOpen}
+        onOpenChange={setInsightsOpen}
+        from={range.from}
+        to={range.to}
+      />
     </div>
   );
 }

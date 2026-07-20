@@ -2314,6 +2314,62 @@ describe('places', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Time insights (M2.8 Task 17)
+// ---------------------------------------------------------------------------
+
+describe('time insights (M2.8 Task 17)', () => {
+  const insights = {
+    from: '2026-07-06T00:00:00Z',
+    to: '2026-07-13T00:00:00Z',
+    meetingMinutes: 150,
+    focusMinutes: 180,
+    taskMinutes: 60,
+    meetingCount: 2,
+    focusGoalMinutes: 600,
+    topPeople: [{ email: 'alice@example.com', name: 'Alice', meetings: 2, minutes: 150 }],
+    byDay: [{ date: '2026-07-06', meetingMinutes: 60, focusMinutes: 0 }],
+  };
+
+  it('requests GET /v1/insights/time with from/to and returns the document', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: insights }] });
+    const got = await client.getTimeInsights('2026-07-06T00:00:00Z', '2026-07-13T00:00:00Z');
+    expect(got).toEqual(insights);
+    expect(calls[0]!.method).toBe('GET');
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe('/v1/insights/time');
+    expect(searchParamsToObject(url.searchParams)).toEqual({
+      from: '2026-07-06T00:00:00Z',
+      to: '2026-07-13T00:00:00Z',
+    });
+  });
+
+  it('maps an over-cap 400 to ApiRequestError(validation_failed)', async () => {
+    const { client } = makeClient({
+      responses: [
+        {
+          status: 400,
+          body: { error: { code: 'validation_failed', message: 'range must be 92 days or less' } },
+        },
+      ],
+    });
+    await expect(
+      client.getTimeInsights('2026-01-01T00:00:00Z', '2026-07-13T00:00:00Z')
+    ).rejects.toMatchObject({ status: 400, code: 'validation_failed' });
+  });
+
+  it('maps a 402 unpaid response to ApiRequestError(payment_required)', async () => {
+    const { client } = makeClient({
+      responses: [
+        { status: 402, body: { error: { code: 'payment_required', message: 'no subscription' } } },
+      ],
+    });
+    await expect(
+      client.getTimeInsights('2026-07-06T00:00:00Z', '2026-07-13T00:00:00Z')
+    ).rejects.toMatchObject({ status: 402, code: 'payment_required' });
+  });
+});
+
 describe('calendar subscriptions (M2.8 Task 15)', () => {
   const sub = {
     id: 'sub_1',

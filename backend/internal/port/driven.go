@@ -945,3 +945,14 @@ type TravelAlertRepo interface {
 	// Delete removes the alert; idempotent (absence is not an error).
 	Delete(ctx context.Context, eventID string) error
 }
+
+// --- Time insights (M2.8 Task 17) --------------------------------------------
+
+// InsightsManagedEventRepo is the read-only, all-kinds view of the
+// managed-events ledger the insights aggregation consumes: every managed
+// event for one user regardless of kind, so events of automation kinds that
+// don't exist yet are still categorized (never mistaken for meetings)
+// without any insights change.
+type InsightsManagedEventRepo interface {
+	ListAllByUser(ctx context.Context, userID string) ([]domain.ManagedEvent, error)
+}

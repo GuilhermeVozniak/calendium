@@ -76,6 +76,9 @@ type Deps struct {
 	// (M2.8 Task 16). When nil (vendor unconfigured, or the integration-
 	// connection repo not composed) the /v1/crm routes answer 501.
 	Crm port.CrmService
+	// Insights serves aggregated time analytics computed from the local
+	// mirror (M2.8 Task 17). When nil the insights route answers 501.
+	Insights port.InsightsService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -330,6 +333,9 @@ func New(deps Deps) http.Handler {
 	// M2.8 Task 16: CRM contact context + explicit email logging.
 	authed("GET /v1/crm/context", s.handleCrmContext)
 	authed("POST /v1/crm/log", s.handleCrmLog)
+
+	// M2.8 Task 17: time analytics computed from the local mirror.
+	authed("GET /v1/insights/time", s.handleGetTimeInsights)
 
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins)

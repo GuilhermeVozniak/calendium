@@ -21,7 +21,8 @@ export type CalendarCommand =
   | { type: 'new-from-template'; templateId: string }
   | { type: 'share-availability' }
   | { type: 'toggle-set'; setId: string }
-  | { type: 'time-travel' };
+  | { type: 'time-travel' }
+  | { type: 'time-insights' };
 
 export const CALENDAR_COMMAND_EVENT = 'calendium:calendar-command';
 
