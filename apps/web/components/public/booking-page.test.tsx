@@ -80,10 +80,16 @@ describe('PublicBookingPage', () => {
 
   it('renders slot times in the selected (default browser) timezone', async () => {
     renderPage();
+    // Anchor on the header first so the slot lookup below isn't racing the
+    // initial fetch+render against findBy's default 1s timeout — this test
+    // was the suite's one flake under parallel pre-push load (render ~1.2s).
+    await screen.findByText('Intro call');
     // The component defaults to browserTimeZone(); compute the expected label
     // the same way the component does so this assertion is host-TZ-agnostic.
     const expected = formatInTZ(SLOT_A.start, Intl.DateTimeFormat().resolvedOptions().timeZone, 'time');
-    expect(await screen.findByRole('button', { name: new RegExp(expected) })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('button', { name: new RegExp(expected) }, { timeout: 5000 })
+    ).toBeInTheDocument();
   });
 
   it('switches displayed slot labels when the visitor changes timezone, without refetching slots', async () => {
