@@ -70,7 +70,7 @@ jobs:
         if: matrix.platform == 'linux'
         # golang.design/x/hotkey (global hotkey, M2.6) needs X11 headers;
         # energye/systray needs ayatana-appindicator.
-        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libx11-dev libayatana-appindicator3-dev
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libx11-dev libayatana-appindicator3-dev xvfb
       - name: Install Wails CLI
         # Pinned to the wails/v2 library version in apps/desktop/go.mod
         # (reproducible builds; avoids silent CLI/library drift).
@@ -89,7 +89,9 @@ jobs:
       - name: Build desktop app
         # ubuntu-latest (24.04) ships webkit2gtk-4.1 only; wails needs the
         # webkit2_41 tag to link against it.
-        run: cd apps/desktop && wails build -platform ${{ matrix.platform }}/${{ matrix.arch }} ${{ matrix.platform == 'linux' && '-tags webkit2_41' || '' }}
+        # xvfb on linux: wails' binding generation executes the app briefly,
+        # and hotkey's X11 init panics without a display (same as the tests).
+        run: cd apps/desktop && ${{ matrix.platform == 'linux' && 'xvfb-run -a' || '' }} wails build -platform ${{ matrix.platform }}/${{ matrix.arch }} ${{ matrix.platform == 'linux' && '-tags webkit2_41' || '' }}
       # Signing/notarization steps are skipped when the signing secrets are
       # absent (e.g. forks), so unsigned releases still build.
       - name: Import signing certificate (macOS)
