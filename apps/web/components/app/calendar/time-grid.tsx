@@ -2,10 +2,11 @@
 
 import * as React from 'react';
 import { addDays, addMinutes, endOfDay, format, isSameDay, isToday, startOfDay } from 'date-fns';
-import { X } from 'lucide-react';
+import { Check, X } from 'lucide-react';
 
-import type { Calendar as CalendarModel, DayForecast, Event } from '@calendium/shared';
+import type { Calendar as CalendarModel, DayForecast, Event, Task } from '@calendium/shared';
 
+import { hasTaskDrag, readTaskDragId, setTaskDragData, timeblockFromDrop } from '@/lib/task-drag';
 import { hourLabelInZone, tzAbbrev, zoneCaption } from '@/lib/timezones';
 import { cn } from '@/lib/utils';
 
@@ -135,6 +136,12 @@ export interface TimeGridProps {
   onEventClick: (event: Event) => void;
   /** subscriptionId → feed color for read-only ICS mirrors (M2.8 Task 15). */
   subscriptionColors?: Map<string, string>;
+  /** Timeblocked tasks to render as grid blocks (M2.8 Task 3). */
+  tasks?: Task[];
+  /** Fires when a task is dropped on a day column (drag contract in lib/task-drag.ts). */
+  onTaskDrop?: (taskId: string, block: { scheduledStart: string; scheduledEnd: string }) => void;
+  /** In-place check-off / reopen for a grid task block. */
+  onTaskToggle?: (task: Task) => void;
 }
 
 export function TimeGrid({
@@ -150,6 +157,9 @@ export function TimeGrid({
   onSlotClick,
   onEventClick,
   subscriptionColors,
+  tasks,
+  onTaskDrop,
+  onTaskToggle,
 }: TimeGridProps) {
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -294,6 +304,9 @@ export function TimeGrid({
               onSlotClick={onSlotClick}
               onEventClick={onEventClick}
               subscriptionColors={subscriptionColors}
+              tasks={tasks}
+              onTaskDrop={onTaskDrop}
+              onTaskToggle={onTaskToggle}
             />
           ))}
         </div>
@@ -445,6 +458,9 @@ interface DayColumnProps {
   onSlotClick: (start: Date) => void;
   onEventClick: (event: Event) => void;
   subscriptionColors?: Map<string, string>;
+  tasks?: Task[];
+  onTaskDrop?: (taskId: string, block: { scheduledStart: string; scheduledEnd: string }) => void;
+  onTaskToggle?: (task: Task) => void;
 }
 
 function DayColumn({
@@ -455,6 +471,9 @@ function DayColumn({
   onSlotClick,
   onEventClick,
   subscriptionColors,
+  tasks,
+  onTaskDrop,
+  onTaskToggle,
 }: DayColumnProps) {
   const positioned = React.useMemo(
     () => layoutDayEvents(day, events.filter((e) => eventTouchesDay(e, day))),
@@ -462,6 +481,15 @@ function DayColumn({
   );
   const showNow = isSameDay(day, now);
   const nowTop = ((now.getHours() * 60 + now.getMinutes()) / 60) * HOUR_HEIGHT;
+
+  // Timeblocked tasks for this day (M2.8 Task 3), positioned like events.
+  const dayTasks = React.useMemo(
+    () =>
+      (tasks ?? []).filter(
+        (t) => t.scheduledStart && isSameDay(new Date(t.scheduledStart), day)
+      ),
+    [tasks, day]
+  );
 
   // Click an empty slot -> quick create, snapped to 30 minutes.
   const handleBackgroundClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -476,6 +504,21 @@ function DayColumn({
       className="relative cursor-pointer border-l"
       style={{ height: 24 * HOUR_HEIGHT }}
       onClick={handleBackgroundClick}
+      onDragOver={(e) => {
+        if (onTaskDrop && hasTaskDrag(e.dataTransfer)) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+        }
+      }}
+      onDrop={(e) => {
+        if (!onTaskDrop) return;
+        const taskId = readTaskDragId(e.dataTransfer);
+        if (!taskId) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        onTaskDrop(taskId, timeblockFromDrop(day, e.clientY, rect.top));
+      }}
     >
       {Array.from({ length: 24 }, (_, hour) => (
         <div
@@ -535,6 +578,63 @@ function DayColumn({
                 <JoinButton event={event} now={now} size="sm" />
               </span>
             )}
+          </div>
+        );
+      })}
+
+      {dayTasks.map((task) => {
+        const start = new Date(task.scheduledStart as string);
+        const end = new Date(task.scheduledEnd as string);
+        const startMinutes = start.getHours() * 60 + start.getMinutes();
+        const durationMinutes = Math.max(15, (end.getTime() - start.getTime()) / 60000);
+        const completed = task.completedAt !== null;
+        return (
+          // Distinct rounded task block: draggable (reschedule / drag back to
+          // the rail) with in-place check-off — clicking never opens a dialog.
+          // biome-ignore lint/a11y/noStaticElementInteractions: drag source whose only click handler stops slot-create propagation; the real control is the button inside.
+          // biome-ignore lint/a11y/useKeyWithClickEvents: the click handler only stops propagation — keyboard users act on the inner checkbox button.
+          <div
+            key={task.id}
+            data-testid={`grid-task-${task.id}`}
+            draggable
+            onDragStart={(e) => setTaskDragData(e.dataTransfer, task.id)}
+            onClick={(e) => e.stopPropagation()}
+            className={cn(
+              'absolute inset-x-0.5 z-10 flex cursor-grab items-start gap-1.5 overflow-hidden rounded-lg border border-primary/40 bg-primary/10 px-1.5 py-1 leading-tight shadow-sm',
+              completed && 'opacity-60'
+            )}
+            style={{
+              top: (startMinutes / 60) * HOUR_HEIGHT + 1,
+              height: Math.max((durationMinutes / 60) * HOUR_HEIGHT - 2, 18),
+            }}
+          >
+            {/* biome-ignore lint/a11y/useSemanticElements: styled round check control; the surrounding block must stay a draggable div. */}
+            <button
+              type="button"
+              role="checkbox"
+              aria-checked={completed}
+              aria-label={completed ? `Reopen "${task.title}"` : `Complete "${task.title}"`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onTaskToggle?.(task);
+              }}
+              className={cn(
+                'mt-px flex size-3.5 shrink-0 items-center justify-center rounded-full border transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                completed
+                  ? 'border-primary bg-primary text-primary-foreground'
+                  : 'border-primary/60 hover:bg-primary/20'
+              )}
+            >
+              {completed && <Check className="size-2.5" />}
+            </button>
+            <span
+              className={cn(
+                'truncate text-xs font-medium text-primary',
+                completed && 'line-through'
+              )}
+            >
+              {task.title}
+            </span>
           </div>
         );
       })}

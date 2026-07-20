@@ -11,6 +11,7 @@ import {
   Globe,
   Layers,
   LayoutTemplate,
+  ListTodo,
   Plus,
   Users,
   X,
@@ -32,6 +33,7 @@ import { TemplateManager } from '@/components/app/calendar/template-manager';
 import { TimeGrid } from '@/components/app/calendar/time-grid';
 import { YearView } from '@/components/app/calendar/year-view';
 import { EventDialog, SubscriptionEventDialog } from '@/components/app/event-dialog';
+import { TaskRail } from '@/components/app/task-rail';
 import { Button } from '@/components/ui/button';
 import {
   Command,
@@ -61,6 +63,7 @@ import { nextHalfHour } from '@/lib/quick-add';
 import { fetchAccounts, fetchCalendarSubscriptions } from '@/lib/settings-data';
 import { subscriptionColorMap } from '@/lib/subscription-utils';
 import { useShortcuts } from '@/lib/shortcuts';
+import { useTasks } from '@/lib/use-tasks';
 import { useWeather } from '@/lib/use-weather';
 import { applyTemplate, fetchEventTemplates, recordTemplateUsage } from '@/lib/template-data';
 import { getPinnedTimeZones, setPinnedTimeZones, zoneCaption } from '@/lib/timezones';
@@ -86,6 +89,7 @@ export default function CalendarPage() {
   const [teamAvailabilityOpen, setTeamAvailabilityOpen] = React.useState(false);
   const [templateManagerOpen, setTemplateManagerOpen] = React.useState(false);
   const [setSwitcherOpen, setSetSwitcherOpen] = React.useState(false);
+  const [taskRailOpen, setTaskRailOpen] = React.useState(true);
 
   // Time Travel (Task 16): overlays one city's clock on the grid without
   // changing your own timezone, persisted separately from pinnedZones above
@@ -196,6 +200,16 @@ export default function CalendarPage() {
   const { byDate: weatherByDate } = useWeather(
     view === 'day' || view === 'week' || view === 'ticker'
   );
+
+  // Tasks (M2.8 Task 3): the rail reads its own useTasks() (same ['tasks']
+  // cache); this instance narrows `scheduled` to the visible range for the
+  // grid's task blocks and provides the drag/check-off mutations.
+  const {
+    scheduled: scheduledTasks,
+    updateTask: patchTask,
+    complete: completeTask,
+    reopen: reopenTask,
+  } = useTasks(range);
 
   const calendars = React.useMemo(
     () => calendarsQuery.data ?? [],
@@ -415,6 +429,12 @@ export default function CalendarPage() {
       handler: () => runCalendarCommand({ type: 'time-travel' }),
     },
     {
+      // `t` alone is taken by "today" on this page, so the rail toggles on ⇧T.
+      keys: 'shift+t',
+      description: 'Toggle task rail',
+      handler: () => setTaskRailOpen((v) => !v),
+    },
+    {
       keys: '/',
       description: 'Focus quick add',
       handler: () => {
@@ -557,6 +577,15 @@ export default function CalendarPage() {
               </TabsTrigger>
             </TabsList>
           </Tabs>
+          <Button
+            variant="outline"
+            size="sm"
+            aria-pressed={taskRailOpen}
+            onClick={() => setTaskRailOpen((v) => !v)}
+          >
+            <ListTodo />
+            Tasks
+          </Button>
           <Button variant="outline" size="sm" onClick={() => setAvailabilityOpen(true)}>
             <Clock />
             Share availability
@@ -716,9 +745,19 @@ export default function CalendarPage() {
               onSlotClick={handleSlotClick}
               onEventClick={handleEventClick}
               subscriptionColors={subscriptionColors}
+              tasks={scheduledTasks}
+              onTaskDrop={(taskId, block) => void patchTask(taskId, block)}
+              onTaskToggle={(task) =>
+                void (task.completedAt ? reopenTask(task.id) : completeTask(task.id))
+              }
             />
           )}
         </main>
+
+        {/* Task rail (M2.8 Task 3): collapsible via the Tasks button / ⇧T. */}
+        {taskRailOpen && (
+          <TaskRail onClose={() => setTaskRailOpen(false)} className="hidden md:flex" />
+        )}
       </div>
 
       {dialog.event?.subscriptionId ? (
