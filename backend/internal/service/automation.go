@@ -83,8 +83,13 @@ func (s *AutomationService) runUser(ctx context.Context, prefs domain.CalendarPr
 			return fmt.Errorf("focusguard: %w", err)
 		}
 	}
-	// Tasks 7, 8, 12, 14 add auto buffers, auto-decline, travel buffers,
-	// and ICS subscription refresh here.
+	if prefs.AutoBufferMinutes > 0 {
+		if err := s.runBuffers(ctx, prefs); err != nil {
+			return fmt.Errorf("buffers: %w", err)
+		}
+	}
+	// Tasks 7, 12, 14 add auto-decline, travel buffers, and ICS
+	// subscription refresh here.
 	return nil
 }
 
