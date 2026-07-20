@@ -82,12 +82,17 @@ func (r *SubscriptionRefresher) refreshOne(ctx context.Context, sub domain.Calen
 		r.update(ctx, sub) // validator honored: events already current
 		return
 	}
-	sub.Etag = etag
 	if err := r.subs.ReplaceEvents(ctx, sub.ID, expandFeedEvents(cal, now)); err != nil {
+		// The etag is NOT advanced on a failed swap: advancing it would make
+		// every later fetch 304 against a stale event set forever. Keeping
+		// the old validator means the next due pass refetches in full.
 		msg := err.Error()
 		sub.LastError = &msg
 		r.logger.Error("subscription event swap failed", "subscription_id", sub.ID, "error", err)
+		r.update(ctx, sub)
+		return
 	}
+	sub.Etag = etag // validator advances only once the swap landed
 	r.update(ctx, sub)
 }
 

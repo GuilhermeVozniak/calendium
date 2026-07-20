@@ -57,7 +57,6 @@ func (s *CalendarService) CreateCalendarSubscription(ctx context.Context, userID
 	}
 	sub.ResolveName(cal.Name)
 	now := s.clock.Now()
-	sub.Etag = etag
 	sub.LastFetchedAt = &now
 
 	created, err := s.calendarSubs.Create(ctx, sub)
@@ -65,6 +64,14 @@ func (s *CalendarService) CreateCalendarSubscription(ctx context.Context, userID
 		return domain.CalendarSubscription{}, err
 	}
 	if err := s.calendarSubs.ReplaceEvents(ctx, created.ID, expandFeedEvents(cal, now)); err != nil {
+		// The subscription row exists but etag-less: the next refresh pass
+		// refetches in full instead of 304ing against an empty event set.
+		return domain.CalendarSubscription{}, err
+	}
+	// Persist the validator only after the event swap landed (etag-after-swap
+	// — same rule as SubscriptionRefresher).
+	created.Etag = etag
+	if err := s.calendarSubs.Update(ctx, created); err != nil {
 		return domain.CalendarSubscription{}, err
 	}
 	return created, nil

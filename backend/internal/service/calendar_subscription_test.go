@@ -19,6 +19,7 @@ type fakeCalSubRepo struct {
 	events       map[string][]domain.Event // subscriptionID -> occurrences
 	nextID       int
 	replaceCalls int
+	replaceErr   error // injected ReplaceEvents failure (transient DB error)
 	rangeCalls   int
 }
 
@@ -89,6 +90,9 @@ func (f *fakeCalSubRepo) Delete(_ context.Context, id string) error {
 
 func (f *fakeCalSubRepo) ReplaceEvents(_ context.Context, subscriptionID string, events []domain.Event) error {
 	f.replaceCalls++
+	if f.replaceErr != nil {
+		return f.replaceErr
+	}
 	f.events[subscriptionID] = events
 	return nil
 }
@@ -213,6 +217,9 @@ func TestCreateCalendarSubscriptionFetchesImmediately(t *testing.T) {
 	if sub.Color != domain.DefaultSubscriptionColor || !sub.IsVisible {
 		t.Fatalf("defaults not applied: %+v", sub)
 	}
+	if stored := subs.subs[sub.ID]; stored.Etag != `"v1"` {
+		t.Fatalf("stored Etag = %q, want the validator persisted after the swap", stored.Etag)
+	}
 
 	evs := subs.events[sub.ID]
 	// 1 all-day holiday + 3 weekly occurrences (COUNT=3); CANCELLED dropped.
@@ -225,6 +232,28 @@ func TestCreateCalendarSubscriptionFetchesImmediately(t *testing.T) {
 		}
 		if ev.Status != domain.EventConfirmed {
 			t.Fatalf("Status = %q, want confirmed", ev.Status)
+		}
+	}
+}
+
+// TestCreateCalendarSubscriptionEtagAfterSwap: a transient DB failure while
+// swapping in the first event set must NOT persist the new etag — the
+// stored subscription stays etag-less so the next refresh pass refetches in
+// full instead of 304ing against an empty set forever.
+func TestCreateCalendarSubscriptionEtagAfterSwap(t *testing.T) {
+	ctx := context.Background()
+	fetcher := &fakeIcsFetcher{cal: holidayFeed(), etag: `"v1"`}
+	svc, subs, _ := newSubFixture(fetcher)
+	subs.replaceErr = errors.New("transient db failure")
+
+	if _, err := svc.CreateCalendarSubscription(ctx, "u1", port.CalendarSubscriptionInput{
+		URL: "https://example.com/holidays.ics",
+	}); err == nil {
+		t.Fatal("want the swap failure surfaced")
+	}
+	for _, stored := range subs.subs {
+		if stored.Etag != "" {
+			t.Fatalf("stored Etag = %q after failed swap, want empty (next pass must refetch in full)", stored.Etag)
 		}
 	}
 }
@@ -524,6 +553,47 @@ func TestSubscriptionRefresherPass(t *testing.T) {
 		}
 		if len(subs.events[sub.ID]) != 1 {
 			t.Fatalf("events = %d, want the previous set kept", len(subs.events[sub.ID]))
+		}
+	})
+
+	t.Run("etag advances only after a successful event swap", func(t *testing.T) {
+		fetcher := &fakeIcsFetcher{cal: holidayFeed(), etag: `"v2"`}
+		r, subs, sub := seed(fetcher)
+		subs.replaceErr = errors.New("transient db failure")
+
+		if err := r.RefreshDue(ctx); err != nil {
+			t.Fatalf("RefreshDue: %v", err)
+		}
+		after := subs.subs[sub.ID]
+		if after.Etag != `"v1"` {
+			t.Fatalf("Etag = %q after failed swap, want the OLD validator kept (a stored %q would 304 against a stale set forever)", after.Etag, `"v2"`)
+		}
+		if after.LastError == nil {
+			t.Fatal("failed swap must record LastError")
+		}
+		if len(subs.events[sub.ID]) != 1 || subs.events[sub.ID][0].Title != "Old occurrence" {
+			t.Fatal("previous good event set must be kept on a failed swap")
+		}
+
+		// DB recovers: the next due pass revalidates with the OLD etag, so
+		// the feed re-serves the body and the swap completes.
+		subs.replaceErr = nil
+		stale := subTestNow.Add(-2 * time.Hour)
+		s := subs.subs[sub.ID]
+		s.LastFetchedAt = &stale
+		subs.subs[s.ID] = s
+		if err := r.RefreshDue(ctx); err != nil {
+			t.Fatalf("RefreshDue (recovered): %v", err)
+		}
+		if fetcher.calls != 2 || fetcher.gotEtag != `"v1"` {
+			t.Fatalf("fetch calls=%d etag=%q, want a second fetch revalidating with the old etag", fetcher.calls, fetcher.gotEtag)
+		}
+		after = subs.subs[sub.ID]
+		if after.Etag != `"v2"` || after.LastError != nil {
+			t.Fatalf("after recovery = %+v, want new etag and no error", after)
+		}
+		if len(subs.events[sub.ID]) != 4 {
+			t.Fatalf("events = %d, want the fresh expanded set", len(subs.events[sub.ID]))
 		}
 	})
 
