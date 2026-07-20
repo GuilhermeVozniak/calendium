@@ -21,6 +21,7 @@ import (
 	"calendium/backend/internal/adapter/out/msgraph"
 	"calendium/backend/internal/adapter/out/nominatim"
 	"calendium/backend/internal/adapter/out/openrouter"
+	"calendium/backend/internal/adapter/out/pgbus"
 	"calendium/backend/internal/adapter/out/postgres"
 	"calendium/backend/internal/adapter/out/push"
 	"calendium/backend/internal/adapter/out/todoist"
@@ -99,6 +100,14 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	// Cross-process realtime bridge (M2 follow-up F1): the worker's bus is
+	// the pg_notify publisher — every event it publishes crosses Postgres as
+	// a compact {topic,type} envelope and is republished into cmd/api's
+	// in-memory bus for SSE subscribers. The worker keeps NO local
+	// subscribers; only the worker publishes to Postgres, so API-local
+	// events are never delivered twice.
+	bus := pgbus.NewPublisher(db, logger)
+
 	// --- outbound gateways ---
 	hc := &http.Client{Timeout: 30 * time.Second}
 
@@ -155,10 +164,13 @@ func run(logger *slog.Logger) error {
 		OAuth:             oauth,
 		Push:              pushSender,
 		AiJobs:            aiJobsRepo,
-		// Activity records team replied_at indicators on delivered sends. The
-		// worker is a separate process from the API's in-process event bus, so
-		// no Bus here: SSE clients converge via their normal refetches.
+		// Activity records team replied_at indicators on delivered sends;
+		// Shares + Bus fan share.updated / activity.updated out through the
+		// Postgres NOTIFY bridge so API SSE clients hear about worker-side
+		// deliveries in realtime instead of waiting for a refetch.
 		Activity:    postgres.NewTeamThreadActivityRepo(store),
+		Shares:      postgres.NewThreadShareRepo(store),
+		Bus:         bus,
 		Classifiers: store.Classifiers(),
 		Clock:       service.SystemClock{},
 		// Leave-now travel alerts (M2.8 Task 12) ride the 5s due-work loop.
