@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	"calendium/backend/internal/domain"
 	"calendium/backend/internal/port"
@@ -16,6 +17,10 @@ type TodoSyncDeps struct {
 	Integrations port.IntegrationRepo
 	Tasks        port.TaskRepo
 	SyncState    port.SyncStateRepo
+	// Prefs resolves each connection owner's CalendarPrefs timezone so the
+	// vendor adapter can interpret floating due datetimes on the user's wall
+	// clock. Optional — nil falls back to UTC.
+	Prefs port.CalendarPrefsRepo
 	// Providers holds the configured todo-tool adapters keyed by task source.
 	Providers map[domain.TaskSource]port.TodoProvider
 	// OAuth refreshes vendor tokens on 401 (exactly one retry per page),
@@ -37,6 +42,7 @@ type TodoSyncService struct {
 	integrations port.IntegrationRepo
 	tasks        port.TaskRepo
 	syncState    port.SyncStateRepo
+	prefs        port.CalendarPrefsRepo
 	providers    map[domain.TaskSource]port.TodoProvider
 	oauth        map[domain.IntegrationVendor]port.OAuthGateway
 	clock        port.Clock
@@ -51,6 +57,7 @@ func NewTodoSyncService(d TodoSyncDeps) *TodoSyncService {
 		integrations: d.Integrations,
 		tasks:        d.Tasks,
 		syncState:    d.SyncState,
+		prefs:        d.Prefs,
 		providers:    d.Providers,
 		oauth:        d.OAuth,
 		clock:        d.Clock,
@@ -124,8 +131,12 @@ func (s *TodoSyncService) syncConnection(ctx context.Context, source domain.Task
 		return err
 	}
 
+	// One prefs read per connection per pass — cheap, and it keeps floating
+	// vendor due datetimes on the owner's wall clock (M2 review minor).
+	loc := s.userLocation(ctx, conn.UserID)
+
 	for {
-		page, err := s.syncPage(ctx, vendor, provider, conn, &tokens, cursor)
+		page, err := s.syncPage(ctx, vendor, provider, conn, &tokens, cursor, loc)
 		if err != nil {
 			return err
 		}
@@ -150,8 +161,8 @@ func (s *TodoSyncService) syncConnection(ctx context.Context, source domain.Task
 // syncPage fetches one vendor page; a 401 refreshes through the vendor's
 // OAuth gateway exactly once, persists the new tokens (encrypted at rest by
 // the repo), and retries.
-func (s *TodoSyncService) syncPage(ctx context.Context, vendor domain.IntegrationVendor, provider port.TodoProvider, conn domain.IntegrationConnection, tokens *port.TokenSet, cursor string) (port.TodoSyncPage, error) {
-	page, err := provider.SyncTasks(ctx, tokens.AccessToken, cursor)
+func (s *TodoSyncService) syncPage(ctx context.Context, vendor domain.IntegrationVendor, provider port.TodoProvider, conn domain.IntegrationConnection, tokens *port.TokenSet, cursor string, loc *time.Location) (port.TodoSyncPage, error) {
+	page, err := provider.SyncTasks(ctx, tokens.AccessToken, cursor, loc)
 	if err == nil || !errors.Is(err, domain.ErrUnauthorized) {
 		return page, err
 	}
@@ -172,7 +183,26 @@ func (s *TodoSyncService) syncPage(ctx context.Context, vendor domain.Integratio
 		return port.TodoSyncPage{}, uerr
 	}
 	*tokens = ts
-	return provider.SyncTasks(ctx, ts.AccessToken, cursor)
+	return provider.SyncTasks(ctx, ts.AccessToken, cursor, loc)
+}
+
+// userLocation resolves the connection owner's CalendarPrefs timezone.
+// Best-effort by design: a nil Prefs repo, a repo error, or an unloadable
+// zone all fall back to UTC — a due-time approximation must never fail the
+// sync pass.
+func (s *TodoSyncService) userLocation(ctx context.Context, userID string) *time.Location {
+	if s.prefs == nil {
+		return time.UTC
+	}
+	p, err := s.prefs.Get(ctx, userID)
+	if err != nil {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(p.TimeZone)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
 }
 
 // applyPage mirrors one sync page into the tasks table, scoped to the
