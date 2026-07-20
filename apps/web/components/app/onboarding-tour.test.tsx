@@ -7,7 +7,7 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push }),
 }));
 
-import { TOUR_STORAGE_KEY, resetTourStateForTests } from '@/lib/tour-state';
+import { resetTourStateForTests, tourStorageKey } from '@/lib/tour-state';
 import type { TourStep } from '@/lib/tour-steps';
 
 import { OnboardingTour } from './onboarding-tour';
@@ -51,7 +51,7 @@ describe('OnboardingTour', () => {
         {STEPS.filter((s) => s.target !== omit).map((s) => (
           <div key={s.id} data-tour={s.target} />
         ))}
-        <OnboardingTour steps={STEPS} anchorRetryMs={0} anchorRetryLimit={1} />
+        <OnboardingTour userId="test-user" steps={STEPS} anchorRetryMs={0} anchorRetryLimit={1} />
       </div>
     );
   }
@@ -64,7 +64,7 @@ describe('OnboardingTour', () => {
   });
 
   it('does not auto-start when the tour is already done', async () => {
-    window.localStorage.setItem(TOUR_STORAGE_KEY, JSON.stringify({ done: true }));
+    window.localStorage.setItem(tourStorageKey('test-user'), JSON.stringify({ done: true }));
     renderTour();
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -78,14 +78,14 @@ describe('OnboardingTour', () => {
     expect(await screen.findByRole('dialog', { name: 'Step three' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Done' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(window.localStorage.getItem(TOUR_STORAGE_KEY)).toContain('"done":true');
+    expect(window.localStorage.getItem(tourStorageKey('test-user'))).toContain('"done":true');
   });
 
   it('Skip tour dismisses immediately and persists completion', async () => {
     renderTour();
     fireEvent.click(await screen.findByRole('button', { name: 'Skip tour' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(window.localStorage.getItem(TOUR_STORAGE_KEY)).toContain('"done":true');
+    expect(window.localStorage.getItem(tourStorageKey('test-user'))).toContain('"done":true');
   });
 
   it('a missing anchor is skipped gracefully instead of blocking the tour', async () => {

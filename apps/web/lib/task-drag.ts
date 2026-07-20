@@ -17,7 +17,10 @@ import { addMinutes, startOfDay } from 'date-fns';
 /** Custom MIME type carrying the dragged task's id. */
 export const TASK_DRAG_TYPE = 'application/x-calendium-task';
 
-/** Matches HOUR_HEIGHT in components/app/calendar/time-grid.tsx. */
+/**
+ * Pixels per hour in the calendar time grid — the single source of truth,
+ * consumed by components/app/calendar/time-grid.tsx and lib/thread-drag.ts.
+ */
 export const GRID_HOUR_HEIGHT = 48;
 
 /** Default timeblock length for a dropped task. */

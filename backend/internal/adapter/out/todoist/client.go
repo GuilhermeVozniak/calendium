@@ -59,8 +59,9 @@ type syncItem struct {
 
 // SyncTasks performs one incremental item sync. cursor is the Sync v9
 // sync_token; "" requests a full sync ("*"). Todoist returns the complete
-// delta in a single response, so HasMore is always false.
-func (c *Client) SyncTasks(ctx context.Context, accessToken, cursor string) (port.TodoSyncPage, error) {
+// delta in a single response, so HasMore is always false. loc resolves
+// floating (zone-less) due datetimes (nil = UTC).
+func (c *Client) SyncTasks(ctx context.Context, accessToken, cursor string, loc *time.Location) (port.TodoSyncPage, error) {
 	syncToken := cursor
 	if syncToken == "" {
 		syncToken = "*"
@@ -88,14 +89,14 @@ func (c *Client) SyncTasks(ctx context.Context, accessToken, cursor string) (por
 			page.DeletedIDs = append(page.DeletedIDs, item.ID)
 			continue
 		}
-		page.Tasks = append(page.Tasks, itemToTask(item))
+		page.Tasks = append(page.Tasks, itemToTask(item, loc))
 	}
 	return page, nil
 }
 
 // itemToTask maps a live Sync item to a mirror task. ID/UserID are left for
 // the sync service to fill — the adapter never sees Calendium users.
-func itemToTask(item syncItem) domain.Task {
+func itemToTask(item syncItem, loc *time.Location) domain.Task {
 	t := domain.Task{
 		Title:      item.Content,
 		Source:     domain.TaskSourceTodoist,
@@ -108,7 +109,7 @@ func itemToTask(item syncItem) domain.Task {
 	itemURL := "https://todoist.com/showTask?id=" + url.QueryEscape(item.ID)
 	t.SourceURL = &itemURL
 	if item.Due != nil {
-		if due, allDay, ok := parseDue(item.Due.Date); ok {
+		if due, allDay, ok := parseDue(item.Due.Date, loc); ok {
 			t.Due = &due
 			t.AllDayDue = allDay
 		}
@@ -118,13 +119,17 @@ func itemToTask(item syncItem) domain.Task {
 
 // parseDue parses a Sync v9 due.date. A date-only value ("2026-07-22") is an
 // all-day due; datetimes arrive with ("2026-07-21T17:00:00Z") or without a
-// zone suffix (floating local time — treated as UTC, the mirror's best
-// deadline approximation without the item's timezone field).
-func parseDue(raw string) (t time.Time, allDay, ok bool) {
+// zone suffix (floating local time — interpreted in loc, the connection
+// owner's CalendarPrefs timezone, since Todoist means "17:00 on the user's
+// wall clock"; nil loc falls back to UTC).
+func parseDue(raw string, loc *time.Location) (t time.Time, allDay, ok bool) {
+	if loc == nil {
+		loc = time.UTC
+	}
 	if ts, err := time.Parse(time.RFC3339, raw); err == nil {
 		return ts.UTC(), false, true
 	}
-	if ts, err := time.Parse("2006-01-02T15:04:05", raw); err == nil {
+	if ts, err := time.ParseInLocation("2006-01-02T15:04:05", raw, loc); err == nil {
 		return ts.UTC(), false, true
 	}
 	if ts, err := time.Parse("2006-01-02", raw); err == nil {

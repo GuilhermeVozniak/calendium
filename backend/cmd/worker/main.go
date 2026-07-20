@@ -266,6 +266,8 @@ func run(logger *slog.Logger) error {
 			Integrations: postgres.NewIntegrationRepo(store),
 			Tasks:        store.Tasks(),
 			SyncState:    store.SyncStates(),
+			// Floating vendor due datetimes resolve on the owner's wall clock.
+			Prefs: store.CalendarPrefs(),
 			Providers: map[domain.TaskSource]port.TodoProvider{
 				domain.TaskSourceTodoist: todoist.NewClient(hc),
 			},

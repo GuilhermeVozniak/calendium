@@ -431,6 +431,24 @@ func run(logger *slog.Logger) error {
 		},
 	}
 
+	// One structured line naming which OPTIONAL httpapi deps are wired — a
+	// nil entry means that surface answers 501 / is omitted from discovery,
+	// so a misconfigured deploy is diagnosable at a glance. Log only; no
+	// behavior change.
+	logger.Info("api: optional deps",
+		"teams", teams != nil,
+		"collab", collab != nil,
+		"delegations", delegations != nil,
+		"team_activity", teamActivitySvc != nil,
+		"tasks", tasksSvc != nil,
+		"weather", weatherSvc != nil,
+		"places", placesSvc != nil,
+		"integrations", integrations != nil,
+		"crm", crmSvc != nil,
+		"insights", insightsSvc != nil,
+		"push", pushSender != nil,
+	)
+
 	// --- HTTP server ---
 	handler := httpapi.New(httpapi.Deps{
 		Logger:    logger,

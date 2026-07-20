@@ -853,10 +853,12 @@ type TodoSyncPage struct {
 
 // TodoProvider is the external todo-tool surface (Todoist first; Things,
 // Notion, Linear later). SyncTasks performs incremental sync from cursor
-// ("" = full sync; Todoist uses the Sync v9 sync_token).
+// ("" = full sync; Todoist uses the Sync v9 sync_token). loc resolves
+// floating (zone-less) vendor due datetimes — the connection owner's
+// CalendarPrefs timezone; nil falls back to UTC.
 type TodoProvider interface {
 	Source() domain.TaskSource
-	SyncTasks(ctx context.Context, accessToken, cursor string) (TodoSyncPage, error)
+	SyncTasks(ctx context.Context, accessToken, cursor string, loc *time.Location) (TodoSyncPage, error)
 	CompleteTask(ctx context.Context, accessToken, externalID string) error
 	ReopenTask(ctx context.Context, accessToken, externalID string) error
 }

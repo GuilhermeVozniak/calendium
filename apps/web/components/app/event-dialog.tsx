@@ -919,6 +919,10 @@ function EventNotesPanel({ eventId }: { eventId: string }) {
   const [linkDraft, setLinkDraft] = React.useState('');
   const [hydratedFor, setHydratedFor] = React.useState<string | null>(null);
   const saveTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The not-yet-saved payload behind a running debounce timer. Kept in a ref
+  // so the unmount cleanup can flush it — clearing the timer alone would
+  // silently drop any edit made <NOTE_AUTOSAVE_MS before the dialog closed.
+  const pendingSave = React.useRef<{ bodyMd: string; links: string[] } | null>(null);
 
   // Hydrate the editable state once per event from the fetched note; later
   // refetches must not clobber in-progress typing.
@@ -930,13 +934,6 @@ function EventNotesPanel({ eventId }: { eventId: string }) {
     }
   }, [noteQuery.data, eventId, hydratedFor]);
 
-  React.useEffect(
-    () => () => {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-    },
-    []
-  );
-
   const save = useMutation({
     mutationFn: (next: { bodyMd: string; links: string[] }) =>
       putEventNoteApi(eventId, next.bodyMd, next.links),
@@ -944,9 +941,32 @@ function EventNotesPanel({ eventId }: { eventId: string }) {
     onError: () => toast.error('Could not save the note'),
   });
 
+  // Flush-on-close: closing the dialog (or leaving the Notes tab) unmounts
+  // this panel, so the cleanup fires any pending debounced save immediately
+  // instead of discarding it. `mutate` has a stable identity in react-query
+  // v5, so this effect runs its cleanup exactly once, on unmount.
+  const saveMutate = save.mutate;
+  React.useEffect(
+    () => () => {
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+      if (pendingSave.current) {
+        const next = pendingSave.current;
+        pendingSave.current = null;
+        saveMutate(next);
+      }
+    },
+    [saveMutate]
+  );
+
   const scheduleSave = (nextBody: string, nextLinks: string[]) => {
+    pendingSave.current = { bodyMd: nextBody, links: nextLinks };
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
+      saveTimer.current = null;
+      pendingSave.current = null;
       save.mutate({ bodyMd: nextBody, links: nextLinks });
     }, NOTE_AUTOSAVE_MS);
   };

@@ -31,6 +31,7 @@ type fakeTodoProvider struct {
 
 	// recording
 	syncCalls []todoProviderCall
+	syncLocs  []*time.Location // loc passed per SyncTasks call
 	completed []todoProviderCall
 	reopened  []todoProviderCall
 }
@@ -45,8 +46,9 @@ func newTodoProvider() *fakeTodoProvider {
 
 func (p *fakeTodoProvider) Source() domain.TaskSource { return p.source }
 
-func (p *fakeTodoProvider) SyncTasks(_ context.Context, accessToken, cursor string) (port.TodoSyncPage, error) {
+func (p *fakeTodoProvider) SyncTasks(_ context.Context, accessToken, cursor string, loc *time.Location) (port.TodoSyncPage, error) {
 	p.syncCalls = append(p.syncCalls, todoProviderCall{accessToken, cursor})
+	p.syncLocs = append(p.syncLocs, loc)
 	if err := p.errByToken[accessToken]; err != nil {
 		return port.TodoSyncPage{}, err
 	}
@@ -74,6 +76,7 @@ type todoSyncHarness struct {
 	syncState    *fakeSyncStateRepo
 	provider     *fakeTodoProvider
 	oauth        *fakeOAuthGateway
+	prefs        *fakeCalendarPrefsRepo
 	clock        *fakeClock
 }
 
@@ -85,12 +88,14 @@ func newTodoSyncHarness(t *testing.T) *todoSyncHarness {
 		syncState:    newSyncStateRepo(),
 		provider:     newTodoProvider(),
 		oauth:        newOAuthGateway(),
+		prefs:        newCalendarPrefsRepo(),
 		clock:        newClock(time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)),
 	}
 	h.svc = NewTodoSyncService(TodoSyncDeps{
 		Integrations: h.integrations,
 		Tasks:        h.tasks,
 		SyncState:    h.syncState,
+		Prefs:        h.prefs,
 		Providers:    map[domain.TaskSource]port.TodoProvider{domain.TaskSourceTodoist: h.provider},
 		OAuth:        map[domain.IntegrationVendor]port.OAuthGateway{domain.IntegrationTodoist: h.oauth},
 		Clock:        h.clock,
@@ -436,6 +441,47 @@ func TestTodoSync(t *testing.T) {
 		}
 		if got := userTasks(t, h.tasks, "u1"); len(got) != 1 {
 			t.Errorf("tasks after recovery = %d, want 1", len(got))
+		}
+	})
+
+	t.Run("floating dues: the owner's prefs timezone is threaded to the provider", func(t *testing.T) {
+		h := newTodoSyncHarness(t)
+		h.connect(t, "c1", "u1", "tok1")
+		p := domain.DefaultCalendarPrefs("u1")
+		p.TimeZone = "Europe/Amsterdam"
+		h.prefs.byUser["u1"] = p
+		h.provider.pages[""] = port.TodoSyncPage{NextCursor: "n1"}
+
+		if err := h.svc.SyncTodos(ctx); err != nil {
+			t.Fatalf("SyncTodos() error = %v", err)
+		}
+		if len(h.provider.syncLocs) != 1 || h.provider.syncLocs[0] == nil {
+			t.Fatalf("syncLocs = %v, want one non-nil location", h.provider.syncLocs)
+		}
+		if got := h.provider.syncLocs[0].String(); got != "Europe/Amsterdam" {
+			t.Errorf("loc = %q, want Europe/Amsterdam (prefs timezone)", got)
+		}
+	})
+
+	t.Run("floating dues: default and broken prefs timezones fall back to UTC", func(t *testing.T) {
+		h := newTodoSyncHarness(t)
+		h.connect(t, "c1", "u1", "tok1") // no prefs row → defaults (UTC)
+		h.connect(t, "c2", "u2", "tok2")
+		broken := domain.DefaultCalendarPrefs("u2")
+		broken.TimeZone = "Not/AZone" // repo-level corruption must not fail the pass
+		h.prefs.byUser["u2"] = broken
+		h.provider.pages[""] = port.TodoSyncPage{NextCursor: "n1"}
+
+		if err := h.svc.SyncTodos(ctx); err != nil {
+			t.Fatalf("SyncTodos() error = %v", err)
+		}
+		if len(h.provider.syncLocs) != 2 {
+			t.Fatalf("syncLocs = %v, want 2", h.provider.syncLocs)
+		}
+		for i, loc := range h.provider.syncLocs {
+			if loc != time.UTC {
+				t.Errorf("syncLocs[%d] = %v, want UTC fallback", i, loc)
+			}
 		}
 	})
 

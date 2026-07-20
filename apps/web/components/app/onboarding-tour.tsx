@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 
 import { Button } from '@/components/ui/button';
 import { Kbd } from '@/components/ui/kbd';
-import { maybeAutoStartTour, nextTourStep, skipTour, useTourState } from '@/lib/tour-state';
+import { maybeAutoStartTour, nextTourStep, setTourUser, skipTour, useTourState } from '@/lib/tour-state';
 import { tourSteps, type TourStep } from '@/lib/tour-steps';
 
 const POPOVER_WIDTH = 320;
@@ -23,10 +23,13 @@ const MARGIN = 12;
  * is skipped instead of blocking the tour.
  */
 export function OnboardingTour({
+  userId,
   steps = tourSteps,
   anchorRetryMs = 250,
   anchorRetryLimit = 12,
 }: {
+  /** The signed-in user's id — scopes the persisted tour state per user. */
+  userId: string;
   steps?: TourStep[];
   anchorRetryMs?: number;
   anchorRetryLimit?: number;
@@ -38,9 +41,12 @@ export function OnboardingTour({
   const [rect, setRect] = React.useState<DOMRect | null>(null);
 
   // First-run entry point: the shell only mounts this for signed-in users.
+  // Attaching the user scope first makes the auto-start read (and any later
+  // completion write) hit that user's own key.
   React.useEffect(() => {
+    setTourUser(userId);
     maybeAutoStartTour();
-  }, []);
+  }, [userId]);
 
   // Walk the user to the step's page — concierge style, no dead popovers.
   React.useEffect(() => {
