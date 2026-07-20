@@ -1256,12 +1256,15 @@ func TestRSVPWriteThrough(t *testing.T) {
 			e.Attendees = []domain.Attendee{{Email: "me@x.com", Response: domain.RsvpNeedsAction}}
 		})
 
-		got, err := f.svc.RSVP(ctx, "u1", "ev1", domain.RsvpAccepted)
+		got, err := f.svc.RSVP(ctx, "u1", "ev1", domain.RsvpAccepted, "see you there")
 		if err != nil {
 			t.Fatalf("RSVP: %v", err)
 		}
 		if len(f.provider.rsvpCalls) != 1 || f.provider.rsvpCalls[0] != domain.RsvpAccepted {
 			t.Fatalf("provider rsvpCalls = %v, want [accepted]", f.provider.rsvpCalls)
+		}
+		if len(f.provider.rsvpComments) != 1 || f.provider.rsvpComments[0] != "see you there" {
+			t.Fatalf("provider rsvpComments = %v, want the comment passed through", f.provider.rsvpComments)
 		}
 		if len(got.Attendees) != 1 || got.Attendees[0].Response != domain.RsvpAccepted {
 			t.Fatalf("attendee response = %+v, want accepted", got.Attendees)
@@ -1278,7 +1281,7 @@ func TestRSVPWriteThrough(t *testing.T) {
 			e.Attendees = []domain.Attendee{{Email: "me@x.com", Response: domain.RsvpNeedsAction}}
 		})
 
-		got, err := f.svc.RSVP(ctx, "u1", "ev1", domain.RsvpDeclined)
+		got, err := f.svc.RSVP(ctx, "u1", "ev1", domain.RsvpDeclined, "")
 		if err != nil {
 			t.Fatalf("RSVP: %v", err)
 		}
@@ -1299,7 +1302,7 @@ func TestRSVPWriteThrough(t *testing.T) {
 			e.Attendees = []domain.Attendee{{Email: "someone-else@x.com", Response: domain.RsvpNeedsAction}}
 		})
 
-		got, err := f.svc.RSVP(ctx, "u1", "ev1", domain.RsvpAccepted)
+		got, err := f.svc.RSVP(ctx, "u1", "ev1", domain.RsvpAccepted, "")
 		if err != nil {
 			t.Fatalf("RSVP: %v", err)
 		}
@@ -1317,7 +1320,7 @@ func TestRSVPWriteThrough(t *testing.T) {
 	t.Run("foreign event is not found", func(t *testing.T) {
 		f := newCalFixture(t)
 		seedEvent(f, "ev1", nil)
-		_, err := f.svc.RSVP(ctx, "intruder", "ev1", domain.RsvpAccepted)
+		_, err := f.svc.RSVP(ctx, "intruder", "ev1", domain.RsvpAccepted, "")
 		if !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("err = %v, want ErrNotFound", err)
 		}
@@ -1374,7 +1377,7 @@ func TestCalendarPaywall(t *testing.T) {
 		wantPaymentRequired(t, err)
 	})
 	t.Run("RSVP", func(t *testing.T) {
-		_, err := svc.RSVP(ctx, "u1", "ev1", domain.RsvpAccepted)
+		_, err := svc.RSVP(ctx, "u1", "ev1", domain.RsvpAccepted, "")
 		wantPaymentRequired(t, err)
 	})
 	t.Run("Availability", func(t *testing.T) {

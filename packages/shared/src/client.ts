@@ -441,8 +441,12 @@ export class ApiClient {
   deleteEvent(eventId: string) {
     return this.request<void>('DELETE', `/v1/events/${eventId}`);
   }
-  rsvp(eventId: string, response: RsvpStatus) {
-    return this.request<Event>('POST', `/v1/events/${eventId}/rsvp`, { response });
+  rsvp(eventId: string, response: RsvpStatus, comment?: string) {
+    return this.request<Event>(
+      'POST',
+      `/v1/events/${eventId}/rsvp`,
+      comment === undefined ? { response } : { response, comment },
+    );
   }
   /** Free slots for "share availability" composing flows. */
   getAvailability(from: string, to: string, durationMinutes: number) {

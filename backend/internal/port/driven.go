@@ -688,7 +688,10 @@ type CalendarProvider interface {
 	CreateEvent(ctx context.Context, accessToken, providerCalendarID string, in domain.EventInput) (domain.Event, error)
 	UpdateEvent(ctx context.Context, accessToken, providerCalendarID, providerEventID string, patch domain.EventPatch) (domain.Event, error)
 	DeleteEvent(ctx context.Context, accessToken, providerCalendarID, providerEventID string) error
-	RSVP(ctx context.Context, accessToken, providerCalendarID, providerEventID string, response domain.RsvpStatus) error
+	// RSVP writes the caller's response through to the provider. comment, when
+	// non-empty, is carried to the organizer as the RSVP note (Google:
+	// attendees[].comment; Graph: the respond action's comment field).
+	RSVP(ctx context.Context, accessToken, providerCalendarID, providerEventID string, response domain.RsvpStatus, comment string) error
 	// FreeBusy returns busy intervals per requested attendee email between
 	// from and to (Google POST /freeBusy; Graph POST /me/calendar/getSchedule).
 	// Emails absent from the result were not resolvable by the provider.

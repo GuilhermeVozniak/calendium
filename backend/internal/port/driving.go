@@ -233,7 +233,9 @@ type CalendarService interface {
 	CreateEvent(ctx context.Context, userID string, in domain.EventInput) (domain.Event, error)
 	UpdateEvent(ctx context.Context, userID, eventID string, patch domain.EventPatch) (domain.Event, error)
 	DeleteEvent(ctx context.Context, userID, eventID string) error
-	RSVP(ctx context.Context, userID, eventID string, response domain.RsvpStatus) (domain.Event, error)
+	// RSVP records the user's response; comment, when non-empty, travels to the
+	// organizer as the RSVP note.
+	RSVP(ctx context.Context, userID, eventID string, response domain.RsvpStatus, comment string) (domain.Event, error)
 	// Availability returns free windows of at least slotDuration between
 	// from and to, computed from the user's visible calendars.
 	Availability(ctx context.Context, userID string, from, to time.Time, slotDuration time.Duration) ([]domain.AvailabilitySlot, error)

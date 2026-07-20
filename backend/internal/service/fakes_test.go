@@ -1381,6 +1381,7 @@ type fakeCalendarProvider struct {
 
 	// recording
 	rsvpCalls            []domain.RsvpStatus
+	rsvpComments         []string
 	lastCreateCalendarID string
 	lastCreateInput      domain.EventInput
 	lastUpdateEventID    string
@@ -1418,8 +1419,9 @@ func (p *fakeCalendarProvider) DeleteEvent(_ context.Context, accessToken, provi
 	return p.deleteErr
 }
 
-func (p *fakeCalendarProvider) RSVP(_ context.Context, accessToken, providerCalendarID, providerEventID string, response domain.RsvpStatus) error {
+func (p *fakeCalendarProvider) RSVP(_ context.Context, accessToken, providerCalendarID, providerEventID string, response domain.RsvpStatus, comment string) error {
 	p.rsvpCalls = append(p.rsvpCalls, response)
+	p.rsvpComments = append(p.rsvpComments, comment)
 	return p.rsvpErr
 }
 
@@ -1566,7 +1568,7 @@ func (c *fakeCalendarService) UpdateEvent(_ context.Context, _, _ string, _ doma
 
 func (c *fakeCalendarService) DeleteEvent(_ context.Context, _, _ string) error { return nil }
 
-func (c *fakeCalendarService) RSVP(_ context.Context, _, _ string, _ domain.RsvpStatus) (domain.Event, error) {
+func (c *fakeCalendarService) RSVP(_ context.Context, _, _ string, _ domain.RsvpStatus, _ string) (domain.Event, error) {
 	return domain.Event{}, nil
 }
 

@@ -208,7 +208,7 @@ func (c *Client) DeleteEvent(ctx context.Context, accessToken, providerCalendarI
 
 // RSVP calls the Graph respond endpoints (accept / decline /
 // tentativelyAccept). Graph has no "reset to needsAction" endpoint.
-func (c *Client) RSVP(ctx context.Context, accessToken, providerCalendarID, providerEventID string, response domain.RsvpStatus) error {
+func (c *Client) RSVP(ctx context.Context, accessToken, providerCalendarID, providerEventID string, response domain.RsvpStatus, comment string) error {
 	var action string
 	switch response {
 	case domain.RsvpAccepted:
@@ -221,7 +221,11 @@ func (c *Client) RSVP(ctx context.Context, accessToken, providerCalendarID, prov
 		return fmt.Errorf("%w: microsoft calendars cannot reset an rsvp to %q", domain.ErrValidation, response)
 	}
 	endpoint := graphBase + "/me/events/" + url.PathEscape(providerEventID) + "/" + action
-	return c.doJSON(ctx, http.MethodPost, endpoint, accessToken, map[string]any{"sendResponse": true}, nil)
+	body := map[string]any{"sendResponse": true}
+	if comment != "" {
+		body["comment"] = comment
+	}
+	return c.doJSON(ctx, http.MethodPost, endpoint, accessToken, body, nil)
 }
 
 // freeBusyChunkSize caps how many mailboxes go in a single getSchedule

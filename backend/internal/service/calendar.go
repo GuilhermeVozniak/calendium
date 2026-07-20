@@ -293,7 +293,7 @@ func (s *CalendarService) DeleteEvent(ctx context.Context, userID, eventID strin
 	return s.events.Delete(ctx, ev.ID)
 }
 
-func (s *CalendarService) RSVP(ctx context.Context, userID, eventID string, response domain.RsvpStatus) (domain.Event, error) {
+func (s *CalendarService) RSVP(ctx context.Context, userID, eventID string, response domain.RsvpStatus, comment string) (domain.Event, error) {
 	if err := s.ent.require(ctx, userID); err != nil {
 		return domain.Event{}, err
 	}
@@ -306,7 +306,7 @@ func (s *CalendarService) RSVP(ctx context.Context, userID, eventID string, resp
 		if err != nil {
 			return domain.Event{}, err
 		}
-		if err := provider.RSVP(ctx, token, c.ProviderCalendarID, ev.ProviderEventID, response); err != nil {
+		if err := provider.RSVP(ctx, token, c.ProviderCalendarID, ev.ProviderEventID, response, comment); err != nil {
 			return domain.Event{}, fmt.Errorf("provider write-through failed: %w", err)
 		}
 	}

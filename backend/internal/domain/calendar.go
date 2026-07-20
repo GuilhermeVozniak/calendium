@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -84,6 +85,17 @@ const (
 	VisibilityPublic  EventVisibility = "public"
 	VisibilityPrivate EventVisibility = "private"
 )
+
+// oooTitleRE matches event titles announcing an out-of-office period.
+var oooTitleRE = regexp.MustCompile(`(?i)\b(out of office|ooo|vacation|annual leave|pto)\b`)
+
+// IsOOOEvent reports whether ev announces an out-of-office period: a
+// non-cancelled event — all-day or timed — whose title matches the OOO
+// vocabulary (out of office / OOO / vacation / annual leave / PTO,
+// case-insensitive, on word boundaries so "Laptop setup" never matches).
+func IsOOOEvent(ev Event) bool {
+	return ev.Status != EventCancelled && oooTitleRE.MatchString(ev.Title)
+}
 
 // Event is a calendar event mirrored locally; writes go through to the
 // provider and update the mirror optimistically.
