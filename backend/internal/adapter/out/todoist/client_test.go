@@ -86,7 +86,7 @@ func TestSyncTasksFullSync(t *testing.T) {
 		}`))
 	})
 
-	page, err := c.SyncTasks(context.Background(), "access-token", "")
+	page, err := c.SyncTasks(context.Background(), "access-token", "", nil)
 	if err != nil {
 		t.Fatalf("SyncTasks() error = %v", err)
 	}
@@ -145,11 +145,58 @@ func TestSyncTasksFullSync(t *testing.T) {
 	}
 }
 
+// TestSyncTasksFloatingDueInLocation pins the due.date interpretation matrix:
+// a floating (zone-less) datetime means "on the user's wall clock" and is
+// parsed in the caller-supplied location; a zoned datetime ignores it; a nil
+// location keeps the historical UTC reading of floating values.
+func TestSyncTasksFloatingDueInLocation(t *testing.T) {
+	body := `{
+		"sync_token": "tok",
+		"items": [
+			{"id": "1", "content": "Floating", "checked": false, "is_deleted": false, "due": {"date": "2026-07-21T17:00:00"}},
+			{"id": "2", "content": "Zoned", "checked": false, "is_deleted": false, "due": {"date": "2026-07-21T17:00:00Z"}}
+		]
+	}`
+	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	})
+	ams, err := time.LoadLocation("Europe/Amsterdam")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := c.SyncTasks(context.Background(), "tok", "", ams)
+	if err != nil {
+		t.Fatalf("SyncTasks() error = %v", err)
+	}
+	// 17:00 in Amsterdam (CEST, UTC+2 in July) = 15:00Z.
+	wantFloating := time.Date(2026, 7, 21, 15, 0, 0, 0, time.UTC)
+	if got := page.Tasks[0].Due; got == nil || !got.Equal(wantFloating) {
+		t.Errorf("floating due = %v, want %v (17:00 Amsterdam wall clock)", got, wantFloating)
+	}
+	if page.Tasks[0].AllDayDue {
+		t.Error("floating datetime flagged all-day")
+	}
+	wantZoned := time.Date(2026, 7, 21, 17, 0, 0, 0, time.UTC)
+	if got := page.Tasks[1].Due; got == nil || !got.Equal(wantZoned) {
+		t.Errorf("zoned due = %v, want %v (location must not shift explicit zones)", got, wantZoned)
+	}
+
+	// nil location: floating values keep the UTC fallback reading.
+	page, err = c.SyncTasks(context.Background(), "tok", "", nil)
+	if err != nil {
+		t.Fatalf("SyncTasks() error = %v", err)
+	}
+	if got := page.Tasks[0].Due; got == nil || !got.Equal(wantZoned) {
+		t.Errorf("floating due with nil loc = %v, want %v (UTC fallback)", got, wantZoned)
+	}
+}
+
 func TestSyncTasksCursorRoundTrip(t *testing.T) {
 	c, reqs := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"sync_token": "cur-2", "items": []}`))
 	})
-	page, err := c.SyncTasks(context.Background(), "tok", "cur-1")
+	page, err := c.SyncTasks(context.Background(), "tok", "cur-1", nil)
 	if err != nil {
 		t.Fatalf("SyncTasks() error = %v", err)
 	}
@@ -225,7 +272,7 @@ func TestVendorErrorStatuses(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte(`{"error": "Unauthorized"}`))
 		})
-		if _, err := c.SyncTasks(ctx, "stale", ""); !errors.Is(err, domain.ErrUnauthorized) {
+		if _, err := c.SyncTasks(ctx, "stale", "", nil); !errors.Is(err, domain.ErrUnauthorized) {
 			t.Errorf("SyncTasks() err = %v, want ErrUnauthorized", err)
 		}
 		if err := c.CompleteTask(ctx, "stale", "1"); !errors.Is(err, domain.ErrUnauthorized) {
@@ -238,7 +285,7 @@ func TestVendorErrorStatuses(t *testing.T) {
 			w.WriteHeader(http.StatusTooManyRequests)
 			_, _ = w.Write([]byte(`{"error": "Too many requests"}`))
 		})
-		_, err := c.SyncTasks(ctx, "tok", "")
+		_, err := c.SyncTasks(ctx, "tok", "", nil)
 		if err == nil || errors.Is(err, domain.ErrUnauthorized) {
 			t.Errorf("SyncTasks() err = %v, want plain rate-limit error", err)
 		}
@@ -252,7 +299,7 @@ func TestVendorErrorStatuses(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte(`upstream exploded`))
 		})
-		_, err := c.SyncTasks(ctx, "tok", "")
+		_, err := c.SyncTasks(ctx, "tok", "", nil)
 		if err == nil || !strings.Contains(err.Error(), "500") {
 			t.Errorf("SyncTasks() err = %v, want HTTP 500 error", err)
 		}
@@ -262,7 +309,7 @@ func TestVendorErrorStatuses(t *testing.T) {
 		c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{not json`))
 		})
-		if _, err := c.SyncTasks(ctx, "tok", ""); err == nil {
+		if _, err := c.SyncTasks(ctx, "tok", "", nil); err == nil {
 			t.Error("SyncTasks() = nil, want decode error")
 		}
 		if err := c.CompleteTask(ctx, "tok", "1"); err == nil {

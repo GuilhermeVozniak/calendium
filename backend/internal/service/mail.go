@@ -594,7 +594,9 @@ func (s *MailService) ListSnippets(ctx context.Context, userID string) ([]domain
 	if err != nil {
 		return nil, err
 	}
-	return mergeSnippets(personal, team), nil
+	merged := mergeSnippets(personal, team)
+	s.annotateSnippetPermissions(ctx, userID, merged)
+	return merged, nil
 }
 
 func (s *MailService) CreateSnippet(ctx context.Context, userID string, in port.SnippetInput) (domain.Snippet, error) {
@@ -611,7 +613,7 @@ func (s *MailService) CreateSnippet(ctx context.Context, userID string, in port.
 			return domain.Snippet{}, err
 		}
 	}
-	return s.snippets.Create(ctx, domain.Snippet{
+	snip, err := s.snippets.Create(ctx, domain.Snippet{
 		ID:       newID(),
 		UserID:   userID,
 		TeamID:   in.TeamID,
@@ -619,6 +621,11 @@ func (s *MailService) CreateSnippet(ctx context.Context, userID string, in port.
 		Shortcut: in.Shortcut,
 		BodyHTML: in.BodyHTML,
 	})
+	if err != nil {
+		return domain.Snippet{}, err
+	}
+	snip.CanDelete = true // the caller is the author
+	return snip, nil
 }
 
 func (s *MailService) UpdateSnippet(ctx context.Context, userID, snippetID string, in port.SnippetInput) (domain.Snippet, error) {
@@ -640,6 +647,7 @@ func (s *MailService) UpdateSnippet(ctx context.Context, userID, snippetID strin
 	if err := s.snippets.Update(ctx, snip); err != nil {
 		return domain.Snippet{}, err
 	}
+	snip.CanDelete = true // editableSnippet passed: author or admin+, same gate as delete
 	return snip, nil
 }
 

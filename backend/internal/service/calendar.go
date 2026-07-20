@@ -478,7 +478,10 @@ func (s *CalendarService) TeamAvailability(ctx context.Context, userID, teamID s
 
 	out := make([]port.MemberAvailability, 0, len(members))
 	for _, m := range members {
-		row := port.MemberAvailability{UserID: m.UserID, Busy: []domain.AvailabilitySlot{}}
+		// Name/Email ride along from the roster join (ListMembers) — the
+		// caller's membership was already verified above, so this stays
+		// within team scope.
+		row := port.MemberAvailability{UserID: m.UserID, Name: m.Name, Email: m.Email, Busy: []domain.AvailabilitySlot{}}
 		calIDs := calsByOwner[m.UserID]
 		if len(calIDs) == 0 {
 			out = append(out, row) // not sharing — visibly opted out, zero data

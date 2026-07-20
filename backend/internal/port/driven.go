@@ -802,8 +802,10 @@ type ManagedEventRepo interface {
 
 // EventBus fans CollabEvents out to in-process subscribers. Publish never
 // blocks (slow subscribers drop events — SSE clients re-sync on reconnect).
-// Single-process today; the multi-instance path is a Postgres LISTEN/NOTIFY
-// implementation behind this same port.
+// Two implementations: adapter/out/eventbus (in-memory, the API's broker)
+// and adapter/out/pgbus (Postgres NOTIFY publisher + LISTEN forwarder that
+// bridges worker-published events into the API's in-memory bus, envelope
+// {topic,type} only — payloads never cross processes).
 type EventBus interface {
 	Publish(ev CollabEvent)
 	// Subscribe returns a channel of events for the given topics and a
@@ -851,10 +853,12 @@ type TodoSyncPage struct {
 
 // TodoProvider is the external todo-tool surface (Todoist first; Things,
 // Notion, Linear later). SyncTasks performs incremental sync from cursor
-// ("" = full sync; Todoist uses the Sync v9 sync_token).
+// ("" = full sync; Todoist uses the Sync v9 sync_token). loc resolves
+// floating (zone-less) vendor due datetimes — the connection owner's
+// CalendarPrefs timezone; nil falls back to UTC.
 type TodoProvider interface {
 	Source() domain.TaskSource
-	SyncTasks(ctx context.Context, accessToken, cursor string) (TodoSyncPage, error)
+	SyncTasks(ctx context.Context, accessToken, cursor string, loc *time.Location) (TodoSyncPage, error)
 	CompleteTask(ctx context.Context, accessToken, externalID string) error
 	ReopenTask(ctx context.Context, accessToken, externalID string) error
 }

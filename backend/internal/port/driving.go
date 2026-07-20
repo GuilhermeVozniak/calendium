@@ -222,6 +222,11 @@ type MemberAvailability struct {
 	UserID string                    `json:"userId"`
 	Busy   []domain.AvailabilitySlot `json:"busy"`
 	Shared bool                      `json:"shared"`
+	// Name and Email are display-identity enrichment copied from the
+	// team roster (TeamMember join) — team scope only, empty when
+	// unresolvable; clients fall back to the id.
+	Name  string `json:"name"`
+	Email string `json:"email"`
 }
 
 // CalendarService covers calendars, events (provider write-through), rsvp,

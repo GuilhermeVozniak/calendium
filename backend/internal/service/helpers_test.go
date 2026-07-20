@@ -51,6 +51,9 @@ func TestTruncate(t *testing.T) {
 		{"equal to n unchanged", "hello", 5, "hello"},
 		{"longer truncated with ellipsis", "hello world", 5, "hello…"},
 		{"n zero keeps only ellipsis", "abc", 0, "…"},
+		{"multibyte within limit unchanged", "café 🎉", 6, "café 🎉"},
+		{"cut lands on a rune boundary, never mid-rune", "café 🎉 party", 6, "café 🎉…"},
+		{"emoji-only body truncates whole emoji", "🎉🎉🎉🎉", 2, "🎉🎉…"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

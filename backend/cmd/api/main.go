@@ -27,6 +27,7 @@ import (
 	"calendium/backend/internal/adapter/out/nominatim"
 	"calendium/backend/internal/adapter/out/openmeteo"
 	"calendium/backend/internal/adapter/out/openrouter"
+	"calendium/backend/internal/adapter/out/pgbus"
 	"calendium/backend/internal/adapter/out/postgres"
 	"calendium/backend/internal/adapter/out/push"
 	"calendium/backend/internal/adapter/out/stripeapi"
@@ -133,6 +134,15 @@ func run(logger *slog.Logger) error {
 	// --- services ---
 	clock := service.SystemClock{}
 	bus := eventbus.New()
+	// Cross-process realtime bridge (M2 follow-up F1): forward worker-
+	// published events (share.updated on sync-delivered messages, team
+	// activity.updated) into this process's bus over Postgres LISTEN/NOTIFY.
+	// API-local publishes go straight to the in-memory bus — only the worker
+	// publishes to Postgres — so nothing is ever delivered twice. The
+	// listener reconnects with capped backoff on connection loss and never
+	// takes the server down; a notification arriving mid-reconnect is
+	// dropped, matching the bus's drop-on-full contract (clients refetch).
+	go pgbus.NewListener(cfg.DB.URL, bus, logger).Run(ctx)
 	activityRepo := postgres.NewTeamThreadActivityRepo(store)
 
 	users := service.NewUserService(store.Users(), store.UserPreferences(), clock)
@@ -420,6 +430,24 @@ func run(logger *slog.Logger) error {
 			Weather: cfg.Weather.BaseURL != "",
 		},
 	}
+
+	// One structured line naming which OPTIONAL httpapi deps are wired — a
+	// nil entry means that surface answers 501 / is omitted from discovery,
+	// so a misconfigured deploy is diagnosable at a glance. Log only; no
+	// behavior change.
+	logger.Info("api: optional deps",
+		"teams", teams != nil,
+		"collab", collab != nil,
+		"delegations", delegations != nil,
+		"team_activity", teamActivitySvc != nil,
+		"tasks", tasksSvc != nil,
+		"weather", weatherSvc != nil,
+		"places", placesSvc != nil,
+		"integrations", integrations != nil,
+		"crm", crmSvc != nil,
+		"insights", insightsSvc != nil,
+		"push", pushSender != nil,
+	)
 
 	// --- HTTP server ---
 	handler := httpapi.New(httpapi.Deps{

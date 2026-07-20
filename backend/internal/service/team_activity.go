@@ -96,12 +96,28 @@ func rfcMessageIDFromHeaders(headers map[string]string) string {
 	return ""
 }
 
-// publishActivityUpdated fans one activity row out on the team's topic.
+// activityUpdatedPayload is the ids-only wire payload for activity.updated
+// collab events. Per the SSE doctrine, events carry identifiers, never the
+// row: subscribers (see web's TeamActivityChips) refetch through the normal
+// authorized GET, so timestamps and any future row fields never ride the
+// broadcast channel.
+type activityUpdatedPayload struct {
+	TeamID          string `json:"teamId"`
+	UserID          string `json:"userId"`
+	ConversationKey string `json:"conversationKey"`
+}
+
+// publishActivityUpdated fans one activity notification out on the team's
+// topic — ids only, never the activity row itself.
 func publishActivityUpdated(bus port.EventBus, a domain.TeamThreadActivity) {
 	if bus == nil {
 		return
 	}
-	payload, err := json.Marshal(a)
+	payload, err := json.Marshal(activityUpdatedPayload{
+		TeamID:          a.TeamID,
+		UserID:          a.UserID,
+		ConversationKey: a.ConversationKey,
+	})
 	if err != nil {
 		return
 	}

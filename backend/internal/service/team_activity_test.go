@@ -141,12 +141,17 @@ func TestMarkThreadOpenedRecordsActivityForSharingTeams(t *testing.T) {
 	if ev.Topic != "team:teamA" || ev.Type != "activity.updated" {
 		t.Fatalf("event = %+v, want team:teamA activity.updated", ev)
 	}
-	var payload domain.TeamThreadActivity
+	// Ids-only doctrine: the payload names the activity (team/user/key) and
+	// nothing else — no timestamps, no row — clients refetch for content.
+	var payload map[string]any
 	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
 		t.Fatalf("payload: %v", err)
 	}
-	if payload.ConversationKey != "<conv-1@acme.com>" {
-		t.Fatalf("payload key = %q", payload.ConversationKey)
+	if payload["conversationKey"] != "<conv-1@acme.com>" || payload["teamId"] != "teamA" || payload["userId"] != "u1" {
+		t.Fatalf("payload = %v, want ids only (teamA/u1/<conv-1@acme.com>)", payload)
+	}
+	if len(payload) != 3 {
+		t.Fatalf("payload carries %d fields %v, want exactly teamId/userId/conversationKey", len(payload), payload)
 	}
 }
 

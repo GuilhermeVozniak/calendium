@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -127,6 +128,92 @@ func TestCrmLogForwardsPayload(t *testing.T) {
 		crm.gotLog.BodyText != "Attached." || crm.gotLog.Direction != "outbound" ||
 		!crm.gotLog.SentAt.Equal(sentAt) {
 		t.Fatalf("forwarded log = %+v", crm.gotLog)
+	}
+}
+
+// TestCrmRoutesUnauthenticated401 pins that both CRM routes sit behind
+// requireAuth: no bearer token means 401 before the service is ever reached.
+func TestCrmRoutesUnauthenticated401(t *testing.T) {
+	crm := &fakeCrmService{ctxRet: []domain.CrmContext{{Vendor: domain.IntegrationHubSpot}}}
+	h := newHarness(t)
+	h.deps.Crm = crm
+
+	rec := h.anon(http.MethodGet, "/v1/crm/context?email=a%40b.c", nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET context status = %d, want 401", rec.Code)
+	}
+	if got := decodeErr(t, rec).Code; got != "unauthorized" {
+		t.Fatalf("error code = %q, want unauthorized", got)
+	}
+	rec = h.anon(http.MethodPost, "/v1/crm/log", jsonBody(t, map[string]string{"contactEmail": "a@b.c"}))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST log status = %d, want 401", rec.Code)
+	}
+	if crm.gotCtxUser != "" || crm.gotCtxEmail != "" || crm.gotLogUser != "" {
+		t.Fatalf("service reached without auth: ctx=(%q,%q) log=%q", crm.gotCtxUser, crm.gotCtxEmail, crm.gotLogUser)
+	}
+}
+
+// tenantCrmService returns per-user data, so a request authenticated as one
+// user can never observe another user's CRM rows through the handler.
+type tenantCrmService struct {
+	byUser   map[string][]domain.CrmContext
+	gotUsers []string
+}
+
+var _ port.CrmService = (*tenantCrmService)(nil)
+
+func (f *tenantCrmService) ContactContext(_ context.Context, userID, _ string) ([]domain.CrmContext, error) {
+	f.gotUsers = append(f.gotUsers, userID)
+	return f.byUser[userID], nil
+}
+func (f *tenantCrmService) LogEmail(_ context.Context, userID string, _ domain.CrmEmailLog) error {
+	f.gotUsers = append(f.gotUsers, userID)
+	return nil
+}
+
+// TestCrmContextCrossTenantUserScoping is the cross-tenant negative: the
+// handler threads ONLY the authenticated identity's user id into the CRM
+// service (never a caller-supplied one — there is no user parameter on the
+// route), so user B authenticating with their own token cannot see user A's
+// CRM context.
+func TestCrmContextCrossTenantUserScoping(t *testing.T) {
+	crm := &tenantCrmService{byUser: map[string][]domain.CrmContext{
+		defaultUserID: {{
+			Vendor:  domain.IntegrationHubSpot,
+			Contact: &domain.CrmContact{ID: "301", Email: "ada@northwind.com", Name: "Ada Lovelace"},
+		}},
+	}}
+	h := newHarness(t)
+	h.deps.Crm = crm
+
+	// User A (the default token) sees their own vendor context.
+	rec := h.authed(http.MethodGet, "/v1/crm/context?email=ada%40northwind.com", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("user A status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	var aCtx []domain.CrmContext
+	if err := json.Unmarshal(rec.Body.Bytes(), &aCtx); err != nil || len(aCtx) != 1 || aCtx[0].Contact == nil || aCtx[0].Contact.ID != "301" {
+		t.Fatalf("user A body = %s (err %v), want their one HubSpot context", rec.Body.String(), err)
+	}
+
+	// User B authenticates with a different token; EnsureUser resolves them
+	// to user_2. The handler must pass user_2 — not user A's id — downward.
+	h.verifier.tokens["token-b"] = port.Identity{Subject: "user_2", Email: "intruder@example.com", Name: "Intruder"}
+	h.users.ensureRet = domain.User{ID: "user_2", Email: "intruder@example.com"}
+	req := httptest.NewRequest(http.MethodGet, "/v1/crm/context?email=ada%40northwind.com", nil)
+	req.Header.Set("Authorization", "Bearer token-b")
+	recB := httptest.NewRecorder()
+	h.handler().ServeHTTP(recB, req)
+
+	if recB.Code != http.StatusOK {
+		t.Fatalf("user B status = %d, want 200 (body=%s)", recB.Code, recB.Body.String())
+	}
+	if body := strings.TrimSpace(recB.Body.String()); body != "[]" {
+		t.Fatalf("user B body = %q, want [] — user A's CRM context leaked cross-tenant", body)
+	}
+	if len(crm.gotUsers) != 2 || crm.gotUsers[0] != defaultUserID || crm.gotUsers[1] != "user_2" {
+		t.Fatalf("service saw users %v, want [%s user_2] (authenticated identity only)", crm.gotUsers, defaultUserID)
 	}
 }
 

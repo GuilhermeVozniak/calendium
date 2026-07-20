@@ -38,7 +38,6 @@ import type {
   Provider,
   Snippet,
   Subscription,
-  TeamRole,
   UserSettings,
 } from '@calendium/shared';
 import { ApiRequestError } from '@calendium/shared';
@@ -769,32 +768,10 @@ export function SnippetsSection() {
   const queryClient = useQueryClient();
   const snippetsQuery = useQuery({ queryKey: ['snippets'], queryFn: fetchSnippets });
 
-  // Teams for the create dialog's scope selector + role-aware delete on team
-  // snippets (M2.7 Task 11). Server-side authz stays authoritative — roles are
-  // only used to hide controls the server would reject.
+  // Teams for the create dialog's scope selector and the team badge on
+  // team snippets (M2.7 Task 11).
   const teamsQuery = useQuery({ queryKey: ['teams'], queryFn: () => getApiClient().listTeams() });
   const teams = React.useMemo(() => teamsQuery.data ?? [], [teamsQuery.data]);
-  const meQuery = useQuery({
-    queryKey: ['me'],
-    queryFn: () => getApiClient().getMe(),
-    enabled: teams.length > 0,
-  });
-  const meId = meQuery.data?.id;
-  const teamIdsKey = teams.map((t) => t.id).join(',');
-  const rolesQuery = useQuery({
-    queryKey: ['team-roles', meId, teamIdsKey],
-    enabled: !!meId && teams.length > 0,
-    queryFn: async () => {
-      const api = getApiClient();
-      const details = await Promise.all(teams.map((t) => api.getTeam(t.id)));
-      const roles: Record<string, TeamRole> = {};
-      for (const { team, members } of details) {
-        const mine = members.find((m) => m.userId === meId);
-        if (mine) roles[team.id] = mine.role;
-      }
-      return roles;
-    },
-  });
 
   const [createOpen, setCreateOpen] = React.useState(false);
   const [name, setName] = React.useState('');
@@ -838,16 +815,11 @@ export function SnippetsSection() {
   const personalSnippets = snippets.filter((s) => !s.teamId);
   const teamSnippets = snippets.filter((s) => Boolean(s.teamId));
 
-  // The server allows deleting a team snippet for its author or a team
-  // admin+. Authorship is not exposed over the API, so the UI hides delete on
-  // team snippets for plain members (Task 11 review); unknown roles fail open
-  // and let the server decide.
-  const canDelete = (snippet: Snippet): boolean => {
-    if (!snippet.teamId) return true;
-    const role = rolesQuery.data?.[snippet.teamId];
-    if (!role) return true;
-    return role === 'admin' || role === 'owner';
-  };
+  // The server computes canDelete per request with exact author/role parity
+  // (F2): author, or admin+ on team snippets. The UI only hides controls the
+  // server would reject; an absent field (older server) fails open and lets
+  // the server decide.
+  const canDelete = (snippet: Snippet): boolean => snippet.canDelete ?? true;
 
   const renderSnippetRow = (snippet: Snippet) => (
     <div key={snippet.id} className="flex items-center gap-3 rounded-lg border p-3">

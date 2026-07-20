@@ -1,4 +1,4 @@
-import type { Snippet, Team, TeamMember } from '@calendium/shared';
+import type { Snippet, Team } from '@calendium/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -41,8 +41,12 @@ const PERSONAL: Snippet = {
   bodyHtml: '<p>Hi there</p>',
   usageCount: 3,
   teamId: null,
+  authorId: 'user_me',
+  canDelete: true,
 };
 
+// A teammate's snippet the server says a plain member may not delete (F2:
+// canDelete is computed server-side with exact author/role parity).
 const TEAM_SNIPPET: Snippet = {
   id: 's2',
   name: 'Team reply',
@@ -50,6 +54,8 @@ const TEAM_SNIPPET: Snippet = {
   bodyHtml: '<p>On behalf of Acme</p>',
   usageCount: 8,
   teamId: 'team1',
+  authorId: 'user_other',
+  canDelete: false,
 };
 
 const TEAM: Team = {
@@ -58,16 +64,6 @@ const TEAM: Team = {
   createdBy: 'user_other',
   createdAt: '2026-07-01T00:00:00Z',
 };
-
-function member(role: TeamMember['role']): TeamMember {
-  return {
-    teamId: 'team1',
-    userId: 'user_me',
-    role,
-    shareReadStatuses: false,
-    joinedAt: '2026-07-01T00:00:00Z',
-  };
-}
 
 function renderSection() {
   const queryClient = new QueryClient({
@@ -91,7 +87,7 @@ beforeEach(() => {
     avatarUrl: null,
     createdAt: '2026-01-01T00:00:00Z',
   });
-  getTeamMock.mockResolvedValue({ team: TEAM, members: [member('member')] });
+  getTeamMock.mockResolvedValue({ team: TEAM, members: [] });
 });
 
 describe('SnippetsSection — team snippets (M2.7 Task 11)', () => {
@@ -101,22 +97,30 @@ describe('SnippetsSection — team snippets (M2.7 Task 11)', () => {
     expect(await screen.findByText('Acme')).toBeInTheDocument();
   });
 
-  it('hides delete on team snippets for a plain member but keeps personal deletes', async () => {
+  it('hides delete when the server computed canDelete=false, keeps it for your own', async () => {
     renderSection();
     expect(await screen.findByText('Team reply')).toBeInTheDocument();
-    await waitFor(() => expect(getTeamMock).toHaveBeenCalledWith('team1'));
     expect(
       await screen.findByRole('button', { name: 'Delete snippet Intro' })
     ).toBeInTheDocument();
-    await waitFor(() =>
-      expect(
-        screen.queryByRole('button', { name: 'Delete snippet Team reply' })
-      ).not.toBeInTheDocument()
-    );
+    expect(
+      screen.queryByRole('button', { name: 'Delete snippet Team reply' })
+    ).not.toBeInTheDocument();
+    // The role heuristic is gone: no per-team roster fetch just to gate a button.
+    expect(getTeamMock).not.toHaveBeenCalled();
   });
 
-  it('shows delete on team snippets for a team admin', async () => {
-    getTeamMock.mockResolvedValue({ team: TEAM, members: [member('admin')] });
+  it('shows delete when the server grants it (author or admin+)', async () => {
+    listSnippetsMock.mockResolvedValue([PERSONAL, { ...TEAM_SNIPPET, canDelete: true }]);
+    renderSection();
+    expect(
+      await screen.findByRole('button', { name: 'Delete snippet Team reply' })
+    ).toBeInTheDocument();
+  });
+
+  it('fails open when canDelete is absent (older server) — the server still decides', async () => {
+    const { canDelete: _dropped, ...legacy } = TEAM_SNIPPET;
+    listSnippetsMock.mockResolvedValue([legacy]);
     renderSection();
     expect(
       await screen.findByRole('button', { name: 'Delete snippet Team reply' })

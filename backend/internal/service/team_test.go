@@ -347,6 +347,22 @@ func TestTeamSetMemberRole(t *testing.T) {
 			t.Fatalf("err = %v, want ErrValidation", err)
 		}
 	})
+
+	t.Run("non-member with invalid role still not found (membership checked first)", func(t *testing.T) {
+		f := seed(t)
+		// Oracle consistency: a stranger must get 404 whether or not the
+		// payload validates — a 400 here would leak that the team exists.
+		if _, err := f.svc.SetMemberRole(ctx, "stranger", "t1", "member", domain.TeamRole("boss")); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("err = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("under-privileged member with invalid role still forbidden (role gate before payload)", func(t *testing.T) {
+		f := seed(t)
+		if _, err := f.svc.SetMemberRole(ctx, "member", "t1", "member", domain.TeamRole("boss")); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("err = %v, want ErrForbidden", err)
+		}
+	})
 }
 
 // --- RemoveMember / leave -----------------------------------------------------

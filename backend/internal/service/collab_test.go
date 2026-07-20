@@ -196,6 +196,103 @@ func (f *collabFixture) shareThread(threadID, teamID string) {
 	})
 }
 
+// --- F2: author display-identity enrichment ----------------------------------
+
+func TestCommentAuthorNameEnrichment(t *testing.T) {
+	ctx := context.Background()
+	f := newCollabFixture(t)
+	f.seedCollabTeam(t, "t1", "owner")
+	f.seedMemberUser(t, "t1", "bob", domain.TeamRoleMember)
+	if _, err := f.users.Upsert(ctx, domain.User{ID: "bob", Email: "bob@example.com", Name: ptr("Bob Byrne")}); err != nil {
+		t.Fatalf("name bob: %v", err)
+	}
+	f.seedOwnedThread(t, "th1", "owner")
+	f.shareThread("th1", "t1")
+
+	// Add: the response carries the author's display name.
+	bobC, err := f.svc.AddComment(ctx, "bob", "th1", port.CommentInput{TeamID: "t1", Body: "hi"})
+	if err != nil {
+		t.Fatalf("AddComment(bob): %v", err)
+	}
+	if bobC.AuthorName != "Bob Byrne" {
+		t.Fatalf("AuthorName = %q, want Bob Byrne", bobC.AuthorName)
+	}
+
+	// A nameless author falls back to email — never a fabricated name.
+	ownerC, err := f.svc.AddComment(ctx, "owner", "th1", port.CommentInput{TeamID: "t1", Body: "yo"})
+	if err != nil {
+		t.Fatalf("AddComment(owner): %v", err)
+	}
+	if ownerC.AuthorName != "owner@example.com" {
+		t.Fatalf("AuthorName = %q, want email fallback", ownerC.AuthorName)
+	}
+
+	// List: every comment is enriched.
+	cs, err := f.svc.ListComments(ctx, "owner", "th1", "t1")
+	if err != nil || len(cs) != 2 {
+		t.Fatalf("ListComments = %d, %v", len(cs), err)
+	}
+	byID := map[string]domain.Comment{}
+	for _, c := range cs {
+		byID[c.ID] = c
+	}
+	if byID[bobC.ID].AuthorName != "Bob Byrne" || byID[ownerC.ID].AuthorName != "owner@example.com" {
+		t.Fatalf("list enrichment = %q / %q", byID[bobC.ID].AuthorName, byID[ownerC.ID].AuthorName)
+	}
+
+	// Update: the edited response is enriched too.
+	upd, err := f.svc.UpdateComment(ctx, "bob", bobC.ID, "edited")
+	if err != nil {
+		t.Fatalf("UpdateComment: %v", err)
+	}
+	if upd.AuthorName != "Bob Byrne" || upd.Body != "edited" {
+		t.Fatalf("updated = %q/%q", upd.AuthorName, upd.Body)
+	}
+}
+
+func TestCommentAuthorNameUnresolvableStaysEmpty(t *testing.T) {
+	ctx := context.Background()
+	f := newCollabFixture(t)
+	f.seedCollabTeam(t, "t1", "owner")
+	f.seedOwnedThread(t, "th1", "owner")
+	f.shareThread("th1", "t1")
+	// A comment whose author has no user row (e.g. deleted account).
+	if _, err := f.comments.Create(ctx, domain.Comment{
+		ID: "c-ghost", ThreadID: "th1", TeamID: "t1", AuthorID: "ghost",
+		Body: "who was I", Mentions: []string{}, CreatedAt: f.clock.Now(), UpdatedAt: f.clock.Now(),
+	}); err != nil {
+		t.Fatalf("seed comment: %v", err)
+	}
+
+	cs, err := f.svc.ListComments(ctx, "owner", "th1", "t1")
+	if err != nil || len(cs) != 1 {
+		t.Fatalf("ListComments = %d, %v", len(cs), err)
+	}
+	if cs[0].AuthorName != "" {
+		t.Fatalf("AuthorName = %q, want empty (honesty: nothing fabricated)", cs[0].AuthorName)
+	}
+}
+
+func TestListCommentsNonMemberNeverResolvesNames(t *testing.T) {
+	// Cross-tenant negative for the authorName path: a non-member gets 404
+	// before any enrichment can run — names never resolve outside the team.
+	ctx := context.Background()
+	f := newCollabFixture(t)
+	f.seedCollabTeam(t, "t1", "owner")
+	f.seedOwnedThread(t, "th1", "owner")
+	f.shareThread("th1", "t1")
+	if _, err := f.svc.AddComment(ctx, "owner", "th1", port.CommentInput{TeamID: "t1", Body: "private"}); err != nil {
+		t.Fatalf("seed comment: %v", err)
+	}
+	if _, err := f.users.Upsert(ctx, domain.User{ID: "stranger", Email: "stranger@example.com"}); err != nil {
+		t.Fatalf("seed stranger: %v", err)
+	}
+
+	if _, err := f.svc.ListComments(ctx, "stranger", "th1", "t1"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
 // --- AddComment --------------------------------------------------------------
 
 func TestCommentAddNonMemberNotFound(t *testing.T) {
@@ -581,6 +678,38 @@ func TestCommentListScoping(t *testing.T) {
 	// Unknown thread: 404 (not an oracle).
 	if _, err := f.svc.ListComments(ctx, "bob", "ghost", "t1"); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("unknown thread err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestCommentNilSharesRepoFailsClosed pins threadVisibleToTeam's fail-closed
+// doctrine: with no Shares repo wired (nil), no share can ever be proven
+// live, so a non-owner team member gets ErrNotFound on a foreign thread —
+// even though a live team share exists in the (unwired) share store. Only
+// the ownership path, which needs no share data, still passes.
+func TestCommentNilSharesRepoFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	f := newCollabFixture(t)
+	f.seedCollabTeam(t, "t1", "owner")
+	f.seedMemberUser(t, "t1", "bob", domain.TeamRoleMember)
+	f.seedOwnedThread(t, "th1", "owner")
+	f.shareThread("th1", "t1") // live share exists — but the service can't see it
+
+	// Rebuild the service with Shares deliberately omitted (nil).
+	f.svc = NewCollabService(CollabServiceDeps{
+		Comments: f.comments, Teams: f.teams, Threads: f.threads,
+		Accounts: f.accounts, Users: f.users, Devices: f.devices,
+		Push: f.push, Bus: f.bus, Clock: f.clock, SelfHost: true,
+	})
+
+	if _, err := f.svc.AddComment(ctx, "bob", "th1", port.CommentInput{TeamID: "t1", Body: "hi"}); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("AddComment err = %v, want ErrNotFound (fail closed without a share checker)", err)
+	}
+	if _, err := f.svc.ListComments(ctx, "bob", "th1", "t1"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("ListComments err = %v, want ErrNotFound (fail closed without a share checker)", err)
+	}
+	// Ownership needs no share data: the owner still comments fine.
+	if _, err := f.svc.AddComment(ctx, "owner", "th1", port.CommentInput{TeamID: "t1", Body: "mine"}); err != nil {
+		t.Fatalf("owner AddComment = %v, want nil (ownership path is share-free)", err)
 	}
 }
 

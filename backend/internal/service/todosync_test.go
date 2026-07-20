@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ type fakeTodoProvider struct {
 
 	// recording
 	syncCalls []todoProviderCall
+	syncLocs  []*time.Location // loc passed per SyncTasks call
 	completed []todoProviderCall
 	reopened  []todoProviderCall
 }
@@ -44,8 +46,9 @@ func newTodoProvider() *fakeTodoProvider {
 
 func (p *fakeTodoProvider) Source() domain.TaskSource { return p.source }
 
-func (p *fakeTodoProvider) SyncTasks(_ context.Context, accessToken, cursor string) (port.TodoSyncPage, error) {
+func (p *fakeTodoProvider) SyncTasks(_ context.Context, accessToken, cursor string, loc *time.Location) (port.TodoSyncPage, error) {
 	p.syncCalls = append(p.syncCalls, todoProviderCall{accessToken, cursor})
+	p.syncLocs = append(p.syncLocs, loc)
 	if err := p.errByToken[accessToken]; err != nil {
 		return port.TodoSyncPage{}, err
 	}
@@ -73,6 +76,7 @@ type todoSyncHarness struct {
 	syncState    *fakeSyncStateRepo
 	provider     *fakeTodoProvider
 	oauth        *fakeOAuthGateway
+	prefs        *fakeCalendarPrefsRepo
 	clock        *fakeClock
 }
 
@@ -84,12 +88,14 @@ func newTodoSyncHarness(t *testing.T) *todoSyncHarness {
 		syncState:    newSyncStateRepo(),
 		provider:     newTodoProvider(),
 		oauth:        newOAuthGateway(),
+		prefs:        newCalendarPrefsRepo(),
 		clock:        newClock(time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)),
 	}
 	h.svc = NewTodoSyncService(TodoSyncDeps{
 		Integrations: h.integrations,
 		Tasks:        h.tasks,
 		SyncState:    h.syncState,
+		Prefs:        h.prefs,
 		Providers:    map[domain.TaskSource]port.TodoProvider{domain.TaskSourceTodoist: h.provider},
 		OAuth:        map[domain.IntegrationVendor]port.OAuthGateway{domain.IntegrationTodoist: h.oauth},
 		Clock:        h.clock,
@@ -372,6 +378,110 @@ func TestTodoSync(t *testing.T) {
 		}
 		if len(h.provider.syncCalls) != 0 {
 			t.Errorf("syncCalls = %v, want none without connections", h.provider.syncCalls)
+		}
+	})
+
+	t.Run("duplicate external ids in one page upsert into a single row", func(t *testing.T) {
+		// A vendor page can repeat an item id (delta anomalies happen). The
+		// second occurrence must flow through the update path — one mirror
+		// row, last write wins, no unique-constraint blowup.
+		h := newTodoSyncHarness(t)
+		h.connect(t, "c1", "u1", "tok1")
+		h.provider.pages[""] = port.TodoSyncPage{
+			Tasks:      []domain.Task{mirrored("First title", "e1"), mirrored("Second title", "e1")},
+			NextCursor: "n1",
+		}
+
+		if err := h.svc.SyncTodos(ctx); err != nil {
+			t.Fatalf("SyncTodos() error = %v, want nil (duplicate id must not blow up)", err)
+		}
+		list := userTasks(t, h.tasks, "u1")
+		if len(list) != 1 {
+			t.Fatalf("len(tasks) = %d, want 1 (duplicate external id upserted once)", len(list))
+		}
+		if list[0].ExternalID != "e1" || list[0].Title != "Second title" {
+			t.Errorf("task = %q/%q, want external id e1 with the LAST occurrence's title", list[0].ExternalID, list[0].Title)
+		}
+		if conn, _ := h.integrations.GetByID(ctx, "c1"); conn.Status != domain.IntegrationStatusActive {
+			t.Errorf("conn status = %q, want active (pass completed cleanly)", conn.Status)
+		}
+	})
+
+	t.Run("transient 429 marks the connection errored, then self-heals next pass", func(t *testing.T) {
+		h := newTodoSyncHarness(t)
+		h.connect(t, "c1", "u1", "tok1")
+		h.provider.errByToken["tok1"] = errors.New("todoist rate limited (HTTP 429): slow down")
+		h.provider.pages[""] = port.TodoSyncPage{Tasks: []domain.Task{mirrored("A", "e1")}, NextCursor: "n1"}
+
+		if err := h.svc.SyncTodos(ctx); err != nil {
+			t.Fatalf("SyncTodos() error = %v, want nil (recorded on the connection)", err)
+		}
+		conn, err := h.integrations.GetByID(ctx, "c1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if conn.Status != domain.IntegrationStatusError || conn.LastError == nil || !strings.Contains(*conn.LastError, "429") {
+			t.Errorf("conn = %q/%v, want errored with the 429 message recorded", conn.Status, conn.LastError)
+		}
+		if h.oauth.refreshCalls != 0 {
+			t.Errorf("refreshCalls = %d, want 0 (429 is not an auth failure)", h.oauth.refreshCalls)
+		}
+
+		// Vendor recovered: the next pass syncs and clears the error.
+		delete(h.provider.errByToken, "tok1")
+		if err := h.svc.SyncTodos(ctx); err != nil {
+			t.Fatalf("second SyncTodos() error = %v", err)
+		}
+		healed, err := h.integrations.GetByID(ctx, "c1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if healed.Status != domain.IntegrationStatusActive || healed.LastError != nil {
+			t.Errorf("healed conn = %q/%v, want active with nil LastError", healed.Status, healed.LastError)
+		}
+		if got := userTasks(t, h.tasks, "u1"); len(got) != 1 {
+			t.Errorf("tasks after recovery = %d, want 1", len(got))
+		}
+	})
+
+	t.Run("floating dues: the owner's prefs timezone is threaded to the provider", func(t *testing.T) {
+		h := newTodoSyncHarness(t)
+		h.connect(t, "c1", "u1", "tok1")
+		p := domain.DefaultCalendarPrefs("u1")
+		p.TimeZone = "Europe/Amsterdam"
+		h.prefs.byUser["u1"] = p
+		h.provider.pages[""] = port.TodoSyncPage{NextCursor: "n1"}
+
+		if err := h.svc.SyncTodos(ctx); err != nil {
+			t.Fatalf("SyncTodos() error = %v", err)
+		}
+		if len(h.provider.syncLocs) != 1 || h.provider.syncLocs[0] == nil {
+			t.Fatalf("syncLocs = %v, want one non-nil location", h.provider.syncLocs)
+		}
+		if got := h.provider.syncLocs[0].String(); got != "Europe/Amsterdam" {
+			t.Errorf("loc = %q, want Europe/Amsterdam (prefs timezone)", got)
+		}
+	})
+
+	t.Run("floating dues: default and broken prefs timezones fall back to UTC", func(t *testing.T) {
+		h := newTodoSyncHarness(t)
+		h.connect(t, "c1", "u1", "tok1") // no prefs row → defaults (UTC)
+		h.connect(t, "c2", "u2", "tok2")
+		broken := domain.DefaultCalendarPrefs("u2")
+		broken.TimeZone = "Not/AZone" // repo-level corruption must not fail the pass
+		h.prefs.byUser["u2"] = broken
+		h.provider.pages[""] = port.TodoSyncPage{NextCursor: "n1"}
+
+		if err := h.svc.SyncTodos(ctx); err != nil {
+			t.Fatalf("SyncTodos() error = %v", err)
+		}
+		if len(h.provider.syncLocs) != 2 {
+			t.Fatalf("syncLocs = %v, want 2", h.provider.syncLocs)
+		}
+		for i, loc := range h.provider.syncLocs {
+			if loc != time.UTC {
+				t.Errorf("syncLocs[%d] = %v, want UTC fallback", i, loc)
+			}
 		}
 	})
 

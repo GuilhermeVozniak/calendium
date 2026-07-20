@@ -28,9 +28,12 @@ type DelegationRepo interface {
 // calendar-share write-throughs and EA delegation. The repo deliberately
 // exposes no update or delete surface.
 
-// DelegationUserDirectory resolves the delegation target user by email.
+// DelegationUserDirectory resolves the delegation target user by email,
+// and grant parties by id for display-identity enrichment (both parties
+// already share the grant, so resolving their names leaks nothing).
 type DelegationUserDirectory interface {
 	GetByEmail(ctx context.Context, email string) (domain.User, error)
+	GetByID(ctx context.Context, id string) (domain.User, error)
 }
 
 // DelegationService manages EA grants and authorizes delegated requests.

@@ -30,20 +30,39 @@ function useSwitchActing() {
 }
 
 /**
+ * Resolves the principal's display label from the caller's own grants
+ * (server data only): name, else email, else the raw id. Honest fallback —
+ * nothing is fabricated client-side.
+ */
+function usePrincipalLabel(acting: string | null): string | null {
+  const delegationsQuery = useQuery({
+    queryKey: ['delegations'],
+    queryFn: () => getApiClient().listDelegations(),
+    enabled: acting !== null,
+  });
+  if (!acting) return null;
+  const grant = (delegationsQuery.data?.asAssistant ?? []).find(
+    (d) => d.principalId === acting
+  );
+  return grant?.principalName || grant?.principalEmail || acting;
+}
+
+/**
  * Full-width banner badging the whole UI while acting for a principal
- * (M2.7 Task 15). Renders nothing when not acting. The principal is shown by
- * user id — the only identity the delegation API exposes (server data only).
+ * (M2.7 Task 15). Renders nothing when not acting. The principal label is
+ * server data from the caller's own grants (F2): name, else email, else id.
  */
 export function ActingBanner() {
   const acting = useActingAs();
   const switchActing = useSwitchActing();
+  const label = usePrincipalLabel(acting);
   if (!acting) return null;
   return (
     <div className="bg-primary text-primary-foreground flex shrink-0 items-center gap-2 px-4 py-1.5 text-xs">
       <UserCog className="size-3.5 shrink-0" />
       <span className="min-w-0 flex-1 truncate">
-        <span className="font-medium">Acting for {acting}</span> — mail and calendar actions run
-        on their account and are audit-logged.
+        <span className="font-medium">Acting for {label ?? acting}</span> — mail and calendar
+        actions run on their account and are audit-logged.
       </span>
       <Button
         size="sm"
@@ -85,7 +104,9 @@ export function ActAsMenuItems() {
           onSelect={() => switchActing(d.principalId)}
         >
           <Check className={cn('size-4', d.principalId !== acting && 'invisible')} />
-          <span className="truncate">{d.principalId}</span>
+          <span className="truncate">
+            {d.principalName || d.principalEmail || d.principalId}
+          </span>
         </DropdownMenuItem>
       ))}
       {acting && (

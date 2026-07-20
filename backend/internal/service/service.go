@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"calendium/backend/internal/domain"
 	"calendium/backend/internal/port"
@@ -59,11 +60,14 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// truncate caps s at n RUNES (not bytes) plus an ellipsis. Byte slicing
+// could split a multibyte rune — e.g. the collab push preview truncating an
+// emoji-bearing comment body — leaving invalid UTF-8 in the output.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return string([]rune(s)[:n]) + "…"
 }
 
 // SystemClock is the production port.Clock.

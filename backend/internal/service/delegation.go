@@ -61,13 +61,17 @@ func (s *DelegationService) Create(ctx context.Context, principalID, assistantEm
 	if assistant.ID == principalID {
 		return domain.Delegation{}, fmt.Errorf("%w: cannot delegate to yourself", domain.ErrValidation)
 	}
-	return s.deps.Delegations.Create(ctx, domain.Delegation{
+	d, err := s.deps.Delegations.Create(ctx, domain.Delegation{
 		PrincipalID: principalID,
 		AssistantID: assistant.ID,
 		Scopes:      deduped,
 		Status:      domain.DelegationPending,
 		CreatedAt:   s.deps.Clock.Now().UTC(),
 	})
+	if err != nil {
+		return domain.Delegation{}, err
+	}
+	return s.enrich(ctx, d), nil
 }
 
 // List returns the caller's grants split by side.
@@ -78,6 +82,7 @@ func (s *DelegationService) List(ctx context.Context, userID string) (asPrincipa
 	}
 	asPrincipal, asAssistant = []domain.Delegation{}, []domain.Delegation{}
 	for _, d := range all {
+		d = s.enrich(ctx, d)
 		if d.PrincipalID == userID {
 			asPrincipal = append(asPrincipal, d)
 		}
@@ -100,7 +105,7 @@ func (s *DelegationService) Accept(ctx context.Context, assistantID, delegationI
 	}
 	switch d.Status {
 	case domain.DelegationActive:
-		return d, nil // idempotent
+		return s.enrich(ctx, d), nil // idempotent
 	case domain.DelegationRevoked:
 		return domain.Delegation{}, fmt.Errorf("%w: delegation was revoked", domain.ErrConflict)
 	}
@@ -110,7 +115,7 @@ func (s *DelegationService) Accept(ctx context.Context, assistantID, delegationI
 	if err := s.deps.Delegations.Update(ctx, d); err != nil {
 		return domain.Delegation{}, err
 	}
-	return d, nil
+	return s.enrich(ctx, d), nil
 }
 
 // Revoke terminates a grant. Either party may revoke; outsiders get
@@ -155,6 +160,27 @@ func (s *DelegationService) Authorize(ctx context.Context, assistantID, principa
 		return fmt.Errorf("%w: delegation does not grant scope %q", domain.ErrForbidden, scope)
 	}
 	return nil
+}
+
+// enrich resolves both parties' display identity (name + email) onto the
+// grant for responses. Least-leak: it is only ever applied to grants the
+// caller is a party to — both parties already share the delegation, so no
+// new information crosses a boundary. Lookup failures leave the fields
+// empty (never fabricated); clients fall back to the id.
+func (s *DelegationService) enrich(ctx context.Context, d domain.Delegation) domain.Delegation {
+	if p, err := s.deps.Users.GetByID(ctx, d.PrincipalID); err == nil {
+		if p.Name != nil {
+			d.PrincipalName = *p.Name
+		}
+		d.PrincipalEmail = p.Email
+	}
+	if a, err := s.deps.Users.GetByID(ctx, d.AssistantID); err == nil {
+		if a.Name != nil {
+			d.AssistantName = *a.Name
+		}
+		d.AssistantEmail = a.Email
+	}
+	return d
 }
 
 // RecordAudit persists an audit entry for a delegated mutation. Attribution

@@ -15,6 +15,7 @@ const getMeMock = vi.fn();
 const listTeamsMock = vi.fn();
 const listCommentsMock = vi.fn();
 const addCommentMock = vi.fn();
+const updateCommentMock = vi.fn();
 const deleteCommentMock = vi.fn();
 vi.mock('@/lib/api', () => ({
   getApiClient: () => ({
@@ -22,6 +23,7 @@ vi.mock('@/lib/api', () => ({
     listTeams: listTeamsMock,
     listComments: listCommentsMock,
     addComment: addCommentMock,
+    updateComment: updateCommentMock,
     deleteComment: deleteCommentMock,
   }),
 }));
@@ -54,8 +56,19 @@ const COMMENTS: Comment[] = [
     threadId: 'thr_1',
     teamId: 'team1',
     authorId: 'user_2',
+    authorName: 'Ada Lovelace',
     body: 'Thanks! Loop in @ada@example.com',
     mentions: ['user_3'],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'c3',
+    threadId: 'thr_1',
+    teamId: 'team1',
+    authorId: 'user_nameless_9',
+    body: 'No name on file for me',
+    mentions: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   },
@@ -91,6 +104,50 @@ describe('CommentsPanel', () => {
     expect(screen.getByText('Thanks! Loop in @ada@example.com')).toBeInTheDocument();
     expect(screen.getByText('You')).toBeInTheDocument();
     expect(listCommentsMock).toHaveBeenCalledWith('thr_1', 'team1');
+  });
+
+  it('shows server-resolved author names, truncated-id fallback when absent (F2)', async () => {
+    renderPanel();
+
+    expect(await screen.findByText('Ada Lovelace')).toBeInTheDocument();
+    // Honest fallback: no name from the server means the id, never a
+    // fabricated name (8-char truncation of user_nameless_9).
+    expect(screen.getByText('Teammate user_nam')).toBeInTheDocument();
+  });
+
+  it('edits your own comment inline via updateComment (author-only UI)', async () => {
+    const user = userEvent.setup();
+    updateCommentMock.mockResolvedValue({ ...COMMENTS[0]!, body: 'I can take this one today' });
+    renderPanel();
+
+    await screen.findByText('I can take this one');
+    // Only the own comment offers Edit.
+    const editButtons = screen.getAllByRole('button', { name: 'Edit comment' });
+    expect(editButtons).toHaveLength(1);
+
+    await user.click(editButtons[0]!);
+    const box = screen.getByLabelText('Edit comment body');
+    expect(box).toHaveValue('I can take this one');
+    await user.clear(box);
+    await user.type(box, 'I can take this one today');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(updateCommentMock).toHaveBeenCalledWith('c1', 'I can take this one today');
+    // The inline editor closes after a successful save.
+    await waitFor(() =>
+      expect(screen.queryByLabelText('Edit comment body')).not.toBeInTheDocument()
+    );
+  });
+
+  it('cancel closes the inline editor without calling the API', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await screen.findByText('I can take this one');
+    await user.click(screen.getByRole('button', { name: 'Edit comment' }));
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(updateCommentMock).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText('Edit comment body')).not.toBeInTheDocument();
   });
 
   it('posts a comment with the selected team and clears the box', async () => {

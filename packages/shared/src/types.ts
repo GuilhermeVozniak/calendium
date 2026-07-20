@@ -199,6 +199,18 @@ export interface Snippet {
   usageCount: number;
   /** Team scope (M2.7 team snippets): set = shared with that team's members; null/absent = personal. */
   teamId?: string | null;
+  /**
+   * The snippet's author (F2). Personal snippets only reach their owner and
+   * team snippets only reach that team's members, so this never crosses
+   * team scope.
+   */
+  authorId?: string;
+  /**
+   * Whether the REQUESTING user may edit/delete this snippet (author, or
+   * admin+ on team snippets). Computed server-side per request — exact
+   * parity with the server's authorization; the server still enforces.
+   */
+  canDelete?: boolean;
 }
 
 export type ThreadAction =
@@ -755,6 +767,13 @@ export interface TeamMember {
    */
   shareReadStatuses: boolean;
   joinedAt: string;
+  /**
+   * Display-identity enrichment (F2), resolved server-side ONLY on member
+   * rosters the caller can already see by membership. Empty when
+   * unresolvable — fall back to the id; nothing is fabricated.
+   */
+  name?: string;
+  email?: string;
 }
 
 /** Lifecycle of an email invitation. */
@@ -938,6 +957,11 @@ export interface Comment {
   mentions: string[];
   createdAt: string;
   updatedAt: string;
+  /**
+   * Author display identity (name, else email) resolved server-side within
+   * team scope (F2). Empty when unresolvable — fall back to the id.
+   */
+  authorName?: string;
 }
 
 /** Add-comment payload; mirrors port.CommentInput. */
@@ -981,6 +1005,15 @@ export interface Delegation {
   createdAt: string;
   acceptedAt: string | null;
   revokedAt: string | null;
+  /**
+   * Display-identity enrichment (F2): both parties already share the
+   * grant, so no new information leaks. Empty when unresolvable — fall
+   * back to the id; nothing is fabricated.
+   */
+  principalName?: string;
+  principalEmail?: string;
+  assistantName?: string;
+  assistantEmail?: string;
 }
 
 /** GET /v1/delegations — the caller's grants, split by side. */
@@ -1069,6 +1102,12 @@ export interface MemberAvailability {
   busy: AvailabilitySlot[];
   /** False = the member has not opted in by sharing a calendar with the team. */
   shared: boolean;
+  /**
+   * Display identity from the team roster (F2) — team scope only. Empty
+   * when unresolvable; fall back to the id.
+   */
+  name?: string;
+  email?: string;
 }
 
 // Declaration-merged augmentations (add-only): TypeScript merges these into

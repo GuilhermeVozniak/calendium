@@ -198,7 +198,8 @@ export function TeamAvailabilityDialog({
                       className="max-w-32 truncate px-2 py-2 text-left font-medium"
                       title={member.userId}
                     >
-                      {member.userId}
+                      {/* Server-resolved roster identity (F2); honest id fallback. */}
+                      {member.name || member.email || member.userId}
                     </th>
                     {member.shared ? (
                       GRID_HOURS.map((hour) => {

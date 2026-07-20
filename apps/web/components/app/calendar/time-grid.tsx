@@ -6,7 +6,13 @@ import { Check, X } from 'lucide-react';
 
 import type { Calendar as CalendarModel, DayForecast, Event, Task } from '@calendium/shared';
 
-import { hasTaskDrag, readTaskDragId, setTaskDragData, timeblockFromDrop } from '@/lib/task-drag';
+import {
+  GRID_HOUR_HEIGHT as HOUR_HEIGHT,
+  hasTaskDrag,
+  readTaskDragId,
+  setTaskDragData,
+  timeblockFromDrop,
+} from '@/lib/task-drag';
 import {
   decodeThreadDrag,
   hasThreadDrag,
@@ -22,8 +28,6 @@ import { WeatherChip } from './weather-chip';
 
 /** Event blocks at/above this height (px) have room for a second text row (time range + Join). */
 const JOIN_BUTTON_MIN_HEIGHT = 40;
-
-const HOUR_HEIGHT = 48; // px per hour in the time grid
 
 export function eventTouchesDay(event: Event, day: Date): boolean {
   return new Date(event.start) < endOfDay(day) && new Date(event.end) > startOfDay(day);

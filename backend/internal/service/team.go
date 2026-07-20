@@ -171,14 +171,18 @@ func (s *TeamService) SetMemberRole(ctx context.Context, userID, teamID, memberU
 	if err := s.ent.require(ctx, userID); err != nil {
 		return domain.TeamMember{}, err
 	}
-	if _, err := domain.ParseTeamRole(string(role)); err != nil {
-		return domain.TeamMember{}, err
-	}
+	// Membership before payload validation: a non-member probing with an
+	// invalid role must see the same 404 as any other non-member (no oracle
+	// distinguishing "team exists, bad payload" from "not yours") — M2.7
+	// review minor.
 	caller, err := membership(ctx, s.teams, userID, teamID)
 	if err != nil {
 		return domain.TeamMember{}, err
 	}
 	if err := requireRole(caller, domain.TeamRoleAdmin); err != nil {
+		return domain.TeamMember{}, err
+	}
+	if _, err := domain.ParseTeamRole(string(role)); err != nil {
 		return domain.TeamMember{}, err
 	}
 	var out domain.TeamMember
