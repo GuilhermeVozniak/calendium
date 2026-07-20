@@ -1800,6 +1800,8 @@ describe('ApiClient.actAs', () => {
         { status: 200, body: [] },
         { status: 200, body: [] },
         { status: 200, body: [] },
+        { status: 200, body: { bodyMd: '', links: [] } },
+        { status: 200, body: { bodyMd: 'x', links: [] } },
       ],
     });
     const acting = client.actAs('user_principal');
@@ -1809,7 +1811,10 @@ describe('ApiClient.actAs', () => {
     await acting.teamThreadActivity('t1');
     await acting.listSnippets();
     await acting.listCalendarShares('c1');
-    expect(calls.length).toBe(6);
+    // Event notes are private commentary: never delegated (M2.8 fix wave).
+    await acting.getEventNote('e1');
+    await acting.putEventNote('e1', 'x', []);
+    expect(calls.length).toBe(8);
     for (const call of calls) {
       expect(call.headers['X-Calendium-Act-As'], call.url).toBeUndefined();
     }
@@ -1860,6 +1865,7 @@ describe('isDelegablePath', () => {
       '/v1/mail/snippets/sn1',
       '/v1/calendars/c1/shares',
       '/v1/calendars/c1/shares/sh1',
+      '/v1/events/e1/note',
       '/v1/comments/cm1',
       '/v1/teams',
       '/v1/delegations',

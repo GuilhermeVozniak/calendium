@@ -1117,7 +1117,9 @@ export const ACT_AS_HEADER = 'X-Calendium-Act-As';
  * prefixes (thread shares, comments, team activity, snippets, calendar-share
  * management) are denied too — the backend 403s them under act-as (an
  * assistant must never mint share tokens or self-grant shares on the
- * principal's behalf), so the header is never attached there either.
+ * principal's behalf), so the header is never attached there either. Event
+ * notes (/v1/events/{id}/note) are equally denied: private commentary, not
+ * calendar data.
  */
 export function isDelegablePath(pathname: string): boolean {
   const path = pathname.split('?')[0] ?? pathname;
@@ -1125,7 +1127,8 @@ export function isDelegablePath(pathname: string): boolean {
     path === '/v1/mail/snippets' ||
     path.startsWith('/v1/mail/snippets/') ||
     /^\/v1\/mail\/threads\/[^/]+\/(share$|shares($|\/)|comments$|team-activity$)/.test(path) ||
-    /^\/v1\/calendars\/[^/]+\/shares($|\/)/.test(path)
+    /^\/v1\/calendars\/[^/]+\/shares($|\/)/.test(path) ||
+    /^\/v1\/events\/[^/]+\/note$/.test(path)
   ) {
     return false;
   }
