@@ -45,6 +45,7 @@ func planFocusWeek(
 	prefs domain.CalendarPrefs,
 	events []domain.Event,
 	managedFocusIDs map[string]bool,
+	pendingInviteIDs map[string]bool,
 ) focusPlan {
 	goal := time.Duration(prefs.FocusGoalMinutesPerWeek) * time.Minute
 	if goal <= 0 {
@@ -55,8 +56,12 @@ func planFocusWeek(
 		loc = time.UTC
 	}
 
-	// Partition: real busy intervals vs owned focus blocks.
+	// Partition: real busy intervals vs owned focus blocks. pendingInviteIDs
+	// (unanswered incoming invites) stay busy for gap planning — new blocks
+	// avoid them — but never evict an existing block: with FocusAutoDecline on,
+	// the decline pass answers them instead, so the block stands its ground.
 	var busy []span
+	var evict []span
 	var owned []domain.Event
 	for _, ev := range events {
 		if ev.Status == domain.EventCancelled || ev.AllDay {
@@ -67,13 +72,16 @@ func planFocusWeek(
 			continue
 		}
 		busy = append(busy, span{ev.Start, ev.End})
+		if !pendingInviteIDs[ev.ID] {
+			evict = append(evict, span{ev.Start, ev.End})
+		}
 	}
 	sort.Slice(busy, func(i, j int) bool { return busy[i].start.Before(busy[j].start) })
 
 	var plan focusPlan
 	var credit time.Duration
 	for _, f := range owned {
-		if overlapsAnySpan(f.Start, f.End, busy) {
+		if overlapsAnySpan(f.Start, f.End, evict) {
 			plan.remove = append(plan.remove, f.ID) // user booked over it
 			continue
 		}

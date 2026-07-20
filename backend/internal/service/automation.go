@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"calendium/backend/internal/domain"
@@ -15,6 +16,7 @@ import (
 // grows in Tasks 7, 8, 12, 14).
 type AutomationServiceDeps struct {
 	Prefs       port.CalendarPrefsRepo
+	Accounts    port.AccountRepo
 	Calendars   port.CalendarRepo
 	Events      port.EventRepo
 	Managed     port.ManagedEventRepo
@@ -29,6 +31,7 @@ type AutomationServiceDeps struct {
 // managed_events so re-runs only ever touch the engine's own blocks.
 type AutomationService struct {
 	prefs       port.CalendarPrefsRepo
+	accounts    port.AccountRepo
 	calendars   port.CalendarRepo
 	events      port.EventRepo
 	managed     port.ManagedEventRepo
@@ -45,6 +48,7 @@ func NewAutomationService(d AutomationServiceDeps) *AutomationService {
 	}
 	return &AutomationService{
 		prefs:       d.Prefs,
+		accounts:    d.Accounts,
 		calendars:   d.Calendars,
 		events:      d.Events,
 		managed:     d.Managed,
@@ -83,8 +87,13 @@ func (s *AutomationService) runUser(ctx context.Context, prefs domain.CalendarPr
 			return fmt.Errorf("focusguard: %w", err)
 		}
 	}
-	// Tasks 7, 8, 12, 14 add auto buffers, auto-decline, travel buffers,
-	// and ICS subscription refresh here.
+	if prefs.FocusAutoDecline || prefs.OOOAutoDecline {
+		if err := s.runAutoDecline(ctx, prefs); err != nil {
+			return fmt.Errorf("autodecline: %w", err)
+		}
+	}
+	// Tasks 8, 12, 14 add auto buffers, travel buffers, and ICS
+	// subscription refresh here.
 	return nil
 }
 
@@ -114,6 +123,10 @@ func (s *AutomationService) runFocusGuard(ctx context.Context, prefs domain.Cale
 	if target == nil {
 		return errors.New("no writable primary calendar")
 	}
+	emails, err := s.calendarEmails(ctx, cals)
+	if err != nil {
+		return err
+	}
 
 	managed, err := s.managed.ListByUser(ctx, prefs.UserID, domain.ManagedFocus)
 	if err != nil {
@@ -135,7 +148,15 @@ func (s *AutomationService) runFocusGuard(ctx context.Context, prefs domain.Cale
 		if err != nil {
 			return err
 		}
-		plan := planFocusWeek(now, ws, prefs, events, managedIDs)
+		// Declined invites hold no time (Availability's rule) — and must not
+		// evict focus blocks, or the auto-decline pass would be undone by the
+		// very next planning run.
+		events = filterDeclined(events, emails)
+		var pending map[string]bool
+		if prefs.FocusAutoDecline {
+			pending = pendingInvites(events, emails)
+		}
+		plan := planFocusWeek(now, ws, prefs, events, managedIDs, pending)
 		for _, id := range plan.remove {
 			// Provider-first (honesty policy): the tag is only forgotten
 			// once the real event is gone. ErrNotFound means it already is.
@@ -173,4 +194,170 @@ func startOfWeek(t time.Time, loc *time.Location) time.Time {
 	back := (int(t.Weekday()) + 6) % 7 // Monday-based weekday index
 	y, m, d := t.AddDate(0, 0, -back).Date()
 	return time.Date(y, m, d, 0, 0, 0, 0, loc)
+}
+
+// --- Auto-decline (M2.8 Task 7) ----------------------------------------------
+
+// defaultFocusDeclineMessage is sent with focus declines when the user has
+// not written their own message.
+const defaultFocusDeclineMessage = "Declined automatically: this time is held for focus work. Please pick another slot."
+
+// declineScanDays bounds the decline pass's look-ahead. Focus blocks only
+// exist for the current and next week; OOO periods further out are handled
+// by later runs as they enter the window.
+const declineScanDays = 28
+
+// oooDeclineMinLead: an already-accepted meeting inside an OOO period is only
+// auto-declined when it starts at least this far in the future — the engine
+// never silently no-shows a same-day commitment.
+const oooDeclineMinLead = 24 * time.Hour
+
+// runAutoDecline is the decline pass (runs after focus planning): pending
+// invites overlapping a managed focus block (FocusAutoDecline) or an OOO
+// period (OOOAutoDecline) are declined through CalendarService.RSVP with the
+// user's custom message — provider-first, so on provider failure the mirror
+// keeps saying needs_action and the next pass retries. Events the user
+// organizes or has already responded to are never touched; idempotency comes
+// from the RSVP state itself (declined attendees are never re-processed).
+func (s *AutomationService) runAutoDecline(ctx context.Context, prefs domain.CalendarPrefs) error {
+	now := s.clock.Now()
+	cals, err := s.calendars.ListByUser(ctx, prefs.UserID)
+	if err != nil {
+		return err
+	}
+	emails, err := s.calendarEmails(ctx, cals)
+	if err != nil {
+		return err
+	}
+	calendarIDs := make([]string, 0, len(cals))
+	for _, c := range cals {
+		calendarIDs = append(calendarIDs, c.ID)
+	}
+	events, err := s.events.ListInRange(ctx, prefs.UserID, now, now.AddDate(0, 0, declineScanDays), calendarIDs)
+	if err != nil {
+		return err
+	}
+	managedFocus, err := s.managed.ListByUser(ctx, prefs.UserID, domain.ManagedFocus)
+	if err != nil {
+		return err
+	}
+	managedIDs := make(map[string]bool, len(managedFocus))
+	for _, m := range managedFocus {
+		managedIDs[m.EventID] = true
+	}
+
+	// Protected periods. OOO periods are the user's own announcements — an
+	// incoming invite that merely mentions vacation in its title is not one.
+	var focusSpans, oooSpans []span
+	for _, ev := range events {
+		if ev.Status == domain.EventCancelled {
+			continue
+		}
+		if prefs.FocusAutoDecline && managedIDs[ev.ID] {
+			focusSpans = append(focusSpans, span{ev.Start, ev.End})
+		}
+		if prefs.OOOAutoDecline && domain.IsOOOEvent(ev) {
+			if self, ok := selfAttendee(ev, emails[ev.CalendarID]); !ok || self.Organizer {
+				oooSpans = append(oooSpans, span{ev.Start, ev.End})
+			}
+		}
+	}
+	if len(focusSpans) == 0 && len(oooSpans) == 0 {
+		return nil
+	}
+
+	var errs []error
+	for _, ev := range events {
+		if ev.Status == domain.EventCancelled || managedIDs[ev.ID] {
+			continue
+		}
+		self, ok := selfAttendee(ev, emails[ev.CalendarID])
+		if !ok || self.Organizer {
+			continue // not an incoming invite: never decline the user's own events
+		}
+		var message string
+		switch {
+		case self.Response == domain.RsvpNeedsAction &&
+			overlapsAnySpan(ev.Start, ev.End, focusSpans):
+			message = prefs.FocusDeclineMessage
+			if message == "" {
+				message = defaultFocusDeclineMessage
+			}
+		case self.Response == domain.RsvpNeedsAction &&
+			overlapsAnySpan(ev.Start, ev.End, oooSpans):
+			message = prefs.OOODeclineMessage
+		case self.Response == domain.RsvpAccepted && prefs.OOODeclineMessage != "" &&
+			!ev.Start.Before(now.Add(oooDeclineMinLead)) &&
+			overlapsAnySpan(ev.Start, ev.End, oooSpans):
+			// An accepted meeting inside a (new) OOO period: declined only
+			// with an explicit message and ≥24h of notice.
+			message = prefs.OOODeclineMessage
+		default:
+			continue
+		}
+		// Provider-first honesty: on failure nothing local changes; log,
+		// continue with the other events, and let the next pass retry.
+		if _, err := s.calendarSvc.RSVP(ctx, prefs.UserID, ev.ID, domain.RsvpDeclined, message); err != nil {
+			errs = append(errs, fmt.Errorf("decline event %s: %w", ev.ID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// calendarEmails resolves each calendar to its connected account's email —
+// the identity the user appears under in that calendar's attendee lists.
+func (s *AutomationService) calendarEmails(ctx context.Context, cals []domain.Calendar) (map[string]string, error) {
+	byAccount := map[string]string{}
+	out := make(map[string]string, len(cals))
+	for _, c := range cals {
+		email, ok := byAccount[c.AccountID]
+		if !ok {
+			acct, err := s.accounts.GetByID(ctx, c.AccountID)
+			if err != nil {
+				return nil, fmt.Errorf("resolve account %s: %w", c.AccountID, err)
+			}
+			email = acct.Email
+			byAccount[c.AccountID] = email
+		}
+		out[c.ID] = email
+	}
+	return out, nil
+}
+
+// selfAttendee returns the user's own attendee entry on ev, matched by the
+// owning account's email.
+func selfAttendee(ev domain.Event, email string) (domain.Attendee, bool) {
+	if email == "" {
+		return domain.Attendee{}, false
+	}
+	for _, a := range ev.Attendees {
+		if strings.EqualFold(a.Email, email) {
+			return a, true
+		}
+	}
+	return domain.Attendee{}, false
+}
+
+// filterDeclined drops invites the user has declined.
+func filterDeclined(events []domain.Event, emails map[string]string) []domain.Event {
+	out := events[:0]
+	for _, ev := range events {
+		if self, ok := selfAttendee(ev, emails[ev.CalendarID]); ok && !self.Organizer && self.Response == domain.RsvpDeclined {
+			continue
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
+// pendingInvites identifies unanswered incoming invites — events where the
+// user's own entry is needs_action and someone else organizes.
+func pendingInvites(events []domain.Event, emails map[string]string) map[string]bool {
+	out := map[string]bool{}
+	for _, ev := range events {
+		if self, ok := selfAttendee(ev, emails[ev.CalendarID]); ok && !self.Organizer && self.Response == domain.RsvpNeedsAction {
+			out[ev.ID] = true
+		}
+	}
+	return out
 }

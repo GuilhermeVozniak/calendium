@@ -330,7 +330,7 @@ func TestClient_RSVP_Accepted(t *testing.T) {
 		}
 	})
 
-	if err := c.RSVP(context.Background(), "tok", "primary", "evt1", domain.RsvpAccepted); err != nil {
+	if err := c.RSVP(context.Background(), "tok", "primary", "evt1", domain.RsvpAccepted, ""); err != nil {
 		t.Fatalf("RSVP: %v", err)
 	}
 	if !sawPatch {
@@ -344,6 +344,45 @@ func TestClient_RSVP_Accepted(t *testing.T) {
 	if !ok || self["email"] != "me@x.com" || self["responseStatus"] != "accepted" {
 		t.Errorf("self attendee = %v, want accepted", attendees[1])
 	}
+	if _, has := self["comment"]; has {
+		t.Errorf("comment key present on an empty-comment RSVP: %v", self)
+	}
+}
+
+func TestRSVPSendsComment(t *testing.T) {
+	var gotPatchBody map[string]any
+	_, c := newGoogleServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			io.WriteString(w, `{"id":"evt1","attendees":[
+				{"email":"other@x.com"},
+				{"email":"me@x.com","self":true,"responseStatus":"needsAction"}
+			]}`)
+		case http.MethodPatch:
+			gotPatchBody = decodeBody(t, r)
+		default:
+			t.Errorf("unexpected method %q", r.Method)
+		}
+	})
+
+	if err := c.RSVP(context.Background(), "tok", "primary", "evt1", domain.RsvpDeclined, "On PTO until Monday."); err != nil {
+		t.Fatalf("RSVP: %v", err)
+	}
+	attendees, ok := gotPatchBody["attendees"].([]any)
+	if !ok || len(attendees) != 2 {
+		t.Fatalf("attendees = %v, want 2 entries", gotPatchBody["attendees"])
+	}
+	self, ok := attendees[1].(map[string]any)
+	if !ok || self["responseStatus"] != "declined" || self["comment"] != "On PTO until Monday." {
+		t.Errorf("self attendee = %v, want declined with comment", attendees[1])
+	}
+	other, ok := attendees[0].(map[string]any)
+	if !ok {
+		t.Fatalf("other attendee = %v", attendees[0])
+	}
+	if _, has := other["comment"]; has {
+		t.Errorf("comment leaked onto another attendee: %v", other)
+	}
 }
 
 func TestClient_RSVP_NoSelfAttendee(t *testing.T) {
@@ -354,7 +393,7 @@ func TestClient_RSVP_NoSelfAttendee(t *testing.T) {
 		io.WriteString(w, `{"id":"evt1","attendees":[{"email":"other@x.com"}]}`)
 	})
 
-	err := c.RSVP(context.Background(), "tok", "primary", "evt1", domain.RsvpAccepted)
+	err := c.RSVP(context.Background(), "tok", "primary", "evt1", domain.RsvpAccepted, "")
 	if !errors.Is(err, domain.ErrValidation) {
 		t.Fatalf("err = %v, want ErrValidation", err)
 	}

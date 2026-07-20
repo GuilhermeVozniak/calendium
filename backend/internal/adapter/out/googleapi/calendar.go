@@ -215,7 +215,7 @@ func (c *Client) DeleteEvent(ctx context.Context, accessToken, providerCalendarI
 
 // RSVP patches the caller's attendee responseStatus (Google models RSVP as
 // an attendee-list update, so the current list is fetched first).
-func (c *Client) RSVP(ctx context.Context, accessToken, providerCalendarID, providerEventID string, response domain.RsvpStatus) error {
+func (c *Client) RSVP(ctx context.Context, accessToken, providerCalendarID, providerEventID string, response domain.RsvpStatus, comment string) error {
 	endpoint := calendarBase + "/calendars/" + url.PathEscape(providerCalendarID) + "/events/" + url.PathEscape(providerEventID)
 	var ev gcalEvent
 	if err := c.doJSON(ctx, http.MethodGet, endpoint, accessToken, nil, &ev); err != nil {
@@ -225,6 +225,9 @@ func (c *Client) RSVP(ctx context.Context, accessToken, providerCalendarID, prov
 	for i := range ev.Attendees {
 		if ev.Attendees[i].Self {
 			ev.Attendees[i].ResponseStatus = gcalResponseStatus(response)
+			if comment != "" {
+				ev.Attendees[i].Comment = comment
+			}
 			found = true
 		}
 	}
@@ -329,6 +332,7 @@ type gcalAttendee struct {
 	Email          string `json:"email"`
 	DisplayName    string `json:"displayName,omitempty"`
 	ResponseStatus string `json:"responseStatus,omitempty"`
+	Comment        string `json:"comment,omitempty"`
 	Organizer      bool   `json:"organizer,omitempty"`
 	Optional       bool   `json:"optional,omitempty"`
 	Self           bool   `json:"self,omitempty"`

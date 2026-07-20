@@ -208,6 +208,7 @@ func run(logger *slog.Logger) error {
 	})
 	autoSvc := service.NewAutomationService(service.AutomationServiceDeps{
 		Prefs:       store.CalendarPrefs(),
+		Accounts:    store.Accounts(),
 		Calendars:   store.Calendars(),
 		Events:      store.Events(),
 		Managed:     store.ManagedEvents(),

@@ -79,7 +79,7 @@ func TestPlanFocusWeekEmptyWeekFillsGoalWithMaxBlocks(t *testing.T) {
 	prefs := fgPrefs("UTC", 8*60)
 	now := fgWeek.Add(-time.Hour)
 
-	plan := planFocusWeek(now, fgWeek, prefs, nil, nil)
+	plan := planFocusWeek(now, fgWeek, prefs, nil, nil, nil)
 
 	if len(plan.remove) != 0 {
 		t.Fatalf("remove = %v, want none", plan.remove)
@@ -104,7 +104,7 @@ func TestPlanFocusWeekPlacesAroundMeetings(t *testing.T) {
 		fgEvent("m5", fgDay(4, 9, 0), fgDay(4, 17, 0)),
 	}
 
-	plan := planFocusWeek(now, fgWeek, prefs, events, nil)
+	plan := planFocusWeek(now, fgWeek, prefs, events, nil, nil)
 
 	if len(plan.create) != 1 {
 		t.Fatalf("created %d blocks, want 1: %+v", len(plan.create), plan.create)
@@ -121,7 +121,7 @@ func TestPlanFocusWeekGoalMetBySurvivingBlocks(t *testing.T) {
 	events := []domain.Event{fgEvent("f1", fgDay(2, 9, 0), fgDay(2, 11, 0))}
 	managed := map[string]bool{"f1": true}
 
-	plan := planFocusWeek(now, fgWeek, prefs, events, managed)
+	plan := planFocusWeek(now, fgWeek, prefs, events, managed, nil)
 
 	if len(plan.create) != 0 || len(plan.remove) != 0 {
 		t.Fatalf("plan = %+v, want empty (goal already met)", plan)
@@ -137,7 +137,7 @@ func TestPlanFocusWeekOwnedBlockOverbookedIsRemovedAndRefilled(t *testing.T) {
 	}
 	managed := map[string]bool{"f1": true}
 
-	plan := planFocusWeek(now, fgWeek, prefs, events, managed)
+	plan := planFocusWeek(now, fgWeek, prefs, events, managed, nil)
 
 	if len(plan.remove) != 1 || plan.remove[0] != "f1" {
 		t.Fatalf("remove = %v, want [f1] — the meeting wins, never the reverse", plan.remove)
@@ -155,7 +155,7 @@ func TestPlanFocusWeekNeverRemovesUserEvents(t *testing.T) {
 	// A user event sitting exactly where a would-be focus block would start.
 	events := []domain.Event{fgEvent("user1", fgDay(0, 9, 0), fgDay(0, 12, 0))}
 
-	plan := planFocusWeek(now, fgWeek, prefs, events, nil)
+	plan := planFocusWeek(now, fgWeek, prefs, events, nil, nil)
 
 	if len(plan.remove) != 0 {
 		t.Fatalf("remove = %v — the planner must never touch user events", plan.remove)
@@ -168,7 +168,7 @@ func TestPlanFocusWeekMidWeekNowNeverPlansInThePast(t *testing.T) {
 	now := fgDay(2, 16, 0) // Wednesday 16:00
 	earliest := now.Add(focusLeadTime)
 
-	plan := planFocusWeek(now, fgWeek, prefs, nil, nil)
+	plan := planFocusWeek(now, fgWeek, prefs, nil, nil, nil)
 
 	if len(plan.create) != 2 || totalCreated(plan) != 6*time.Hour {
 		t.Fatalf("plan = %+v, want two 3h blocks (Thu+Fri)", plan.create)
@@ -185,7 +185,7 @@ func TestPlanFocusWeekSkipsNonWorkdays(t *testing.T) {
 	prefs.WorkDays = []time.Weekday{time.Tuesday}
 	now := fgWeek.Add(-time.Hour)
 
-	plan := planFocusWeek(now, fgWeek, prefs, nil, nil)
+	plan := planFocusWeek(now, fgWeek, prefs, nil, nil, nil)
 
 	if len(plan.create) != 1 {
 		t.Fatalf("created %d blocks, want 1 (one gap, one block)", len(plan.create))
@@ -204,7 +204,7 @@ func TestPlanFocusWeekIgnoresGapsUnderMinBlock(t *testing.T) {
 		events = append(events, fgEvent("m"+string(rune('a'+d)), fgDay(d, 9, 0), fgDay(d, 16, 15)))
 	}
 
-	plan := planFocusWeek(now, fgWeek, prefs, events, nil)
+	plan := planFocusWeek(now, fgWeek, prefs, events, nil, nil)
 
 	if len(plan.create) != 0 {
 		t.Fatalf("create = %+v, want none (all gaps under 1h)", plan.create)
@@ -215,7 +215,7 @@ func TestPlanFocusWeekRemainingGoalRoundsToQuarterHour(t *testing.T) {
 	prefs := fgPrefs("UTC", 70)
 	now := fgWeek.Add(-time.Hour)
 
-	plan := planFocusWeek(now, fgWeek, prefs, nil, nil)
+	plan := planFocusWeek(now, fgWeek, prefs, nil, nil, nil)
 
 	if len(plan.create) != 1 {
 		t.Fatalf("created %d blocks, want 1", len(plan.create))
@@ -234,7 +234,7 @@ func TestPlanFocusWeekIgnoresCancelledAndAllDayEvents(t *testing.T) {
 	allDay.AllDay = true
 	events := []domain.Event{cancelled, allDay}
 
-	plan := planFocusWeek(now, fgWeek, prefs, events, nil)
+	plan := planFocusWeek(now, fgWeek, prefs, events, nil, nil)
 
 	if len(plan.create) != 1 || totalCreated(plan) != time.Hour {
 		t.Fatalf("plan = %+v, want one 1h block (cancelled/all-day must not block)", plan.create)
@@ -269,7 +269,7 @@ func TestPlanFocusWeekDSTTransition(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now := tc.weekStart.Add(-time.Hour)
-			plan := planFocusWeek(now, tc.weekStart, prefs, nil, nil)
+			plan := planFocusWeek(now, tc.weekStart, prefs, nil, nil, nil)
 			if len(plan.create) != 1 {
 				t.Fatalf("created %d blocks, want 1", len(plan.create))
 			}

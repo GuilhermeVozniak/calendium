@@ -96,6 +96,7 @@ func (s *server) handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleRsvp(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Response string `json:"response"`
+		Comment  string `json:"comment"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
 		s.writeError(w, r, err)
@@ -106,7 +107,7 @@ func (s *server) handleRsvp(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	event, err := s.deps.Calendars.RSVP(r.Context(), userFrom(r).ID, r.PathValue("id"), response)
+	event, err := s.deps.Calendars.RSVP(r.Context(), userFrom(r).ID, r.PathValue("id"), response, in.Comment)
 	if err != nil {
 		s.writeError(w, r, err)
 		return

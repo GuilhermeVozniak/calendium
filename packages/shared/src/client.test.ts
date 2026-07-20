@@ -810,6 +810,13 @@ const methodCases: MethodCase[] = [
     path: '/v1/events/e1/rsvp',
     body: { response: 'accepted' },
   },
+  {
+    name: 'rsvp with comment',
+    call: (c) => c.rsvp('e1', 'declined', 'Out of office this week.'),
+    method: 'POST',
+    path: '/v1/events/e1/rsvp',
+    body: { response: 'declined', comment: 'Out of office this week.' },
+  },
 
   // --- AI ---
   {

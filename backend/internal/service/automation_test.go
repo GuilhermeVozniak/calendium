@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,6 +81,14 @@ type automationCalendarStub struct {
 	failUsers  map[string]bool
 	created    int
 	deletedIDs []string
+	rsvpErr    error
+	rsvpCalls  []stubRsvpCall
+}
+
+type stubRsvpCall struct {
+	userID, eventID string
+	response        domain.RsvpStatus
+	comment         string
 }
 
 func (c *automationCalendarStub) CreateEvent(ctx context.Context, userID string, in domain.EventInput) (domain.Event, error) {
@@ -107,6 +116,37 @@ func (c *automationCalendarStub) DeleteEvent(ctx context.Context, userID, eventI
 	}
 	c.deletedIDs = append(c.deletedIDs, eventID)
 	return c.events.Delete(ctx, eventID)
+}
+
+// RSVP mirrors the real service's provider-first path: on failure nothing
+// local changes; on success the mirror attendee matching the owning
+// account's email is updated.
+func (c *automationCalendarStub) RSVP(ctx context.Context, userID, eventID string, response domain.RsvpStatus, comment string) (domain.Event, error) {
+	if c.failUsers[userID] {
+		return domain.Event{}, errors.New("provider down")
+	}
+	if c.rsvpErr != nil {
+		return domain.Event{}, c.rsvpErr
+	}
+	ev, ok := c.events.byID[eventID]
+	if !ok {
+		return domain.Event{}, domain.ErrNotFound
+	}
+	cal, ok := c.events.calendars.byID[ev.CalendarID]
+	if !ok {
+		return domain.Event{}, domain.ErrNotFound
+	}
+	acct, ok := c.events.accounts.byID[cal.AccountID]
+	if !ok {
+		return domain.Event{}, domain.ErrNotFound
+	}
+	for i := range ev.Attendees {
+		if strings.EqualFold(ev.Attendees[i].Email, acct.Email) {
+			ev.Attendees[i].Response = response
+		}
+	}
+	c.rsvpCalls = append(c.rsvpCalls, stubRsvpCall{userID, eventID, response, comment})
+	return c.events.Upsert(ctx, ev)
 }
 
 // --- fixture -----------------------------------------------------------------
@@ -138,6 +178,7 @@ func newAutomationFixture() *automationFixture {
 	clock := newClock(autoMonday.Add(7 * time.Hour))
 	svc := NewAutomationService(AutomationServiceDeps{
 		Prefs:       prefs,
+		Accounts:    accts,
 		Calendars:   cals,
 		Events:      events,
 		Managed:     managed,
@@ -177,6 +218,55 @@ func (f *automationFixture) addUser(t *testing.T, userID string, mutate func(*do
 func (f *automationFixture) managedForUser(userID string) []domain.ManagedEvent {
 	out, _ := f.managed.ListByUser(context.Background(), userID, domain.ManagedFocus)
 	return out
+}
+
+// focusBlockEvent returns the mirrored focus-block event tagged for week
+// (yyyy-mm-dd).
+func (f *automationFixture) focusBlockEvent(t *testing.T, userID, week string) domain.Event {
+	t.Helper()
+	for _, m := range f.managedForUser(userID) {
+		if m.WeekStart != nil && m.WeekStart.Format("2006-01-02") == week {
+			ev, err := f.events.GetByID(context.Background(), m.EventID)
+			if err != nil {
+				t.Fatalf("focus block mirror: %v", err)
+			}
+			return ev
+		}
+	}
+	t.Fatalf("no focus block for week %s", week)
+	return domain.Event{}
+}
+
+// seedInvite stores a mirrored two-attendee event. The fixture user's entry
+// carries response; selfOrganizes flips who runs the meeting.
+func seedInvite(t *testing.T, f *automationFixture, calID, id, title string, start, end time.Time, userID string, response domain.RsvpStatus, selfOrganizes bool) domain.Event {
+	t.Helper()
+	other := domain.Attendee{Email: "boss@example.com", Response: domain.RsvpAccepted, Organizer: !selfOrganizes}
+	self := domain.Attendee{Email: userID + "@example.com", Response: response, Organizer: selfOrganizes}
+	ev, err := f.events.Upsert(context.Background(), domain.Event{
+		ID: id, CalendarID: calID, ProviderEventID: "p-" + id, Title: title,
+		Start: start, End: end, Status: domain.EventConfirmed,
+		Attendees: []domain.Attendee{other, self},
+	})
+	if err != nil {
+		t.Fatalf("seed invite %s: %v", id, err)
+	}
+	return ev
+}
+
+func (f *automationFixture) attendeeResponse(t *testing.T, eventID, email string) domain.RsvpStatus {
+	t.Helper()
+	ev, err := f.events.GetByID(context.Background(), eventID)
+	if err != nil {
+		t.Fatalf("event %s: %v", eventID, err)
+	}
+	for _, a := range ev.Attendees {
+		if strings.EqualFold(a.Email, email) {
+			return a.Response
+		}
+	}
+	t.Fatalf("no attendee %s on %s", email, eventID)
+	return ""
 }
 
 // --- tests -------------------------------------------------------------------
@@ -378,6 +468,247 @@ func TestRunAutomationUserWithoutWritablePrimaryIsSkipped(t *testing.T) {
 	if got := len(f.managedForUser("u_ok")); got != 2 {
 		t.Fatalf("u_ok managed blocks = %d, want 2", got)
 	}
+}
+
+// --- auto-decline (Task 7) ---------------------------------------------------
+
+func TestFocusAutoDecline(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("pending invite overlapping a focus block is declined with the default message", func(t *testing.T) {
+		f := newAutomationFixture()
+		cal := f.addUser(t, "u1", func(p *domain.CalendarPrefs) {
+			p.FocusGoalMinutesPerWeek = 120
+			p.FocusAutoDecline = true
+		})
+		if err := f.svc.RunAutomation(ctx); err != nil {
+			t.Fatalf("first run: %v", err)
+		}
+		block := f.focusBlockEvent(t, "u1", "2026-07-20")
+		seedInvite(t, f, cal.ID, "inv-pending", "1:1 catch-up", block.Start, block.End, "u1", domain.RsvpNeedsAction, false)
+		seedInvite(t, f, cal.ID, "inv-answered", "Old invite", block.Start, block.End, "u1", domain.RsvpDeclined, false)
+
+		if err := f.svc.RunAutomation(ctx); err != nil {
+			t.Fatalf("second run: %v", err)
+		}
+
+		if len(f.calSvc.rsvpCalls) != 1 {
+			t.Fatalf("rsvpCalls = %+v, want exactly the pending invite", f.calSvc.rsvpCalls)
+		}
+		call := f.calSvc.rsvpCalls[0]
+		if call.eventID != "inv-pending" || call.response != domain.RsvpDeclined {
+			t.Fatalf("call = %+v, want inv-pending declined", call)
+		}
+		if call.comment != defaultFocusDeclineMessage {
+			t.Fatalf("comment = %q, want the default focus message", call.comment)
+		}
+		if got := f.attendeeResponse(t, "inv-pending", "u1@example.com"); got != domain.RsvpDeclined {
+			t.Fatalf("mirror response = %q, want declined", got)
+		}
+		// The defended block survives: a pending invite must not evict it.
+		if _, err := f.managed.GetByEventID(ctx, block.ID); err != nil {
+			t.Fatalf("focus block was evicted by the pending invite: %v", err)
+		}
+
+		// Idempotent: a third run declines nothing new.
+		if err := f.svc.RunAutomation(ctx); err != nil {
+			t.Fatalf("third run: %v", err)
+		}
+		if len(f.calSvc.rsvpCalls) != 1 {
+			t.Fatalf("third run re-declined: %+v", f.calSvc.rsvpCalls)
+		}
+	})
+
+	t.Run("an event the user organizes is never declined", func(t *testing.T) {
+		f := newAutomationFixture()
+		cal := f.addUser(t, "u1", func(p *domain.CalendarPrefs) {
+			p.FocusGoalMinutesPerWeek = 120
+			p.FocusAutoDecline = true
+		})
+		if err := f.svc.RunAutomation(ctx); err != nil {
+			t.Fatalf("first run: %v", err)
+		}
+		block := f.focusBlockEvent(t, "u1", "2026-07-20")
+		// The user's own meeting over the block: Task 6's rule applies (the
+		// booking wins, the block replans) — but it must never be declined.
+		seedInvite(t, f, cal.ID, "inv-mine", "My own sync", block.Start, block.End, "u1", domain.RsvpNeedsAction, true)
+		if err := f.svc.RunAutomation(ctx); err != nil {
+			t.Fatalf("second run: %v", err)
+		}
+		if len(f.calSvc.rsvpCalls) != 0 {
+			t.Fatalf("rsvpCalls = %+v, want none for the user's own meeting", f.calSvc.rsvpCalls)
+		}
+		if got := f.attendeeResponse(t, "inv-mine", "u1@example.com"); got != domain.RsvpNeedsAction {
+			t.Fatalf("organized event was touched: %q", got)
+		}
+	})
+
+	t.Run("custom focus message is used verbatim", func(t *testing.T) {
+		f := newAutomationFixture()
+		cal := f.addUser(t, "u1", func(p *domain.CalendarPrefs) {
+			p.FocusGoalMinutesPerWeek = 120
+			p.FocusAutoDecline = true
+			p.FocusDeclineMessage = "Deep work — please pick another slot."
+		})
+		if err := f.svc.RunAutomation(ctx); err != nil {
+			t.Fatalf("first run: %v", err)
+		}
+		block := f.focusBlockEvent(t, "u1", "2026-07-20")
+		seedInvite(t, f, cal.ID, "inv-pending", "1:1", block.Start, block.End, "u1", domain.RsvpNeedsAction, false)
+		if err := f.svc.RunAutomation(ctx); err != nil {
+			t.Fatalf("second run: %v", err)
+		}
+		if len(f.calSvc.rsvpCalls) != 1 || f.calSvc.rsvpCalls[0].comment != "Deep work — please pick another slot." {
+			t.Fatalf("rsvpCalls = %+v, want the custom message", f.calSvc.rsvpCalls)
+		}
+	})
+
+	t.Run("toggle off declines nothing", func(t *testing.T) {
+		f := newAutomationFixture()
+		cal := f.addUser(t, "u1", func(p *domain.CalendarPrefs) {
+			p.FocusGoalMinutesPerWeek = 120 // FocusAutoDecline stays false
+		})
+		if err := f.svc.RunAutomation(ctx); err != nil {
+			t.Fatalf("first run: %v", err)
+		}
+		block := f.focusBlockEvent(t, "u1", "2026-07-20")
+		seedInvite(t, f, cal.ID, "inv-pending", "1:1", block.Start, block.End, "u1", domain.RsvpNeedsAction, false)
+		if err := f.svc.RunAutomation(ctx); err != nil {
+			t.Fatalf("second run: %v", err)
+		}
+		if len(f.calSvc.rsvpCalls) != 0 {
+			t.Fatalf("rsvpCalls = %+v, want none with FocusAutoDecline off", f.calSvc.rsvpCalls)
+		}
+	})
+}
+
+func TestOOOAutoDecline(t *testing.T) {
+	ctx := context.Background()
+
+	// seedOOO stores the user's own OOO announcement (no attendees).
+	seedOOO := func(t *testing.T, f *automationFixture, calID string, start, end time.Time) {
+		t.Helper()
+		if _, err := f.events.Upsert(ctx, domain.Event{
+			ID: "ooo", CalendarID: calID, ProviderEventID: "p-ooo",
+			Title: "Out of office — Lisbon", AllDay: true,
+			Start: start, End: end, Status: domain.EventConfirmed,
+		}); err != nil {
+			t.Fatalf("seed ooo: %v", err)
+		}
+	}
+
+	t.Run("pending and future-accepted invites inside OOO are declined with the message", func(t *testing.T) {
+		f := newAutomationFixture()
+		cal := f.addUser(t, "u1", func(p *domain.CalendarPrefs) {
+			p.OOOAutoDecline = true
+			p.OOODeclineMessage = "I'm out of office this week."
+		})
+		seedOOO(t, f, cal.ID, autoMonday, autoMonday.AddDate(0, 0, 5))
+		day := func(d, h int) time.Time { return autoMonday.AddDate(0, 0, d).Add(time.Duration(h) * time.Hour) }
+		// Clock is Monday 07:00. Tuesday/Wednesday are ≥24h out; Monday 10:00 is not.
+		seedInvite(t, f, cal.ID, "inv-pending", "Design review", day(1, 10), day(1, 11), "u1", domain.RsvpNeedsAction, false)
+		seedInvite(t, f, cal.ID, "inv-accepted", "Roadmap sync", day(2, 10), day(2, 11), "u1", domain.RsvpAccepted, false)
+		seedInvite(t, f, cal.ID, "inv-today", "Same-day standup", day(0, 10), day(0, 11), "u1", domain.RsvpAccepted, false)
+		seedInvite(t, f, cal.ID, "inv-mine", "My own kick-off", day(1, 14), day(1, 15), "u1", domain.RsvpNeedsAction, true)
+
+		if err := f.svc.RunAutomation(ctx); err != nil {
+			t.Fatalf("RunAutomation: %v", err)
+		}
+
+		declined := map[string]string{}
+		for _, c := range f.calSvc.rsvpCalls {
+			if c.response != domain.RsvpDeclined {
+				t.Fatalf("non-decline rsvp: %+v", c)
+			}
+			declined[c.eventID] = c.comment
+		}
+		if len(declined) != 2 || declined["inv-pending"] != "I'm out of office this week." || declined["inv-accepted"] != "I'm out of office this week." {
+			t.Fatalf("declined = %v, want inv-pending and inv-accepted with the message", declined)
+		}
+		if got := f.attendeeResponse(t, "inv-today", "u1@example.com"); got != domain.RsvpAccepted {
+			t.Fatalf("same-day accepted meeting touched: %q", got)
+		}
+		if got := f.attendeeResponse(t, "inv-mine", "u1@example.com"); got != domain.RsvpNeedsAction {
+			t.Fatalf("organized event touched: %q", got)
+		}
+
+		// Idempotent: nothing new on the next run.
+		if err := f.svc.RunAutomation(ctx); err != nil {
+			t.Fatalf("second run: %v", err)
+		}
+		if len(f.calSvc.rsvpCalls) != 2 {
+			t.Fatalf("second run re-declined: %+v", f.calSvc.rsvpCalls)
+		}
+	})
+
+	t.Run("without a custom message accepted meetings are untouched, pending still declined", func(t *testing.T) {
+		f := newAutomationFixture()
+		cal := f.addUser(t, "u1", func(p *domain.CalendarPrefs) {
+			p.OOOAutoDecline = true // OOODeclineMessage stays ""
+		})
+		seedOOO(t, f, cal.ID, autoMonday, autoMonday.AddDate(0, 0, 5))
+		day := func(d, h int) time.Time { return autoMonday.AddDate(0, 0, d).Add(time.Duration(h) * time.Hour) }
+		seedInvite(t, f, cal.ID, "inv-pending", "Design review", day(1, 10), day(1, 11), "u1", domain.RsvpNeedsAction, false)
+		seedInvite(t, f, cal.ID, "inv-accepted", "Roadmap sync", day(2, 10), day(2, 11), "u1", domain.RsvpAccepted, false)
+
+		if err := f.svc.RunAutomation(ctx); err != nil {
+			t.Fatalf("RunAutomation: %v", err)
+		}
+		if len(f.calSvc.rsvpCalls) != 1 || f.calSvc.rsvpCalls[0].eventID != "inv-pending" || f.calSvc.rsvpCalls[0].comment != "" {
+			t.Fatalf("rsvpCalls = %+v, want only the pending invite with an empty comment", f.calSvc.rsvpCalls)
+		}
+		if got := f.attendeeResponse(t, "inv-accepted", "u1@example.com"); got != domain.RsvpAccepted {
+			t.Fatalf("accepted meeting declined without a message: %q", got)
+		}
+	})
+
+	t.Run("provider failure leaves the mirror untouched, next run retries", func(t *testing.T) {
+		f := newAutomationFixture()
+		cal := f.addUser(t, "u1", func(p *domain.CalendarPrefs) {
+			p.OOOAutoDecline = true
+			p.OOODeclineMessage = "Away."
+		})
+		seedOOO(t, f, cal.ID, autoMonday, autoMonday.AddDate(0, 0, 5))
+		day := func(d, h int) time.Time { return autoMonday.AddDate(0, 0, d).Add(time.Duration(h) * time.Hour) }
+		seedInvite(t, f, cal.ID, "inv-pending", "Design review", day(1, 10), day(1, 11), "u1", domain.RsvpNeedsAction, false)
+
+		f.calSvc.rsvpErr = errors.New("provider down")
+		if err := f.svc.RunAutomation(ctx); err != nil {
+			t.Fatalf("RunAutomation must not fail the fleet: %v", err)
+		}
+		if len(f.calSvc.rsvpCalls) != 0 {
+			t.Fatalf("rsvp recorded despite failure: %+v", f.calSvc.rsvpCalls)
+		}
+		if got := f.attendeeResponse(t, "inv-pending", "u1@example.com"); got != domain.RsvpNeedsAction {
+			t.Fatalf("mirror changed on provider failure: %q", got)
+		}
+
+		f.calSvc.rsvpErr = nil
+		if err := f.svc.RunAutomation(ctx); err != nil {
+			t.Fatalf("retry run: %v", err)
+		}
+		if got := f.attendeeResponse(t, "inv-pending", "u1@example.com"); got != domain.RsvpDeclined {
+			t.Fatalf("retry did not decline: %q", got)
+		}
+	})
+
+	t.Run("toggle off declines nothing", func(t *testing.T) {
+		f := newAutomationFixture()
+		cal := f.addUser(t, "u1", func(p *domain.CalendarPrefs) {
+			p.WeatherEnabled = true // stays in ListAutomated; OOOAutoDecline off
+			p.OOODeclineMessage = "Away."
+		})
+		seedOOO(t, f, cal.ID, autoMonday, autoMonday.AddDate(0, 0, 5))
+		day := func(d, h int) time.Time { return autoMonday.AddDate(0, 0, d).Add(time.Duration(h) * time.Hour) }
+		seedInvite(t, f, cal.ID, "inv-pending", "Design review", day(1, 10), day(1, 11), "u1", domain.RsvpNeedsAction, false)
+
+		if err := f.svc.RunAutomation(ctx); err != nil {
+			t.Fatalf("RunAutomation: %v", err)
+		}
+		if len(f.calSvc.rsvpCalls) != 0 {
+			t.Fatalf("rsvpCalls = %+v, want none with OOOAutoDecline off", f.calSvc.rsvpCalls)
+		}
+	})
 }
 
 // TestStartOfWeek covers the Monday snap, including across the Amsterdam

@@ -259,7 +259,7 @@ func (p *recordingCalendarProvider) DeleteEvent(_ context.Context, accessToken, 
 	return nil
 }
 
-func (p *recordingCalendarProvider) RSVP(_ context.Context, _, _, _ string, _ domain.RsvpStatus) error {
+func (p *recordingCalendarProvider) RSVP(_ context.Context, _, _, _ string, _ domain.RsvpStatus, _ string) error {
 	return nil
 }
 

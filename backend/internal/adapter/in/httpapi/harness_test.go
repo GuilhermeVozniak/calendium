@@ -532,10 +532,11 @@ type fakeCalendarService struct {
 	deleteEventErr error
 	gotDeleteEvt   string
 
-	rsvpRet   domain.Event
-	rsvpErr   error
-	gotRsvp   domain.RsvpStatus
-	gotRsvpID string
+	rsvpRet        domain.Event
+	rsvpErr        error
+	gotRsvp        domain.RsvpStatus
+	gotRsvpID      string
+	gotRsvpComment string
 
 	availRet    []domain.AvailabilitySlot
 	availErr    error
@@ -611,8 +612,8 @@ func (f *fakeCalendarService) DeleteEvent(ctx context.Context, userID, eventID s
 	f.gotDeleteEvt = eventID
 	return f.deleteEventErr
 }
-func (f *fakeCalendarService) RSVP(ctx context.Context, userID, eventID string, response domain.RsvpStatus) (domain.Event, error) {
-	f.gotRsvpID, f.gotRsvp = eventID, response
+func (f *fakeCalendarService) RSVP(ctx context.Context, userID, eventID string, response domain.RsvpStatus, comment string) (domain.Event, error) {
+	f.gotRsvpID, f.gotRsvp, f.gotRsvpComment = eventID, response, comment
 	return f.rsvpRet, f.rsvpErr
 }
 func (f *fakeCalendarService) Availability(ctx context.Context, userID string, from, to time.Time, slotDuration time.Duration) ([]domain.AvailabilitySlot, error) {
