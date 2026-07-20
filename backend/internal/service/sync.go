@@ -736,7 +736,9 @@ func (s *SyncService) notifyThread(ctx context.Context, t domain.Thread, title, 
 // there is nothing to deliver). A total push failure leaves the alert unsent
 // for the next 5s pass; retries are naturally bounded because alerts whose
 // event already started are dropped, so a permanently failing sender cannot
-// retry-storm forever. Alerts fail independently (collected, never fatal).
+// retry-storm forever. Delivery re-checks the user's travel prefs so opting
+// out silences already-armed alerts immediately. Alerts fail independently
+// (collected, never fatal).
 func (s *SyncService) fireTravelAlerts(ctx context.Context, now time.Time) error {
 	if s.travelAlerts == nil || s.push == nil {
 		return nil // travel alerts or push unconfigured: degrade silently
@@ -763,6 +765,21 @@ func (s *SyncService) fireTravelAlerts(ctx context.Context, now time.Time) error
 		if !now.Before(ev.Start) || ev.LocationLat == nil || ev.LocationLon == nil {
 			_ = s.travelAlerts.Delete(ctx, alert.EventID)
 			continue
+		}
+		// Opt-out is honored at delivery too: alerts armed BEFORE the user
+		// turned travel automation off are dropped, not pushed (up to 48h of
+		// already-armed alerts would otherwise keep firing). A transient
+		// prefs-load failure retries next pass rather than deleting.
+		if s.calendarPrefs != nil {
+			p, err := s.calendarPrefs.Get(ctx, alert.UserID)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("travel alert %s: load prefs: %w", alert.EventID, err))
+				continue
+			}
+			if !p.TravelBuffers || !p.LeaveAlerts {
+				_ = s.travelAlerts.Delete(ctx, alert.EventID)
+				continue
+			}
 		}
 		devices, err := s.devices.ListByUser(ctx, alert.UserID)
 		if err != nil {

@@ -59,9 +59,14 @@ func (f *leaveAlertFixture) seedDevice(t *testing.T, userID, token string) {
 }
 
 // seedDueAlert stores an event starting soon plus its already-due alert.
+// The owner gets travel-enabled prefs unless the test already seeded some —
+// delivery re-checks prefs, and an armed alert implies they were on.
 func (f *leaveAlertFixture) seedDueAlert(t *testing.T, userID, eventID string) domain.Event {
 	t.Helper()
 	ctx := context.Background()
+	if _, ok := f.prefs.byUser[userID]; !ok {
+		f.prefs.byUser[userID] = travelPrefs(userID)
+	}
 	ev := locEvent(eventID, f.clock.Now().Add(40*time.Minute), time.Hour, 48.86, 2.35)
 	ev.Title = "Standup " + eventID
 	if _, err := f.events.Upsert(ctx, ev); err != nil {
@@ -81,7 +86,7 @@ func TestLeaveAlertDelivery(t *testing.T) {
 	f.seedDevice(t, "u1", "tok-1")
 	f.seedDevice(t, "u1", "tok-2")
 	tz := "Europe/Amsterdam"
-	p := domain.DefaultCalendarPrefs("u1")
+	p := travelPrefs("u1")
 	p.TimeZone = tz
 	f.prefs.byUser["u1"] = p
 	ev := f.seedDueAlert(t, "u1", "ev1")
@@ -143,6 +148,39 @@ func TestLeaveAlertPushFailureLeavesUnsent(t *testing.T) {
 	}
 	if a := f.alerts.byEvent["ev1"]; a.SentAt == nil {
 		t.Fatal("sent_at not stamped after recovery")
+	}
+}
+
+// TestLeaveAlertPrefsOptOutDeletes: alerts armed while travel automation
+// was on must NOT fire after the user opts out — delivery re-checks prefs
+// and deletes the alert (either toggle off silences it). A prefs-load
+// failure, by contrast, retries instead of deleting.
+func TestLeaveAlertPrefsOptOutDeletes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*domain.CalendarPrefs)
+	}{
+		{"leave alerts off", func(p *domain.CalendarPrefs) { p.LeaveAlerts = false }},
+		{"travel buffers off", func(p *domain.CalendarPrefs) { p.TravelBuffers = false }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLeaveAlertFixture(t)
+			f.seedDevice(t, "u1", "tok-1")
+			f.seedDueAlert(t, "u1", "ev1")
+			p := f.prefs.byUser["u1"]
+			tc.mutate(&p)
+			f.prefs.byUser["u1"] = p
+
+			if err := f.svc.ProcessDueWork(context.Background()); err != nil {
+				t.Fatalf("ProcessDueWork: %v", err)
+			}
+			if len(f.push.sent) != 0 {
+				t.Fatalf("pushes = %d, want 0 after opt-out", len(f.push.sent))
+			}
+			if _, ok := f.alerts.byEvent["ev1"]; ok {
+				t.Fatal("opted-out alert must be deleted, not left to retry")
+			}
+		})
 	}
 }
 
