@@ -113,7 +113,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               <CommandPalette />
               {/* Concierge tour: auto-starts on a user's first authenticated
                   visit; "Restart tour" in the palette re-runs it. */}
-              <OnboardingTour />
+              <OnboardingTour userId={session.user.id} />
               <GlobalShortcuts />
               <OutboxReplayLifecycle />
             </TooltipProvider>

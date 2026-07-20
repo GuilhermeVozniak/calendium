@@ -15,9 +15,9 @@ vi.mock('@/lib/offline/queue', () => ({
   clearOfflineState: () => clearOfflineStateMock(),
 }));
 
-const clearTourStateMock = vi.fn();
+const resetTourSessionMock = vi.fn();
 vi.mock('@/lib/tour-state', () => ({
-  clearTourState: () => clearTourStateMock(),
+  resetTourSession: () => resetTourSessionMock(),
 }));
 
 import { performSignOut } from './sign-out';
@@ -27,11 +27,11 @@ describe('performSignOut', () => {
     vi.clearAllMocks();
   });
 
-  it('ends the session, clears acting-as, tour state, and offline state', async () => {
+  it('ends the session, clears acting-as, detaches tour scope, and clears offline state', async () => {
     await performSignOut();
     expect(signOutMock).toHaveBeenCalledTimes(1);
     expect(clearActingAsMock).toHaveBeenCalledTimes(1);
-    expect(clearTourStateMock).toHaveBeenCalledTimes(1);
+    expect(resetTourSessionMock).toHaveBeenCalledTimes(1);
     expect(clearOfflineStateMock).toHaveBeenCalledTimes(1);
   });
 
@@ -39,9 +39,9 @@ describe('performSignOut', () => {
     const order: string[] = [];
     signOutMock.mockImplementation(() => order.push('signOut'));
     clearActingAsMock.mockImplementation(() => order.push('clearActingAs'));
-    clearTourStateMock.mockImplementation(() => order.push('clearTourState'));
+    resetTourSessionMock.mockImplementation(() => order.push('resetTourSession'));
     clearOfflineStateMock.mockImplementation(() => order.push('clearOfflineState'));
     await performSignOut();
-    expect(order).toEqual(['signOut', 'clearActingAs', 'clearTourState', 'clearOfflineState']);
+    expect(order).toEqual(['signOut', 'clearActingAs', 'resetTourSession', 'clearOfflineState']);
   });
 });

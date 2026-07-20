@@ -40,8 +40,11 @@ const FAKE_SESSION = {
 export const test = base.extend<{ page: Page }>({
   page: async ({ page }, use) => {
     // The concierge tour auto-starts for fresh users (M2.8 Task 19); mark it
-    // done so its popover never overlays unrelated specs. onboarding.spec.ts
-    // removes this key in its own init script to exercise the first-run path.
+    // done so its popover never overlays unrelated specs. Tour keys are now
+    // per-user (calendium.tour.v1.<userId>), but seeding the legacy un-scoped
+    // key still works: lib/tour-state.ts adopts it into the signed-in user's
+    // key on first read. onboarding.spec.ts removes this key in its own init
+    // script to exercise the first-run path.
     await page.addInitScript(() => {
       window.localStorage.setItem(
         'calendium.tour.v1',
