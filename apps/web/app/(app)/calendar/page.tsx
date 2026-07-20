@@ -31,7 +31,7 @@ import { SetSwitcher } from '@/components/app/calendar/set-switcher';
 import { TemplateManager } from '@/components/app/calendar/template-manager';
 import { TimeGrid } from '@/components/app/calendar/time-grid';
 import { YearView } from '@/components/app/calendar/year-view';
-import { EventDialog } from '@/components/app/event-dialog';
+import { EventDialog, SubscriptionEventDialog } from '@/components/app/event-dialog';
 import { Button } from '@/components/ui/button';
 import {
   Command,
@@ -58,7 +58,8 @@ import { activateSet, fetchCalendarSets } from '@/lib/set-data';
 import type { CalendarView } from '@/lib/calendar-views';
 import { VIEW_KEYS, rangeLabel, stepAnchor, viewRange } from '@/lib/calendar-views';
 import { nextHalfHour } from '@/lib/quick-add';
-import { fetchAccounts } from '@/lib/settings-data';
+import { fetchAccounts, fetchCalendarSubscriptions } from '@/lib/settings-data';
+import { subscriptionColorMap } from '@/lib/subscription-utils';
 import { useShortcuts } from '@/lib/shortcuts';
 import { applyTemplate, fetchEventTemplates, recordTemplateUsage } from '@/lib/template-data';
 import { getPinnedTimeZones, setPinnedTimeZones, zoneCaption } from '@/lib/timezones';
@@ -168,6 +169,12 @@ export default function CalendarPage() {
 
   const calendarsQuery = useQuery({ queryKey: ['calendars'], queryFn: fetchCalendars });
   const accountsQuery = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts });
+  // ICS feed subscriptions (M2.8 Task 15): colors for the grid's read-only
+  // feed mirrors. Their events already arrive merged into /v1/events.
+  const subscriptionsQuery = useQuery({
+    queryKey: ['calendar-subscriptions'],
+    queryFn: fetchCalendarSubscriptions,
+  });
   const eventsQuery = useQuery({
     queryKey: ['events', range.from.toISOString(), range.to.toISOString()],
     queryFn: () => fetchEvents(range.from, range.to),
@@ -187,6 +194,10 @@ export default function CalendarPage() {
   const calendarById = React.useMemo(
     () => new Map(calendars.map((c) => [c.id, c])),
     [calendars]
+  );
+  const subscriptionColors = React.useMemo(
+    () => subscriptionColorMap(subscriptionsQuery.data),
+    [subscriptionsQuery.data]
   );
   const events = React.useMemo(
     () =>
@@ -692,18 +703,27 @@ export default function CalendarPage() {
               onExitTimeTravel={() => changeTimeTravelZone(null)}
               onSlotClick={handleSlotClick}
               onEventClick={handleEventClick}
+              subscriptionColors={subscriptionColors}
             />
           )}
         </main>
       </div>
 
-      <EventDialog
-        open={dialog.open}
-        onOpenChange={(open) => setDialog((d) => ({ ...d, open }))}
-        calendars={calendars}
-        event={dialog.event}
-        defaults={dialog.defaults}
-      />
+      {dialog.event?.subscriptionId ? (
+        <SubscriptionEventDialog
+          open={dialog.open}
+          onOpenChange={(open) => setDialog((d) => ({ ...d, open }))}
+          event={dialog.event}
+        />
+      ) : (
+        <EventDialog
+          open={dialog.open}
+          onOpenChange={(open) => setDialog((d) => ({ ...d, open }))}
+          calendars={calendars}
+          event={dialog.event}
+          defaults={dialog.defaults}
+        />
+      )}
       <AvailabilityDialog open={availabilityOpen} onOpenChange={setAvailabilityOpen} />
       <TeamAvailabilityDialog
         open={teamAvailabilityOpen}

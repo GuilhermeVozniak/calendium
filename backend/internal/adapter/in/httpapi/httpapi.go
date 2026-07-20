@@ -195,6 +195,12 @@ func New(deps Deps) http.Handler {
 	authed("PUT /v1/calendar-sets/{id}", s.handleUpdateCalendarSet)
 	authed("DELETE /v1/calendar-sets/{id}", s.handleDeleteCalendarSet)
 
+	// M2.8 Task 15: interesting-calendar ICS feed subscriptions.
+	authed("GET /v1/calendar-subscriptions", s.handleListCalendarSubscriptions)
+	authed("POST /v1/calendar-subscriptions", s.handleCreateCalendarSubscription)
+	authed("PATCH /v1/calendar-subscriptions/{id}", s.handleUpdateCalendarSubscription)
+	authed("DELETE /v1/calendar-subscriptions/{id}", s.handleDeleteCalendarSubscription)
+
 	authed("GET /v1/search", s.handleSearch)
 	authed("POST /v1/ai/compose", s.handleAiCompose)
 	authed("POST /v1/ai/ask", s.handleAiAsk)

@@ -21,6 +21,7 @@ import (
 	"calendium/backend/internal/adapter/out/authjwt"
 	"calendium/backend/internal/adapter/out/eventbus"
 	"calendium/backend/internal/adapter/out/googleapi"
+	"calendium/backend/internal/adapter/out/icsfeed"
 	"calendium/backend/internal/adapter/out/msgraph"
 	"calendium/backend/internal/adapter/out/openrouter"
 	"calendium/backend/internal/adapter/out/postgres"
@@ -154,6 +155,11 @@ func run(logger *slog.Logger) error {
 		Audit:  postgres.NewAuditRepo(store),
 		Teams:  postgres.NewTeamRepo(store),
 		Users:  store.Users(),
+		// Interesting-calendar ICS subscriptions (M2.8 Task 15). No vendor
+		// config needed — the fetcher is plain HTTPS, so the routes always
+		// work.
+		CalendarSubs: store.CalendarSubscriptions(),
+		IcsFetcher:   icsfeed.New(nil),
 	})
 	search := service.NewSearchService(store.Subscriptions(), store.Threads(), store.Events(), clock, cfg.Instance.SelfHosted)
 	aiSvc := service.NewAIService(service.AIServiceDeps{

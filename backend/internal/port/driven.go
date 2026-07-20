@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"calendium/backend/internal/domain"
+	"calendium/backend/internal/ics"
 )
 
 // ---------------------------------------------------------------------------
@@ -745,4 +746,34 @@ type EventBus interface {
 	// Subscribe returns a channel of events for the given topics and a
 	// cancel func. The channel closes on cancel.
 	Subscribe(topics []string) (<-chan CollabEvent, func())
+}
+
+// ---------------------------------------------------------------------------
+// Interesting-calendar ICS subscriptions (M2.8 Task 15)
+// ---------------------------------------------------------------------------
+
+// CalendarSubscriptionRepo persists user-added ICS feed subscriptions and
+// their expanded, read-only event mirrors (subscription_events).
+type CalendarSubscriptionRepo interface {
+	Create(ctx context.Context, s domain.CalendarSubscription) (domain.CalendarSubscription, error)
+	GetByID(ctx context.Context, id string) (domain.CalendarSubscription, error)
+	ListByUser(ctx context.Context, userID string) ([]domain.CalendarSubscription, error)
+	// ListDue returns subscriptions not fetched since `since` (hourly cadence).
+	ListDue(ctx context.Context, since time.Time) ([]domain.CalendarSubscription, error)
+	Update(ctx context.Context, s domain.CalendarSubscription) error
+	Delete(ctx context.Context, id string) error
+	// ReplaceEvents atomically swaps the expanded occurrence set for a
+	// subscription (12-month horizon), preserving nothing — feeds own truth.
+	// Event UIDs travel in domain.Event.ProviderEventID.
+	ReplaceEvents(ctx context.Context, subscriptionID string, events []domain.Event) error
+	// ListEventsInRange mirrors EventRepo.ListInRange for subscription
+	// events: occurrences overlapping [from, to) across the user's VISIBLE
+	// subscriptions, with SubscriptionID set and Status confirmed.
+	ListEventsInRange(ctx context.Context, userID string, from, to time.Time) ([]domain.Event, error)
+}
+
+// IcsFetcher retrieves and parses a feed. notModified is true when the
+// server honored the cached validator (etag) and events must be kept.
+type IcsFetcher interface {
+	Fetch(ctx context.Context, url, etag string) (cal ics.Calendar, newEtag string, notModified bool, err error)
 }

@@ -108,6 +108,10 @@ type Event struct {
 	// calendar: only Start/End survive redaction (title "Busy", every other
 	// field zeroed server-side).
 	FreeBusyOnly bool `json:"freeBusyOnly,omitempty"`
+	// SubscriptionID is set on read-only mirrors of ICS feed subscriptions
+	// (M2.8 Task 15). Subscription events have no CalendarID, are never
+	// written through to any provider, and never count as busy time.
+	SubscriptionID *string `json:"subscriptionId,omitempty"`
 }
 
 // EventInput is the create-event payload (mirrors EventInput in types.ts).

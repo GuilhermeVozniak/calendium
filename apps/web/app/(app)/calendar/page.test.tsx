@@ -62,6 +62,7 @@ vi.mock('@/components/app/event-dialog', () => ({
         {defaults?.title && <span data-testid="event-dialog-title">{defaults.title}</span>}
       </div>
     ) : null,
+  SubscriptionEventDialog: () => null,
 }));
 vi.mock('@/components/app/availability', () => ({
   AvailabilityDialog: ({ open }: { open: boolean }) =>
@@ -99,8 +100,10 @@ vi.mock('@/lib/set-data', () => ({
 }));
 
 const fetchAccountsMock = vi.fn();
+const fetchCalendarSubscriptionsMock = vi.fn();
 vi.mock('@/lib/settings-data', () => ({
   fetchAccounts: (...args: unknown[]) => fetchAccountsMock(...args),
+  fetchCalendarSubscriptions: (...args: unknown[]) => fetchCalendarSubscriptionsMock(...args),
 }));
 
 const fetchEventTemplatesMock = vi.fn();
@@ -161,6 +164,7 @@ beforeEach(() => {
   window.localStorage.clear();
   fetchCalendarsMock.mockResolvedValue([CALENDAR_A, CALENDAR_B]);
   fetchAccountsMock.mockResolvedValue([]);
+  fetchCalendarSubscriptionsMock.mockResolvedValue([]);
   fetchEventsMock.mockResolvedValue([]);
   fetchBusyEventsMock.mockResolvedValue([]);
   fetchCalendarSetsMock.mockResolvedValue([]);

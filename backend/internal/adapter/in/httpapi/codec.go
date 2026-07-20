@@ -53,6 +53,8 @@ func statusFor(err error) (int, string) {
 		return http.StatusNotFound, "not_found"
 	case errors.Is(err, domain.ErrConflict):
 		return http.StatusConflict, "conflict"
+	case errors.Is(err, domain.ErrUnprocessable):
+		return http.StatusUnprocessableEntity, "unprocessable"
 	case errors.Is(err, domain.ErrSelfHosted):
 		return http.StatusNotImplemented, "self_hosted"
 	case errors.Is(err, domain.ErrNotImplemented):
@@ -85,6 +87,8 @@ func safeMessage(code string) string {
 		return "The requested resource was not found."
 	case "conflict":
 		return "The request conflicts with the current state of the resource."
+	case "unprocessable":
+		return "The calendar feed could not be fetched or parsed."
 	case "self_hosted":
 		return "Billing is disabled on self-hosted instances."
 	case "not_implemented":

@@ -36,6 +36,12 @@ type CalendarServiceDeps struct {
 	Audit  port.AuditRepo
 	Teams  port.TeamRepo
 	Users  port.UserRepo
+
+	// --- Interesting-calendar ICS subscriptions (M2.8 Task 15). Both are
+	// optional: left nil, the subscription surface answers ErrNotImplemented
+	// and ListEvents serves provider/shared events only. ---
+	CalendarSubs port.CalendarSubscriptionRepo
+	IcsFetcher   port.IcsFetcher
 }
 
 // CalendarService implements port.CalendarService. Event mutations write
@@ -55,6 +61,9 @@ type CalendarService struct {
 	audit     port.AuditRepo
 	teams     port.TeamRepo
 	users     port.UserRepo
+
+	calendarSubs port.CalendarSubscriptionRepo
+	icsFetcher   port.IcsFetcher
 }
 
 var _ port.CalendarService = (*CalendarService)(nil)
@@ -75,6 +84,9 @@ func NewCalendarService(d CalendarServiceDeps) *CalendarService {
 		audit:     d.Audit,
 		teams:     d.Teams,
 		users:     d.Users,
+
+		calendarSubs: d.CalendarSubs,
+		icsFetcher:   d.IcsFetcher,
 	}
 }
 
@@ -140,16 +152,24 @@ func (s *CalendarService) ListEvents(ctx context.Context, userID string, from, t
 		if err != nil {
 			return nil, err
 		}
-		if len(shared) > 0 {
-			evs = append(evs, shared...)
-			sort.Slice(evs, func(i, j int) bool {
-				if evs[i].Start.Equal(evs[j].Start) {
-					return evs[i].ID < evs[j].ID
-				}
-				return evs[i].Start.Before(evs[j].Start)
-			})
-		}
+		evs = append(evs, shared...)
 	}
+	// M2.8 Task 15: merge read-only ICS subscription events (visible feeds
+	// only — the repo filters is_visible in SQL). They carry SubscriptionID
+	// and never reach Availability, which queries the event repo directly.
+	if s.calendarSubs != nil && len(calendarIDs) == 0 {
+		subEvs, err := s.calendarSubs.ListEventsInRange(ctx, userID, from, to)
+		if err != nil {
+			return nil, err
+		}
+		evs = append(evs, subEvs...)
+	}
+	sort.Slice(evs, func(i, j int) bool {
+		if evs[i].Start.Equal(evs[j].Start) {
+			return evs[i].ID < evs[j].ID
+		}
+		return evs[i].Start.Before(evs[j].Start)
+	})
 	return evs, nil
 }
 

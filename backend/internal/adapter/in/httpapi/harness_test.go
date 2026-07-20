@@ -487,6 +487,19 @@ type fakeCalendarService struct {
 	listCalsRet []domain.Calendar
 	listCalsErr error
 
+	// Calendar subscriptions (M2.8 Task 15)
+	listSubsRet    []domain.CalendarSubscription
+	listSubsErr    error
+	createSubRet   domain.CalendarSubscription
+	createSubErr   error
+	gotCreateSub   port.CalendarSubscriptionInput
+	updateSubRet   domain.CalendarSubscription
+	updateSubErr   error
+	gotUpdateSubID string
+	gotUpdateSub   port.CalendarSubscriptionPatch
+	deleteSubErr   error
+	gotDeleteSubID string
+
 	updateCalRet domain.Calendar
 	updateCalErr error
 	gotUpdateCal port.CalendarPatch
@@ -599,6 +612,25 @@ func (f *fakeCalendarService) TeamAvailability(ctx context.Context, userID, team
 	f.gotTeamAvailID = teamID
 	f.gotTeamAvailFrom, f.gotTeamAvailTo = from, to
 	return f.teamAvailRet, f.teamAvailErr
+}
+
+// --- Calendar subscriptions (M2.8 Task 15)
+
+func (f *fakeCalendarService) ListCalendarSubscriptions(ctx context.Context, userID string) ([]domain.CalendarSubscription, error) {
+	return f.listSubsRet, f.listSubsErr
+}
+func (f *fakeCalendarService) CreateCalendarSubscription(ctx context.Context, userID string, in port.CalendarSubscriptionInput) (domain.CalendarSubscription, error) {
+	f.gotCreateSub = in
+	return f.createSubRet, f.createSubErr
+}
+func (f *fakeCalendarService) UpdateCalendarSubscription(ctx context.Context, userID, subscriptionID string, patch port.CalendarSubscriptionPatch) (domain.CalendarSubscription, error) {
+	f.gotUpdateSubID = subscriptionID
+	f.gotUpdateSub = patch
+	return f.updateSubRet, f.updateSubErr
+}
+func (f *fakeCalendarService) DeleteCalendarSubscription(ctx context.Context, userID, subscriptionID string) error {
+	f.gotDeleteSubID = subscriptionID
+	return f.deleteSubErr
 }
 
 // --- Event Template Methods

@@ -1965,3 +1965,68 @@ describe('calendar shares & team availability', () => {
     ).rejects.toMatchObject({ status: 404, code: 'not_found' });
   });
 });
+
+describe('calendar subscriptions (M2.8 Task 15)', () => {
+  const sub = {
+    id: 'sub_1',
+    url: 'https://example.com/holidays.ics',
+    name: 'US Holidays',
+    color: '#8b5cf6',
+    isVisible: true,
+    lastFetchedAt: '2026-07-19T11:00:00Z',
+    lastError: null,
+    createdAt: '2026-07-19T10:00:00Z',
+  };
+
+  it('lists subscriptions via GET /v1/calendar-subscriptions', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: [sub] }] });
+    const got = await client.listCalendarSubscriptions();
+    expect(got).toEqual([sub]);
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendar-subscriptions`);
+  });
+
+  it('creates a subscription via POST with the input body', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: sub }] });
+    const got = await client.createCalendarSubscription({
+      url: 'https://example.com/holidays.ics',
+      color: '#8b5cf6',
+    });
+    expect(got).toEqual(sub);
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendar-subscriptions`);
+    expect(calls[0]!.body).toEqual({ url: 'https://example.com/holidays.ics', color: '#8b5cf6' });
+  });
+
+  it('surfaces the 422 unprocessable feed error', async () => {
+    const { client } = makeClient({
+      responses: [
+        {
+          status: 422,
+          body: { error: { code: 'unprocessable', message: 'The calendar feed could not be fetched or parsed.' } },
+        },
+      ],
+    });
+    await expect(
+      client.createCalendarSubscription({ url: 'https://example.com/broken.ics' })
+    ).rejects.toMatchObject({ status: 422, code: 'unprocessable' });
+  });
+
+  it('patches a subscription and percent-encodes the id', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { ...sub, isVisible: false } }],
+    });
+    const got = await client.updateCalendarSubscription('sub 1', { isVisible: false });
+    expect(got.isVisible).toBe(false);
+    expect(calls[0]!.method).toBe('PATCH');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendar-subscriptions/sub%201`);
+    expect(calls[0]!.body).toEqual({ isVisible: false });
+  });
+
+  it('deletes a subscription and resolves on 204', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    await expect(client.deleteCalendarSubscription('sub_1')).resolves.toBeUndefined();
+    expect(calls[0]!.method).toBe('DELETE');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendar-subscriptions/sub_1`);
+  });
+});

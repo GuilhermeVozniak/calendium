@@ -1,6 +1,13 @@
 import { addDays, subDays, subMinutes } from 'date-fns';
 
-import type { ConnectedAccount, Snippet, Subscription } from '@calendium/shared';
+import type {
+  CalendarSubscription,
+  CalendarSubscriptionInput,
+  CalendarSubscriptionPatch,
+  ConnectedAccount,
+  Snippet,
+  Subscription,
+} from '@calendium/shared';
 
 /**
  * In-memory mock for the settings surface (accounts, snippets, subscription),
@@ -11,6 +18,7 @@ interface SettingsStore {
   accounts: ConnectedAccount[];
   snippets: Snippet[];
   subscription: Subscription;
+  calendarSubscriptions: CalendarSubscription[];
 }
 
 let store: SettingsStore | null = null;
@@ -84,6 +92,18 @@ function seed(): SettingsStore {
       cancelAtPeriodEnd: false,
       trialEndsAt: addDays(now, 9).toISOString(),
     },
+    calendarSubscriptions: [
+      {
+        id: 'sub-mock-holidays',
+        url: 'https://ics.calendarlabs.com/76/us-holidays.ics',
+        name: 'Holidays',
+        color: '#8b5cf6',
+        isVisible: true,
+        lastFetchedAt: subMinutes(now, 25).toISOString(),
+        lastError: null,
+        createdAt: subDays(now, 12).toISOString(),
+      },
+    ],
   };
 }
 
@@ -145,5 +165,40 @@ export const settingsMock = {
 
   getSubscription(): Subscription {
     return { ...getStore().subscription };
+  },
+
+  // --- Interesting-calendar ICS feeds (M2.8 Task 15) ---
+
+  listCalendarSubscriptions(): CalendarSubscription[] {
+    return getStore().calendarSubscriptions.map((s) => ({ ...s }));
+  },
+
+  createCalendarSubscription(input: CalendarSubscriptionInput): CalendarSubscription {
+    const sub: CalendarSubscription = {
+      id: `sub-local-${nextId++}`,
+      url: input.url,
+      name: input.name || new URL(input.url).host,
+      color: input.color ?? '#8b5cf6',
+      isVisible: true,
+      lastFetchedAt: new Date().toISOString(),
+      lastError: null,
+      createdAt: new Date().toISOString(),
+    };
+    getStore().calendarSubscriptions.push(sub);
+    return { ...sub };
+  },
+
+  updateCalendarSubscription(id: string, patch: CalendarSubscriptionPatch): CalendarSubscription {
+    const sub = getStore().calendarSubscriptions.find((s) => s.id === id);
+    if (!sub) throw new Error('Subscription not found');
+    if (patch.name !== undefined) sub.name = patch.name;
+    if (patch.color !== undefined) sub.color = patch.color;
+    if (patch.isVisible !== undefined) sub.isVisible = patch.isVisible;
+    return { ...sub };
+  },
+
+  deleteCalendarSubscription(id: string): void {
+    const s = getStore();
+    s.calendarSubscriptions = s.calendarSubscriptions.filter((x) => x.id !== id);
   },
 };

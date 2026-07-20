@@ -1045,3 +1045,44 @@ export interface Event {
   /** True when the event was redacted for a free_busy viewer (title "Busy", details zeroed). */
   freeBusyOnly?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Interesting-calendar ICS subscriptions (M2.8 Task 15)
+// ---------------------------------------------------------------------------
+
+export interface Event {
+  /**
+   * Set when the event is a read-only mirror of an ICS feed subscription.
+   * Subscription events cannot be edited, RSVP'd, or deleted, and never
+   * count as busy time for availability.
+   */
+  subscriptionId?: string;
+}
+
+/** A user-added "interesting calendar" ICS feed (https only, read-only). */
+export interface CalendarSubscription {
+  id: string;
+  url: string;
+  name: string;
+  color: string;
+  isVisible: boolean;
+  /** Last fetch ATTEMPT; `lastError` (not this) is what signals staleness. */
+  lastFetchedAt: string | null;
+  /** Non-null when the last refresh failed; the previous event set is kept. */
+  lastError: string | null;
+  createdAt: string;
+}
+
+export interface CalendarSubscriptionInput {
+  /** Must be an absolute https URL. */
+  url: string;
+  /** Optional label; the feed's X-WR-CALNAME (else its host) fills in. */
+  name?: string;
+  color?: string;
+}
+
+export interface CalendarSubscriptionPatch {
+  name?: string;
+  color?: string;
+  isVisible?: boolean;
+}

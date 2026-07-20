@@ -235,6 +235,14 @@ type CalendarService interface {
 	CreateCalendarSet(ctx context.Context, userID string, in domain.CalendarSetInput) (domain.CalendarSet, error)
 	UpdateCalendarSet(ctx context.Context, userID, setID string, in domain.CalendarSetInput) (domain.CalendarSet, error)
 	DeleteCalendarSet(ctx context.Context, userID, setID string) error
+
+	// Calendar subscription methods (M2.8 Task 15: read-only ICS feeds).
+	// Create validates https and fetches the feed once synchronously so the
+	// caller sees immediate events or a clear error (ErrUnprocessable).
+	ListCalendarSubscriptions(ctx context.Context, userID string) ([]domain.CalendarSubscription, error)
+	CreateCalendarSubscription(ctx context.Context, userID string, in CalendarSubscriptionInput) (domain.CalendarSubscription, error)
+	UpdateCalendarSubscription(ctx context.Context, userID, subscriptionID string, patch CalendarSubscriptionPatch) (domain.CalendarSubscription, error)
+	DeleteCalendarSubscription(ctx context.Context, userID, subscriptionID string) error
 }
 
 // SearchResult is the unified GET /v1/search response.
@@ -552,4 +560,25 @@ type CollabService interface {
 	UpdateComment(ctx context.Context, userID, commentID, body string) (domain.Comment, error)
 	// DeleteComment: the author, or a team admin+ (soft delete).
 	DeleteComment(ctx context.Context, userID, commentID string) error
+}
+
+// ---------------------------------------------------------------------------
+// Interesting-calendar ICS subscriptions (M2.8 Task 15)
+// ---------------------------------------------------------------------------
+
+// CalendarSubscriptionInput is the create payload
+// (POST /v1/calendar-subscriptions). URL must be https; Name and Color are
+// optional (feed X-WR-CALNAME / default color fill in).
+type CalendarSubscriptionInput struct {
+	URL   string `json:"url"`
+	Name  string `json:"name,omitempty"`
+	Color string `json:"color,omitempty"`
+}
+
+// CalendarSubscriptionPatch is a partial subscription update
+// (PATCH /v1/calendar-subscriptions/{id}); nil fields are left unchanged.
+type CalendarSubscriptionPatch struct {
+	Name      *string `json:"name"`
+	Color     *string `json:"color"`
+	IsVisible *bool   `json:"isVisible"`
 }
