@@ -23,6 +23,7 @@ import {
   type ReactionResult,
   type SendSuggestion,
   type Subscription,
+  type Task,
   type Thread,
 } from '@calendium/shared';
 
@@ -594,6 +595,73 @@ export function mockSendSuggestion(email: string): SendSuggestion {
     confidence: 0.72,
     sampleSize: 8,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Tasks (M2.8 Task 3b — mobile mirror of the web task rail)
+// ---------------------------------------------------------------------------
+
+function makeMockTask(
+  overrides: Partial<Task> & { id: string; title: string; position: number }
+): Task {
+  const created = minutesAgo(240);
+  return {
+    notes: null,
+    due: null,
+    allDayDue: false,
+    scheduledStart: null,
+    scheduledEnd: null,
+    completedAt: null,
+    source: 'local',
+    sourceUrl: null,
+    createdAt: created,
+    updatedAt: created,
+    ...overrides,
+  };
+}
+
+function seedMockTasks(): Task[] {
+  return [
+    makeMockTask({ id: 'task_1', title: 'Prep board deck', position: 1, due: minutesAgo(-120) }),
+    makeMockTask({
+      id: 'task_2',
+      title: 'Send follow-up to Dana',
+      position: 2,
+      due: minutesAgo(-30),
+    }),
+    makeMockTask({ id: 'task_3', title: 'Book flights to Lisbon', position: 3 }),
+    makeMockTask({
+      id: 'task_4',
+      title: 'Review Q3 budget draft',
+      position: 4,
+      due: daysFromNow(3),
+      allDayDue: true,
+    }),
+    makeMockTask({ id: 'task_5', title: 'Renew passport', position: 5, completedAt: minutesAgo(60) }),
+  ];
+}
+
+let mockTaskStore: Task[] = seedMockTasks();
+
+export function mockListTasks(): Task[] {
+  return mockTaskStore.map((t) => ({ ...t }));
+}
+
+export function mockSetTaskCompleted(taskId: string, completed: boolean): Task {
+  const current = mockTaskStore.find((t) => t.id === taskId);
+  if (!current) throw new Error(`No demo task ${taskId}`);
+  const next: Task = {
+    ...current,
+    completedAt: completed ? new Date().toISOString() : null,
+    updatedAt: new Date().toISOString(),
+  };
+  mockTaskStore = mockTaskStore.map((t) => (t.id === taskId ? next : t));
+  return { ...next };
+}
+
+/** Test-only: restore the seeded demo tasks. */
+export function resetMockTasks(): void {
+  mockTaskStore = seedMockTasks();
 }
 
 /** Stores a demo-mode-only emoji reaction; sendReply flips Delivery to "sent" (mirrors the real backend). */

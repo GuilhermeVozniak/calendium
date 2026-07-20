@@ -1120,7 +1120,7 @@ export const ACT_AS_HEADER = 'X-Calendium-Act-As';
  * principal's behalf), so the header is never attached there either.
  */
 export function isDelegablePath(pathname: string): boolean {
-  const path = pathname.split('?')[0];
+  const path = pathname.split('?')[0] ?? pathname;
   if (
     path === '/v1/mail/snippets' ||
     path.startsWith('/v1/mail/snippets/') ||

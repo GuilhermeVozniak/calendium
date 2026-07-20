@@ -3,7 +3,13 @@ import { usePushRegistration } from '@/hooks/use-push-registration';
 import { useServerConfig } from '@/lib/server-config';
 import { THEME } from '@/lib/theme';
 import { Redirect, Tabs, useRouter } from 'expo-router';
-import { CalendarDaysIcon, InboxIcon, Settings2Icon, SparklesIcon } from 'lucide-react-native';
+import {
+  CalendarDaysIcon,
+  InboxIcon,
+  ListTodoIcon,
+  Settings2Icon,
+  SparklesIcon,
+} from 'lucide-react-native';
 import { useColorScheme } from 'nativewind';
 import { ActivityIndicator, View } from 'react-native';
 
@@ -52,6 +58,13 @@ export default function TabsLayout() {
         options={{
           title: 'Calendar',
           tabBarIcon: ({ color, size }) => <CalendarDaysIcon color={color} size={size ?? 22} />,
+        }}
+      />
+      <Tabs.Screen
+        name="tasks"
+        options={{
+          title: 'Tasks',
+          tabBarIcon: ({ color, size }) => <ListTodoIcon color={color} size={size ?? 22} />,
         }}
       />
       <Tabs.Screen

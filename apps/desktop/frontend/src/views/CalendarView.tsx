@@ -26,6 +26,7 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  ListTodo,
   Loader2,
   Plus,
   Trash2,
@@ -38,6 +39,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api, orMock } from '@/lib/api';
 import { mockCalendars, mockEvents, mockUser } from '@/lib/mock';
 import { isDemoMode } from '@/lib/server-config';
+import { TaskRail } from './TaskRail';
 import { errorMessage, toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { Button } from '@/ui/button';
@@ -162,6 +164,9 @@ export function CalendarView() {
   const [anchor, setAnchor] = useState(() => new Date());
   const [editing, setEditing] = useState<CalendarEvent | null>(null);
   const [creating, setCreating] = useState(false);
+  // Task rail (M2.8 Task 3b): closed by default — the desktop window is
+  // often narrower than the web app, so the rail is opt-in via the header.
+  const [tasksOpen, setTasksOpen] = useState(false);
 
   const { from, to, days } = useMemo(() => viewRange(view, anchor), [view, anchor]);
   const fromIso = from.toISOString();
@@ -281,6 +286,14 @@ export function CalendarView() {
             <Plus /> New event
           </Button>
           <Button
+            variant="outline"
+            size="sm"
+            aria-pressed={tasksOpen}
+            onClick={() => setTasksOpen((v) => !v)}
+          >
+            <ListTodo /> Tasks
+          </Button>
+          <Button
             variant="ghost"
             size="icon"
             aria-label="Previous"
@@ -302,6 +315,8 @@ export function CalendarView() {
         </div>
       </header>
 
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
       {isError ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
           <p className="text-sm font-medium">Couldn't load your calendar</p>
@@ -389,6 +404,9 @@ export function CalendarView() {
           })}
         </div>
       )}
+        </div>
+        {tasksOpen && <TaskRail onClose={() => setTasksOpen(false)} />}
+      </div>
 
       {(creating || editing) && (
         <EventDialog
