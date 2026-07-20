@@ -60,6 +60,7 @@ import { activateSet, fetchCalendarSets } from '@/lib/set-data';
 import type { CalendarView } from '@/lib/calendar-views';
 import { VIEW_KEYS, rangeLabel, stepAnchor, viewRange } from '@/lib/calendar-views';
 import { nextHalfHour } from '@/lib/quick-add';
+import { eventPrefillFromThread, type ThreadDragPayload } from '@/lib/thread-drag';
 import { fetchAccounts, fetchCalendarSubscriptions } from '@/lib/settings-data';
 import { subscriptionColorMap } from '@/lib/subscription-utils';
 import { useShortcuts } from '@/lib/shortcuts';
@@ -72,6 +73,8 @@ interface EventDialogState {
   open: boolean;
   event: Event | null;
   defaults: Partial<EventInput> | null;
+  /** Email-to-event drop prefill (M2.8 Task 18); null for every other entry point. */
+  prefill: (Partial<EventInput> & { sourceThreadId?: string }) | null;
 }
 
 export default function CalendarPage() {
@@ -84,6 +87,7 @@ export default function CalendarPage() {
     open: false,
     event: null,
     defaults: null,
+    prefill: null,
   });
   const [availabilityOpen, setAvailabilityOpen] = React.useState(false);
   const [teamAvailabilityOpen, setTeamAvailabilityOpen] = React.useState(false);
@@ -260,6 +264,23 @@ export default function CalendarPage() {
         open: true,
         event: null,
         defaults: { calendarId: defaultCalendarId, ...defaults },
+        prefill: null,
+      });
+    },
+    [defaultCalendarId]
+  );
+
+  // Email-to-event drop (M2.8 Task 18): a thread dragged from /mail onto a
+  // grid day column (timed) or a day header (all-day) opens the create
+  // dialog prefilled — title from the subject, attendees from participants,
+  // time from the drop position (lib/thread-drag.ts).
+  const handleThreadDrop = React.useCallback(
+    (payload: ThreadDragPayload, start: Date, allDay: boolean) => {
+      setDialog({
+        open: true,
+        event: null,
+        defaults: { calendarId: defaultCalendarId },
+        prefill: eventPrefillFromThread(payload, start, allDay),
       });
     },
     [defaultCalendarId]
@@ -306,7 +327,7 @@ export default function CalendarPage() {
   );
 
   const handleEventClick = React.useCallback(
-    (event: Event) => setDialog({ open: true, event, defaults: null }),
+    (event: Event) => setDialog({ open: true, event, defaults: null, prefill: null }),
     []
   );
 
@@ -750,6 +771,7 @@ export default function CalendarPage() {
               onTaskToggle={(task) =>
                 void (task.completedAt ? reopenTask(task.id) : completeTask(task.id))
               }
+              onThreadDrop={handleThreadDrop}
             />
           )}
         </main>
@@ -773,6 +795,7 @@ export default function CalendarPage() {
           calendars={calendars}
           event={dialog.event}
           defaults={dialog.defaults}
+          prefill={dialog.prefill}
         />
       )}
       <AvailabilityDialog open={availabilityOpen} onOpenChange={setAvailabilityOpen} />

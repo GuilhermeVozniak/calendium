@@ -39,6 +39,7 @@ import {
   type MailCommand,
 } from '@/lib/mail-utils';
 import { usePrefs } from '@/lib/prefs-data';
+import { setThreadDragData } from '@/lib/thread-drag';
 import { useSelfEmails } from '@/lib/use-identity';
 import { MOD_KEY, useChords, useShortcuts } from '@/lib/shortcuts';
 import { useDraftActions, useDrafts, useLabels, useMailActions, useThreadList } from '@/lib/use-mail';
@@ -806,6 +807,19 @@ const ThreadRow = React.forwardRef<HTMLLIElement, ThreadRowProps>(function Threa
       <button
         type="button"
         onClick={onOpen}
+        // Email-to-event drag (M2.8 Task 18): the row carries its own
+        // subject + participants, so a calendar drop target can prefill an
+        // event without another fetch. Keyboard users get the same outcome
+        // via the thread view's "Propose event" action.
+        draggable
+        aria-roledescription="Draggable email conversation. Drop on the calendar to create an event."
+        onDragStart={(e) =>
+          setThreadDragData(e.dataTransfer, {
+            threadId: thread.id,
+            subject: thread.subject,
+            participants: thread.participants,
+          })
+        }
         onMouseEnter={() => {
           onSelect();
           onHoverStart();

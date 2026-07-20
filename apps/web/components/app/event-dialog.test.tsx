@@ -462,6 +462,64 @@ describe('EventDialog — quick-add defaults prefill', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Thread-drop prefill (M2.8 Task 18) — the email-to-event drag hands the
+// dialog a `prefill` prop (Partial<EventInput> + sourceThreadId) that merges
+// over `defaults` in create mode.
+// ---------------------------------------------------------------------------
+
+describe('EventDialog — thread-drop prefill', () => {
+  const PREFILL = {
+    title: 'Renewal terms for FY27',
+    attendeeEmails: ['ana@acme.com', 'bob@acme.com'],
+    description: 'From email thread “Renewal terms for FY27” — mailto:ana@acme.com,bob@acme.com',
+    start: new Date(2026, 6, 23, 14, 0, 0, 0).toISOString(),
+    end: new Date(2026, 6, 23, 14, 30, 0, 0).toISOString(),
+    sourceThreadId: 'thr-1',
+  };
+
+  it('renders the prefilled title, attendee chips, and thread-reference description', async () => {
+    renderDialog({ prefill: PREFILL });
+    expect(await screen.findByLabelText('Event title')).toHaveValue('Renewal terms for FY27');
+    expect(screen.getByText('ana@acme.com')).toBeInTheDocument();
+    expect(screen.getByText('bob@acme.com')).toBeInTheDocument();
+    expect(screen.getByLabelText('Description')).toHaveValue(PREFILL.description);
+    expect(screen.getByText('Created from email')).toBeInTheDocument();
+  });
+
+  it('prefills the dropped start/end slot', async () => {
+    renderDialog({ prefill: PREFILL });
+    const startInput = (await screen.findByLabelText('Start')) as HTMLInputElement;
+    const endInput = screen.getByLabelText('End') as HTMLInputElement;
+    expect(startInput.value).toBe(fmt(new Date(PREFILL.start)));
+    expect(endInput.value).toBe(fmt(new Date(PREFILL.end)));
+  });
+
+  it('merges prefill over defaults and carries everything into the create payload', async () => {
+    const user = userEvent.setup();
+    renderDialog({ defaults: { title: 'ignored', location: 'Room 4' }, prefill: PREFILL });
+    await screen.findByLabelText('Event title');
+    expect(screen.getByLabelText('Event title')).toHaveValue('Renewal terms for FY27');
+    // Non-overlapping defaults still apply.
+    expect(screen.getByLabelText('Location')).toHaveValue('Room 4');
+
+    await user.click(screen.getByRole('button', { name: /create event/i }));
+    await waitFor(() => expect(createEventApiMock).toHaveBeenCalledTimes(1));
+    const input = createEventApiMock.mock.calls[0]![0];
+    expect(input.title).toBe('Renewal terms for FY27');
+    expect(input.attendeeEmails).toEqual(['ana@acme.com', 'bob@acme.com']);
+    expect(input.description).toBe(PREFILL.description);
+    expect(input.start).toBe(PREFILL.start);
+    expect(input.end).toBe(PREFILL.end);
+  });
+
+  it('shows no from-email badge without a sourceThreadId', async () => {
+    renderDialog();
+    await screen.findByLabelText('Event title');
+    expect(screen.queryByText('Created from email')).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Edit-mode recurrence clear — the backend's EventPatch.RecurrenceRule is a
 // *string where nil means "unchanged" and non-nil "" means "CLEAR"; JSON.stringify
 // drops `undefined` keys entirely, so dismissing an existing recurrence must
