@@ -867,6 +867,8 @@ type fakeEventRepo struct {
 	// event — simulates a persistence failure between provider event
 	// creation and the local mirror write inside Book/ConfirmPoll's tx.
 	upsertErr error
+	// clearedGeo records ClearGeo calls (M2.8 Task 12 coords-clear).
+	clearedGeo []string
 }
 
 func newEventRepo() *fakeEventRepo { return &fakeEventRepo{byID: map[string]domain.Event{}} }
@@ -951,6 +953,17 @@ func (r *fakeEventRepo) DeleteByProviderID(_ context.Context, calendarID, provid
 
 func (r *fakeEventRepo) Search(_ context.Context, userID, query string, limit int) ([]domain.Event, error) {
 	return r.searchResult, r.searchErr
+}
+
+func (r *fakeEventRepo) ClearGeo(_ context.Context, id string) error {
+	e, ok := r.byID[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	e.LocationLat, e.LocationLon = nil, nil
+	r.byID[id] = e
+	r.clearedGeo = append(r.clearedGeo, id)
+	return nil
 }
 
 var _ port.EventRepo = (*fakeEventRepo)(nil)
@@ -1098,6 +1111,113 @@ func (r *fakeOAuthStateRepo) Consume(_ context.Context, state string) (port.OAut
 }
 
 var _ port.OAuthStateRepo = (*fakeOAuthStateRepo)(nil)
+
+// --- integration repo (M2.8 Task 9) ------------------------------------------
+
+// fakeIntegrationRepo persists integration connections in memory, mirroring
+// the DB's UNIQUE (user_id, vendor) on Create; tokens live in a parallel map
+// so tests can assert exactly what the service stored.
+type fakeIntegrationRepo struct {
+	byID    map[string]domain.IntegrationConnection
+	tokens  map[string]port.TokenSet
+	order   []string
+	created []domain.IntegrationConnection
+	updated []domain.IntegrationConnection
+	deleted []string
+}
+
+func newIntegrationRepo() *fakeIntegrationRepo {
+	return &fakeIntegrationRepo{
+		byID:   map[string]domain.IntegrationConnection{},
+		tokens: map[string]port.TokenSet{},
+	}
+}
+
+func (r *fakeIntegrationRepo) Create(_ context.Context, c domain.IntegrationConnection) (domain.IntegrationConnection, error) {
+	for _, existing := range r.byID {
+		if existing.UserID == c.UserID && existing.Vendor == c.Vendor {
+			return domain.IntegrationConnection{}, domain.ErrConflict
+		}
+	}
+	r.byID[c.ID] = c
+	r.order = append(r.order, c.ID)
+	r.created = append(r.created, c)
+	return c, nil
+}
+
+func (r *fakeIntegrationRepo) GetByID(_ context.Context, id string) (domain.IntegrationConnection, error) {
+	c, ok := r.byID[id]
+	if !ok {
+		return domain.IntegrationConnection{}, domain.ErrNotFound
+	}
+	return c, nil
+}
+
+func (r *fakeIntegrationRepo) GetByVendor(_ context.Context, userID string, vendor domain.IntegrationVendor) (domain.IntegrationConnection, error) {
+	for _, id := range r.order {
+		if c := r.byID[id]; c.UserID == userID && c.Vendor == vendor {
+			return c, nil
+		}
+	}
+	return domain.IntegrationConnection{}, domain.ErrNotFound
+}
+
+func (r *fakeIntegrationRepo) ListByUser(_ context.Context, userID string) ([]domain.IntegrationConnection, error) {
+	var out []domain.IntegrationConnection
+	for _, id := range r.order {
+		if c, ok := r.byID[id]; ok && c.UserID == userID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeIntegrationRepo) ListByVendor(_ context.Context, vendor domain.IntegrationVendor) ([]domain.IntegrationConnection, error) {
+	var out []domain.IntegrationConnection
+	for _, id := range r.order {
+		if c, ok := r.byID[id]; ok && c.Vendor == vendor {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeIntegrationRepo) Update(_ context.Context, c domain.IntegrationConnection) error {
+	if _, ok := r.byID[c.ID]; !ok {
+		return domain.ErrNotFound
+	}
+	r.byID[c.ID] = c
+	r.updated = append(r.updated, c)
+	return nil
+}
+
+func (r *fakeIntegrationRepo) Delete(_ context.Context, id string) error {
+	if _, ok := r.byID[id]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(r.byID, id)
+	delete(r.tokens, id)
+	r.deleted = append(r.deleted, id)
+	return nil
+}
+
+func (r *fakeIntegrationRepo) SaveTokens(_ context.Context, connectionID string, t port.TokenSet) error {
+	if _, ok := r.byID[connectionID]; !ok {
+		return domain.ErrNotFound
+	}
+	r.tokens[connectionID] = t
+	return nil
+}
+
+func (r *fakeIntegrationRepo) GetTokens(_ context.Context, connectionID string) (port.TokenSet, error) {
+	t, ok := r.tokens[connectionID]
+	if !ok {
+		return port.TokenSet{}, domain.ErrNotFound
+	}
+	return t, nil
+}
+
+var _ port.IntegrationRepo = (*fakeIntegrationRepo)(nil)
 
 // --- oauth gateway -----------------------------------------------------------
 
@@ -1261,6 +1381,7 @@ type fakeCalendarProvider struct {
 
 	// recording
 	rsvpCalls            []domain.RsvpStatus
+	rsvpComments         []string
 	lastCreateCalendarID string
 	lastCreateInput      domain.EventInput
 	lastUpdateEventID    string
@@ -1298,8 +1419,9 @@ func (p *fakeCalendarProvider) DeleteEvent(_ context.Context, accessToken, provi
 	return p.deleteErr
 }
 
-func (p *fakeCalendarProvider) RSVP(_ context.Context, accessToken, providerCalendarID, providerEventID string, response domain.RsvpStatus) error {
+func (p *fakeCalendarProvider) RSVP(_ context.Context, accessToken, providerCalendarID, providerEventID string, response domain.RsvpStatus, comment string) error {
 	p.rsvpCalls = append(p.rsvpCalls, response)
+	p.rsvpComments = append(p.rsvpComments, comment)
 	return p.rsvpErr
 }
 
@@ -1414,6 +1536,14 @@ type fakeCalendarService struct {
 	availCalls    int
 }
 
+func (f *fakeCalendarService) GetEventNote(ctx context.Context, userID, eventID string) (domain.EventNote, error) {
+	return domain.EventNote{EventID: eventID, Links: []string{}}, nil
+}
+
+func (f *fakeCalendarService) PutEventNote(ctx context.Context, userID, eventID string, bodyMD string, links []string) (domain.EventNote, error) {
+	return domain.EventNote{EventID: eventID, UserID: userID, BodyMD: bodyMD, Links: links}, nil
+}
+
 func newCalendarService() *fakeCalendarService { return &fakeCalendarService{} }
 
 func (c *fakeCalendarService) ListCalendars(_ context.Context, _ string) ([]domain.Calendar, error) {
@@ -1438,7 +1568,7 @@ func (c *fakeCalendarService) UpdateEvent(_ context.Context, _, _ string, _ doma
 
 func (c *fakeCalendarService) DeleteEvent(_ context.Context, _, _ string) error { return nil }
 
-func (c *fakeCalendarService) RSVP(_ context.Context, _, _ string, _ domain.RsvpStatus) (domain.Event, error) {
+func (c *fakeCalendarService) RSVP(_ context.Context, _, _ string, _ domain.RsvpStatus, _ string) (domain.Event, error) {
 	return domain.Event{}, nil
 }
 
@@ -1481,6 +1611,20 @@ func (c *fakeCalendarService) UpdateCalendarSet(_ context.Context, _, _ string, 
 }
 
 func (c *fakeCalendarService) DeleteCalendarSet(_ context.Context, _, _ string) error { return nil }
+
+// Calendar subscription stubs (M2.8 Task 15).
+func (c *fakeCalendarService) ListCalendarSubscriptions(_ context.Context, _ string) ([]domain.CalendarSubscription, error) {
+	return nil, nil
+}
+func (c *fakeCalendarService) CreateCalendarSubscription(_ context.Context, _ string, _ port.CalendarSubscriptionInput) (domain.CalendarSubscription, error) {
+	return domain.CalendarSubscription{}, nil
+}
+func (c *fakeCalendarService) UpdateCalendarSubscription(_ context.Context, _, _ string, _ port.CalendarSubscriptionPatch) (domain.CalendarSubscription, error) {
+	return domain.CalendarSubscription{}, nil
+}
+func (c *fakeCalendarService) DeleteCalendarSubscription(_ context.Context, _, _ string) error {
+	return nil
+}
 
 var _ port.CalendarService = (*fakeCalendarService)(nil)
 
@@ -2495,3 +2639,123 @@ func (r *fakeTeamInvitationRepo) Update(_ context.Context, inv domain.TeamInvita
 }
 
 var _ port.TeamInvitationRepo = (*fakeTeamInvitationRepo)(nil)
+
+// --- task repo (M2.8) --------------------------------------------------------
+
+// fakeTaskRepo is map-backed and mirrors the postgres repo's List semantics:
+// completed excluded unless IncludeCompleted, scheduled overlap with
+// [ScheduledFrom, ScheduledTo), due range [DueFrom, DueTo), ordered by
+// (position, createdAt, id).
+type fakeTaskRepo struct {
+	byID map[string]domain.Task
+	seq  int
+
+	// programmable
+	createErr error
+	listErr   error
+	updateErr error
+
+	// recording
+	lastQuery   port.TaskQuery
+	updateCalls int
+}
+
+func newTaskRepo() *fakeTaskRepo { return &fakeTaskRepo{byID: map[string]domain.Task{}} }
+
+func (r *fakeTaskRepo) Create(_ context.Context, t domain.Task) (domain.Task, error) {
+	if r.createErr != nil {
+		return domain.Task{}, r.createErr
+	}
+	if t.ID == "" {
+		r.seq++
+		t.ID = fmt.Sprintf("task_%d", r.seq)
+	}
+	if t.Source == "" {
+		t.Source = domain.TaskSourceLocal
+	}
+	r.byID[t.ID] = t
+	return t, nil
+}
+
+func (r *fakeTaskRepo) GetByID(_ context.Context, id string) (domain.Task, error) {
+	t, ok := r.byID[id]
+	if !ok {
+		return domain.Task{}, domain.ErrNotFound
+	}
+	return t, nil
+}
+
+func (r *fakeTaskRepo) GetByExternalID(_ context.Context, userID string, source domain.TaskSource, externalID string) (domain.Task, error) {
+	for _, t := range r.byID {
+		if t.UserID == userID && t.Source == source && t.ExternalID == externalID {
+			return t, nil
+		}
+	}
+	return domain.Task{}, domain.ErrNotFound
+}
+
+func (r *fakeTaskRepo) List(_ context.Context, q port.TaskQuery) ([]domain.Task, error) {
+	r.lastQuery = q
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+	out := []domain.Task{}
+	for _, t := range r.byID {
+		switch {
+		case t.UserID != q.UserID:
+		case q.Source != "" && t.Source != q.Source:
+		case !q.IncludeCompleted && t.Completed():
+		case !q.ScheduledFrom.IsZero() && (t.ScheduledEnd == nil || !t.ScheduledEnd.After(q.ScheduledFrom)):
+		case !q.ScheduledTo.IsZero() && (t.ScheduledStart == nil || !t.ScheduledStart.Before(q.ScheduledTo)):
+		case !q.DueFrom.IsZero() && (t.Due == nil || t.Due.Before(q.DueFrom)):
+		case !q.DueTo.IsZero() && (t.Due == nil || !t.Due.Before(q.DueTo)):
+		case q.UnscheduledOnly && t.ScheduledStart != nil:
+		default:
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Position != out[j].Position {
+			return out[i].Position < out[j].Position
+		}
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	if q.Limit > 0 && len(out) > q.Limit {
+		out = out[:q.Limit]
+	}
+	return out, nil
+}
+
+func (r *fakeTaskRepo) Update(_ context.Context, t domain.Task) error {
+	r.updateCalls++
+	if r.updateErr != nil {
+		return r.updateErr
+	}
+	if _, ok := r.byID[t.ID]; !ok {
+		return domain.ErrNotFound
+	}
+	r.byID[t.ID] = t
+	return nil
+}
+
+func (r *fakeTaskRepo) Delete(_ context.Context, id string) error {
+	if _, ok := r.byID[id]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(r.byID, id)
+	return nil
+}
+
+func (r *fakeTaskRepo) DeleteBySource(_ context.Context, userID string, source domain.TaskSource) error {
+	for id, t := range r.byID {
+		if t.UserID == userID && t.Source == source {
+			delete(r.byID, id)
+		}
+	}
+	return nil
+}
+
+var _ port.TaskRepo = (*fakeTaskRepo)(nil)

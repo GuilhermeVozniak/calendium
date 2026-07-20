@@ -150,6 +150,9 @@ func TestDelegationScopeForRoute(t *testing.T) {
 		{http.MethodDelete, "/v1/calendars/c1/shares/sh1", "", "", false},
 		{http.MethodPatch, "/v1/comments/cm1", "", "", false},
 		{http.MethodDelete, "/v1/comments/cm1", "", "", false},
+		// Event notes are private commentary (M2.8 Task 4): never delegable.
+		{http.MethodGet, "/v1/events/e1/note", "", "", false},
+		{http.MethodPut, "/v1/events/e1/note", "", "", false},
 		// But sibling thread sub-routes stay delegable.
 		{http.MethodPost, "/v1/mail/threads/t1/snooze", domain.ScopeMailWrite, "mail", true},
 		// Fail closed on everything else.
@@ -244,6 +247,8 @@ func TestActAsDeniedCollabSubpathsAreForbidden(t *testing.T) {
 		{http.MethodDelete, "/v1/calendars/c1/shares/sh1"},
 		{http.MethodPatch, "/v1/comments/cm1"},
 		{http.MethodDelete, "/v1/comments/cm1"},
+		{http.MethodGet, "/v1/events/e1/note"},
+		{http.MethodPut, "/v1/events/e1/note"},
 	}
 	for _, tc := range denied {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {

@@ -4,11 +4,14 @@ const message = vi.fn();
 vi.mock('sonner', () => ({ toast: { message: (...args: unknown[]) => message(...args) } }));
 
 import { resetShortcutHints, teachShortcut } from './shortcut-hints';
+import { resetTourStateForTests, setCoachMuted } from './tour-state';
 
 describe('teachShortcut', () => {
   beforeEach(() => {
     message.mockClear();
     resetShortcutHints();
+    window.localStorage.clear();
+    resetTourStateForTests();
   });
 
   it('toasts the shortcut for the action', () => {
@@ -24,5 +27,14 @@ describe('teachShortcut', () => {
     expect(message).toHaveBeenCalledTimes(1);
     teachShortcut('label', 'L', 'Label');
     expect(message).toHaveBeenCalledTimes(2);
+  });
+
+  it('stays silent while the coach is muted, without consuming the hint', () => {
+    setCoachMuted(true);
+    teachShortcut('archive', 'E', 'Archive');
+    expect(message).not.toHaveBeenCalled();
+    setCoachMuted(false);
+    teachShortcut('archive', 'E', 'Archive');
+    expect(message).toHaveBeenCalledTimes(1);
   });
 });

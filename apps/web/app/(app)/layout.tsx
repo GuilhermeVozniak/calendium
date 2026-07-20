@@ -35,6 +35,7 @@ import { ActAsMenuItems, ActingBanner } from '@/components/app/acting-as';
 import { AttachmentsPaneProvider } from '@/components/app/attachments-pane';
 import { CommandPalette } from '@/components/app/command-palette';
 import { ComposeProvider, useCompose } from '@/components/app/compose';
+import { OnboardingTour } from '@/components/app/onboarding-tour';
 import { OutboxIndicator } from '@/components/app/outbox-indicator';
 import { useTheme } from '@/components/theme-provider';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -56,6 +57,7 @@ import {
 import { Kbd } from '@/components/ui/kbd';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { authClient } from '@/lib/auth-client';
+import { dispatchCalendarCommand, queueCalendarCommand } from '@/lib/calendar-commands';
 import { DEMO_MODE } from '@/lib/demo';
 import { startOutboxReplay } from '@/lib/offline/queue';
 import { performSignOut } from '@/lib/sign-out';
@@ -109,6 +111,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 <AskSidebarPanel />
               </div>
               <CommandPalette />
+              {/* Concierge tour: auto-starts on a user's first authenticated
+                  visit; "Restart tour" in the palette re-runs it. */}
+              <OnboardingTour />
               <GlobalShortcuts />
               <OutboxReplayLifecycle />
             </TooltipProvider>
@@ -148,6 +153,23 @@ function GlobalShortcuts() {
       handler: () => openCompose(),
       // The calendar page binds 'c' to "new event"; don't double-fire there.
       enabled: pathname !== '/calendar',
+    },
+    {
+      // New task (M2.8 Task 3b). The brief's first pick was ⇧T, but the
+      // calendar page already ships ⇧T as the rail TOGGLE (t = today there),
+      // so creation lives on ⇧N — matching the app's shift+letter action
+      // convention (⇧I, ⇧H, ⇧Z…) and colliding with no existing binding.
+      // Routed like the palette entry: dispatch on /calendar, else queue+go.
+      keys: 'shift+n',
+      description: 'New task',
+      handler: () => {
+        if (pathname === '/calendar') {
+          dispatchCalendarCommand({ type: 'new-task' });
+        } else {
+          queueCalendarCommand({ type: 'new-task' });
+          router.push('/calendar');
+        }
+      },
     },
     // mod+1..9 selects the nth connected account, mod+0 all accounts (M2.6).
     ...accountSwitchShortcuts(
@@ -307,6 +329,7 @@ function SideRail({ user }: { user: SessionUser | null }) {
         </Link>
         <Link
           href="/settings"
+          data-tour="settings"
           className={cn(
             'flex h-8 items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors',
             pathname.startsWith('/settings')

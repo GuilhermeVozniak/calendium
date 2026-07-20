@@ -351,22 +351,25 @@ func TestClient_DeleteEvent(t *testing.T) {
 
 func TestClient_RSVP(t *testing.T) {
 	cases := []struct {
+		name     string
 		response domain.RsvpStatus
+		comment  string
 		action   string
 	}{
-		{domain.RsvpAccepted, "accept"},
-		{domain.RsvpDeclined, "decline"},
-		{domain.RsvpTentative, "tentativelyAccept"},
+		{"accepted", domain.RsvpAccepted, "", "accept"},
+		{"declined", domain.RsvpDeclined, "", "decline"},
+		{"tentative", domain.RsvpTentative, "", "tentativelyAccept"},
+		{"declined with comment", domain.RsvpDeclined, "Out of office this week.", "decline"},
 	}
 	for _, tc := range cases {
-		t.Run(string(tc.response), func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			var gotPath string
 			var gotBody map[string]any
 			_, c := newGraphServer(t, func(w http.ResponseWriter, r *http.Request) {
 				gotPath = r.URL.Path
 				gotBody = decodeBody(t, r)
 			})
-			if err := c.RSVP(context.Background(), "tok", "cal1", "evt1", tc.response); err != nil {
+			if err := c.RSVP(context.Background(), "tok", "cal1", "evt1", tc.response, tc.comment); err != nil {
 				t.Fatalf("RSVP: %v", err)
 			}
 			if !strings.HasSuffix(gotPath, "/me/events/evt1/"+tc.action) {
@@ -375,6 +378,13 @@ func TestClient_RSVP(t *testing.T) {
 			if gotBody["sendResponse"] != true {
 				t.Errorf("sendResponse = %v, want true", gotBody["sendResponse"])
 			}
+			if tc.comment == "" {
+				if _, has := gotBody["comment"]; has {
+					t.Errorf("comment key present on an empty-comment RSVP: %v", gotBody)
+				}
+			} else if gotBody["comment"] != tc.comment {
+				t.Errorf("comment = %v, want %q", gotBody["comment"], tc.comment)
+			}
 		})
 	}
 
@@ -382,7 +392,7 @@ func TestClient_RSVP(t *testing.T) {
 		_, c := newGraphServer(t, func(w http.ResponseWriter, r *http.Request) {
 			t.Errorf("unexpected HTTP call for RsvpNeedsAction: %s", r.URL)
 		})
-		err := c.RSVP(context.Background(), "tok", "cal1", "evt1", domain.RsvpNeedsAction)
+		err := c.RSVP(context.Background(), "tok", "cal1", "evt1", domain.RsvpNeedsAction, "")
 		if !errors.Is(err, domain.ErrValidation) {
 			t.Fatalf("err = %v, want ErrValidation", err)
 		}

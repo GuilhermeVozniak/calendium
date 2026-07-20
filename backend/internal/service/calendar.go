@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -36,6 +37,16 @@ type CalendarServiceDeps struct {
 	Audit  port.AuditRepo
 	Teams  port.TeamRepo
 	Users  port.UserRepo
+
+	// Notes stores local-only event notes (M2.8 Task 4). Notes never reach
+	// the provider, so event write-through is untouched by them.
+	Notes port.EventNoteRepo
+
+	// --- Interesting-calendar ICS subscriptions (M2.8 Task 15). Both are
+	// optional: left nil, the subscription surface answers ErrNotImplemented
+	// and ListEvents serves provider/shared events only. ---
+	CalendarSubs port.CalendarSubscriptionRepo
+	IcsFetcher   port.IcsFetcher
 }
 
 // CalendarService implements port.CalendarService. Event mutations write
@@ -55,6 +66,10 @@ type CalendarService struct {
 	audit     port.AuditRepo
 	teams     port.TeamRepo
 	users     port.UserRepo
+	notes     port.EventNoteRepo
+
+	calendarSubs port.CalendarSubscriptionRepo
+	icsFetcher   port.IcsFetcher
 }
 
 var _ port.CalendarService = (*CalendarService)(nil)
@@ -75,6 +90,10 @@ func NewCalendarService(d CalendarServiceDeps) *CalendarService {
 		audit:     d.Audit,
 		teams:     d.Teams,
 		users:     d.Users,
+		notes:     d.Notes,
+
+		calendarSubs: d.CalendarSubs,
+		icsFetcher:   d.IcsFetcher,
 	}
 }
 
@@ -140,16 +159,24 @@ func (s *CalendarService) ListEvents(ctx context.Context, userID string, from, t
 		if err != nil {
 			return nil, err
 		}
-		if len(shared) > 0 {
-			evs = append(evs, shared...)
-			sort.Slice(evs, func(i, j int) bool {
-				if evs[i].Start.Equal(evs[j].Start) {
-					return evs[i].ID < evs[j].ID
-				}
-				return evs[i].Start.Before(evs[j].Start)
-			})
-		}
+		evs = append(evs, shared...)
 	}
+	// M2.8 Task 15: merge read-only ICS subscription events (visible feeds
+	// only — the repo filters is_visible in SQL). They carry SubscriptionID
+	// and never reach Availability, which queries the event repo directly.
+	if s.calendarSubs != nil && len(calendarIDs) == 0 {
+		subEvs, err := s.calendarSubs.ListEventsInRange(ctx, userID, from, to)
+		if err != nil {
+			return nil, err
+		}
+		evs = append(evs, subEvs...)
+	}
+	sort.Slice(evs, func(i, j int) bool {
+		if evs[i].Start.Equal(evs[j].Start) {
+			return evs[i].ID < evs[j].ID
+		}
+		return evs[i].Start.Before(evs[j].Start)
+	})
 	return evs, nil
 }
 
@@ -191,6 +218,7 @@ func (s *CalendarService) CreateEvent(ctx context.Context, userID string, in dom
 		}
 		created.ID = ev.ID
 		created.CalendarID = c.ID
+		carryLocalGeo(&created, ev)
 		ev = created
 	}
 	return s.events.Upsert(ctx, ev)
@@ -226,9 +254,17 @@ func (s *CalendarService) UpdateEvent(ctx context.Context, userID, eventID strin
 		}
 		updated.ID = ev.ID
 		updated.CalendarID = c.ID
+		carryLocalGeo(&updated, ev)
 		ev = updated
 	}
-	return s.events.Upsert(ctx, ev)
+	saved, err := s.events.Upsert(ctx, ev)
+	if err != nil {
+		return domain.Event{}, err
+	}
+	if err := s.clearStaleGeo(ctx, &saved, patch); err != nil {
+		return domain.Event{}, err
+	}
+	return saved, nil
 }
 
 func (s *CalendarService) DeleteEvent(ctx context.Context, userID, eventID string) error {
@@ -257,7 +293,7 @@ func (s *CalendarService) DeleteEvent(ctx context.Context, userID, eventID strin
 	return s.events.Delete(ctx, ev.ID)
 }
 
-func (s *CalendarService) RSVP(ctx context.Context, userID, eventID string, response domain.RsvpStatus) (domain.Event, error) {
+func (s *CalendarService) RSVP(ctx context.Context, userID, eventID string, response domain.RsvpStatus, comment string) (domain.Event, error) {
 	if err := s.ent.require(ctx, userID); err != nil {
 		return domain.Event{}, err
 	}
@@ -270,7 +306,7 @@ func (s *CalendarService) RSVP(ctx context.Context, userID, eventID string, resp
 		if err != nil {
 			return domain.Event{}, err
 		}
-		if err := provider.RSVP(ctx, token, c.ProviderCalendarID, ev.ProviderEventID, response); err != nil {
+		if err := provider.RSVP(ctx, token, c.ProviderCalendarID, ev.ProviderEventID, response, comment); err != nil {
 			return domain.Event{}, fmt.Errorf("provider write-through failed: %w", err)
 		}
 	}
@@ -794,6 +830,71 @@ func (s *CalendarService) ownedEvent(ctx context.Context, userID, eventID string
 	return ev, c, acct, nil
 }
 
+// --- Event notes (M2.8 Task 4) ----------------------------------------------
+//
+// Notes are local-only user content: they are never written through to the
+// provider (no provider payload carries them), so they survive provider
+// syncs; the mirror row's ON DELETE CASCADE is their only lifecycle tie.
+
+func (s *CalendarService) GetEventNote(ctx context.Context, userID, eventID string) (domain.EventNote, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.EventNote{}, err
+	}
+	if _, _, _, err := s.ownedEvent(ctx, userID, eventID); err != nil {
+		return domain.EventNote{}, err
+	}
+	n, err := s.notes.GetByEventID(ctx, eventID)
+	if errors.Is(err, domain.ErrNotFound) {
+		// Missing note is an empty note, never a 404: the UI needs no
+		// special case.
+		return domain.EventNote{EventID: eventID, UserID: userID, Links: []string{}}, nil
+	}
+	if err != nil {
+		return domain.EventNote{}, err
+	}
+	if n.Links == nil {
+		n.Links = []string{}
+	}
+	return n, nil
+}
+
+func (s *CalendarService) PutEventNote(ctx context.Context, userID, eventID string, bodyMD string, links []string) (domain.EventNote, error) {
+	if err := s.ent.require(ctx, userID); err != nil {
+		return domain.EventNote{}, err
+	}
+	if _, _, _, err := s.ownedEvent(ctx, userID, eventID); err != nil {
+		return domain.EventNote{}, err
+	}
+	// Links are user content rendered as clickable "open" affordances:
+	// restrict them to absolute http(s) URLs so a stored javascript: (or
+	// other scheme) link can never become an XSS vector client-side.
+	clean := make([]string, 0, len(links))
+	for _, raw := range links {
+		link := strings.TrimSpace(raw)
+		if link == "" {
+			continue
+		}
+		u, err := url.Parse(link)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return domain.EventNote{}, fmt.Errorf("%w: link %q must be an absolute http(s) URL", domain.ErrValidation, raw)
+		}
+		clean = append(clean, link)
+	}
+	n, err := s.notes.Upsert(ctx, domain.EventNote{
+		EventID: eventID,
+		UserID:  userID,
+		BodyMD:  bodyMD,
+		Links:   clean,
+	})
+	if err != nil {
+		return domain.EventNote{}, err
+	}
+	if n.Links == nil {
+		n.Links = []string{}
+	}
+	return n, nil
+}
+
 func eventFromInput(in domain.EventInput, calendarID string) domain.Event {
 	ev := domain.Event{
 		ID:              newID(),
@@ -822,7 +923,20 @@ func eventFromInput(in domain.EventInput, calendarID string) domain.Event {
 	for _, email := range in.AttendeeEmails {
 		ev.Attendees = append(ev.Attendees, domain.Attendee{Email: email, Response: domain.RsvpNeedsAction})
 	}
+	// Coordinates arrive only when the location was picked from maps
+	// autocomplete; free-typed locations keep them nil (travel features
+	// skip such events).
+	ev.LocationLat = in.LocationLat
+	ev.LocationLon = in.LocationLon
 	return ev
+}
+
+// carryLocalGeo re-applies the local-only coordinate fields after a provider
+// write-through: providers know nothing about locationLat/Lon, so the event
+// they return must not erase coordinates chosen locally.
+func carryLocalGeo(dst *domain.Event, src domain.Event) {
+	dst.LocationLat = src.LocationLat
+	dst.LocationLon = src.LocationLon
 }
 
 func applyEventPatch(ev *domain.Event, patch domain.EventPatch) {
@@ -834,6 +948,12 @@ func applyEventPatch(ev *domain.Event, patch domain.EventPatch) {
 	}
 	if patch.Location != nil {
 		ev.Location = patch.Location
+		if patchClearsGeo(patch) {
+			// A location edit without a fresh autocomplete pick invalidates
+			// the stored coordinates — they describe the OLD location (M2.8
+			// Task 12 carry-forward).
+			ev.LocationLat, ev.LocationLon = nil, nil
+		}
 	}
 	if patch.Start != nil {
 		ev.Start = *patch.Start
@@ -864,6 +984,37 @@ func applyEventPatch(ev *domain.Event, patch domain.EventPatch) {
 	if patch.ReminderMinutes != nil {
 		ev.ReminderMinutes = *patch.ReminderMinutes
 	}
+	if patch.LocationLat != nil {
+		ev.LocationLat = patch.LocationLat
+	}
+	if patch.LocationLon != nil {
+		ev.LocationLon = patch.LocationLon
+	}
+}
+
+// patchClearsGeo reports whether the patch edits the location text without
+// supplying fresh coordinates. The stored coordinates then belong to the OLD
+// location and must be cleared rather than trusted (M2.8 Task 12 carry-
+// forward): on a location edit, the absence of a new autocomplete pick IS
+// the clear signal — the same clearing-sentinel convention as
+// recurrenceRule "" in this PATCH path.
+func patchClearsGeo(patch domain.EventPatch) bool {
+	return patch.Location != nil && patch.LocationLat == nil && patch.LocationLon == nil
+}
+
+// clearStaleGeo nulls persisted coordinates after a geo-clearing patch.
+// EventRepo.Upsert COALESCE-preserves coordinates on NULL input (so
+// coordinate-less provider syncs cannot wipe them), which means a deliberate
+// clear needs this targeted follow-up write.
+func (s *CalendarService) clearStaleGeo(ctx context.Context, ev *domain.Event, patch domain.EventPatch) error {
+	if !patchClearsGeo(patch) {
+		return nil
+	}
+	if err := s.events.ClearGeo(ctx, ev.ID); err != nil {
+		return err
+	}
+	ev.LocationLat, ev.LocationLon = nil, nil
+	return nil
 }
 
 func declinedByUser(ev domain.Event, ownEmails map[string]struct{}) bool {

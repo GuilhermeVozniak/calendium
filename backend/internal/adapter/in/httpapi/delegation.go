@@ -74,6 +74,9 @@ func delegationScopeForRoute(method, path string) (domain.DelegationScope, strin
 // calendar share), read or post team comments, read team activity, or read
 // or mutate snippets (team snippet bodies are a team surface and the list
 // endpoint cannot be split by scope at the path level — fail closed).
+// Event notes (GET/PUT /v1/events/{id}/note) are denied too: notes are the
+// principal's private commentary on a meeting, not calendar data — an
+// assistant with a calendar grant must not read or rewrite them.
 // /v1/comments/{id} is already non-delegable (no matching prefix).
 func delegationDeniedSubpath(path string) bool {
 	if path == "/v1/mail/snippets" || strings.HasPrefix(path, "/v1/mail/snippets/") {
@@ -93,6 +96,11 @@ func delegationDeniedSubpath(path string) bool {
 			if sub == "shares" || strings.HasPrefix(sub, "shares/") {
 				return true
 			}
+		}
+	}
+	if rest, ok := strings.CutPrefix(path, "/v1/events/"); ok {
+		if _, sub, ok := strings.Cut(rest, "/"); ok && sub == "note" {
+			return true
 		}
 	}
 	return false

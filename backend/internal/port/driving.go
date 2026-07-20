@@ -65,6 +65,28 @@ type AccountService interface {
 	SetAutoBcc(ctx context.Context, userID, accountID string, autoBcc []string) (domain.ConnectedAccount, error)
 }
 
+// --- Integrations (M2.8 Task 9) ----------------------------------------------
+
+// IntegrationService manages per-user vendor OAuth connections
+// (Todoist/HubSpot), mirroring AccountService's connect choreography: the
+// one-time CSRF state is stored server-side (OAuthStateRepo) and the
+// callback fails closed on any state mismatch.
+type IntegrationService interface {
+	List(ctx context.Context, userID string) ([]domain.IntegrationConnection, error)
+	// BeginConnect starts the vendor OAuth flow and returns the URL to open
+	// in a browser. redirectURL is the client's own return target (stored in
+	// state, never sent to the vendor); requestBaseURL builds the vendor
+	// redirect_uri when PUBLIC_API_URL is unset. Unconfigured vendors return
+	// domain.ErrNotImplemented (HTTP 501).
+	BeginConnect(ctx context.Context, userID string, vendor domain.IntegrationVendor, redirectURL, requestBaseURL string) (authURL string, err error)
+	// CompleteConnect handles the vendor OAuth callback (state-validated) and
+	// stores the connection with encrypted tokens, upserting on reconnect. It
+	// returns the client redirect URL stored in state (empty only when the
+	// state itself was invalid).
+	CompleteConnect(ctx context.Context, vendor domain.IntegrationVendor, state, code, requestBaseURL string) (conn domain.IntegrationConnection, clientRedirect string, err error)
+	Disconnect(ctx context.Context, userID, connectionID string) error
+}
+
 // DraftInput is the create/update draft payload (autosave-friendly).
 type DraftInput struct {
 	AccountID   string                `json:"accountId"`
@@ -211,7 +233,9 @@ type CalendarService interface {
 	CreateEvent(ctx context.Context, userID string, in domain.EventInput) (domain.Event, error)
 	UpdateEvent(ctx context.Context, userID, eventID string, patch domain.EventPatch) (domain.Event, error)
 	DeleteEvent(ctx context.Context, userID, eventID string) error
-	RSVP(ctx context.Context, userID, eventID string, response domain.RsvpStatus) (domain.Event, error)
+	// RSVP records the user's response; comment, when non-empty, travels to the
+	// organizer as the RSVP note.
+	RSVP(ctx context.Context, userID, eventID string, response domain.RsvpStatus, comment string) (domain.Event, error)
 	// Availability returns free windows of at least slotDuration between
 	// from and to, computed from the user's visible calendars.
 	Availability(ctx context.Context, userID string, from, to time.Time, slotDuration time.Duration) ([]domain.AvailabilitySlot, error)
@@ -235,6 +259,20 @@ type CalendarService interface {
 	CreateCalendarSet(ctx context.Context, userID string, in domain.CalendarSetInput) (domain.CalendarSet, error)
 	UpdateCalendarSet(ctx context.Context, userID, setID string, in domain.CalendarSetInput) (domain.CalendarSet, error)
 	DeleteCalendarSet(ctx context.Context, userID, setID string) error
+
+	// Event note methods (M2.8 Task 4). Notes are local-only: GetEventNote
+	// returns an empty note (not ErrNotFound) when none is stored, and
+	// PutEventNote with an empty body and no links deletes the note.
+	GetEventNote(ctx context.Context, userID, eventID string) (domain.EventNote, error)
+	PutEventNote(ctx context.Context, userID, eventID string, bodyMD string, links []string) (domain.EventNote, error)
+
+	// Calendar subscription methods (M2.8 Task 15: read-only ICS feeds).
+	// Create validates https and fetches the feed once synchronously so the
+	// caller sees immediate events or a clear error (ErrUnprocessable).
+	ListCalendarSubscriptions(ctx context.Context, userID string) ([]domain.CalendarSubscription, error)
+	CreateCalendarSubscription(ctx context.Context, userID string, in CalendarSubscriptionInput) (domain.CalendarSubscription, error)
+	UpdateCalendarSubscription(ctx context.Context, userID, subscriptionID string, patch CalendarSubscriptionPatch) (domain.CalendarSubscription, error)
+	DeleteCalendarSubscription(ctx context.Context, userID, subscriptionID string) error
 }
 
 // SearchResult is the unified GET /v1/search response.
@@ -290,10 +328,30 @@ type DeviceService interface {
 	Unregister(ctx context.Context, userID, deviceID string) error
 }
 
-// PrefsService covers user preferences like split reordering.
+// --- Automation engine (M2.8 Task 6) -----------------------------------------
+
+// AutomationService is the calendar automation engine, consumed by
+// cmd/worker beside SyncService.
+type AutomationService interface {
+	// RunAutomation runs one pass of every calendar automation for every
+	// user with automation enabled: FocusGuard planning, auto buffers,
+	// travel buffers, focus/OOO auto-decline, and ICS subscription refresh.
+	// Users fail independently.
+	RunAutomation(ctx context.Context) error
+}
+
+// PrefsService covers user preferences: split reordering (layout, no
+// paywall) and the calendar automation preference document (M2.8 Task 5,
+// entitlement-gated — the prefs unlock the automation engine).
 type PrefsService interface {
 	GetPrefs(ctx context.Context, userID string) (domain.UserPrefs, error)
 	UpdatePrefs(ctx context.Context, userID string, p domain.UserPrefs) (domain.UserPrefs, error)
+	// GetCalendarPrefs returns the user's calendar automation preferences,
+	// DefaultCalendarPrefs when never saved.
+	GetCalendarPrefs(ctx context.Context, userID string) (domain.CalendarPrefs, error)
+	// UpdateCalendarPrefs applies a nil-means-unchanged patch to the current
+	// document, validates the result, and persists it.
+	UpdateCalendarPrefs(ctx context.Context, userID string, patch domain.CalendarPrefsPatch) (domain.CalendarPrefs, error)
 }
 
 // SyncService is consumed by cmd/worker: provider polling plus scheduled
@@ -553,3 +611,77 @@ type CollabService interface {
 	// DeleteComment: the author, or a team admin+ (soft delete).
 	DeleteComment(ctx context.Context, userID, commentID string) error
 }
+
+// --- Tasks (M2.8) ------------------------------------------------------------
+
+// TaskService covers first-class tasks: CRUD, timeblock scheduling, and
+// in-place completion. Completion of an external task writes through to
+// its TodoProvider (Task 10) and rolls back the local mirror on failure.
+type TaskService interface {
+	ListTasks(ctx context.Context, userID string, q TaskQuery) ([]domain.Task, error)
+	CreateTask(ctx context.Context, userID string, in domain.TaskInput) (domain.Task, error)
+	UpdateTask(ctx context.Context, userID, taskID string, patch domain.TaskPatch) (domain.Task, error)
+	// CompleteTask checks the task off (idempotent); ReopenTask clears it.
+	CompleteTask(ctx context.Context, userID, taskID string) (domain.Task, error)
+	ReopenTask(ctx context.Context, userID, taskID string) (domain.Task, error)
+	DeleteTask(ctx context.Context, userID, taskID string) error
+}
+
+// --- Weather (M2.8 Task 13) --------------------------------------------------
+
+// WeatherService serves inline day forecasts for calendar surfaces
+// (GET /v1/weather). Entitlement-gated like every other product surface.
+type WeatherService interface {
+	// Forecast serves up to 14 days; cached ~30 minutes per location.
+	Forecast(ctx context.Context, userID string, lat, lon float64, timeZone string, days int) ([]domain.DayForecast, error)
+}
+
+// --- Places (M2.8 Task 11) ---------------------------------------------------
+
+// PlacesService is entitlement-gated location autocomplete over a
+// MapsProvider, with an in-memory result cache honoring Nominatim's
+// 1 req/s usage policy. Queries under 3 characters are ErrValidation.
+type PlacesService interface {
+	Autocomplete(ctx context.Context, userID, query string) ([]domain.Place, error)
+}
+
+// CrmService is the CRM-integration surface (M2.8 Task 16): contact context
+// for the contact pane and explicit per-message email logging.
+type CrmService interface {
+	// ContactContext returns context from the user's connected CRM vendors
+	// (empty slice when none connected — the pane hides the section).
+	ContactContext(ctx context.Context, userID, email string) ([]domain.CrmContext, error)
+	LogEmail(ctx context.Context, userID string, log domain.CrmEmailLog) error
+}
+
+// ---------------------------------------------------------------------------
+// Interesting-calendar ICS subscriptions (M2.8 Task 15)
+// ---------------------------------------------------------------------------
+
+// CalendarSubscriptionInput is the create payload
+// (POST /v1/calendar-subscriptions). URL must be https; Name and Color are
+// optional (feed X-WR-CALNAME / default color fill in).
+type CalendarSubscriptionInput struct {
+	URL   string `json:"url"`
+	Name  string `json:"name,omitempty"`
+	Color string `json:"color,omitempty"`
+}
+
+// --- Time insights (M2.8 Task 17) --------------------------------------------
+
+// InsightsService serves aggregated time analytics (GET /v1/insights/time)
+// computed from the LOCAL mirror only — events, managed events, and
+// scheduled task blocks. It never calls a provider.
+type InsightsService interface {
+	TimeInsights(ctx context.Context, userID string, from, to time.Time) (domain.TimeInsights, error)
+}
+
+// CalendarSubscriptionPatch is a partial subscription update
+// (PATCH /v1/calendar-subscriptions/{id}); nil fields are left unchanged.
+type CalendarSubscriptionPatch struct {
+	Name      *string `json:"name"`
+	Color     *string `json:"color"`
+	IsVisible *bool   `json:"isVisible"`
+}
+
+// --- Travel (M2.8 Task 12) ---------------------------------------------------

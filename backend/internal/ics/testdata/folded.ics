@@ -1,0 +1,14 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+X-WR-CALNAME:Agenda Cul
+ tural
+BEGIN:VEVENT
+UID:folded-1
+SUMMARY:Concerto de fado — Amália: uma homena
+ gem
+DESCRIPTION:Linha um\nLinha dois com vírgula\, e
+  espaço preservado
+DTSTART:20261101T210000Z
+DTEND:20261101T230000Z
+END:VEVENT
+END:VCALENDAR

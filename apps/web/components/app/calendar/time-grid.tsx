@@ -2,15 +2,23 @@
 
 import * as React from 'react';
 import { addDays, addMinutes, endOfDay, format, isSameDay, isToday, startOfDay } from 'date-fns';
-import { X } from 'lucide-react';
+import { Check, X } from 'lucide-react';
 
-import type { Calendar as CalendarModel, Event } from '@calendium/shared';
+import type { Calendar as CalendarModel, DayForecast, Event, Task } from '@calendium/shared';
 
+import { hasTaskDrag, readTaskDragId, setTaskDragData, timeblockFromDrop } from '@/lib/task-drag';
+import {
+  decodeThreadDrag,
+  hasThreadDrag,
+  threadDropTime,
+  type ThreadDragPayload,
+} from '@/lib/thread-drag';
 import { hourLabelInZone, tzAbbrev, zoneCaption } from '@/lib/timezones';
 import { cn } from '@/lib/utils';
 
 import { FALLBACK_COLOR, withAlpha } from './event-render';
 import { JoinButton } from './join-button';
+import { WeatherChip } from './weather-chip';
 
 /** Event blocks at/above this height (px) have room for a second text row (time range + Join). */
 const JOIN_BUTTON_MIN_HEIGHT = 40;
@@ -128,8 +136,25 @@ export interface TimeGridProps {
   timeTravelZone?: string | null;
   /** Clears the Time Travel overlay from its gutter's own exit control (mirrors Esc, wired in components/app/time-travel.tsx). */
   onExitTimeTravel?: () => void;
+  /** Day-keyed (yyyy-MM-dd) forecasts (M2.8 Task 13); absent → no weather chips. */
+  weatherByDate?: Map<string, DayForecast>;
   onSlotClick: (start: Date) => void;
   onEventClick: (event: Event) => void;
+  /** subscriptionId → feed color for read-only ICS mirrors (M2.8 Task 15). */
+  subscriptionColors?: Map<string, string>;
+  /** Timeblocked tasks to render as grid blocks (M2.8 Task 3). */
+  tasks?: Task[];
+  /** Fires when a task is dropped on a day column (drag contract in lib/task-drag.ts). */
+  onTaskDrop?: (taskId: string, block: { scheduledStart: string; scheduledEnd: string }) => void;
+  /** In-place check-off / reopen for a grid task block. */
+  onTaskToggle?: (task: Task) => void;
+  /**
+   * Fires when an email thread is dropped on the grid (M2.8 Task 18; drag
+   * contract in lib/thread-drag.ts). Timed drops on a day column pass the
+   * 15-minute-snapped `start` with `allDay: false`; drops on a day header
+   * pass local midnight with `allDay: true`.
+   */
+  onThreadDrop?: (payload: ThreadDragPayload, start: Date, allDay: boolean) => void;
 }
 
 export function TimeGrid({
@@ -141,8 +166,14 @@ export function TimeGrid({
   pinnedZones = [],
   timeTravelZone = null,
   onExitTimeTravel,
+  weatherByDate,
   onSlotClick,
   onEventClick,
+  subscriptionColors,
+  tasks,
+  onTaskDrop,
+  onTaskToggle,
+  onThreadDrop,
 }: TimeGridProps) {
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -201,7 +232,27 @@ export function TimeGrid({
             {days.map((day) => {
               const dayAllDay = allDay.filter((e) => eventTouchesDay(e, day));
               return (
-                <div key={day.toISOString()} className="border-l px-1.5 pt-2 pb-1.5 text-center">
+                // biome-ignore lint/a11y/noStaticElementInteractions: drop-only target for the email-to-event drag; keyboard users create all-day events via the dialog's All day switch.
+                <div
+                  key={day.toISOString()}
+                  data-testid={`day-header-${format(day, 'yyyy-MM-dd')}`}
+                  className="border-l px-1.5 pt-2 pb-1.5 text-center"
+                  onDragOver={(e) => {
+                    // All-day drop target for email threads (Task 18).
+                    if (onThreadDrop && hasThreadDrag(e.dataTransfer)) {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = 'copy';
+                    }
+                  }}
+                  onDrop={(e) => {
+                    if (!onThreadDrop) return;
+                    const payload = decodeThreadDrag(e.dataTransfer);
+                    if (!payload) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onThreadDrop(payload, startOfDay(day), true);
+                  }}
+                >
                   <div className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
                     {format(day, 'EEE')}
                   </div>
@@ -213,15 +264,28 @@ export function TimeGrid({
                   >
                     {format(day, 'd')}
                   </div>
+                  <WeatherChip
+                    forecast={weatherByDate?.get(format(day, 'yyyy-MM-dd'))}
+                    className="mt-0.5"
+                  />
                   {dayAllDay.slice(0, 2).map((event) => {
-                    const color = calendarById.get(event.calendarId)?.color ?? FALLBACK_COLOR;
+                    const color = event.subscriptionId
+                      ? (subscriptionColors?.get(event.subscriptionId) ?? FALLBACK_COLOR)
+                      : (calendarById.get(event.calendarId)?.color ?? FALLBACK_COLOR);
                     return (
                       <button
                         key={event.id}
                         type="button"
                         onClick={() => onEventClick(event)}
-                        className="mt-1 block w-full truncate rounded px-1.5 py-0.5 text-left text-[10px] font-medium"
-                        style={{ backgroundColor: withAlpha(color, 0.18), color }}
+                        className={cn(
+                          'mt-1 block w-full truncate rounded px-1.5 py-0.5 text-left text-[10px] font-medium',
+                          event.subscriptionId && 'border border-dashed'
+                        )}
+                        style={{
+                          backgroundColor: withAlpha(color, 0.18),
+                          color,
+                          ...(event.subscriptionId ? { borderColor: color } : null),
+                        }}
                       >
                         {event.title}
                       </button>
@@ -273,6 +337,11 @@ export function TimeGrid({
               now={now}
               onSlotClick={onSlotClick}
               onEventClick={onEventClick}
+              subscriptionColors={subscriptionColors}
+              tasks={tasks}
+              onTaskDrop={onTaskDrop}
+              onTaskToggle={onTaskToggle}
+              onThreadDrop={onThreadDrop}
             />
           ))}
         </div>
@@ -423,15 +492,41 @@ interface DayColumnProps {
   now: Date;
   onSlotClick: (start: Date) => void;
   onEventClick: (event: Event) => void;
+  subscriptionColors?: Map<string, string>;
+  tasks?: Task[];
+  onTaskDrop?: (taskId: string, block: { scheduledStart: string; scheduledEnd: string }) => void;
+  onTaskToggle?: (task: Task) => void;
+  onThreadDrop?: (payload: ThreadDragPayload, start: Date, allDay: boolean) => void;
 }
 
-function DayColumn({ day, events, calendarById, now, onSlotClick, onEventClick }: DayColumnProps) {
+function DayColumn({
+  day,
+  events,
+  calendarById,
+  now,
+  onSlotClick,
+  onEventClick,
+  subscriptionColors,
+  tasks,
+  onTaskDrop,
+  onTaskToggle,
+  onThreadDrop,
+}: DayColumnProps) {
   const positioned = React.useMemo(
     () => layoutDayEvents(day, events.filter((e) => eventTouchesDay(e, day))),
     [day, events]
   );
   const showNow = isSameDay(day, now);
   const nowTop = ((now.getHours() * 60 + now.getMinutes()) / 60) * HOUR_HEIGHT;
+
+  // Timeblocked tasks for this day (M2.8 Task 3), positioned like events.
+  const dayTasks = React.useMemo(
+    () =>
+      (tasks ?? []).filter(
+        (t) => t.scheduledStart && isSameDay(new Date(t.scheduledStart), day)
+      ),
+    [tasks, day]
+  );
 
   // Click an empty slot -> quick create, snapped to 30 minutes.
   const handleBackgroundClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -443,9 +538,37 @@ function DayColumn({ day, events, calendarById, now, onSlotClick, onEventClick }
 
   return (
     <div
+      data-testid={`day-column-${format(day, 'yyyy-MM-dd')}`}
       className="relative cursor-pointer border-l"
       style={{ height: 24 * HOUR_HEIGHT }}
       onClick={handleBackgroundClick}
+      onDragOver={(e) => {
+        // Same drop affordance for both drag sources (tasks: Task 3,
+        // email threads: Task 18) — accept + a matching drop cursor.
+        if (onTaskDrop && hasTaskDrag(e.dataTransfer)) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+        } else if (onThreadDrop && hasThreadDrag(e.dataTransfer)) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'copy';
+        }
+      }}
+      onDrop={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const taskId = onTaskDrop ? readTaskDragId(e.dataTransfer) : null;
+        if (taskId) {
+          e.preventDefault();
+          e.stopPropagation();
+          onTaskDrop!(taskId, timeblockFromDrop(day, e.clientY, rect.top));
+          return;
+        }
+        const payload = onThreadDrop ? decodeThreadDrag(e.dataTransfer) : null;
+        if (payload) {
+          e.preventDefault();
+          e.stopPropagation();
+          onThreadDrop!(payload, threadDropTime(day, e.clientY, rect.top), false);
+        }
+      }}
     >
       {Array.from({ length: 24 }, (_, hour) => (
         <div
@@ -456,7 +579,9 @@ function DayColumn({ day, events, calendarById, now, onSlotClick, onEventClick }
       ))}
 
       {positioned.map(({ event, top, height, leftPct, widthPct }) => {
-        const color = calendarById.get(event.calendarId)?.color ?? FALLBACK_COLOR;
+        const color = event.subscriptionId
+          ? (subscriptionColors?.get(event.subscriptionId) ?? FALLBACK_COLOR)
+          : (calendarById.get(event.calendarId)?.color ?? FALLBACK_COLOR);
         return (
           // biome-ignore lint/a11y/useSemanticElements: hosts a real <button> (JoinButton) inline — nesting a button inside a button is invalid HTML, so this outer element is a div with button semantics instead.
           <div
@@ -477,7 +602,9 @@ function DayColumn({ day, events, calendarById, now, onSlotClick, onEventClick }
             }}
             className={cn(
               'absolute z-10 flex cursor-pointer flex-col overflow-hidden rounded-md border-l-[3px] px-1.5 py-1 text-left leading-tight shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              event.status === 'tentative' && 'opacity-70'
+              event.status === 'tentative' && 'opacity-70',
+              // ICS feed mirrors are visually distinct: dashed outline in the feed color.
+              event.subscriptionId && 'border border-dashed'
             )}
             style={{
               top: top + 1,
@@ -486,6 +613,7 @@ function DayColumn({ day, events, calendarById, now, onSlotClick, onEventClick }
               width: `calc(${widthPct}% - 3px)`,
               backgroundColor: withAlpha(color, 0.16),
               borderLeftColor: color,
+              ...(event.subscriptionId ? { borderColor: color, borderLeftStyle: 'solid' } : null),
             }}
           >
             <span className="truncate text-xs font-medium" style={{ color }}>
@@ -500,6 +628,63 @@ function DayColumn({ day, events, calendarById, now, onSlotClick, onEventClick }
                 <JoinButton event={event} now={now} size="sm" />
               </span>
             )}
+          </div>
+        );
+      })}
+
+      {dayTasks.map((task) => {
+        const start = new Date(task.scheduledStart as string);
+        const end = new Date(task.scheduledEnd as string);
+        const startMinutes = start.getHours() * 60 + start.getMinutes();
+        const durationMinutes = Math.max(15, (end.getTime() - start.getTime()) / 60000);
+        const completed = task.completedAt !== null;
+        return (
+          // Distinct rounded task block: draggable (reschedule / drag back to
+          // the rail) with in-place check-off — clicking never opens a dialog.
+          // biome-ignore lint/a11y/noStaticElementInteractions: drag source whose only click handler stops slot-create propagation; the real control is the button inside.
+          // biome-ignore lint/a11y/useKeyWithClickEvents: the click handler only stops propagation — keyboard users act on the inner checkbox button.
+          <div
+            key={task.id}
+            data-testid={`grid-task-${task.id}`}
+            draggable
+            onDragStart={(e) => setTaskDragData(e.dataTransfer, task.id)}
+            onClick={(e) => e.stopPropagation()}
+            className={cn(
+              'absolute inset-x-0.5 z-10 flex cursor-grab items-start gap-1.5 overflow-hidden rounded-lg border border-primary/40 bg-primary/10 px-1.5 py-1 leading-tight shadow-sm',
+              completed && 'opacity-60'
+            )}
+            style={{
+              top: (startMinutes / 60) * HOUR_HEIGHT + 1,
+              height: Math.max((durationMinutes / 60) * HOUR_HEIGHT - 2, 18),
+            }}
+          >
+            {/* biome-ignore lint/a11y/useSemanticElements: styled round check control; the surrounding block must stay a draggable div. */}
+            <button
+              type="button"
+              role="checkbox"
+              aria-checked={completed}
+              aria-label={completed ? `Reopen "${task.title}"` : `Complete "${task.title}"`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onTaskToggle?.(task);
+              }}
+              className={cn(
+                'mt-px flex size-3.5 shrink-0 items-center justify-center rounded-full border transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                completed
+                  ? 'border-primary bg-primary text-primary-foreground'
+                  : 'border-primary/60 hover:bg-primary/20'
+              )}
+            >
+              {completed && <Check className="size-2.5" />}
+            </button>
+            <span
+              className={cn(
+                'truncate text-xs font-medium text-primary',
+                completed && 'line-through'
+              )}
+            >
+              {task.title}
+            </span>
           </div>
         );
       })}

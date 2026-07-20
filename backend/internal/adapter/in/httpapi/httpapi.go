@@ -57,6 +57,28 @@ type Deps struct {
 	// TeamActivity serves teammate read/reply indicators (M2.7 Task 10);
 	// when nil the team-activity route answers 501.
 	TeamActivity port.TeamActivityService
+	// Tasks is the first-class task surface (M2.8): local todos plus
+	// mirrored external provider todos.
+	Tasks port.TaskService
+	// Weather serves inline day forecasts for calendar surfaces (M2.8 Task
+	// 13, Open-Meteo). When nil — no vendor configured — GET /v1/weather
+	// answers 501 and clients hide the weather chips.
+	Weather port.WeatherService
+	// Places is location autocomplete backed by a MapsProvider (M2.8
+	// Task 11). When nil (maps not configured) the places route answers 501
+	// and GET /v1/instance advertises features.maps=false.
+	Places port.PlacesService
+	// Integrations manages per-user vendor OAuth connections
+	// (Todoist/HubSpot, M2.8 Task 9). When nil the integration routes
+	// answer 501.
+	Integrations port.IntegrationService
+	// Crm serves CRM contact context and explicit per-message email logging
+	// (M2.8 Task 16). When nil (vendor unconfigured, or the integration-
+	// connection repo not composed) the /v1/crm routes answer 501.
+	Crm port.CrmService
+	// Insights serves aggregated time analytics computed from the local
+	// mirror (M2.8 Task 17). When nil the insights route answers 501.
+	Insights port.InsightsService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -86,6 +108,9 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("GET /v1/instance", s.handleInstance)
 	mux.HandleFunc("POST /v1/webhooks/stripe", s.handleStripeWebhook)
 	mux.HandleFunc("GET /v1/accounts/callback/{provider}", s.handleAccountCallback)
+	// M2.8 Task 9: vendor OAuth redirect target (state-validated, like the
+	// account callback above).
+	mux.HandleFunc("GET /v1/integrations/callback/{vendor}", s.handleIntegrationCallback)
 
 	// Public scheduling surface (unauthenticated, rate limited): booking
 	// pages/slots/bookings and meeting-poll view/vote. Two buckets — reads
@@ -123,6 +148,11 @@ func New(deps Deps) http.Handler {
 	authed("PUT /v1/accounts/{id}/signature", s.handleSetSignature)
 	authed("PUT /v1/accounts/{id}/auto-bcc", s.handleSetAutoBcc)
 	authed("DELETE /v1/accounts/{id}", s.handleDisconnectAccount)
+
+	// M2.8 Task 9: per-user vendor integrations (Todoist/HubSpot).
+	authed("GET /v1/integrations", s.handleListIntegrations)
+	authed("POST /v1/integrations/connect/{vendor}", s.handleConnectIntegration)
+	authed("DELETE /v1/integrations/{id}", s.handleDisconnectIntegration)
 
 	authed("GET /v1/mail/threads", s.handleListThreads)
 	authed("GET /v1/mail/threads/{id}", s.handleGetThread)
@@ -182,7 +212,18 @@ func New(deps Deps) http.Handler {
 	authed("PATCH /v1/events/{id}", s.handleUpdateEvent)
 	authed("DELETE /v1/events/{id}", s.handleDeleteEvent)
 	authed("POST /v1/events/{id}/rsvp", s.handleRsvp)
+	// M2.8 Task 4: local-only docs/notes attached to events.
+	authed("GET /v1/events/{id}/note", s.handleGetEventNote)
+	authed("PUT /v1/events/{id}/note", s.handlePutEventNote)
 	authed("GET /v1/availability", s.handleAvailability)
+
+	// M2.8: first-class tasks (local + mirrored provider todos).
+	authed("GET /v1/tasks", s.handleListTasks)
+	authed("POST /v1/tasks", s.handleCreateTask)
+	authed("PATCH /v1/tasks/{id}", s.handleUpdateTask)
+	authed("POST /v1/tasks/{id}/complete", s.handleCompleteTask)
+	authed("POST /v1/tasks/{id}/reopen", s.handleReopenTask)
+	authed("DELETE /v1/tasks/{id}", s.handleDeleteTask)
 
 	authed("GET /v1/event-templates", s.handleListEventTemplates)
 	authed("POST /v1/event-templates", s.handleCreateEventTemplate)
@@ -194,6 +235,12 @@ func New(deps Deps) http.Handler {
 	authed("POST /v1/calendar-sets", s.handleCreateCalendarSet)
 	authed("PUT /v1/calendar-sets/{id}", s.handleUpdateCalendarSet)
 	authed("DELETE /v1/calendar-sets/{id}", s.handleDeleteCalendarSet)
+
+	// M2.8 Task 15: interesting-calendar ICS feed subscriptions.
+	authed("GET /v1/calendar-subscriptions", s.handleListCalendarSubscriptions)
+	authed("POST /v1/calendar-subscriptions", s.handleCreateCalendarSubscription)
+	authed("PATCH /v1/calendar-subscriptions/{id}", s.handleUpdateCalendarSubscription)
+	authed("DELETE /v1/calendar-subscriptions/{id}", s.handleDeleteCalendarSubscription)
 
 	authed("GET /v1/search", s.handleSearch)
 	authed("POST /v1/ai/compose", s.handleAiCompose)
@@ -210,6 +257,12 @@ func New(deps Deps) http.Handler {
 
 	authed("GET /v1/prefs", s.handleGetPrefs)
 	authed("PUT /v1/prefs", s.handleUpdatePrefs)
+
+	// M2.8 Task 5: calendar automation preferences (FocusGuard, buffers,
+	// OOO, travel, weather) — the settings the Wave-2 automation engine
+	// fans out over.
+	authed("GET /v1/prefs/calendar", s.handleGetCalendarPrefs)
+	authed("PATCH /v1/prefs/calendar", s.handleUpdateCalendarPrefs)
 
 	// Scheduling: owner-authenticated surface (booking links, bookings,
 	// meeting polls, propose-new-time, guest free/busy, settings). The
@@ -269,6 +322,20 @@ func New(deps Deps) http.Handler {
 	authed("POST /v1/delegations/{id}/accept", s.handleAcceptDelegation)
 	authed("DELETE /v1/delegations/{id}", s.handleRevokeDelegation)
 	authed("GET /v1/delegations/audit", s.handleDelegationAudit)
+
+	// M2.8 Task 13: inline weather on calendar days. Best-effort decoration:
+	// its own endpoint, never on a calendar request's critical path.
+	authed("GET /v1/weather", s.handleGetWeather)
+
+	// M2.8 Task 11: location autocomplete (Nominatim-backed; 501 unwired).
+	authed("GET /v1/places/autocomplete", s.handlePlacesAutocomplete)
+
+	// M2.8 Task 16: CRM contact context + explicit email logging.
+	authed("GET /v1/crm/context", s.handleCrmContext)
+	authed("POST /v1/crm/log", s.handleCrmLog)
+
+	// M2.8 Task 17: time analytics computed from the local mirror.
+	authed("GET /v1/insights/time", s.handleGetTimeInsights)
 
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins)

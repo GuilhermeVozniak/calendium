@@ -219,6 +219,16 @@ func (r *scopedEventRepo) Search(_ context.Context, userID, query string, limit 
 	return nil, nil
 }
 
+func (r *scopedEventRepo) ClearGeo(_ context.Context, id string) error {
+	e, ok := r.byID[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	e.LocationLat, e.LocationLon = nil, nil
+	r.byID[id] = e
+	return nil
+}
+
 var _ port.EventRepo = (*scopedEventRepo)(nil)
 
 // recordingCalendarProvider records the access token of every write so the
@@ -259,7 +269,7 @@ func (p *recordingCalendarProvider) DeleteEvent(_ context.Context, accessToken, 
 	return nil
 }
 
-func (p *recordingCalendarProvider) RSVP(_ context.Context, _, _, _ string, _ domain.RsvpStatus) error {
+func (p *recordingCalendarProvider) RSVP(_ context.Context, _, _, _ string, _ domain.RsvpStatus, _ string) error {
 	return nil
 }
 

@@ -21,7 +21,11 @@ export type CalendarCommand =
   | { type: 'new-from-template'; templateId: string }
   | { type: 'share-availability' }
   | { type: 'toggle-set'; setId: string }
-  | { type: 'time-travel' };
+  | { type: 'time-travel' }
+  | { type: 'time-insights' }
+  // Task rail (M2.8 Task 3b): palette / global-shortcut parity for the rail.
+  | { type: 'new-task' }
+  | { type: 'toggle-task-rail' };
 
 export const CALENDAR_COMMAND_EVENT = 'calendium:calendar-command';
 

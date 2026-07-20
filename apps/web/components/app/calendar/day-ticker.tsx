@@ -4,9 +4,10 @@ import * as React from 'react';
 import { addDays, format, isSameDay, isToday } from 'date-fns';
 import { CalendarDays } from 'lucide-react';
 
-import type { Calendar as CalendarModel, Event } from '@calendium/shared';
+import type { Calendar as CalendarModel, DayForecast, Event } from '@calendium/shared';
 
 import { Badge } from '@/components/ui/badge';
+import { WeatherChip } from '@/components/app/calendar/weather-chip';
 import { Kbd } from '@/components/ui/kbd';
 import { TICKER_DAYS } from '@/lib/calendar-views';
 import { cn } from '@/lib/utils';
@@ -23,6 +24,8 @@ export interface DayTickerProps {
   calendarById: Map<string, CalendarModel>;
   onAnchorChange: (day: Date) => void;
   onEventClick: (event: Event) => void;
+  /** Day-keyed (yyyy-MM-dd) forecasts (M2.8 Task 13); absent → no weather chips. */
+  weatherByDate?: Map<string, DayForecast>;
 }
 
 /**
@@ -30,7 +33,7 @@ export interface DayTickerProps {
  * grouped agenda list (reusing AgendaView's grouping + row-rendering engine)
  * that auto-scrolls to whichever day is selected in the strip.
  */
-export function DayTicker({ anchor, events, calendarById, onAnchorChange, onEventClick }: DayTickerProps) {
+export function DayTicker({ anchor, events, calendarById, onAnchorChange, onEventClick, weatherByDate }: DayTickerProps) {
   const stripDays = React.useMemo(
     () => Array.from({ length: STRIP_DAYS }, (_, i) => addDays(anchor, i - STRIP_DAYS_BEFORE)),
     [anchor]
@@ -76,6 +79,11 @@ export function DayTicker({ anchor, events, calendarById, onAnchorChange, onEven
                 {format(day, 'EEEEE')}
               </span>
               <span className="text-sm font-semibold tabular-nums">{format(day, 'd')}</span>
+              <WeatherChip
+                compact
+                forecast={weatherByDate?.get(key)}
+                className={selected ? 'text-primary-foreground/80' : undefined}
+              />
               {today && (
                 <Badge
                   variant={selected ? 'secondary' : 'default'}

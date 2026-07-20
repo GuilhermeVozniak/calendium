@@ -90,6 +90,7 @@ describe('TabsLayout — Ask AI tab visibility', () => {
     // The always-present tabs are unaffected by the AI flag.
     expect(screen.getByText('inbox')).toBeTruthy();
     expect(screen.getByText('calendar')).toBeTruthy();
+    expect(screen.getByText('tasks')).toBeTruthy();
     expect(screen.getByText('settings')).toBeTruthy();
   });
 });

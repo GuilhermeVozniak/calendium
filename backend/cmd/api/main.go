@@ -21,11 +21,16 @@ import (
 	"calendium/backend/internal/adapter/out/authjwt"
 	"calendium/backend/internal/adapter/out/eventbus"
 	"calendium/backend/internal/adapter/out/googleapi"
+	"calendium/backend/internal/adapter/out/hubspot"
+	"calendium/backend/internal/adapter/out/icsfeed"
 	"calendium/backend/internal/adapter/out/msgraph"
+	"calendium/backend/internal/adapter/out/nominatim"
+	"calendium/backend/internal/adapter/out/openmeteo"
 	"calendium/backend/internal/adapter/out/openrouter"
 	"calendium/backend/internal/adapter/out/postgres"
 	"calendium/backend/internal/adapter/out/push"
 	"calendium/backend/internal/adapter/out/stripeapi"
+	"calendium/backend/internal/adapter/out/todoist"
 	"calendium/backend/internal/adapter/out/unsubscribe"
 	"calendium/backend/internal/config"
 	"calendium/backend/internal/domain"
@@ -107,6 +112,24 @@ func run(logger *slog.Logger) error {
 		calendarProviders[domain.ProviderMicrosoft] = m
 	}
 
+	// M2.8 Task 9: per-user vendor OAuth (Todoist/HubSpot). Only vendors with
+	// config present are wired; the rest answer 501 and are not advertised.
+	integrationOAuth := map[domain.IntegrationVendor]port.OAuthGateway{}
+	if cfg.Todoist.ClientID != "" {
+		integrationOAuth[domain.IntegrationTodoist] = todoist.NewOAuth(cfg.Todoist.ClientID, cfg.Todoist.ClientSecret, hc)
+	}
+	if cfg.HubSpot.ClientID != "" {
+		integrationOAuth[domain.IntegrationHubSpot] = hubspot.NewOAuth(cfg.HubSpot.ClientID, cfg.HubSpot.ClientSecret, hc)
+	}
+
+	// M2.8 Task 10: todo-tool adapters keyed by task source. Completing or
+	// reopening a mirrored task writes through to the vendor before the local
+	// mark; the worker owns the periodic mirror sync.
+	todoProviders := map[domain.TaskSource]port.TodoProvider{}
+	if cfg.Todoist.ClientID != "" {
+		todoProviders[domain.TaskSourceTodoist] = todoist.NewClient(hc)
+	}
+
 	// --- services ---
 	clock := service.SystemClock{}
 	bus := eventbus.New()
@@ -115,6 +138,15 @@ func run(logger *slog.Logger) error {
 	users := service.NewUserService(store.Users(), store.UserPreferences(), clock)
 	billing := service.NewBillingService(store.Users(), store.Subscriptions(), store.StripeEvents(), stripe, clock, store, cfg.Instance.SelfHosted)
 	accounts := service.NewAccountService(store.Accounts(), store.OAuthStates(), store.SyncStates(), oauth, cfg.OAuth.AllowedRedirectURIs, cfg.Instance.PublicAPIURL, clock)
+	integrations := service.NewIntegrationService(
+		postgres.NewIntegrationRepo(store), store.OAuthStates(), integrationOAuth,
+		cfg.OAuth.AllowedRedirectURIs, cfg.Instance.PublicAPIURL,
+		// Todoist task purge on disconnect: mirrored Todoist rows are removed
+		// so the task rail never shows tasks from a revoked grant.
+		func(ctx context.Context, userID string) error {
+			return store.Tasks().DeleteBySource(ctx, userID, domain.TaskSourceTodoist)
+		},
+		clock)
 	mail := service.NewMailService(service.MailServiceDeps{
 		Subscriptions: store.Subscriptions(),
 		Accounts:      store.Accounts(),
@@ -154,6 +186,13 @@ func run(logger *slog.Logger) error {
 		Audit:  postgres.NewAuditRepo(store),
 		Teams:  postgres.NewTeamRepo(store),
 		Users:  store.Users(),
+		// Local-only event notes (M2.8 Task 4).
+		Notes: store.EventNotes(),
+		// Interesting-calendar ICS subscriptions (M2.8 Task 15). No vendor
+		// config needed — the fetcher is plain HTTPS, so the routes always
+		// work.
+		CalendarSubs: store.CalendarSubscriptions(),
+		IcsFetcher:   icsfeed.New(nil),
 	})
 	search := service.NewSearchService(store.Subscriptions(), store.Threads(), store.Events(), clock, cfg.Instance.SelfHosted)
 	aiSvc := service.NewAIService(service.AIServiceDeps{
@@ -172,7 +211,7 @@ func run(logger *slog.Logger) error {
 		SelfHosted:    cfg.Instance.SelfHosted,
 	})
 	devices := service.NewDeviceService(store.Devices(), clock)
-	prefs := service.NewPrefsService(store.Prefs())
+	prefs := service.NewPrefsService(store.Prefs(), store.CalendarPrefs(), store.Subscriptions(), clock, cfg.Instance.SelfHosted)
 	scheduling := service.NewSchedulingService(service.SchedulingServiceDeps{
 		Subscriptions:     store.Subscriptions(),
 		Users:             store.Users(),
@@ -247,6 +286,16 @@ func run(logger *slog.Logger) error {
 		Clock:       clock,
 	})
 
+	// M2.8: first-class tasks (local todos + mirrored provider todos).
+	tasksSvc := service.NewTaskService(service.TaskServiceDeps{
+		Subscriptions: store.Subscriptions(),
+		Tasks:         store.Tasks(),
+		Clock:         clock,
+		TodoProviders: todoProviders,
+		Integrations:  postgres.NewIntegrationRepo(store),
+		SelfHosted:    cfg.Instance.SelfHosted,
+	})
+
 	// M2.7 Task 10: teammate read/reply indicators.
 	teamActivitySvc := service.NewTeamActivityService(service.TeamActivityServiceDeps{
 		Subscriptions: store.Subscriptions(),
@@ -254,6 +303,69 @@ func run(logger *slog.Logger) error {
 		Threads:       store.Threads(),
 		Teams:         postgres.NewTeamRepo(store),
 		Activity:      activityRepo,
+		Clock:         clock,
+		SelfHosted:    cfg.Instance.SelfHosted,
+	})
+
+	// M2.8 Task 13: inline weather (Open-Meteo, keyless — on unless
+	// OPEN_METEO_URL is explicitly emptied). Left nil when disabled:
+	// GET /v1/weather answers 501 and capabilities.weather reads false.
+	var weatherSvc port.WeatherService
+	if cfg.Weather.BaseURL != "" {
+		weatherSvc = service.NewWeatherService(service.WeatherServiceDeps{
+			Provider:      openmeteo.New(cfg.Weather.BaseURL),
+			Subscriptions: store.Subscriptions(),
+			Clock:         clock,
+			SelfHosted:    cfg.Instance.SelfHosted,
+		})
+	}
+
+	// M2.8 Task 11: location autocomplete (Nominatim) + travel times (OSRM).
+	// Unconfigured base URLs leave the provider unwired: the places route
+	// answers 501 and features.maps stays false, so clients hide the
+	// affordance (graceful degradation).
+	var placesSvc port.PlacesService
+	mapsConfigured := cfg.Maps.NominatimBaseURL != ""
+	if mapsConfigured {
+		placesSvc = service.NewPlacesService(service.PlacesServiceDeps{
+			Subscriptions: store.Subscriptions(),
+			Maps:          nominatim.New(cfg.Maps.NominatimBaseURL, cfg.Maps.OSRMBaseURL, hc),
+			Clock:         clock,
+			SelfHosted:    cfg.Instance.SelfHosted,
+		})
+	}
+
+	// M2.8 Task 16: CRM contact context + explicit per-message email logging
+	// (HubSpot). Consumes Task 9's integration-connection store (AES-GCM
+	// token vault) through the narrow crmConnectionStore adapter below. Left
+	// nil when the HubSpot OAuth app is unconfigured: /v1/crm answers 501.
+	var crmSvc port.CrmService
+	if cfg.HubSpot.ClientID != "" {
+		crmSvc = service.NewCrmService(service.CrmServiceDeps{
+			Subscriptions: store.Subscriptions(),
+			Connections:   crmConnectionStore{repo: postgres.NewIntegrationRepo(store)},
+			Providers: map[domain.IntegrationVendor]port.CrmProvider{
+				domain.IntegrationHubSpot: hubspot.NewClient(hc),
+			},
+			OAuth: map[domain.IntegrationVendor]port.OAuthGateway{
+				domain.IntegrationHubSpot: integrationOAuth[domain.IntegrationHubSpot],
+			},
+			Clock:      clock,
+			SelfHosted: cfg.Instance.SelfHosted,
+		})
+	}
+
+	// M2.8 Task 17: time insights — aggregated analytics computed from the
+	// LOCAL mirror (events, managed events, scheduled task blocks). Never
+	// calls a provider, so it is always wired.
+	insightsSvc := service.NewInsightsService(service.InsightsServiceDeps{
+		Subscriptions: store.Subscriptions(),
+		Users:         store.Users(),
+		Accounts:      store.Accounts(),
+		Events:        store.Events(),
+		Managed:       store.InsightsManagedEvents(),
+		Tasks:         store.Tasks(),
+		Prefs:         store.CalendarPrefs(),
 		Clock:         clock,
 		SelfHosted:    cfg.Instance.SelfHosted,
 	})
@@ -298,6 +410,14 @@ func run(logger *slog.Logger) error {
 			Microsoft: cfg.Microsoft.ClientID != "",
 			AI:        cfg.OpenRouter.APIKey != "",
 			Push:      pushConfigured,
+			Maps:      mapsConfigured,
+		},
+		// Only vendors whose config is present are advertised (M2.8).
+		Capabilities: httpapi.InstanceCapabilities{
+			Todoist: cfg.Todoist.ClientID != "",
+			HubSpot: cfg.HubSpot.ClientID != "",
+			Maps:    mapsConfigured,
+			Weather: cfg.Weather.BaseURL != "",
 		},
 	}
 
@@ -328,7 +448,20 @@ func run(logger *slog.Logger) error {
 		// M2.7 Task 15: EA delegation grants + act-as + audit surface.
 		Delegations: delegations,
 		// M2.7 Task 10: teammate read/reply indicators.
-		TeamActivity:       teamActivitySvc,
+		TeamActivity: teamActivitySvc,
+		// M2.8: first-class tasks.
+		Tasks: tasksSvc,
+		// M2.8 Task 13: inline weather (nil when disabled → 501).
+		Weather: weatherSvc,
+		// M2.8 Task 11: location autocomplete (nil when maps unconfigured).
+		Places: placesSvc,
+		// M2.8 Task 9: per-user vendor integrations.
+		Integrations: integrations,
+		// M2.8 Task 16: CRM contact context + explicit email logging (nil
+		// when the HubSpot OAuth app is unconfigured → /v1/crm answers 501).
+		Crm: crmSvc,
+		// M2.8 Task 17: time insights over the local mirror.
+		Insights:           insightsSvc,
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 	})
@@ -351,4 +484,32 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("api: shut down cleanly")
 	return nil
+}
+
+// crmConnectionStore adapts Task 9's IntegrationRepo (connection rows + the
+// AES-GCM token vault) to port.CrmConnectionStore — the narrow decrypted-
+// token view the CRM service consumes. The CRM side never grows its own
+// OAuth/token storage.
+type crmConnectionStore struct{ repo *postgres.IntegrationRepo }
+
+var _ port.CrmConnectionStore = crmConnectionStore{}
+
+func (s crmConnectionStore) ListByUser(ctx context.Context, userID string) ([]port.CrmConnection, error) {
+	conns, err := s.repo.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]port.CrmConnection, 0, len(conns))
+	for _, c := range conns {
+		t, err := s.repo.GetTokens(ctx, c.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, port.CrmConnection{ID: c.ID, UserID: c.UserID, Vendor: c.Vendor, Tokens: t})
+	}
+	return out, nil
+}
+
+func (s crmConnectionStore) UpdateTokens(ctx context.Context, connectionID string, t port.TokenSet) error {
+	return s.repo.SaveTokens(ctx, connectionID, t)
 }

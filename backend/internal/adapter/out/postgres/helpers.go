@@ -85,6 +85,21 @@ func timePtr(nt sql.NullTime) *time.Time {
 	return &t
 }
 
+func nullFloatPtr(p *float64) sql.NullFloat64 {
+	if p == nil {
+		return sql.NullFloat64{}
+	}
+	return sql.NullFloat64{Float64: *p, Valid: true}
+}
+
+func floatPtr(nf sql.NullFloat64) *float64 {
+	if !nf.Valid {
+		return nil
+	}
+	f := nf.Float64
+	return &f
+}
+
 // jsonArray marshals v, coercing nil slices to "[]" so jsonb columns and
 // API payloads never carry JSON null where an array is expected.
 func jsonArray(v any) (string, error) {

@@ -39,6 +39,7 @@ import {
   type MailCommand,
 } from '@/lib/mail-utils';
 import { usePrefs } from '@/lib/prefs-data';
+import { setThreadDragData } from '@/lib/thread-drag';
 import { useSelfEmails } from '@/lib/use-identity';
 import { MOD_KEY, useChords, useShortcuts } from '@/lib/shortcuts';
 import { useDraftActions, useDrafts, useLabels, useMailActions, useThreadList } from '@/lib/use-mail';
@@ -602,7 +603,7 @@ function MailClient() {
             <h1 className="px-1 text-sm font-semibold">{title}</h1>
           ) : (
             <Tabs value={split} onValueChange={(value) => navigate({ split: value as InboxSplit, view: null, t: null })}>
-              <TabsList className="h-8">
+              <TabsList className="h-8" data-tour="split-inbox">
                 {splits.map((s) => (
                   <TabsTrigger key={s.value} value={s.value} className="px-2.5 text-xs">
                     {s.label}
@@ -650,7 +651,7 @@ function MailClient() {
         </div>
 
         {/* Thread list (or the Drafts pseudo-view) */}
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto" data-tour="triage">
           {isDrafts ? (
             <DraftsPane />
           ) : isLoading ? (
@@ -706,7 +707,7 @@ function MailClient() {
           <span className="flex items-center gap-1">
             <Kbd size="sm">E</Kbd> archive
           </span>
-          <span className="flex items-center gap-1">
+          <span className="flex items-center gap-1" data-tour="snooze">
             <Kbd size="sm">H</Kbd> snooze
           </span>
           <span className="flex items-center gap-1">
@@ -718,7 +719,7 @@ function MailClient() {
           <span className="flex items-center gap-1">
             <Kbd size="sm">C</Kbd> compose
           </span>
-          <span className="ml-auto flex items-center gap-1">
+          <span className="ml-auto flex items-center gap-1" data-tour="command-palette">
             <Kbd size="sm">{MOD_KEY}</Kbd>
             <Kbd size="sm">K</Kbd> commands
           </span>
@@ -806,6 +807,19 @@ const ThreadRow = React.forwardRef<HTMLLIElement, ThreadRowProps>(function Threa
       <button
         type="button"
         onClick={onOpen}
+        // Email-to-event drag (M2.8 Task 18): the row carries its own
+        // subject + participants, so a calendar drop target can prefill an
+        // event without another fetch. Keyboard users get the same outcome
+        // via the thread view's "Propose event" action.
+        draggable
+        aria-roledescription="Draggable email conversation. Drop on the calendar to create an event."
+        onDragStart={(e) =>
+          setThreadDragData(e.dataTransfer, {
+            threadId: thread.id,
+            subject: thread.subject,
+            participants: thread.participants,
+          })
+        }
         onMouseEnter={() => {
           onSelect();
           onHoverStart();

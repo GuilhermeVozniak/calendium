@@ -798,6 +798,37 @@ export interface ApiError {
 /** How a Calendium server is run: a self-hosted instance or Calendium Cloud. */
 export type InstanceMode = 'self_host' | 'cloud';
 
+// --- Integrations (M2.8 Task 9) — mirrors backend/internal/domain/integration.go ---
+
+/** External per-user integration vendors (todo/CRM tools). */
+export type IntegrationVendor = 'todoist' | 'hubspot';
+
+/**
+ * A per-user vendor OAuth grant (one per vendor). OAuth tokens are stored
+ * encrypted server-side and never serialized — this shape carries no token
+ * and no owner id.
+ */
+export interface IntegrationConnection {
+  id: string;
+  vendor: IntegrationVendor;
+  /** Vendor login / portal label; may be empty when the vendor doesn't reveal one. */
+  externalAccount: string;
+  status: 'active' | 'error';
+  lastError: string | null;
+  createdAt: string;
+}
+
+/**
+ * Optional vendor integrations configured on a server (M2.8): only vendors
+ * whose config is present are advertised; unwired vendors' endpoints 501.
+ */
+export interface InstanceCapabilities {
+  todoist: boolean;
+  hubspot: boolean;
+  maps: boolean;
+  weather: boolean;
+}
+
 /** Capabilities a server advertises so clients can adapt their UI. */
 export interface InstanceFeatures {
   /** Stripe billing is available (false on self-hosted instances). */
@@ -831,6 +862,11 @@ export interface InstanceInfo {
   /** Web Push application server key; present only when web push is configured. */
   vapidPublicKey?: string;
   features: InstanceFeatures;
+  /**
+   * Vendor integration flags (M2.8). Current servers always send it; typed
+   * optional so pre-M2.8 servers and fixtures stay valid.
+   */
+  capabilities?: InstanceCapabilities;
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,4 +1080,308 @@ export interface Calendar {
 export interface Event {
   /** True when the event was redacted for a free_busy viewer (title "Busy", details zeroed). */
   freeBusyOnly?: boolean;
+}
+
+/**
+ * Local-only doc/note attached to an event (M2.8 Task 4). Lives only in
+ * Calendium (never written to the provider), so it survives provider syncs;
+ * deleting the event deletes the note. bodyMd is markdown treated as plain
+ * text by clients; links are absolute http(s) doc URLs (Notion, GDoc, ...).
+ */
+export interface EventNote {
+  eventId: string;
+  bodyMd: string;
+  links: string[];
+  updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// M2.8 Task 5 — Calendar automation preferences
+// (mirrors backend/internal/domain/prefs.go CalendarPrefs field-for-field).
+// ---------------------------------------------------------------------------
+
+/** Routing profile for travel buffers and leave-by alerts. */
+export type TravelMode = 'driving' | 'walking' | 'transit';
+
+/**
+ * Per-user calendar automation preferences (GET/PATCH /v1/prefs/calendar):
+ * FocusGuard, auto buffers, OOO auto-decline, travel buffers / leave alerts,
+ * and weather. Defaults (UTC, Mon–Fri 09:00–17:00, everything off) are
+ * served when the user never saved the document.
+ */
+export interface CalendarPrefs {
+  timeZone: string;
+  /** Working days, 0=Sunday … 6=Saturday. */
+  workDays: number[];
+  /** Minutes after midnight in timeZone; default 540 (09:00). */
+  workdayStartMinutes: number;
+  /** Minutes after midnight in timeZone; default 1020 (17:00). */
+  workdayEndMinutes: number;
+  /** Weekly focus-time goal in minutes; 0 = FocusGuard off. */
+  focusGoalMinutesPerWeek: number;
+  focusAutoDecline: boolean;
+  focusDeclineMessage: string;
+  /** Buffer added around meetings; 0 = off, otherwise 5..30. */
+  autoBufferMinutes: number;
+  oooAutoDecline: boolean;
+  oooDeclineMessage: string;
+  travelBuffers: boolean;
+  travelMode: TravelMode;
+  leaveAlerts: boolean;
+  homeLat: number | null;
+  homeLon: number | null;
+  weatherEnabled: boolean;
+}
+
+/**
+ * PATCH /v1/prefs/calendar payload — omitted fields are unchanged
+ * (server-side nil-means-unchanged). Sending null for homeLat/homeLon is
+ * treated as omitted, not as clearing.
+ */
+export type CalendarPrefsPatch = Partial<CalendarPrefs>;
+
+// ---------------------------------------------------------------------------
+// Tasks (M2.8) — mirrors backend/internal/domain/task.go field-for-field.
+// ---------------------------------------------------------------------------
+
+/** Where a task originates: created in Calendium, or mirrored from a provider todo. */
+export type TaskSource = 'local' | 'todoist';
+
+/**
+ * A first-class todo. `due` carries deadline semantics; the scheduled pair
+ * carries timeblock semantics — when both are set the task renders on the
+ * calendar grid between scheduledStart and scheduledEnd and in the rail's
+ * due grouping. External tasks mirror a provider todo and write completion
+ * through to the provider server-side.
+ */
+export interface Task {
+  id: string;
+  title: string;
+  notes: string | null;
+  /** RFC 3339, or null when the task has no deadline. */
+  due: string | null;
+  /** Date-only due: render in the all-day lane, no hour. */
+  allDayDue: boolean;
+  scheduledStart: string | null;
+  scheduledEnd: string | null;
+  /** Non-null exactly when the task is checked off. */
+  completedAt: string | null;
+  source: TaskSource;
+  /** Deep link into the source app for mirrored tasks. */
+  sourceUrl: string | null;
+  /** Rail sort key: lower first, fractional so drag-reorder never rewrites neighbors. */
+  position: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** POST /v1/tasks payload (mirrors domain.TaskInput). Created tasks are always source 'local'. */
+export interface TaskInput {
+  title: string;
+  notes?: string;
+  due?: string;
+  allDayDue?: boolean;
+  scheduledStart?: string;
+  scheduledEnd?: string;
+  /** Omitted: the server appends after the current max position. */
+  position?: number;
+}
+
+/**
+ * PATCH /v1/tasks/{id} payload (mirrors domain.TaskPatch). Omitted fields are
+ * left unchanged; an explicit `null` clears notes/due/scheduledStart/
+ * scheduledEnd (JSON.stringify drops `undefined` keys, so the distinction
+ * survives the wire).
+ */
+export interface TaskPatch {
+  title?: string;
+  notes?: string | null;
+  due?: string | null;
+  allDayDue?: boolean;
+  scheduledStart?: string | null;
+  scheduledEnd?: string | null;
+  position?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Weather (M2.8 Task 13) — mirrors backend/internal/domain/weather.go and
+// the `capabilities` block of GET /v1/instance.
+// ---------------------------------------------------------------------------
+
+/** One day of forecast for one location (GET /v1/weather), best-effort calendar decoration. */
+export interface DayForecast {
+  /** YYYY-MM-DD in the requested time zone. */
+  date: string;
+  /** WMO weather interpretation code. */
+  code: number;
+  highCelsius: number;
+  lowCelsius: number;
+  /** Max precipitation probability for the day, 0..100. */
+  precipChance: number;
+}
+
+// ---------------------------------------------------------------------------
+// Maps & location autocomplete (M2.8 Task 11) — mirrors domain.Place and the
+// event geo fields in backend/internal/domain/calendar.go.
+// ---------------------------------------------------------------------------
+
+/** One suggestion from GET /v1/places/autocomplete (Nominatim-backed). */
+export interface Place {
+  name: string;
+  address: string;
+  lat: number;
+  lon: number;
+}
+
+export interface Event {
+  /** Set when the location was picked from autocomplete; null for free-typed text. */
+  locationLat?: number | null;
+  locationLon?: number | null;
+}
+export interface EventInput {
+  /** Coordinates of an autocomplete-picked location; omit for free-typed text. */
+  locationLat?: number;
+  locationLon?: number;
+}
+export interface EventPatch {
+  /** Omitted = coordinates unchanged (free-typed edits keep what was stored). */
+  locationLat?: number;
+  locationLon?: number;
+}
+export interface InstanceFeatures {
+  /** Maps provider configured (location autocomplete + travel times). */
+  maps?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// CRM integrations (M2.8) — mirrors backend/internal/domain/crm.go.
+// ---------------------------------------------------------------------------
+
+/** A CRM-side person record resolved by email address. */
+export interface CrmContact {
+  id: string;
+  email: string;
+  name: string;
+  company: string;
+  title: string;
+  phone: string;
+  owner: string;
+  /** Deep link into the CRM record. */
+  vendorUrl: string;
+}
+
+/** A deal/opportunity associated with a CRM contact. */
+export interface CrmDeal {
+  id: string;
+  name: string;
+  stage: string;
+  amount: number | null;
+  closeDate: string | null;
+  vendorUrl: string;
+}
+
+/** Everything the contact pane shows for one email address, per vendor. */
+export interface CrmContext {
+  vendor: IntegrationVendor;
+  /** Null = the address is not in this CRM. */
+  contact: CrmContact | null;
+  deals: CrmDeal[];
+}
+
+/**
+ * One email engagement to record on the CRM contact's timeline. Logging is
+ * always an explicit per-message user action ("Log to HubSpot") — mail is
+ * never exported to a CRM implicitly or in bulk.
+ */
+export interface CrmEmailLogInput {
+  contactEmail: string;
+  subject: string;
+  bodyText: string;
+  /** RFC 3339. */
+  sentAt: string;
+  direction: 'inbound' | 'outbound';
+}
+
+// ---------------------------------------------------------------------------
+// Interesting-calendar ICS subscriptions (M2.8 Task 15)
+// ---------------------------------------------------------------------------
+
+export interface Event {
+  /**
+   * Set when the event is a read-only mirror of an ICS feed subscription.
+   * Subscription events cannot be edited, RSVP'd, or deleted, and never
+   * count as busy time for availability.
+   */
+  subscriptionId?: string;
+}
+
+/** A user-added "interesting calendar" ICS feed (https only, read-only). */
+export interface CalendarSubscription {
+  id: string;
+  url: string;
+  name: string;
+  color: string;
+  isVisible: boolean;
+  /** Last fetch ATTEMPT; `lastError` (not this) is what signals staleness. */
+  lastFetchedAt: string | null;
+  /** Non-null when the last refresh failed; the previous event set is kept. */
+  lastError: string | null;
+  createdAt: string;
+}
+
+export interface CalendarSubscriptionInput {
+  /** Must be an absolute https URL. */
+  url: string;
+  /** Optional label; the feed's X-WR-CALNAME (else its host) fills in. */
+  name?: string;
+  color?: string;
+}
+
+export interface CalendarSubscriptionPatch {
+  name?: string;
+  color?: string;
+  isVisible?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Time insights (M2.8 Task 17) — mirrors backend/internal/domain/insights.go
+// field-for-field. Computed server-side from the local mirror only.
+// ---------------------------------------------------------------------------
+
+/** One "top person": meetings shared with them and minutes spent, in range. */
+export interface PersonStat {
+  email: string;
+  name: string;
+  meetings: number;
+  minutes: number;
+}
+
+/** One day's meeting-vs-focus split for the per-day mini bars. */
+export interface DayStat {
+  /** YYYY-MM-DD. */
+  date: string;
+  meetingMinutes: number;
+  focusMinutes: number;
+}
+
+/**
+ * Aggregated time analytics for [from, to) (GET /v1/insights/time). Meetings
+ * are events with >= 2 attendees not declined/cancelled; focus is managed
+ * focus blocks plus focus-titled events; task minutes are scheduled task
+ * blocks. The range is capped at 92 days server-side.
+ */
+export interface TimeInsights {
+  /** RFC 3339. */
+  from: string;
+  /** RFC 3339. */
+  to: string;
+  meetingMinutes: number;
+  focusMinutes: number;
+  taskMinutes: number;
+  meetingCount: number;
+  /** Weekly focus goal scaled to the range; 0 when FocusGuard is off. */
+  focusGoalMinutes: number;
+  /** Top 5 by minutes, the user's own addresses excluded. */
+  topPeople: PersonStat[];
+  byDay: DayStat[];
 }

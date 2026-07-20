@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"calendium/backend/internal/domain"
+	"calendium/backend/internal/ics"
 )
 
 // ---------------------------------------------------------------------------
@@ -253,6 +254,52 @@ type EventRepo interface {
 	Delete(ctx context.Context, id string) error
 	DeleteByProviderID(ctx context.Context, calendarID, providerEventID string) error
 	Search(ctx context.Context, userID, query string, limit int) ([]domain.Event, error)
+	// ClearGeo nulls location_lat/location_lon (M2.8 Task 12). Upsert
+	// COALESCE-preserves coordinates on NULL input so coordinate-less
+	// provider syncs cannot wipe them — a deliberate clear (location edited
+	// without a fresh autocomplete pick) therefore needs this targeted write.
+	ClearGeo(ctx context.Context, id string) error
+}
+
+// --- Tasks (M2.8) ---
+
+// TaskQuery filters task lists. UserID is mandatory; zero values mean "no
+// filter". Completed tasks are excluded unless IncludeCompleted is set.
+// ScheduledFrom/ScheduledTo select tasks whose scheduled block overlaps
+// [ScheduledFrom, ScheduledTo) — the calendar-grid query. DueFrom/DueTo
+// select by due date — the rail's "due today" grouping.
+type TaskQuery struct {
+	UserID           string
+	Source           domain.TaskSource
+	IncludeCompleted bool
+	ScheduledFrom    time.Time
+	ScheduledTo      time.Time
+	DueFrom          time.Time
+	DueTo            time.Time
+	UnscheduledOnly  bool
+	Limit            int
+}
+
+// TaskRepo persists first-class tasks (local and mirrored external todos).
+type TaskRepo interface {
+	Create(ctx context.Context, t domain.Task) (domain.Task, error)
+	GetByID(ctx context.Context, id string) (domain.Task, error)
+	// GetByExternalID resolves a mirrored provider todo; domain.ErrNotFound
+	// when the task was never synced.
+	GetByExternalID(ctx context.Context, userID string, source domain.TaskSource, externalID string) (domain.Task, error)
+	List(ctx context.Context, q TaskQuery) ([]domain.Task, error)
+	Update(ctx context.Context, t domain.Task) error
+	Delete(ctx context.Context, id string) error
+	// DeleteBySource removes every mirrored task of one source for a user
+	// (integration disconnect).
+	DeleteBySource(ctx context.Context, userID string, source domain.TaskSource) error
+}
+
+// EventNoteRepo persists local-only notes attached to events (M2.8 Task 4).
+type EventNoteRepo interface {
+	// Upsert replaces the note for (eventID); empty BodyMD+Links deletes it.
+	Upsert(ctx context.Context, n domain.EventNote) (domain.EventNote, error)
+	GetByEventID(ctx context.Context, eventID string) (domain.EventNote, error)
 }
 
 // EventTemplateRepo persists per-user saved event defaults.
@@ -520,6 +567,26 @@ type CommentRepo interface {
 	SoftDelete(ctx context.Context, id string, at time.Time) error
 }
 
+// --- Integrations (M2.8 Task 9) ----------------------------------------------
+
+// IntegrationRepo persists per-user vendor OAuth connections
+// (Todoist/HubSpot). Implementations MUST store access/refresh tokens
+// encrypted at rest exactly like AccountRepo (AES-256-GCM with
+// config.Crypto.TokenEncryptionKey); TokenSet crosses this boundary in
+// plaintext only. Create returns domain.ErrConflict on a (user, vendor)
+// collision; lookups return domain.ErrNotFound when absent.
+type IntegrationRepo interface {
+	Create(ctx context.Context, c domain.IntegrationConnection) (domain.IntegrationConnection, error)
+	GetByID(ctx context.Context, id string) (domain.IntegrationConnection, error)
+	GetByVendor(ctx context.Context, userID string, vendor domain.IntegrationVendor) (domain.IntegrationConnection, error)
+	ListByUser(ctx context.Context, userID string) ([]domain.IntegrationConnection, error)
+	ListByVendor(ctx context.Context, vendor domain.IntegrationVendor) ([]domain.IntegrationConnection, error)
+	Update(ctx context.Context, c domain.IntegrationConnection) error
+	Delete(ctx context.Context, id string) error
+	SaveTokens(ctx context.Context, connectionID string, t TokenSet) error
+	GetTokens(ctx context.Context, connectionID string) (TokenSet, error)
+}
+
 // ---------------------------------------------------------------------------
 // Gateways (implemented by internal/adapter/out/{googleapi,msgraph,stripeapi,openrouter,push,authjwt})
 // ---------------------------------------------------------------------------
@@ -621,7 +688,10 @@ type CalendarProvider interface {
 	CreateEvent(ctx context.Context, accessToken, providerCalendarID string, in domain.EventInput) (domain.Event, error)
 	UpdateEvent(ctx context.Context, accessToken, providerCalendarID, providerEventID string, patch domain.EventPatch) (domain.Event, error)
 	DeleteEvent(ctx context.Context, accessToken, providerCalendarID, providerEventID string) error
-	RSVP(ctx context.Context, accessToken, providerCalendarID, providerEventID string, response domain.RsvpStatus) error
+	// RSVP writes the caller's response through to the provider. comment, when
+	// non-empty, is carried to the organizer as the RSVP note (Google:
+	// attendees[].comment; Graph: the respond action's comment field).
+	RSVP(ctx context.Context, accessToken, providerCalendarID, providerEventID string, response domain.RsvpStatus, comment string) error
 	// FreeBusy returns busy intervals per requested attendee email between
 	// from and to (Google POST /freeBusy; Graph POST /me/calendar/getSchedule).
 	// Emails absent from the result were not resolvable by the provider.
@@ -702,6 +772,34 @@ type CollabEvent struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
+// --- Calendar automation preferences (M2.8 Task 5) ---------------------------
+
+// CalendarPrefsRepo persists the per-user calendar automation preference
+// document (table calendar_prefs, one JSONB row per user).
+type CalendarPrefsRepo interface {
+	// Get returns DefaultCalendarPrefs(userID) when no row exists.
+	Get(ctx context.Context, userID string) (domain.CalendarPrefs, error)
+	Upsert(ctx context.Context, p domain.CalendarPrefs) error
+	// ListAutomated returns prefs rows with any automation enabled — the
+	// worker's fan-out set (no full-user table scan of defaults).
+	ListAutomated(ctx context.Context) ([]domain.CalendarPrefs, error)
+}
+
+// --- Managed events (M2.8 Task 6) -------------------------------------------
+
+// ManagedEventRepo persists the automation engine's ownership ledger
+// (table managed_events): which mirrored events the engine created and may
+// therefore move, shrink, or delete on later passes. Rows cascade away when
+// the mirrored event row is deleted.
+type ManagedEventRepo interface {
+	Create(ctx context.Context, m domain.ManagedEvent) error
+	// GetByEventID returns domain.ErrNotFound when the event is not managed.
+	GetByEventID(ctx context.Context, eventID string) (domain.ManagedEvent, error)
+	ListByUser(ctx context.Context, userID string, kind domain.ManagedKind) ([]domain.ManagedEvent, error)
+	ListBySourceEvent(ctx context.Context, sourceEventID string) ([]domain.ManagedEvent, error)
+	Delete(ctx context.Context, eventID string) error
+}
+
 // EventBus fans CollabEvents out to in-process subscribers. Publish never
 // blocks (slow subscribers drop events — SSE clients re-sync on reconnect).
 // Single-process today; the multi-instance path is a Postgres LISTEN/NOTIFY
@@ -711,4 +809,150 @@ type EventBus interface {
 	// Subscribe returns a channel of events for the given topics and a
 	// cancel func. The channel closes on cancel.
 	Subscribe(topics []string) (<-chan CollabEvent, func())
+}
+
+// ---------------------------------------------------------------------------
+// Weather (M2.8 Task 13, implemented by internal/adapter/out/openmeteo)
+// ---------------------------------------------------------------------------
+
+// WeatherProvider fetches a multi-day daily forecast for one location.
+// Weather is best-effort decoration on calendar surfaces: implementations
+// must use a short timeout, and callers must degrade gracefully (hide the
+// chip) on any error — a vendor failure never fails a calendar request.
+type WeatherProvider interface {
+	DailyForecast(ctx context.Context, lat, lon float64, timeZone string, days int) ([]domain.DayForecast, error)
+}
+
+// ---------------------------------------------------------------------------
+// Maps (M2.8 Task 11, implemented by internal/adapter/out/nominatim)
+// ---------------------------------------------------------------------------
+
+// MapsProvider is the geocoding + routing vendor surface (Nominatim/OSRM).
+// Left unwired when MAPS_NOMINATIM_URL is not configured — consumers must
+// degrade gracefully (501 routes, hidden UI affordances).
+type MapsProvider interface {
+	// Autocomplete returns up to limit place suggestions for a partial query.
+	Autocomplete(ctx context.Context, query string, limit int) ([]domain.Place, error)
+	// TravelTime estimates door-to-door duration between two points.
+	TravelTime(ctx context.Context, fromLat, fromLon, toLat, toLon float64, mode domain.TravelMode) (time.Duration, error)
+}
+
+// ---------------------------------------------------------------------------
+// Todo tools (M2.8 Task 10, implemented by internal/adapter/out/todoist)
+// ---------------------------------------------------------------------------
+
+// TodoSyncPage is one page of incremental todo sync.
+type TodoSyncPage struct {
+	Tasks      []domain.Task // ExternalID+Source set; ID/UserID left empty
+	DeletedIDs []string      // provider task ids removed or completed upstream
+	NextCursor string
+	HasMore    bool
+}
+
+// TodoProvider is the external todo-tool surface (Todoist first; Things,
+// Notion, Linear later). SyncTasks performs incremental sync from cursor
+// ("" = full sync; Todoist uses the Sync v9 sync_token).
+type TodoProvider interface {
+	Source() domain.TaskSource
+	SyncTasks(ctx context.Context, accessToken, cursor string) (TodoSyncPage, error)
+	CompleteTask(ctx context.Context, accessToken, externalID string) error
+	ReopenTask(ctx context.Context, accessToken, externalID string) error
+}
+
+// --- CRM integrations (M2.8 Task 16) ----------------------------------------
+
+// CrmProvider is a vendor CRM adapter (HubSpot first).
+type CrmProvider interface {
+	Vendor() domain.IntegrationVendor
+	// ContactContext resolves a contact by email with associated open deals;
+	// a missing contact returns CrmContext{Contact: nil}, not an error.
+	ContactContext(ctx context.Context, accessToken, email string) (domain.CrmContext, error)
+	// LogEmail records an email engagement on the contact's timeline.
+	LogEmail(ctx context.Context, accessToken string, log domain.CrmEmailLog) error
+}
+
+// CrmConnection is the narrow, consumer-side view of a per-user integration
+// connection the CRM service needs: vendor plus current (decrypted) tokens.
+//
+// NOTE(M2.8 integration): the parallel integration-OAuth task (Task 9) owns
+// the real storage — integration_connections, the connect/callback flow, and
+// AES-GCM token encryption at rest. This interface is deliberately minimal so
+// Task 9's repository can implement (or be thinly adapted to) it at merge;
+// the CRM side must never grow its own OAuth/token storage.
+type CrmConnection struct {
+	ID     string
+	UserID string
+	Vendor domain.IntegrationVendor
+	Tokens TokenSet
+}
+
+// CrmConnectionStore reads and refreshes per-user integration connections.
+type CrmConnectionStore interface {
+	// ListByUser returns the user's integration connections with decrypted
+	// tokens; an empty slice (never an error) when none exist.
+	ListByUser(ctx context.Context, userID string) ([]CrmConnection, error)
+	// UpdateTokens persists refreshed tokens for a connection
+	// (implementations encrypt at rest).
+	UpdateTokens(ctx context.Context, connectionID string, t TokenSet) error
+}
+
+// ---------------------------------------------------------------------------
+// Interesting-calendar ICS subscriptions (M2.8 Task 15)
+// ---------------------------------------------------------------------------
+
+// CalendarSubscriptionRepo persists user-added ICS feed subscriptions and
+// their expanded, read-only event mirrors (subscription_events).
+type CalendarSubscriptionRepo interface {
+	Create(ctx context.Context, s domain.CalendarSubscription) (domain.CalendarSubscription, error)
+	GetByID(ctx context.Context, id string) (domain.CalendarSubscription, error)
+	ListByUser(ctx context.Context, userID string) ([]domain.CalendarSubscription, error)
+	// ListDue returns subscriptions not fetched since `since` (hourly cadence).
+	ListDue(ctx context.Context, since time.Time) ([]domain.CalendarSubscription, error)
+	Update(ctx context.Context, s domain.CalendarSubscription) error
+	Delete(ctx context.Context, id string) error
+	// ReplaceEvents atomically swaps the expanded occurrence set for a
+	// subscription (12-month horizon), preserving nothing — feeds own truth.
+	// Event UIDs travel in domain.Event.ProviderEventID.
+	ReplaceEvents(ctx context.Context, subscriptionID string, events []domain.Event) error
+	// ListEventsInRange mirrors EventRepo.ListInRange for subscription
+	// events: occurrences overlapping [from, to) across the user's VISIBLE
+	// subscriptions, with SubscriptionID set and Status confirmed.
+	ListEventsInRange(ctx context.Context, userID string, from, to time.Time) ([]domain.Event, error)
+}
+
+// IcsFetcher retrieves and parses a feed. notModified is true when the
+// server honored the cached validator (etag) and events must be kept.
+type IcsFetcher interface {
+	Fetch(ctx context.Context, url, etag string) (cal ics.Calendar, newEtag string, notModified bool, err error)
+}
+
+// ---------------------------------------------------------------------------
+// Travel alerts (M2.8 Task 12, implemented by internal/adapter/out/postgres)
+// ---------------------------------------------------------------------------
+
+// TravelAlertRepo persists leave-now alerts, one per event (PK event_id,
+// ON DELETE CASCADE from events).
+type TravelAlertRepo interface {
+	// Upsert creates or refreshes the alert. A changed leave_at clears
+	// sent_at (a moved event re-arms its alert); an unchanged leave_at
+	// preserves it, so idempotent passes never cause a re-send.
+	Upsert(ctx context.Context, eventID, userID string, leaveAt time.Time) error
+	// ListDue returns unsent alerts with leave_at <= now, oldest first.
+	ListDue(ctx context.Context, now time.Time, limit int) ([]domain.TravelAlert, error)
+	// MarkSent stamps sent_at — called only AFTER an observed successful
+	// push (honesty policy); domain.ErrNotFound when the alert is missing.
+	MarkSent(ctx context.Context, eventID string, at time.Time) error
+	// Delete removes the alert; idempotent (absence is not an error).
+	Delete(ctx context.Context, eventID string) error
+}
+
+// --- Time insights (M2.8 Task 17) --------------------------------------------
+
+// InsightsManagedEventRepo is the read-only, all-kinds view of the
+// managed-events ledger the insights aggregation consumes: every managed
+// event for one user regardless of kind, so events of automation kinds that
+// don't exist yet are still categorized (never mistaken for meetings)
+// without any insights change.
+type InsightsManagedEventRepo interface {
+	ListAllByUser(ctx context.Context, userID string) ([]domain.ManagedEvent, error)
 }

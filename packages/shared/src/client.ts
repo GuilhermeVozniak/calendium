@@ -21,24 +21,35 @@ import type {
   BusyInterval,
   Calendar,
   CalendarPermission,
+  CalendarPrefs,
+  CalendarPrefsPatch,
   CalendarSet,
   CalendarSetInput,
   CalendarShare,
   CalendarShareInput,
+  CalendarSubscription,
+  CalendarSubscriptionInput,
+  CalendarSubscriptionPatch,
   ClassifierInput,
   Comment,
   CommentInput,
   ConnectedAccount,
   ContactSummary,
+  CrmContext,
+  CrmEmailLogInput,
+  DayForecast,
   DevicePlatform,
   Draft,
   DraftInput,
   Event,
   EventInput,
+  EventNote,
   EventPatch,
   EventTemplate,
   EventTemplateInput,
   InstanceInfo,
+  IntegrationConnection,
+  IntegrationVendor,
   Label,
   MeetingPoll,
   MemberAvailability,
@@ -46,6 +57,7 @@ import type {
   NotificationDevice,
   OpenEvent,
   Page,
+  Place,
   PollBallot,
   PollInput,
   Provider,
@@ -58,6 +70,9 @@ import type {
   ShareThreadInput,
   Snippet,
   Subscription,
+  Task,
+  TaskInput,
+  TaskPatch,
   Team,
   TeamInvitation,
   TeamMember,
@@ -67,6 +82,7 @@ import type {
   ThreadAction,
   ThreadShare,
   ThreadShareCreated,
+  TimeInsights,
   TimeProposal,
   TimeProposalInput,
   UnsubscribeResult,
@@ -202,6 +218,26 @@ export class ApiClient {
     return this.request<void>('DELETE', `/v1/accounts/${accountId}`);
   }
 
+  // --- Integrations (M2.8) ---
+  /** The caller's per-user vendor integrations (Todoist/HubSpot). */
+  listIntegrations() {
+    return this.request<IntegrationConnection[]>('GET', '/v1/integrations');
+  }
+  /**
+   * Starts the vendor OAuth flow; open the returned URL in a browser. Throws
+   * ApiRequestError(501, 'not_implemented') when the vendor is not
+   * configured on this server — gate on InstanceInfo.capabilities first.
+   */
+  connectIntegration(vendor: IntegrationVendor, redirectUrl: string) {
+    return this.request<{ url: string }>('POST', `/v1/integrations/connect/${vendor}`, {
+      redirectUrl,
+    });
+  }
+  /** Disconnects an integration; Todoist also purges its mirrored tasks server-side. */
+  disconnectIntegration(connectionId: string) {
+    return this.request<void>('DELETE', `/v1/integrations/${encodeURIComponent(connectionId)}`);
+  }
+
   // --- Mail ---
   listThreads(params: {
     split?: string;
@@ -328,6 +364,14 @@ export class ApiClient {
   updatePreferences(prefs: UserPreferences) {
     return this.request<UserPreferences>('PUT', '/v1/me/preferences', prefs);
   }
+  /** Calendar automation preferences (M2.8): FocusGuard, buffers, OOO, travel, weather. */
+  getCalendarPrefs() {
+    return this.request<CalendarPrefs>('GET', '/v1/prefs/calendar');
+  }
+  /** Partial update; omitted fields are unchanged. Returns the merged document. */
+  updateCalendarPrefs(patch: CalendarPrefsPatch) {
+    return this.request<CalendarPrefs>('PATCH', '/v1/prefs/calendar', patch);
+  }
 
   // --- Mail (M2.5) — Recent Opens, Smart Send, attachments, contacts, reactions ---
   /** Recent Opens feed: sent messages the recipient has opened, newest first. */
@@ -398,8 +442,12 @@ export class ApiClient {
   deleteEvent(eventId: string) {
     return this.request<void>('DELETE', `/v1/events/${eventId}`);
   }
-  rsvp(eventId: string, response: RsvpStatus) {
-    return this.request<Event>('POST', `/v1/events/${eventId}/rsvp`, { response });
+  rsvp(eventId: string, response: RsvpStatus, comment?: string) {
+    return this.request<Event>(
+      'POST',
+      `/v1/events/${eventId}/rsvp`,
+      comment === undefined ? { response } : { response, comment },
+    );
   }
   /** Free slots for "share availability" composing flows. */
   getAvailability(from: string, to: string, durationMinutes: number) {
@@ -808,6 +856,158 @@ export class ApiClient {
       `/v1/teams/${encodeURIComponent(teamId)}/availability?${qs}`
     );
   }
+
+  // --- Event notes (M2.8 Task 4) ---
+  /**
+   * The event's local-only note. A missing note comes back as an empty note
+   * (200, never 404), so callers need no special case.
+   */
+  getEventNote(eventId: string) {
+    return this.request<EventNote>('GET', `/v1/events/${encodeURIComponent(eventId)}/note`);
+  }
+  /**
+   * Replaces the event's note wholesale; an empty body with no links deletes
+   * it server-side. Links must be absolute http(s) URLs.
+   */
+  putEventNote(eventId: string, bodyMd: string, links: string[]) {
+    return this.request<EventNote>('PUT', `/v1/events/${encodeURIComponent(eventId)}/note`, {
+      bodyMd,
+      links,
+    });
+  }
+
+  // --- Tasks (M2.8) ---
+  // First-class tasks: local todos plus mirrored external provider todos.
+  // All authorization is server-side and user-scoped (another user's task is
+  // a plain 404); complete/reopen are idempotent.
+
+  /**
+   * Lists the caller's tasks. `from`/`to` (RFC 3339) select tasks whose
+   * scheduled block overlaps [from, to) — the calendar-grid query;
+   * `dueFrom`/`dueTo` select by due date — the rail's due grouping;
+   * `unscheduled` restricts to rail tasks without a timeblock. Completed
+   * tasks are excluded unless `includeCompleted`.
+   */
+  listTasks(query?: {
+    from?: string;
+    to?: string;
+    dueFrom?: string;
+    dueTo?: string;
+    unscheduled?: boolean;
+    includeCompleted?: boolean;
+  }) {
+    const qs = new URLSearchParams();
+    if (query?.from) qs.set('from', query.from);
+    if (query?.to) qs.set('to', query.to);
+    if (query?.dueFrom) qs.set('dueFrom', query.dueFrom);
+    if (query?.dueTo) qs.set('dueTo', query.dueTo);
+    if (query?.unscheduled) qs.set('unscheduled', '1');
+    if (query?.includeCompleted) qs.set('includeCompleted', '1');
+    const search = qs.toString();
+    return this.request<Task[]>('GET', `/v1/tasks${search ? `?${search}` : ''}`);
+  }
+  createTask(input: TaskInput) {
+    return this.request<Task>('POST', '/v1/tasks', input);
+  }
+  /**
+   * Partial update: omitted fields are left unchanged, an explicit `null`
+   * clears a clearable field (notes, due, scheduledStart, scheduledEnd).
+   */
+  updateTask(taskId: string, patch: TaskPatch) {
+    return this.request<Task>('PATCH', `/v1/tasks/${encodeURIComponent(taskId)}`, patch);
+  }
+  /** Checks the task off (idempotent). External tasks write through to their provider. */
+  completeTask(taskId: string) {
+    return this.request<Task>('POST', `/v1/tasks/${encodeURIComponent(taskId)}/complete`);
+  }
+  /** Clears completion (idempotent). */
+  reopenTask(taskId: string) {
+    return this.request<Task>('POST', `/v1/tasks/${encodeURIComponent(taskId)}/reopen`);
+  }
+  deleteTask(taskId: string) {
+    return this.request<void>('DELETE', `/v1/tasks/${encodeURIComponent(taskId)}`);
+  }
+
+  // --- Weather (M2.8 Task 13) ---
+  /**
+   * Up to 14 days of daily forecast for a location (GET /v1/weather).
+   * Throws ApiRequestError(501, 'not_implemented') when the server has no
+   * weather vendor configured — callers treat that as "hide the weather UI".
+   */
+  getWeather(lat: number, lon: number, tz: string, days = 7): Promise<DayForecast[]> {
+    const qs = new URLSearchParams({
+      lat: String(lat),
+      lon: String(lon),
+      tz,
+      days: String(days),
+    });
+    return this.request<DayForecast[]>('GET', `/v1/weather?${qs}`);
+  }
+
+  // --- Places (M2.8 Task 11): location autocomplete ---
+  /**
+   * Up to 5 place suggestions for a partial location query (min 3 chars).
+   * Throws ApiRequestError(501, 'not_implemented') when the server has no
+   * maps provider configured — callers degrade to a plain text input.
+   */
+  autocompletePlaces(q: string) {
+    return this.request<Place[]>('GET', `/v1/places/autocomplete?q=${encodeURIComponent(q)}`);
+  }
+
+  // --- CRM integrations (M2.8) ---
+  /**
+   * CRM context for one email address: one entry per connected CRM vendor.
+   * Empty array when no CRM is connected (clients hide the CRM section);
+   * 501 when the instance has no CRM integration configured at all.
+   */
+  getCrmContext(email: string) {
+    const qs = new URLSearchParams({ email });
+    return this.request<CrmContext[]>('GET', `/v1/crm/context?${qs}`);
+  }
+  /** Explicitly log one email to the connected CRM (per-message user action). */
+  logCrmEmail(input: CrmEmailLogInput) {
+    return this.request<void>('POST', '/v1/crm/log', input);
+  }
+
+  // --- Interesting-calendar ICS subscriptions (M2.8 Task 15) ---
+  // Read-only feed mirrors: their events arrive through the existing
+  // listEvents (tagged with `subscriptionId`) and are never editable.
+  listCalendarSubscriptions() {
+    return this.request<CalendarSubscription[]>('GET', '/v1/calendar-subscriptions');
+  }
+  /**
+   * Subscribes to an https ICS feed. The server fetches it synchronously, so
+   * a bad URL rejects with 400 and an unreachable/unparseable feed with 422
+   * (`unprocessable`) — surface that message inline next to the URL input.
+   */
+  createCalendarSubscription(input: CalendarSubscriptionInput) {
+    return this.request<CalendarSubscription>('POST', '/v1/calendar-subscriptions', input);
+  }
+  updateCalendarSubscription(id: string, patch: CalendarSubscriptionPatch) {
+    return this.request<CalendarSubscription>(
+      'PATCH',
+      `/v1/calendar-subscriptions/${encodeURIComponent(id)}`,
+      patch
+    );
+  }
+  deleteCalendarSubscription(id: string) {
+    return this.request<void>(
+      'DELETE',
+      `/v1/calendar-subscriptions/${encodeURIComponent(id)}`
+    );
+  }
+
+  // --- Time insights (M2.8 Task 17) ---
+  /**
+   * Aggregated time analytics for [from, to) (RFC 3339), computed server-side
+   * from the local mirror — meeting hours, focus vs meeting split, scheduled
+   * task minutes, top people, and per-day stats. The range is capped at 92
+   * days (400 beyond).
+   */
+  getTimeInsights(from: string, to: string) {
+    const qs = new URLSearchParams({ from, to });
+    return this.request<TimeInsights>('GET', `/v1/insights/time?${qs}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -917,15 +1117,18 @@ export const ACT_AS_HEADER = 'X-Calendium-Act-As';
  * prefixes (thread shares, comments, team activity, snippets, calendar-share
  * management) are denied too — the backend 403s them under act-as (an
  * assistant must never mint share tokens or self-grant shares on the
- * principal's behalf), so the header is never attached there either.
+ * principal's behalf), so the header is never attached there either. Event
+ * notes (/v1/events/{id}/note) are equally denied: private commentary, not
+ * calendar data.
  */
 export function isDelegablePath(pathname: string): boolean {
-  const path = pathname.split('?')[0];
+  const path = pathname.split('?')[0] ?? pathname;
   if (
     path === '/v1/mail/snippets' ||
     path.startsWith('/v1/mail/snippets/') ||
     /^\/v1\/mail\/threads\/[^/]+\/(share$|shares($|\/)|comments$|team-activity$)/.test(path) ||
-    /^\/v1\/calendars\/[^/]+\/shares($|\/)/.test(path)
+    /^\/v1\/calendars\/[^/]+\/shares($|\/)/.test(path) ||
+    /^\/v1\/events\/[^/]+\/note$/.test(path)
   ) {
     return false;
   }

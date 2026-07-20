@@ -17,6 +17,8 @@ import type {
   ReactionResult,
   SendSuggestion,
   Subscription,
+  Task,
+  TaskInput,
   Thread,
   User,
 } from '@calendium/shared';
@@ -525,6 +527,72 @@ export function mockProposeEvent(threadId: string): AiEventProposal {
     end: iso(addMinutes(start, 30)),
     notes: 'Proposed from thread context (demo mode).',
   };
+}
+
+// ---------------------------------------------------------------------------
+// Tasks (M2.8 Task 3b — desktop mirror of the web task rail)
+// ---------------------------------------------------------------------------
+
+let nextMockTaskId = 1;
+
+function makeMockTask(overrides: Partial<Task> & { title: string; position: number }): Task {
+  return {
+    id: `task_${nextMockTaskId++}`,
+    notes: null,
+    due: null,
+    allDayDue: false,
+    scheduledStart: null,
+    scheduledEnd: null,
+    completedAt: null,
+    source: 'local',
+    sourceUrl: null,
+    createdAt: iso(now),
+    updatedAt: iso(now),
+    ...overrides,
+  };
+}
+
+let mockTaskStore: Task[] = [
+  makeMockTask({ title: 'Prep board deck', position: 1, due: iso(setMinutes(setHours(now, 17), 0)) }),
+  makeMockTask({
+    title: 'Send follow-up to Dana',
+    position: 2,
+    due: iso(setMinutes(setHours(now, 12), 0)),
+  }),
+  makeMockTask({ title: 'Book flights to Lisbon', position: 3 }),
+  makeMockTask({ title: 'Review Q3 budget draft', position: 4 }),
+  makeMockTask({ title: 'Renew passport', position: 5, completedAt: iso(subMinutes(now, 90)) }),
+];
+
+export function mockListTasks(): Task[] {
+  return mockTaskStore.map((t) => ({ ...t }));
+}
+
+export function createMockTask(input: TaskInput): Task {
+  const maxPosition = mockTaskStore.reduce((max, t) => Math.max(max, t.position), 0);
+  const task = makeMockTask({
+    title: input.title,
+    position: input.position ?? maxPosition + 1,
+    notes: input.notes ?? null,
+    due: input.due ?? null,
+    allDayDue: input.allDayDue ?? false,
+    scheduledStart: input.scheduledStart ?? null,
+    scheduledEnd: input.scheduledEnd ?? null,
+  });
+  mockTaskStore.push(task);
+  return { ...task };
+}
+
+export function setMockTaskCompleted(taskId: string, completed: boolean): Task {
+  const current = mockTaskStore.find((t) => t.id === taskId);
+  if (!current) throw new Error(`No demo task ${taskId}`);
+  const next: Task = {
+    ...current,
+    completedAt: completed ? iso(new Date()) : null,
+    updatedAt: iso(new Date()),
+  };
+  mockTaskStore = mockTaskStore.map((t) => (t.id === taskId ? next : t));
+  return { ...next };
 }
 
 let mockClassifiers: AiClassifier[] = [

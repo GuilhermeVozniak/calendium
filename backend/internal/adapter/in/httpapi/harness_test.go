@@ -34,6 +34,8 @@ var (
 
 	_ port.EventBus    = (*fakeEventBus)(nil)
 	_ port.TeamService = (*fakeTeamService)(nil)
+
+	_ port.TaskService = (*fakeTaskService)(nil)
 )
 
 const (
@@ -487,6 +489,19 @@ type fakeCalendarService struct {
 	listCalsRet []domain.Calendar
 	listCalsErr error
 
+	// Calendar subscriptions (M2.8 Task 15)
+	listSubsRet    []domain.CalendarSubscription
+	listSubsErr    error
+	createSubRet   domain.CalendarSubscription
+	createSubErr   error
+	gotCreateSub   port.CalendarSubscriptionInput
+	updateSubRet   domain.CalendarSubscription
+	updateSubErr   error
+	gotUpdateSubID string
+	gotUpdateSub   port.CalendarSubscriptionPatch
+	deleteSubErr   error
+	gotDeleteSubID string
+
 	updateCalRet domain.Calendar
 	updateCalErr error
 	gotUpdateCal port.CalendarPatch
@@ -504,13 +519,24 @@ type fakeCalendarService struct {
 	updateEventRet domain.Event
 	updateEventErr error
 
+	getNoteRet   domain.EventNote
+	getNoteErr   error
+	gotGetNoteID string
+
+	putNoteRet      domain.EventNote
+	putNoteErr      error
+	gotPutNoteID    string
+	gotPutNoteBody  string
+	gotPutNoteLinks []string
+
 	deleteEventErr error
 	gotDeleteEvt   string
 
-	rsvpRet   domain.Event
-	rsvpErr   error
-	gotRsvp   domain.RsvpStatus
-	gotRsvpID string
+	rsvpRet        domain.Event
+	rsvpErr        error
+	gotRsvp        domain.RsvpStatus
+	gotRsvpID      string
+	gotRsvpComment string
 
 	availRet    []domain.AvailabilitySlot
 	availErr    error
@@ -586,8 +612,8 @@ func (f *fakeCalendarService) DeleteEvent(ctx context.Context, userID, eventID s
 	f.gotDeleteEvt = eventID
 	return f.deleteEventErr
 }
-func (f *fakeCalendarService) RSVP(ctx context.Context, userID, eventID string, response domain.RsvpStatus) (domain.Event, error) {
-	f.gotRsvpID, f.gotRsvp = eventID, response
+func (f *fakeCalendarService) RSVP(ctx context.Context, userID, eventID string, response domain.RsvpStatus, comment string) (domain.Event, error) {
+	f.gotRsvpID, f.gotRsvp, f.gotRsvpComment = eventID, response, comment
 	return f.rsvpRet, f.rsvpErr
 }
 func (f *fakeCalendarService) Availability(ctx context.Context, userID string, from, to time.Time, slotDuration time.Duration) ([]domain.AvailabilitySlot, error) {
@@ -599,6 +625,37 @@ func (f *fakeCalendarService) TeamAvailability(ctx context.Context, userID, team
 	f.gotTeamAvailID = teamID
 	f.gotTeamAvailFrom, f.gotTeamAvailTo = from, to
 	return f.teamAvailRet, f.teamAvailErr
+}
+
+func (f *fakeCalendarService) GetEventNote(ctx context.Context, userID, eventID string) (domain.EventNote, error) {
+	f.gotGetNoteID = eventID
+	return f.getNoteRet, f.getNoteErr
+}
+
+func (f *fakeCalendarService) PutEventNote(ctx context.Context, userID, eventID string, bodyMD string, links []string) (domain.EventNote, error) {
+	f.gotPutNoteID = eventID
+	f.gotPutNoteBody = bodyMD
+	f.gotPutNoteLinks = links
+	return f.putNoteRet, f.putNoteErr
+}
+
+// --- Calendar subscriptions (M2.8 Task 15)
+
+func (f *fakeCalendarService) ListCalendarSubscriptions(ctx context.Context, userID string) ([]domain.CalendarSubscription, error) {
+	return f.listSubsRet, f.listSubsErr
+}
+func (f *fakeCalendarService) CreateCalendarSubscription(ctx context.Context, userID string, in port.CalendarSubscriptionInput) (domain.CalendarSubscription, error) {
+	f.gotCreateSub = in
+	return f.createSubRet, f.createSubErr
+}
+func (f *fakeCalendarService) UpdateCalendarSubscription(ctx context.Context, userID, subscriptionID string, patch port.CalendarSubscriptionPatch) (domain.CalendarSubscription, error) {
+	f.gotUpdateSubID = subscriptionID
+	f.gotUpdateSub = patch
+	return f.updateSubRet, f.updateSubErr
+}
+func (f *fakeCalendarService) DeleteCalendarSubscription(ctx context.Context, userID, subscriptionID string) error {
+	f.gotDeleteSubID = subscriptionID
+	return f.deleteSubErr
 }
 
 // --- Event Template Methods
@@ -776,6 +833,14 @@ type fakePrefsService struct {
 	updateRet      domain.UserPrefs
 	updateErr      error
 	gotUpdatePrefs domain.UserPrefs
+
+	// Calendar automation preferences (M2.8 Task 5).
+	getCalendarRet    domain.CalendarPrefs
+	getCalendarErr    error
+	updateCalendarRet domain.CalendarPrefs
+	updateCalendarErr error
+	gotCalendarUserID string
+	gotCalendarPatch  domain.CalendarPrefsPatch
 }
 
 func (f *fakePrefsService) GetPrefs(ctx context.Context, userID string) (domain.UserPrefs, error) {
@@ -784,6 +849,15 @@ func (f *fakePrefsService) GetPrefs(ctx context.Context, userID string) (domain.
 func (f *fakePrefsService) UpdatePrefs(ctx context.Context, userID string, p domain.UserPrefs) (domain.UserPrefs, error) {
 	f.gotUpdatePrefs = p
 	return f.updateRet, f.updateErr
+}
+func (f *fakePrefsService) GetCalendarPrefs(ctx context.Context, userID string) (domain.CalendarPrefs, error) {
+	f.gotCalendarUserID = userID
+	return f.getCalendarRet, f.getCalendarErr
+}
+func (f *fakePrefsService) UpdateCalendarPrefs(ctx context.Context, userID string, patch domain.CalendarPrefsPatch) (domain.CalendarPrefs, error) {
+	f.gotCalendarUserID = userID
+	f.gotCalendarPatch = patch
+	return f.updateCalendarRet, f.updateCalendarErr
 }
 
 // --- SchedulingService --------------------------------------------------------
@@ -1215,6 +1289,7 @@ type harness struct {
 	settings   *fakeSettingsService
 	events     *fakeEventBus
 	teams      *fakeTeamService
+	tasks      *fakeTaskService
 }
 
 // newHarness wires every double into Deps with a discard logger and one
@@ -1241,6 +1316,7 @@ func newHarness(t *testing.T) *harness {
 		settings:  &fakeSettingsService{},
 		events:    newFakeEventBus(),
 		teams:     &fakeTeamService{},
+		tasks:     &fakeTaskService{},
 	}
 	h.scheduling = h.sched
 	h.deps = Deps{
@@ -1259,6 +1335,7 @@ func newHarness(t *testing.T) *harness {
 		Settings:   h.settings,
 		Events:     h.events,
 		Teams:      h.teams,
+		Tasks:      h.tasks,
 	}
 	return h
 }
@@ -1307,4 +1384,66 @@ func decodeErr(t *testing.T, rec *httptest.ResponseRecorder) errorDetail {
 		t.Fatalf("decode error envelope: %v (body=%s)", err, rec.Body.String())
 	}
 	return b.Error
+}
+
+// --- TaskService (M2.8) ------------------------------------------------------
+
+type fakeTaskService struct {
+	listRet      []domain.Task
+	listErr      error
+	listCalls    int
+	gotListUser  string
+	gotListQuery port.TaskQuery
+
+	createRet      domain.Task
+	createErr      error
+	createCalls    int
+	gotCreateUser  string
+	gotCreateInput domain.TaskInput
+
+	updateRet      domain.Task
+	updateErr      error
+	updateCalls    int
+	gotUpdateUser  string
+	gotUpdateID    string
+	gotUpdatePatch domain.TaskPatch
+
+	completeRet   domain.Task
+	completeErr   error
+	gotCompleteID string
+
+	reopenRet   domain.Task
+	reopenErr   error
+	gotReopenID string
+
+	deleteErr   error
+	gotDeleteID string
+}
+
+func (f *fakeTaskService) ListTasks(ctx context.Context, userID string, q port.TaskQuery) ([]domain.Task, error) {
+	f.listCalls++
+	f.gotListUser, f.gotListQuery = userID, q
+	return f.listRet, f.listErr
+}
+func (f *fakeTaskService) CreateTask(ctx context.Context, userID string, in domain.TaskInput) (domain.Task, error) {
+	f.createCalls++
+	f.gotCreateUser, f.gotCreateInput = userID, in
+	return f.createRet, f.createErr
+}
+func (f *fakeTaskService) UpdateTask(ctx context.Context, userID, taskID string, patch domain.TaskPatch) (domain.Task, error) {
+	f.updateCalls++
+	f.gotUpdateUser, f.gotUpdateID, f.gotUpdatePatch = userID, taskID, patch
+	return f.updateRet, f.updateErr
+}
+func (f *fakeTaskService) CompleteTask(ctx context.Context, userID, taskID string) (domain.Task, error) {
+	f.gotCompleteID = taskID
+	return f.completeRet, f.completeErr
+}
+func (f *fakeTaskService) ReopenTask(ctx context.Context, userID, taskID string) (domain.Task, error) {
+	f.gotReopenID = taskID
+	return f.reopenRet, f.reopenErr
+}
+func (f *fakeTaskService) DeleteTask(ctx context.Context, userID, taskID string) error {
+	f.gotDeleteID = taskID
+	return f.deleteErr
 }

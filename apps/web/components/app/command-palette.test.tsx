@@ -788,3 +788,66 @@ describe('CommandPalette — shortcut teaching', () => {
     expect(toastMessage).toHaveBeenCalledWith("Tip: press ⇧Z to overlay a city's time zone");
   });
 });
+
+describe('CommandPalette — task commands (M2.8 Task 3b)', () => {
+  it('renders both task entries with their shortcut hints', async () => {
+    renderPalette();
+    await openPalette();
+
+    const newTask = screen.getByText('New task').closest('[cmdk-item]');
+    expect(newTask).not.toBeNull();
+    expect(newTask?.textContent).toContain('⇧');
+    expect(newTask?.textContent).toContain('N');
+
+    const toggleRail = screen.getByText('Toggle task rail').closest('[cmdk-item]');
+    expect(toggleRail).not.toBeNull();
+    expect(toggleRail?.textContent).toContain('⇧');
+    expect(toggleRail?.textContent).toContain('T');
+  });
+
+  it('dispatches "New task" as a calendar command when already on /calendar', async () => {
+    currentPathname = '/calendar';
+    const received: CalendarCommand[] = [];
+    const unsubscribe = onCalendarCommand((command) => received.push(command));
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText('New task'));
+    expect(received).toEqual([{ type: 'new-task' }]);
+    expect(pushMock).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it('queues "New task" and navigates to /calendar from another route', async () => {
+    currentPathname = '/mail';
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText('New task'));
+    expect(pushMock).toHaveBeenCalledWith('/calendar');
+    expect(takePendingCalendarCommand()).toEqual({ type: 'new-task' });
+  });
+
+  it('dispatches "Toggle task rail" via the toggle-task-rail calendar command', async () => {
+    currentPathname = '/calendar';
+    const received: CalendarCommand[] = [];
+    const unsubscribe = onCalendarCommand((command) => received.push(command));
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText('Toggle task rail'));
+    expect(received).toEqual([{ type: 'toggle-task-rail' }]);
+    expect(pushMock).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it('queues "Toggle task rail" and navigates to /calendar from another route', async () => {
+    currentPathname = '/mail';
+    const user = userEvent.setup();
+    renderPalette();
+    await openPalette();
+    await user.click(screen.getByText('Toggle task rail'));
+    expect(pushMock).toHaveBeenCalledWith('/calendar');
+    expect(takePendingCalendarCommand()).toEqual({ type: 'toggle-task-rail' });
+  });
+});

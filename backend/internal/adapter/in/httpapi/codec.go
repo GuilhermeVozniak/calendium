@@ -37,6 +37,23 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	return nil
 }
 
+// optionalField resolves the tri-state of a clearable PATCH field from a
+// pre-decoded JSON object (encoding/json alone collapses `null` and absent
+// for pointer fields): absent key → nil outer pointer (leave unchanged);
+// explicit JSON null → non-nil outer, nil inner (clear); a value → both
+// levels set. Feeds double-pointer patch fields such as domain.TaskPatch.
+func optionalField[T any](raw map[string]json.RawMessage, key string) (**T, error) {
+	msg, ok := raw[key]
+	if !ok {
+		return nil, nil
+	}
+	var inner *T
+	if err := json.Unmarshal(msg, &inner); err != nil {
+		return nil, fmt.Errorf("%w: invalid %q: %v", domain.ErrValidation, key, err)
+	}
+	return &inner, nil
+}
+
 // statusFor maps domain sentinel errors to HTTP status codes and stable
 // machine-readable error codes.
 func statusFor(err error) (int, string) {
@@ -53,6 +70,8 @@ func statusFor(err error) (int, string) {
 		return http.StatusNotFound, "not_found"
 	case errors.Is(err, domain.ErrConflict):
 		return http.StatusConflict, "conflict"
+	case errors.Is(err, domain.ErrUnprocessable):
+		return http.StatusUnprocessableEntity, "unprocessable"
 	case errors.Is(err, domain.ErrSelfHosted):
 		return http.StatusNotImplemented, "self_hosted"
 	case errors.Is(err, domain.ErrNotImplemented):
@@ -85,6 +104,8 @@ func safeMessage(code string) string {
 		return "The requested resource was not found."
 	case "conflict":
 		return "The request conflicts with the current state of the resource."
+	case "unprocessable":
+		return "The calendar feed could not be fetched or parsed."
 	case "self_hosted":
 		return "Billing is disabled on self-hosted instances."
 	case "not_implemented":

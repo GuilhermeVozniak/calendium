@@ -13,8 +13,11 @@ import {
 import type {
   AiAskRequest,
   AiComposeRequest,
+  Place,
   BookingLinkInput,
   BookingRequest,
+  CalendarPrefs,
+  CalendarPrefsPatch,
   CalendarSetInput,
   ClassifierInput,
   CommentInput,
@@ -25,6 +28,8 @@ import type {
   EventTemplateInput,
   PollBallot,
   PollInput,
+  TaskInput,
+  TaskPatch,
   TimeProposalInput,
   UserSettings,
 } from './types';
@@ -804,6 +809,13 @@ const methodCases: MethodCase[] = [
     method: 'POST',
     path: '/v1/events/e1/rsvp',
     body: { response: 'accepted' },
+  },
+  {
+    name: 'rsvp with comment',
+    call: (c) => c.rsvp('e1', 'declined', 'Out of office this week.'),
+    method: 'POST',
+    path: '/v1/events/e1/rsvp',
+    body: { response: 'declined', comment: 'Out of office this week.' },
   },
 
   // --- AI ---
@@ -1788,6 +1800,8 @@ describe('ApiClient.actAs', () => {
         { status: 200, body: [] },
         { status: 200, body: [] },
         { status: 200, body: [] },
+        { status: 200, body: { bodyMd: '', links: [] } },
+        { status: 200, body: { bodyMd: 'x', links: [] } },
       ],
     });
     const acting = client.actAs('user_principal');
@@ -1797,7 +1811,10 @@ describe('ApiClient.actAs', () => {
     await acting.teamThreadActivity('t1');
     await acting.listSnippets();
     await acting.listCalendarShares('c1');
-    expect(calls.length).toBe(6);
+    // Event notes are private commentary: never delegated (M2.8 fix wave).
+    await acting.getEventNote('e1');
+    await acting.putEventNote('e1', 'x', []);
+    expect(calls.length).toBe(8);
     for (const call of calls) {
       expect(call.headers['X-Calendium-Act-As'], call.url).toBeUndefined();
     }
@@ -1848,6 +1865,7 @@ describe('isDelegablePath', () => {
       '/v1/mail/snippets/sn1',
       '/v1/calendars/c1/shares',
       '/v1/calendars/c1/shares/sh1',
+      '/v1/events/e1/note',
       '/v1/comments/cm1',
       '/v1/teams',
       '/v1/delegations',
@@ -1963,5 +1981,462 @@ describe('calendar shares & team availability', () => {
     await expect(
       client.teamAvailability('team_x', '2026-07-07T00:00:00Z', '2026-07-08T00:00:00Z')
     ).rejects.toMatchObject({ status: 404, code: 'not_found' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Event notes (M2.8 Task 4)
+// ---------------------------------------------------------------------------
+
+describe('event notes', () => {
+  const NOTE = {
+    eventId: 'ev1',
+    bodyMd: '# Prep\n- read the doc',
+    links: ['https://notion.so/doc'],
+    updatedAt: '2026-07-20T12:00:00Z',
+  };
+
+  it('getEventNote GETs /v1/events/{id}/note with the id percent-encoded', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: NOTE }] });
+    const result = await client.getEventNote('ev 1');
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/events/ev%201/note`);
+    expect(calls[0]!.headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(result).toEqual(NOTE);
+  });
+
+  it('getEventNote resolves an empty note for events without one (200, never 404)', async () => {
+    const empty = { eventId: 'ev1', bodyMd: '', links: [], updatedAt: '0001-01-01T00:00:00Z' };
+    const { client } = makeClient({ responses: [{ status: 200, body: empty }] });
+    await expect(client.getEventNote('ev1')).resolves.toEqual(empty);
+  });
+
+  it('putEventNote PUTs the { bodyMd, links } payload and returns the stored note', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: NOTE }] });
+    const result = await client.putEventNote('ev1', '# Prep\n- read the doc', [
+      'https://notion.so/doc',
+    ]);
+    expect(calls[0]!.method).toBe('PUT');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/events/ev1/note`);
+    expect(calls[0]!.body).toEqual({
+      bodyMd: '# Prep\n- read the doc',
+      links: ['https://notion.so/doc'],
+    });
+    expect(result).toEqual(NOTE);
+  });
+
+  it('maps a rejected link to ApiRequestError(400)', async () => {
+    const { client } = makeClient({
+      responses: [
+        { status: 400, body: { error: { code: 'validation_failed', message: 'bad link' } } },
+      ],
+    });
+    await expect(client.putEventNote('ev1', 'x', ['javascript:alert(1)'])).rejects.toMatchObject({
+      status: 400,
+      code: 'validation_failed',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Calendar automation preferences (M2.8 Task 5)
+// ---------------------------------------------------------------------------
+
+describe('calendar automation preferences', () => {
+  const PREFS: CalendarPrefs = {
+    timeZone: 'Europe/Amsterdam',
+    workDays: [1, 2, 3, 4, 5],
+    workdayStartMinutes: 540,
+    workdayEndMinutes: 1020,
+    focusGoalMinutesPerWeek: 600,
+    focusAutoDecline: true,
+    focusDeclineMessage: 'Deep work — back later.',
+    autoBufferMinutes: 10,
+    oooAutoDecline: false,
+    oooDeclineMessage: '',
+    travelBuffers: true,
+    travelMode: 'transit',
+    leaveAlerts: true,
+    homeLat: 52.37,
+    homeLon: 4.89,
+    weatherEnabled: true,
+  };
+
+  it('getCalendarPrefs GETs /v1/prefs/calendar and returns the document', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: PREFS }] });
+    const result = await client.getCalendarPrefs();
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/prefs/calendar`);
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(result).toEqual(PREFS);
+  });
+
+  it('updateCalendarPrefs PATCHes only the provided fields', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: PREFS }] });
+    const patch: CalendarPrefsPatch = { autoBufferMinutes: 10, travelMode: 'transit' };
+    const result = await client.updateCalendarPrefs(patch);
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/prefs/calendar`);
+    expect(calls[0]!.method).toBe('PATCH');
+    expect(calls[0]!.body).toEqual({ autoBufferMinutes: 10, travelMode: 'transit' });
+    expect(result).toEqual(PREFS);
+  });
+
+  it('maps a 400 validation response to ApiRequestError(400)', async () => {
+    const { client } = makeClient({
+      responses: [
+        { status: 400, body: { error: { code: 'validation_failed', message: 'validation failed' } } },
+      ],
+    });
+    await expect(client.updateCalendarPrefs({ autoBufferMinutes: 3 })).rejects.toMatchObject({
+      status: 400,
+      code: 'validation_failed',
+    });
+  });
+
+  it('maps a 402 paywall response to ApiRequestError(402)', async () => {
+    const { client } = makeClient({
+      responses: [
+        { status: 402, body: { error: { code: 'payment_required', message: 'payment required' } } },
+      ],
+    });
+    await expect(client.getCalendarPrefs()).rejects.toMatchObject({
+      status: 402,
+      code: 'payment_required',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tasks (M2.8)
+// ---------------------------------------------------------------------------
+
+describe('tasks', () => {
+  const TASK = {
+    id: 'task_1',
+    title: 'Write brief',
+    notes: null,
+    due: null,
+    allDayDue: false,
+    scheduledStart: null,
+    scheduledEnd: null,
+    completedAt: null,
+    source: 'local',
+    sourceUrl: null,
+    position: 1024,
+    createdAt: '2026-07-19T12:00:00Z',
+    updatedAt: '2026-07-19T12:00:00Z',
+  };
+
+  it('lists tasks with a bare GET /v1/tasks when no query is given', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: [TASK] }] });
+    const got = await client.listTasks();
+    expect(got).toEqual([TASK]);
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/tasks`);
+    expect(calls[0]!.body).toBeUndefined();
+  });
+
+  it('encodes list query params; boolean flags spell "1"', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: [] }] });
+    await client.listTasks({
+      from: '2026-07-20T00:00:00Z',
+      to: '2026-07-27T00:00:00Z',
+      unscheduled: true,
+      includeCompleted: true,
+    });
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe('/v1/tasks');
+    expect(searchParamsToObject(url.searchParams)).toEqual({
+      from: '2026-07-20T00:00:00Z',
+      to: '2026-07-27T00:00:00Z',
+      unscheduled: '1',
+      includeCompleted: '1',
+    });
+  });
+
+  it('encodes the due range and omits false flags', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: [] }] });
+    await client.listTasks({
+      dueFrom: '2026-07-20T00:00:00Z',
+      dueTo: '2026-07-21T00:00:00Z',
+      unscheduled: false,
+    });
+    expect(searchParamsToObject(new URL(calls[0]!.url).searchParams)).toEqual({
+      dueFrom: '2026-07-20T00:00:00Z',
+      dueTo: '2026-07-21T00:00:00Z',
+    });
+  });
+
+  it('creates a task via POST /v1/tasks with the input as the body', async () => {
+    const input: TaskInput = {
+      title: 'Write brief',
+      notes: 'details',
+      due: '2026-07-21T17:00:00Z',
+      position: 512,
+    };
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: TASK }] });
+    const got = await client.createTask(input);
+    expect(got).toEqual(TASK);
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/tasks`);
+    expect(calls[0]!.body).toEqual(input);
+  });
+
+  it('PATCHes a task preserving explicit nulls and dropping undefined keys', async () => {
+    const patch: TaskPatch = { title: 'renamed', due: null, notes: undefined, position: 2048 };
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { ...TASK, title: 'renamed' } }],
+    });
+    await client.updateTask('task_1', patch);
+    expect(calls[0]!.method).toBe('PATCH');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/tasks/task_1`);
+    const body = calls[0]!.body as Record<string, unknown>;
+    expect(body).toEqual({ title: 'renamed', due: null, position: 2048 });
+    expect('notes' in body).toBe(false);
+    expect(body.due).toBeNull();
+  });
+
+  it('percent-encodes the task id in every path', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: TASK }] });
+    await client.updateTask('task 1', { title: 'x' });
+    expect(new URL(calls[0]!.url).pathname).toBe('/v1/tasks/task%201');
+
+    const { client: c2, calls: calls2 } = makeClient({ responses: [{ status: 200, body: TASK }] });
+    await c2.completeTask('task/2');
+    expect(calls2[0]!.url).toBe(`${BASE_URL}/v1/tasks/${encodeURIComponent('task/2')}/complete`);
+  });
+
+  it('completes and reopens via POST subroutes with no body', async () => {
+    const done = { ...TASK, completedAt: '2026-07-19T13:00:00Z' };
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: done }] });
+    const got = await client.completeTask('task_1');
+    expect(got).toEqual(done);
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/tasks/task_1/complete`);
+    expect(calls[0]!.body).toBeUndefined();
+
+    const { client: c2, calls: calls2 } = makeClient({ responses: [{ status: 200, body: TASK }] });
+    await c2.reopenTask('task_1');
+    expect(calls2[0]!.method).toBe('POST');
+    expect(calls2[0]!.url).toBe(`${BASE_URL}/v1/tasks/task_1/reopen`);
+    expect(calls2[0]!.body).toBeUndefined();
+  });
+
+  it('deletes via DELETE and resolves undefined on 204', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    await expect(client.deleteTask('task_1')).resolves.toBeUndefined();
+    expect(calls[0]!.method).toBe('DELETE');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/tasks/task_1`);
+  });
+
+  it('surfaces the error envelope as ApiRequestError', async () => {
+    const { client } = makeClient({
+      responses: [
+        { status: 402, body: { error: { code: 'payment_required', message: 'subscribe' } } },
+      ],
+    });
+    await expect(client.createTask({ title: 't' })).rejects.toMatchObject({
+      status: 402,
+      code: 'payment_required',
+    });
+    await expect(client.createTask({ title: 't' })).rejects.toBeInstanceOf(ApiRequestError);
+  });
+});
+
+describe('weather (M2.8 Task 13)', () => {
+  const rows = [
+    { date: '2026-07-19', code: 3, highCelsius: 24.6, lowCelsius: 13.1, precipChance: 20 },
+    { date: '2026-07-20', code: 61, highCelsius: 19.2, lowCelsius: 12.4, precipChance: 85 },
+  ];
+
+  it('requests GET /v1/weather with lat/lon/tz/days and returns the rows', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: rows }] });
+    const got = await client.getWeather(52.52, 13.405, 'Europe/Berlin', 5);
+    expect(got).toEqual(rows);
+    expect(calls[0]!.method).toBe('GET');
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe('/v1/weather');
+    expect(searchParamsToObject(url.searchParams)).toEqual({
+      lat: '52.52',
+      lon: '13.405',
+      tz: 'Europe/Berlin',
+      days: '5',
+    });
+  });
+
+  it('defaults days to 7', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: [] }] });
+    await client.getWeather(0, 0, 'UTC');
+    expect(new URL(calls[0]!.url).searchParams.get('days')).toBe('7');
+  });
+
+  it('maps a 501 unconfigured response to ApiRequestError(501, not_implemented)', async () => {
+    const { client } = makeClient({
+      responses: [
+        { status: 501, body: { error: { code: 'not_implemented', message: 'no vendor' } } },
+      ],
+    });
+    await expect(client.getWeather(0, 0, 'UTC')).rejects.toMatchObject({
+      status: 501,
+      code: 'not_implemented',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Places — location autocomplete (M2.8 Task 11)
+// ---------------------------------------------------------------------------
+
+describe('places', () => {
+  it('GETs /v1/places/autocomplete with a percent-encoded user query', async () => {
+    const places: Place[] = [
+      { name: 'Alexanderplatz', address: 'Alexanderplatz, Mitte, Berlin, Germany', lat: 52.5219, lon: 13.4132 },
+    ];
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: places }] });
+    const got = await client.autocompletePlaces('café & bar berlin');
+    expect(got).toEqual(places);
+    expect(calls[0]!.method).toBe('GET');
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe('/v1/places/autocomplete');
+    expect(searchParamsToObject(url.searchParams)).toEqual({ q: 'café & bar berlin' });
+    // Raw wire form must be percent-encoded — no raw multibyte chars or
+    // bare ampersands from user input in the URL.
+    expect(calls[0]!.url).toContain('caf%C3%A9%20%26%20bar%20berlin');
+  });
+
+  it('maps the unconfigured-server 501 to ApiRequestError(not_implemented)', async () => {
+    const { client } = makeClient({
+      responses: [
+        {
+          status: 501,
+          body: { error: { code: 'not_implemented', message: 'maps are not available on this instance' } },
+        },
+      ],
+    });
+    await expect(client.autocompletePlaces('berlin')).rejects.toMatchObject({
+      status: 501,
+      code: 'not_implemented',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Time insights (M2.8 Task 17)
+// ---------------------------------------------------------------------------
+
+describe('time insights (M2.8 Task 17)', () => {
+  const insights = {
+    from: '2026-07-06T00:00:00Z',
+    to: '2026-07-13T00:00:00Z',
+    meetingMinutes: 150,
+    focusMinutes: 180,
+    taskMinutes: 60,
+    meetingCount: 2,
+    focusGoalMinutes: 600,
+    topPeople: [{ email: 'alice@example.com', name: 'Alice', meetings: 2, minutes: 150 }],
+    byDay: [{ date: '2026-07-06', meetingMinutes: 60, focusMinutes: 0 }],
+  };
+
+  it('requests GET /v1/insights/time with from/to and returns the document', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: insights }] });
+    const got = await client.getTimeInsights('2026-07-06T00:00:00Z', '2026-07-13T00:00:00Z');
+    expect(got).toEqual(insights);
+    expect(calls[0]!.method).toBe('GET');
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe('/v1/insights/time');
+    expect(searchParamsToObject(url.searchParams)).toEqual({
+      from: '2026-07-06T00:00:00Z',
+      to: '2026-07-13T00:00:00Z',
+    });
+  });
+
+  it('maps an over-cap 400 to ApiRequestError(validation_failed)', async () => {
+    const { client } = makeClient({
+      responses: [
+        {
+          status: 400,
+          body: { error: { code: 'validation_failed', message: 'range must be 92 days or less' } },
+        },
+      ],
+    });
+    await expect(
+      client.getTimeInsights('2026-01-01T00:00:00Z', '2026-07-13T00:00:00Z')
+    ).rejects.toMatchObject({ status: 400, code: 'validation_failed' });
+  });
+
+  it('maps a 402 unpaid response to ApiRequestError(payment_required)', async () => {
+    const { client } = makeClient({
+      responses: [
+        { status: 402, body: { error: { code: 'payment_required', message: 'no subscription' } } },
+      ],
+    });
+    await expect(
+      client.getTimeInsights('2026-07-06T00:00:00Z', '2026-07-13T00:00:00Z')
+    ).rejects.toMatchObject({ status: 402, code: 'payment_required' });
+  });
+});
+
+describe('calendar subscriptions (M2.8 Task 15)', () => {
+  const sub = {
+    id: 'sub_1',
+    url: 'https://example.com/holidays.ics',
+    name: 'US Holidays',
+    color: '#8b5cf6',
+    isVisible: true,
+    lastFetchedAt: '2026-07-19T11:00:00Z',
+    lastError: null,
+    createdAt: '2026-07-19T10:00:00Z',
+  };
+
+  it('lists subscriptions via GET /v1/calendar-subscriptions', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: [sub] }] });
+    const got = await client.listCalendarSubscriptions();
+    expect(got).toEqual([sub]);
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendar-subscriptions`);
+  });
+
+  it('creates a subscription via POST with the input body', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: sub }] });
+    const got = await client.createCalendarSubscription({
+      url: 'https://example.com/holidays.ics',
+      color: '#8b5cf6',
+    });
+    expect(got).toEqual(sub);
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendar-subscriptions`);
+    expect(calls[0]!.body).toEqual({ url: 'https://example.com/holidays.ics', color: '#8b5cf6' });
+  });
+
+  it('surfaces the 422 unprocessable feed error', async () => {
+    const { client } = makeClient({
+      responses: [
+        {
+          status: 422,
+          body: { error: { code: 'unprocessable', message: 'The calendar feed could not be fetched or parsed.' } },
+        },
+      ],
+    });
+    await expect(
+      client.createCalendarSubscription({ url: 'https://example.com/broken.ics' })
+    ).rejects.toMatchObject({ status: 422, code: 'unprocessable' });
+  });
+
+  it('patches a subscription and percent-encodes the id', async () => {
+    const { client, calls } = makeClient({
+      responses: [{ status: 200, body: { ...sub, isVisible: false } }],
+    });
+    const got = await client.updateCalendarSubscription('sub 1', { isVisible: false });
+    expect(got.isVisible).toBe(false);
+    expect(calls[0]!.method).toBe('PATCH');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendar-subscriptions/sub%201`);
+    expect(calls[0]!.body).toEqual({ isVisible: false });
+  });
+
+  it('deletes a subscription and resolves on 204', async () => {
+    const { client, calls } = makeClient({ responses: [{ status: 204 }] });
+    await expect(client.deleteCalendarSubscription('sub_1')).resolves.toBeUndefined();
+    expect(calls[0]!.method).toBe('DELETE');
+    expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendar-subscriptions/sub_1`);
   });
 });

@@ -11,6 +11,7 @@ import {
   Globe,
   Layers,
   LayoutTemplate,
+  ListTodo,
   Plus,
   Users,
   X,
@@ -31,7 +32,9 @@ import { SetSwitcher } from '@/components/app/calendar/set-switcher';
 import { TemplateManager } from '@/components/app/calendar/template-manager';
 import { TimeGrid } from '@/components/app/calendar/time-grid';
 import { YearView } from '@/components/app/calendar/year-view';
-import { EventDialog } from '@/components/app/event-dialog';
+import { EventDialog, SubscriptionEventDialog } from '@/components/app/event-dialog';
+import { InsightsPanel } from '@/components/app/insights-panel';
+import { TaskRail } from '@/components/app/task-rail';
 import { Button } from '@/components/ui/button';
 import {
   Command,
@@ -58,8 +61,12 @@ import { activateSet, fetchCalendarSets } from '@/lib/set-data';
 import type { CalendarView } from '@/lib/calendar-views';
 import { VIEW_KEYS, rangeLabel, stepAnchor, viewRange } from '@/lib/calendar-views';
 import { nextHalfHour } from '@/lib/quick-add';
-import { fetchAccounts } from '@/lib/settings-data';
+import { eventPrefillFromThread, type ThreadDragPayload } from '@/lib/thread-drag';
+import { fetchAccounts, fetchCalendarSubscriptions } from '@/lib/settings-data';
+import { subscriptionColorMap } from '@/lib/subscription-utils';
 import { useShortcuts } from '@/lib/shortcuts';
+import { useTasks } from '@/lib/use-tasks';
+import { useWeather } from '@/lib/use-weather';
 import { applyTemplate, fetchEventTemplates, recordTemplateUsage } from '@/lib/template-data';
 import { getPinnedTimeZones, setPinnedTimeZones, zoneCaption } from '@/lib/timezones';
 
@@ -67,6 +74,8 @@ interface EventDialogState {
   open: boolean;
   event: Event | null;
   defaults: Partial<EventInput> | null;
+  /** Email-to-event drop prefill (M2.8 Task 18); null for every other entry point. */
+  prefill: (Partial<EventInput> & { sourceThreadId?: string }) | null;
 }
 
 export default function CalendarPage() {
@@ -79,11 +88,15 @@ export default function CalendarPage() {
     open: false,
     event: null,
     defaults: null,
+    prefill: null,
   });
   const [availabilityOpen, setAvailabilityOpen] = React.useState(false);
   const [teamAvailabilityOpen, setTeamAvailabilityOpen] = React.useState(false);
   const [templateManagerOpen, setTemplateManagerOpen] = React.useState(false);
   const [setSwitcherOpen, setSetSwitcherOpen] = React.useState(false);
+  const [taskRailOpen, setTaskRailOpen] = React.useState(true);
+  // Time insights sheet (M2.8 Task 17): ⇧I / palette "Time insights".
+  const [insightsOpen, setInsightsOpen] = React.useState(false);
 
   // Time Travel (Task 16): overlays one city's clock on the grid without
   // changing your own timezone, persisted separately from pinnedZones above
@@ -168,6 +181,12 @@ export default function CalendarPage() {
 
   const calendarsQuery = useQuery({ queryKey: ['calendars'], queryFn: fetchCalendars });
   const accountsQuery = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts });
+  // ICS feed subscriptions (M2.8 Task 15): colors for the grid's read-only
+  // feed mirrors. Their events already arrive merged into /v1/events.
+  const subscriptionsQuery = useQuery({
+    queryKey: ['calendar-subscriptions'],
+    queryFn: fetchCalendarSubscriptions,
+  });
   const eventsQuery = useQuery({
     queryKey: ['events', range.from.toISOString(), range.to.toISOString()],
     queryFn: () => fetchEvents(range.from, range.to),
@@ -180,6 +199,25 @@ export default function CalendarPage() {
     queryFn: () => fetchBusyEvents(range.from, range.to),
   });
 
+  // Inline day forecasts (M2.8 Task 13), fetched only for the views that
+  // render chips (day/week grid headers + the agenda strip). `byDate` is
+  // undefined whenever weather is hidden — no location, weather pref off,
+  // server capability off / endpoint 501, or a vendor failure — and the
+  // views render no chips (best-effort decoration, never an error state).
+  const { byDate: weatherByDate } = useWeather(
+    view === 'day' || view === 'week' || view === 'ticker'
+  );
+
+  // Tasks (M2.8 Task 3): the rail reads its own useTasks() (same ['tasks']
+  // cache); this instance narrows `scheduled` to the visible range for the
+  // grid's task blocks and provides the drag/check-off mutations.
+  const {
+    scheduled: scheduledTasks,
+    updateTask: patchTask,
+    complete: completeTask,
+    reopen: reopenTask,
+  } = useTasks(range);
+
   const calendars = React.useMemo(
     () => calendarsQuery.data ?? [],
     [calendarsQuery.data]
@@ -187,6 +225,10 @@ export default function CalendarPage() {
   const calendarById = React.useMemo(
     () => new Map(calendars.map((c) => [c.id, c])),
     [calendars]
+  );
+  const subscriptionColors = React.useMemo(
+    () => subscriptionColorMap(subscriptionsQuery.data),
+    [subscriptionsQuery.data]
   );
   const events = React.useMemo(
     () =>
@@ -225,6 +267,23 @@ export default function CalendarPage() {
         open: true,
         event: null,
         defaults: { calendarId: defaultCalendarId, ...defaults },
+        prefill: null,
+      });
+    },
+    [defaultCalendarId]
+  );
+
+  // Email-to-event drop (M2.8 Task 18): a thread dragged from /mail onto a
+  // grid day column (timed) or a day header (all-day) opens the create
+  // dialog prefilled — title from the subject, attendees from participants,
+  // time from the drop position (lib/thread-drag.ts).
+  const handleThreadDrop = React.useCallback(
+    (payload: ThreadDragPayload, start: Date, allDay: boolean) => {
+      setDialog({
+        open: true,
+        event: null,
+        defaults: { calendarId: defaultCalendarId },
+        prefill: eventPrefillFromThread(payload, start, allDay),
       });
     },
     [defaultCalendarId]
@@ -271,7 +330,7 @@ export default function CalendarPage() {
   );
 
   const handleEventClick = React.useCallback(
-    (event: Event) => setDialog({ open: true, event, defaults: null }),
+    (event: Event) => setDialog({ open: true, event, defaults: null, prefill: null }),
     []
   );
 
@@ -347,6 +406,20 @@ export default function CalendarPage() {
           if (timeTravelZone) changeTimeTravelZone(null);
           else setTimeTravelPickerOpen(true);
           break;
+        case 'time-insights':
+          setInsightsOpen((prev) => !prev);
+          break;
+        case 'toggle-task-rail':
+          setTaskRailOpen((v) => !v);
+          break;
+        case 'new-task':
+          // Open the rail if hidden, then focus its quick-add once rendered
+          // (the input is the rail's "Add a task" field, task-rail.tsx).
+          setTaskRailOpen(true);
+          requestAnimationFrame(() => {
+            document.querySelector<HTMLInputElement>('input[aria-label="Add a task"]')?.focus();
+          });
+          break;
       }
     },
     [goToday, goNext, goPrev, openCreate, applyTemplateById, toggleCalendarSet, timeTravelZone, changeTimeTravelZone]
@@ -394,6 +467,17 @@ export default function CalendarPage() {
       handler: () => runCalendarCommand({ type: 'time-travel' }),
     },
     {
+      // `t` alone is taken by "today" on this page, so the rail toggles on ⇧T.
+      keys: 'shift+t',
+      description: 'Toggle task rail',
+      handler: () => runCalendarCommand({ type: 'toggle-task-rail' }),
+    },
+    {
+      keys: 'shift+i',
+      description: 'Time insights',
+      handler: () => runCalendarCommand({ type: 'time-insights' }),
+    },
+    {
       keys: '/',
       description: 'Focus quick add',
       handler: () => {
@@ -436,7 +520,7 @@ export default function CalendarPage() {
         <div className="flex items-center gap-1">
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="outline" size="sm" onClick={goToday}>
+              <Button variant="outline" size="sm" onClick={goToday} data-tour="cal-today">
                 Today
               </Button>
             </TooltipTrigger>
@@ -536,7 +620,22 @@ export default function CalendarPage() {
               </TabsTrigger>
             </TabsList>
           </Tabs>
-          <Button variant="outline" size="sm" onClick={() => setAvailabilityOpen(true)}>
+          <Button
+            variant="outline"
+            size="sm"
+            aria-pressed={taskRailOpen}
+            onClick={() => setTaskRailOpen((v) => !v)}
+            data-tour="task-rail"
+          >
+            <ListTodo />
+            Tasks
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setAvailabilityOpen(true)}
+            data-tour="share-availability"
+          >
             <Clock />
             Share availability
           </Button>
@@ -647,6 +746,7 @@ export default function CalendarPage() {
               calendarById={calendarById}
               onAnchorChange={setAnchor}
               onEventClick={handleEventClick}
+              weatherByDate={weatherByDate}
             />
           ) : view === 'month' ? (
             <MonthView
@@ -690,20 +790,42 @@ export default function CalendarPage() {
               pinnedZones={pinnedZones}
               timeTravelZone={timeTravelZone}
               onExitTimeTravel={() => changeTimeTravelZone(null)}
+              weatherByDate={weatherByDate}
               onSlotClick={handleSlotClick}
               onEventClick={handleEventClick}
+              subscriptionColors={subscriptionColors}
+              tasks={scheduledTasks}
+              onTaskDrop={(taskId, block) => void patchTask(taskId, block)}
+              onTaskToggle={(task) =>
+                void (task.completedAt ? reopenTask(task.id) : completeTask(task.id))
+              }
+              onThreadDrop={handleThreadDrop}
             />
           )}
         </main>
+
+        {/* Task rail (M2.8 Task 3): collapsible via the Tasks button / ⇧T. */}
+        {taskRailOpen && (
+          <TaskRail onClose={() => setTaskRailOpen(false)} className="hidden md:flex" />
+        )}
       </div>
 
-      <EventDialog
-        open={dialog.open}
-        onOpenChange={(open) => setDialog((d) => ({ ...d, open }))}
-        calendars={calendars}
-        event={dialog.event}
-        defaults={dialog.defaults}
-      />
+      {dialog.event?.subscriptionId ? (
+        <SubscriptionEventDialog
+          open={dialog.open}
+          onOpenChange={(open) => setDialog((d) => ({ ...d, open }))}
+          event={dialog.event}
+        />
+      ) : (
+        <EventDialog
+          open={dialog.open}
+          onOpenChange={(open) => setDialog((d) => ({ ...d, open }))}
+          calendars={calendars}
+          event={dialog.event}
+          defaults={dialog.defaults}
+          prefill={dialog.prefill}
+        />
+      )}
       <AvailabilityDialog open={availabilityOpen} onOpenChange={setAvailabilityOpen} />
       <TeamAvailabilityDialog
         open={teamAvailabilityOpen}
@@ -711,6 +833,12 @@ export default function CalendarPage() {
       />
       <TemplateManager open={templateManagerOpen} onOpenChange={setTemplateManagerOpen} />
       <SetSwitcher open={setSwitcherOpen} onOpenChange={setSetSwitcherOpen} />
+      <InsightsPanel
+        open={insightsOpen}
+        onOpenChange={setInsightsOpen}
+        from={range.from}
+        to={range.to}
+      />
     </div>
   );
 }

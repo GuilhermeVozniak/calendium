@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { fetchCalendars, fetchEvents } from '@/lib/calendar-data';
+import { eventPrefillFromThread, type ThreadDragPayload } from '@/lib/thread-drag';
 import { WEEK_OPTS } from '@/lib/calendar-views';
 import { cn } from '@/lib/utils';
 
@@ -33,6 +34,8 @@ interface DialogState {
   open: boolean;
   event: Event | null;
   defaults: Partial<EventInput> | null;
+  /** Email-to-event drop prefill (M2.8 Task 18) — the peek accepts the same drop as the main grid. */
+  prefill: (Partial<EventInput> & { sourceThreadId?: string }) | null;
 }
 
 type PeekMode = 'day' | 'week';
@@ -55,7 +58,12 @@ export function CalendarPeek({ open, onOpenChange }: CalendarPeekProps) {
   const [mode, setMode] = React.useState<PeekMode>('day');
   const [selectedDay, setSelectedDay] = React.useState<Date>(() => startOfDay(new Date()));
   const [now, setNow] = React.useState<Date>(() => new Date());
-  const [dialog, setDialog] = React.useState<DialogState>({ open: false, event: null, defaults: null });
+  const [dialog, setDialog] = React.useState<DialogState>({
+    open: false,
+    event: null,
+    defaults: null,
+    prefill: null,
+  });
 
   React.useEffect(() => setMounted(true), []);
 
@@ -137,7 +145,26 @@ export function CalendarPeek({ open, onOpenChange }: CalendarPeekProps) {
 
   const openCreate = React.useCallback(
     (defaults?: Partial<EventInput>) => {
-      setDialog({ open: true, event: null, defaults: { calendarId: defaultCalendarId, ...defaults } });
+      setDialog({
+        open: true,
+        event: null,
+        defaults: { calendarId: defaultCalendarId, ...defaults },
+        prefill: null,
+      });
+    },
+    [defaultCalendarId]
+  );
+
+  // Same email-to-event drop contract as the calendar page's grid, so a drag
+  // from the thread list never requires leaving mail (M2.8 Task 18).
+  const handleThreadDrop = React.useCallback(
+    (payload: ThreadDragPayload, start: Date, allDay: boolean) => {
+      setDialog({
+        open: true,
+        event: null,
+        defaults: { calendarId: defaultCalendarId },
+        prefill: eventPrefillFromThread(payload, start, allDay),
+      });
     },
     [defaultCalendarId]
   );
@@ -150,7 +177,7 @@ export function CalendarPeek({ open, onOpenChange }: CalendarPeekProps) {
   );
 
   const handleEventClick = React.useCallback(
-    (event: Event) => setDialog({ open: true, event, defaults: null }),
+    (event: Event) => setDialog({ open: true, event, defaults: null, prefill: null }),
     []
   );
 
@@ -241,6 +268,7 @@ export function CalendarPeek({ open, onOpenChange }: CalendarPeekProps) {
             gmtLabel={gmtLabel}
             onSlotClick={handleSlotClick}
             onEventClick={handleEventClick}
+            onThreadDrop={handleThreadDrop}
           />
         </>
       )}
@@ -258,6 +286,7 @@ export function CalendarPeek({ open, onOpenChange }: CalendarPeekProps) {
         calendars={calendars}
         event={dialog.event}
         defaults={dialog.defaults}
+        prefill={dialog.prefill}
       />
     </aside>
   );

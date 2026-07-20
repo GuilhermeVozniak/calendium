@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -85,6 +86,17 @@ const (
 	VisibilityPrivate EventVisibility = "private"
 )
 
+// oooTitleRE matches event titles announcing an out-of-office period.
+var oooTitleRE = regexp.MustCompile(`(?i)\b(out of office|ooo|vacation|annual leave|pto)\b`)
+
+// IsOOOEvent reports whether ev announces an out-of-office period: a
+// non-cancelled event — all-day or timed — whose title matches the OOO
+// vocabulary (out of office / OOO / vacation / annual leave / PTO,
+// case-insensitive, on word boundaries so "Laptop setup" never matches).
+func IsOOOEvent(ev Event) bool {
+	return ev.Status != EventCancelled && oooTitleRE.MatchString(ev.Title)
+}
+
 // Event is a calendar event mirrored locally; writes go through to the
 // provider and update the mirror optimistically.
 type Event struct {
@@ -108,6 +120,15 @@ type Event struct {
 	// calendar: only Start/End survive redaction (title "Busy", every other
 	// field zeroed server-side).
 	FreeBusyOnly bool `json:"freeBusyOnly,omitempty"`
+	// LocationLat/LocationLon are set when Location was picked from maps
+	// autocomplete; nil for free-typed locations (travel features skip
+	// events without coordinates). Local-only: never sent to providers.
+	LocationLat *float64 `json:"locationLat"`
+	LocationLon *float64 `json:"locationLon"`
+	// SubscriptionID is set on read-only mirrors of ICS feed subscriptions
+	// (M2.8 Task 15). Subscription events have no CalendarID, are never
+	// written through to any provider, and never count as busy time.
+	SubscriptionID *string `json:"subscriptionId,omitempty"`
 }
 
 // EventInput is the create-event payload (mirrors EventInput in types.ts).
@@ -123,6 +144,10 @@ type EventInput struct {
 	AttendeeEmails  []string  `json:"attendeeEmails,omitempty"`
 	AddConferencing bool      `json:"addConferencing,omitempty"`
 	ReminderMinutes []int     `json:"reminderMinutes,omitempty"`
+	// LocationLat/LocationLon carry the coordinates of an autocomplete-picked
+	// location; omitted for free-typed location text.
+	LocationLat *float64 `json:"locationLat,omitempty"`
+	LocationLon *float64 `json:"locationLon,omitempty"`
 }
 
 // EventPatch is a partial event update; nil fields are left unchanged.
@@ -136,6 +161,10 @@ type EventPatch struct {
 	RecurrenceRule  *string    `json:"recurrenceRule"`
 	AttendeeEmails  *[]string  `json:"attendeeEmails"`
 	ReminderMinutes *[]int     `json:"reminderMinutes"`
+	// LocationLat/LocationLon update the picked-location coordinates; nil
+	// leaves them unchanged (free-typed edits keep whatever was stored).
+	LocationLat *float64 `json:"locationLat"`
+	LocationLon *float64 `json:"locationLon"`
 }
 
 // AvailabilitySlot is a free window for the share-availability flow.
@@ -192,3 +221,29 @@ type CalendarSetInput struct {
 	CalendarIDs []string `json:"calendarIds"`
 	Position    int      `json:"position"`
 }
+
+// EventNote is a doc/note attached to an event (M2.8 Task 4). Notes survive
+// provider syncs because they live only locally, keyed by our event id
+// (ON DELETE CASCADE follows mirror deletes).
+type EventNote struct {
+	EventID   string    `json:"eventId"`
+	UserID    string    `json:"-"`
+	BodyMD    string    `json:"bodyMd"` // markdown; rendered read-only outside edit
+	Links     []string  `json:"links"`  // attached doc URLs (Notion, GDoc, ...)
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// --- Maps & location autocomplete (M2.8 Task 11) -----------------------------
+
+// Place is one location-autocomplete suggestion (mirrors Place in
+// packages/shared/src/types.ts).
+type Place struct {
+	Name    string  `json:"name"`
+	Address string  `json:"address"`
+	Lat     float64 `json:"lat"`
+	Lon     float64 `json:"lon"`
+}
+
+// TravelMode (driving/walking/transit) is declared in prefs.go (M2.8 Task 5)
+// and shared by the maps port; the OSRM adapter approximates transit as
+// driving*1.5 until a transit vendor lands.

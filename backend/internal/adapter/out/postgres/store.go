@@ -40,6 +40,7 @@ func (s *Store) Drafts() port.DraftRepo                 { return draftRepo{s} }
 func (s *Store) Snippets() port.SnippetRepo             { return snippetRepo{s} }
 func (s *Store) Calendars() port.CalendarRepo           { return calendarRepo{s} }
 func (s *Store) Events() port.EventRepo                 { return eventRepo{s} }
+func (s *Store) EventNotes() port.EventNoteRepo         { return eventNoteRepo{s} }
 func (s *Store) EventTemplates() port.EventTemplateRepo { return eventTemplateRepo{s} }
 func (s *Store) CalendarSets() port.CalendarSetRepo     { return calendarSetRepo{s} }
 func (s *Store) Prefs() port.PrefsRepo                  { return prefsRepo{s} }
@@ -73,6 +74,7 @@ var (
 	_ port.SnippetRepo         = snippetRepo{}
 	_ port.CalendarRepo        = calendarRepo{}
 	_ port.EventRepo           = eventRepo{}
+	_ port.EventNoteRepo       = eventNoteRepo{}
 	_ port.EventTemplateRepo   = eventTemplateRepo{}
 	_ port.CalendarSetRepo     = calendarSetRepo{}
 	_ port.PrefsRepo           = prefsRepo{}
@@ -104,6 +106,7 @@ type (
 	snippetRepo         struct{ *Store }
 	calendarRepo        struct{ *Store }
 	eventRepo           struct{ *Store }
+	eventNoteRepo       struct{ *Store }
 	eventTemplateRepo   struct{ *Store }
 	calendarSetRepo     struct{ *Store }
 	prefsRepo           struct{ *Store }
@@ -157,3 +160,12 @@ func (s *Store) RunInTx(ctx context.Context, fn func(ctx context.Context) error)
 	}
 	return nil
 }
+
+// --- Calendar automation preferences (M2.8 Task 5) ---------------------------
+
+type calendarPrefsRepo struct{ *Store }
+
+var _ port.CalendarPrefsRepo = calendarPrefsRepo{}
+
+// CalendarPrefs returns the calendar automation preferences repo.
+func (s *Store) CalendarPrefs() port.CalendarPrefsRepo { return calendarPrefsRepo{s} }

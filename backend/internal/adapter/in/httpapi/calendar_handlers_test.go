@@ -272,6 +272,23 @@ func TestHandleRsvp(t *testing.T) {
 		if h.calendars.gotRsvpID != "ev1" {
 			t.Fatalf("gotRsvpID = %q, want ev1", h.calendars.gotRsvpID)
 		}
+		if h.calendars.gotRsvpComment != "" {
+			t.Fatalf("gotRsvpComment = %q, want empty when omitted", h.calendars.gotRsvpComment)
+		}
+	})
+
+	t.Run("comment is passed through", func(t *testing.T) {
+		h := newHarness(t)
+		rec := h.authed(http.MethodPost, "/v1/events/ev1/rsvp", jsonBody(t, map[string]string{"response": "declined", "comment": "Out of office this week."}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.calendars.gotRsvp != domain.RsvpDeclined {
+			t.Fatalf("gotRsvp = %q, want declined", h.calendars.gotRsvp)
+		}
+		if h.calendars.gotRsvpComment != "Out of office this week." {
+			t.Fatalf("gotRsvpComment = %q, want the custom message", h.calendars.gotRsvpComment)
+		}
 	})
 
 	t.Run("invalid response rejected", func(t *testing.T) {

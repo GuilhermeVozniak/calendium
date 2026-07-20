@@ -63,6 +63,21 @@ type Microsoft struct {
 	ClientSecret string // MS_CLIENT_SECRET
 }
 
+// Todoist configures the Todoist OAuth app for per-user task integrations
+// (M2.8). Unset leaves the vendor unwired: its endpoints answer 501 and
+// GET /v1/instance does not advertise it.
+type Todoist struct {
+	ClientID     string // TODOIST_CLIENT_ID
+	ClientSecret string // TODOIST_CLIENT_SECRET
+}
+
+// HubSpot configures the HubSpot OAuth app for per-user CRM integrations
+// (M2.8). Unset leaves the vendor unwired (501 + not advertised).
+type HubSpot struct {
+	ClientID     string // HUBSPOT_CLIENT_ID
+	ClientSecret string // HUBSPOT_CLIENT_SECRET
+}
+
 // Stripe configures billing (docs/payments.md).
 type Stripe struct {
 	SecretKey     string // STRIPE_SECRET_KEY
@@ -104,6 +119,15 @@ type OpenRouter struct {
 	DailyLimit int
 }
 
+// Maps configures the location-autocomplete / travel-time vendor endpoints
+// (M2.8 Task 11): a Nominatim geocoding instance and an OSRM routing
+// instance. Both empty (the default) leaves the maps feature off — the
+// places routes answer 501 and GET /v1/instance advertises maps=false.
+type Maps struct {
+	NominatimBaseURL string // MAPS_NOMINATIM_URL
+	OSRMBaseURL      string // MAPS_OSRM_URL
+}
+
 // Crypto holds secrets-at-rest material.
 type Crypto struct {
 	// TokenEncryptionKey is the 32-byte AES-256-GCM key for provider
@@ -134,6 +158,15 @@ var defaultRedirectAllowlist = []string{
 	"https://localhost",
 	"http://127.0.0.1",
 	"calendium://",
+}
+
+// Weather configures the Open-Meteo forecast adapter (M2.8 Task 13).
+// Open-Meteo is keyless, so weather defaults to ON; setting OPEN_METEO_URL
+// to an empty value disables it (adapter unwired, GET /v1/weather → 501).
+type Weather struct {
+	// BaseURL is the Open-Meteo API origin (OPEN_METEO_URL, default
+	// https://api.open-meteo.com). Empty disables weather.
+	BaseURL string
 }
 
 // Instance describes the deployment mode surfaced to clients via the public
@@ -167,6 +200,8 @@ type Config struct {
 	Google     Google
 	Apple      Apple
 	Microsoft  Microsoft
+	Todoist    Todoist
+	HubSpot    HubSpot
 	Stripe     Stripe
 	Push       Push
 	OpenRouter OpenRouter
@@ -174,6 +209,8 @@ type Config struct {
 	Mail       Mail
 	OAuth      OAuth
 	Instance   Instance
+	Weather    Weather
+	Maps       Maps
 }
 
 // FromEnv builds a Config from environment variables. DATABASE_URL and a
@@ -201,6 +238,14 @@ func FromEnv() (Config, error) {
 		Microsoft: Microsoft{
 			ClientID:     os.Getenv("MS_CLIENT_ID"),
 			ClientSecret: os.Getenv("MS_CLIENT_SECRET"),
+		},
+		Todoist: Todoist{
+			ClientID:     os.Getenv("TODOIST_CLIENT_ID"),
+			ClientSecret: os.Getenv("TODOIST_CLIENT_SECRET"),
+		},
+		HubSpot: HubSpot{
+			ClientID:     os.Getenv("HUBSPOT_CLIENT_ID"),
+			ClientSecret: os.Getenv("HUBSPOT_CLIENT_SECRET"),
 		},
 		Stripe: Stripe{
 			SecretKey:     os.Getenv("STRIPE_SECRET_KEY"),
@@ -306,6 +351,15 @@ func FromEnv() (Config, error) {
 		}
 	}
 
+	// Weather (M2.8 Task 13): keyless vendor, so the default is on. LookupEnv
+	// (not Getenv) so an explicitly empty OPEN_METEO_URL means "disable",
+	// while an unset one means "use the public API".
+	if v, ok := os.LookupEnv("OPEN_METEO_URL"); ok {
+		cfg.Weather.BaseURL = strings.TrimRight(strings.TrimSpace(v), "/")
+	} else {
+		cfg.Weather.BaseURL = "https://api.open-meteo.com"
+	}
+
 	cfg.OAuth.AllowedRedirectURIs = append([]string(nil), defaultRedirectAllowlist...)
 	if v := os.Getenv("OAUTH_ALLOWED_REDIRECT_URIS"); v != "" {
 		for _, part := range strings.Split(v, ",") {
@@ -313,6 +367,11 @@ func FromEnv() (Config, error) {
 				cfg.OAuth.AllowedRedirectURIs = append(cfg.OAuth.AllowedRedirectURIs, p)
 			}
 		}
+	}
+
+	cfg.Maps = Maps{
+		NominatimBaseURL: strings.TrimRight(os.Getenv("MAPS_NOMINATIM_URL"), "/"),
+		OSRMBaseURL:      strings.TrimRight(os.Getenv("MAPS_OSRM_URL"), "/"),
 	}
 
 	if v := os.Getenv("CORS_ALLOWED_ORIGINS"); v != "" {

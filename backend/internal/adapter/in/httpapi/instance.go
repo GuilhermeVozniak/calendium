@@ -29,6 +29,10 @@ type InstanceInfo struct {
 	// web push is configured; clients subscribe the service worker with it.
 	VapidPublicKey string           `json:"vapidPublicKey,omitempty"`
 	Features       InstanceFeatures `json:"features"`
+	// Capabilities advertises optional vendor integrations (M2.8): a vendor
+	// flag is true only when its OAuth/API config is present in the
+	// deployment, so clients never show connect UI that can only 501.
+	Capabilities InstanceCapabilities `json:"capabilities"`
 }
 
 // InstanceFeatures reports which optional capabilities are wired on this
@@ -39,6 +43,21 @@ type InstanceFeatures struct {
 	Microsoft bool `json:"microsoft"`
 	AI        bool `json:"ai"`
 	Push      bool `json:"push"`
+	// Maps reports a configured maps provider (location autocomplete +
+	// travel times, M2.8); false hides the affordances client-side.
+	Maps bool `json:"maps"`
+}
+
+// InstanceCapabilities reports which optional vendor integrations are
+// configured on this deployment (M2.8): todoist/hubspot per-user OAuth
+// (Task 9), maps geocoding (Task 11), and weather (Task 13). Only vendors
+// whose config is present are advertised; unwired vendors' endpoints
+// answer 501.
+type InstanceCapabilities struct {
+	Todoist bool `json:"todoist"`
+	HubSpot bool `json:"hubspot"`
+	Maps    bool `json:"maps"`
+	Weather bool `json:"weather"`
 }
 
 // Instance mode string values.

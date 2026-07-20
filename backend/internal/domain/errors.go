@@ -30,6 +30,11 @@ var (
 	ErrPaymentRequired = errors.New("payment required")
 	ErrValidation      = errors.New("validation failed")
 	ErrConflict        = errors.New("conflict")
+	// ErrUnprocessable marks input that is syntactically valid but cannot be
+	// acted on (e.g. a well-formed subscription URL whose feed cannot be
+	// fetched or parsed). The HTTP adapter maps it to 422 Unprocessable
+	// Entity, distinct from ErrValidation's 400.
+	ErrUnprocessable = errors.New("unprocessable")
 	// ErrSelfHosted marks an operation that is unavailable on self-hosted
 	// instances (the Stripe billing endpoints). The HTTP adapter maps it to
 	// 501 Not Implemented.

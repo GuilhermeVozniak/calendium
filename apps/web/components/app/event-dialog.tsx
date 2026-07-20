@@ -7,7 +7,9 @@ import {
   AlignLeft,
   Bell,
   BookmarkPlus,
+  ExternalLink,
   LayoutTemplate,
+  Link2,
   MapPin,
   Plus,
   Repeat,
@@ -31,6 +33,7 @@ import { detectConference } from '@calendium/shared';
 import { ConflictWarning } from '@/components/app/calendar/conflict-warning';
 import { JoinButton } from '@/components/app/calendar/join-button';
 import { FindATimeGrid, ProposalsList, ProposeTimeForm } from '@/components/app/find-a-time';
+import { LocationField } from '@/components/app/location-field';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -51,10 +54,13 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import {
   createEventApi,
   deleteEventApi,
+  fetchEventNoteApi,
+  putEventNoteApi,
   sendRsvpApi,
   updateEventApi,
 } from '@/lib/calendar-data';
@@ -131,6 +137,59 @@ function FieldRow({
   );
 }
 
+/**
+ * Read-only detail view for ICS feed subscription events (M2.8 Task 15).
+ * Feed mirrors cannot be edited, RSVP'd, or deleted — the feed owns them —
+ * so this compact dialog replaces the full editor for events carrying a
+ * `subscriptionId` (see the calendar page's dialog switch).
+ */
+export function SubscriptionEventDialog({
+  open,
+  onOpenChange,
+  event,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  event: Event | null;
+}) {
+  if (!event) return null;
+  const start = new Date(event.start);
+  const end = new Date(event.end);
+  const when = event.allDay
+    ? format(start, 'EEEE, MMMM d, yyyy')
+    : `${format(start, 'EEE, MMM d · h:mm a')} – ${format(end, 'h:mm a')}`;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{event.title || '(No title)'}</DialogTitle>
+        </DialogHeader>
+        <div className="grid gap-3 text-sm">
+          <p className="text-muted-foreground">{when}</p>
+          {event.location && (
+            <FieldRow icon={MapPin}>
+              <p className="pt-1.5">{event.location}</p>
+            </FieldRow>
+          )}
+          {event.description && (
+            <FieldRow icon={AlignLeft}>
+              <p className="pt-1.5 whitespace-pre-wrap">{event.description}</p>
+            </FieldRow>
+          )}
+          <Badge variant="outline" className="w-fit font-normal">
+            Subscribed calendar · read-only
+          </Badge>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export interface EventDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -139,9 +198,22 @@ export interface EventDialogProps {
   event: Event | null;
   /** Prefill for the create flow (slot click / quick add). */
   defaults: Partial<EventInput> | null;
+  /**
+   * Extra create-mode prefill from an email-to-event drop (M2.8 Task 18);
+   * merged over `defaults`. `sourceThreadId` marks the event as created from
+   * a thread (renders a small badge — it is not sent to the backend).
+   */
+  prefill?: (Partial<EventInput> & { sourceThreadId?: string }) | null;
 }
 
-export function EventDialog({ open, onOpenChange, calendars, event, defaults }: EventDialogProps) {
+export function EventDialog({
+  open,
+  onOpenChange,
+  calendars,
+  event,
+  defaults,
+  prefill,
+}: EventDialogProps) {
   const queryClient = useQueryClient();
 
   const [title, setTitle] = React.useState('');
@@ -150,6 +222,11 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
   const [start, setStart] = React.useState('');
   const [end, setEnd] = React.useState('');
   const [location, setLocation] = React.useState('');
+  // Set only when `location` came from an autocomplete pick; free typing
+  // clears it so stale coordinates never outlive an edited location string.
+  const [locationCoords, setLocationCoords] = React.useState<{ lat: number; lon: number } | null>(
+    null
+  );
   const [recurrenceRule, setRecurrenceRule] = React.useState<string | null>(null);
   const [description, setDescription] = React.useState('');
   const [attendees, setAttendees] = React.useState<string[]>([]);
@@ -157,6 +234,9 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
   const [meet, setMeet] = React.useState(false);
   const [reminders, setReminders] = React.useState<number[]>([10]);
   const [rsvpChoice, setRsvpChoice] = React.useState<RsvpStatus>('needs_action');
+  // Notes tab (M2.8 Task 4) exists only in edit mode: a note is keyed by an
+  // event id, which a not-yet-created event doesn't have.
+  const [activeTab, setActiveTab] = React.useState<'details' | 'notes'>('details');
 
   const selfEmails = useSelfEmails();
   const writableCalendars = calendars.filter((c) => c.canWrite);
@@ -189,6 +269,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
 
   React.useEffect(() => {
     if (!open) return;
+    setActiveTab('details');
     if (event) {
       const startDate = new Date(event.start);
       const endDate = new Date(event.end);
@@ -199,6 +280,11 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
       // All-day events store an exclusive end (next midnight); show the inclusive last day.
       setEnd(formatInput(event.allDay ? new Date(endDate.getTime() - 1) : endDate, event.allDay));
       setLocation(event.location ?? '');
+      setLocationCoords(
+        event.locationLat != null && event.locationLon != null
+          ? { lat: event.locationLat, lon: event.locationLon }
+          : null
+      );
       setRecurrenceRule(event.recurrenceRule);
       setDescription(event.description ?? '');
       setAttendees(event.attendees.filter((a) => !a.organizer).map((a) => a.email));
@@ -209,7 +295,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
         event.attendees.find((a) => !a.organizer);
       setRsvpChoice(self?.response ?? 'needs_action');
     } else {
-      const d = defaults ?? {};
+      const d = { ...defaults, ...prefill };
       const isAllDay = d.allDay ?? false;
       const startDate = d.start ? new Date(d.start) : nextHalfHour();
       const endDate = d.end ? new Date(d.end) : addMinutes(startDate, 30);
@@ -223,6 +309,11 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
       setStart(formatInput(startDate, isAllDay));
       setEnd(formatInput(endDate, isAllDay));
       setLocation(d.location ?? '');
+      setLocationCoords(
+        d.locationLat != null && d.locationLon != null
+          ? { lat: d.locationLat, lon: d.locationLon }
+          : null
+      );
       setRecurrenceRule(d.recurrenceRule ?? null);
       setDescription(d.description ?? '');
       setAttendees(d.attendeeEmails ?? []);
@@ -231,7 +322,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
       setRsvpChoice('needs_action');
     }
     setAttendeeDraft('');
-  }, [open, event, defaults, calendars, selfEmails]);
+  }, [open, event, defaults, prefill, calendars, selfEmails]);
 
   /** Shifting the start keeps the event duration by moving the end with it. */
   const handleStartChange = (value: string) => {
@@ -310,6 +401,11 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
       // PATCH instead of sending '' to actually clear them on the backend.
       description: description.trim() || undefined,
       location: location.trim() || undefined,
+      // Coordinates only ever accompany an autocomplete-picked location;
+      // free-typed text sends none (travel features skip such events).
+      ...(location.trim() && locationCoords
+        ? { locationLat: locationCoords.lat, locationLon: locationCoords.lon }
+        : {}),
       start: startIso,
       end: endIso,
       allDay,
@@ -335,6 +431,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
     setTitle(applied.title ?? '');
     setDescription(applied.description ?? '');
     setLocation(applied.location ?? '');
+    setLocationCoords(null); // templates store plain location text only
     setAllDay(applied.allDay ?? false);
     if (applied.start) setStart(formatInput(new Date(applied.start), applied.allDay ?? false));
     if (applied.end) setEnd(formatInput(new Date(applied.end), applied.allDay ?? false));
@@ -364,6 +461,9 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
         title: input.title,
         description: input.description,
         location: input.location,
+        ...(input.locationLat !== undefined
+          ? { locationLat: input.locationLat, locationLon: input.locationLon }
+          : {}),
         start: input.start,
         end: input.end,
         allDay: input.allDay,
@@ -484,7 +584,20 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
           </div>
         )}
 
-        <div className="grid gap-3">
+        {event && (
+          <Tabs
+            value={activeTab}
+            onValueChange={(v) => setActiveTab(v as 'details' | 'notes')}
+          >
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="details">Details</TabsTrigger>
+              <TabsTrigger value="notes">Notes</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        )}
+
+        {/* Hidden (not unmounted) on the Notes tab so in-progress edits survive tab switches. */}
+        <div className={cn('grid gap-3', event != null && activeTab !== 'details' && 'hidden')}>
           <Input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -492,6 +605,12 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
             aria-label="Event title"
             className="h-10 text-base font-medium"
           />
+
+          {!event && prefill?.sourceThreadId && (
+            <Badge variant="outline" className="w-fit font-normal" data-testid="from-thread-badge">
+              Created from email
+            </Badge>
+          )}
 
           {!event && (templatesQuery.data?.length ?? 0) > 0 && (
             <FieldRow icon={LayoutTemplate}>
@@ -589,12 +708,12 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
           />
 
           <FieldRow icon={MapPin}>
-            <Input
+            <LocationField
               value={location}
-              onChange={(e) => setLocation(e.target.value)}
-              placeholder="Add location"
-              aria-label="Location"
-              className="h-8"
+              onChange={(next, coords) => {
+                setLocation(next);
+                setLocationCoords(coords);
+              }}
             />
           </FieldRow>
 
@@ -742,6 +861,8 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
           </FieldRow>
         </div>
 
+        {event && activeTab === 'notes' && <EventNotesPanel eventId={event.id} />}
+
         <DialogFooter>
           {event && (
             <Button
@@ -771,5 +892,153 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Notes tab (M2.8 Task 4)
+// ---------------------------------------------------------------------------
+
+const NOTE_AUTOSAVE_MS = 800;
+
+/**
+ * Local-only markdown notes + doc links attached to the event. Edits are
+ * optimistic (local state is the source of truth while typing, same spirit as
+ * the thread-action pattern) and autosave with an 800ms debounce; notes never
+ * reach the calendar provider or the attendees.
+ */
+function EventNotesPanel({ eventId }: { eventId: string }) {
+  const queryClient = useQueryClient();
+  const noteQuery = useQuery({
+    queryKey: ['event-note', eventId],
+    queryFn: () => fetchEventNoteApi(eventId),
+  });
+
+  const [bodyMd, setBodyMd] = React.useState('');
+  const [links, setLinks] = React.useState<string[]>([]);
+  const [linkDraft, setLinkDraft] = React.useState('');
+  const [hydratedFor, setHydratedFor] = React.useState<string | null>(null);
+  const saveTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Hydrate the editable state once per event from the fetched note; later
+  // refetches must not clobber in-progress typing.
+  React.useEffect(() => {
+    if (noteQuery.data && hydratedFor !== eventId) {
+      setBodyMd(noteQuery.data.bodyMd);
+      setLinks(noteQuery.data.links);
+      setHydratedFor(eventId);
+    }
+  }, [noteQuery.data, eventId, hydratedFor]);
+
+  React.useEffect(
+    () => () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    },
+    []
+  );
+
+  const save = useMutation({
+    mutationFn: (next: { bodyMd: string; links: string[] }) =>
+      putEventNoteApi(eventId, next.bodyMd, next.links),
+    onSuccess: (saved) => queryClient.setQueryData(['event-note', eventId], saved),
+    onError: () => toast.error('Could not save the note'),
+  });
+
+  const scheduleSave = (nextBody: string, nextLinks: string[]) => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      save.mutate({ bodyMd: nextBody, links: nextLinks });
+    }, NOTE_AUTOSAVE_MS);
+  };
+
+  const addLink = () => {
+    const url = linkDraft.trim();
+    if (!url) return;
+    if (!/^https?:\/\/\S+$/i.test(url)) {
+      toast.error('Links must be full http(s) URLs');
+      return;
+    }
+    setLinkDraft('');
+    if (links.includes(url)) return;
+    const next = [...links, url];
+    setLinks(next);
+    scheduleSave(bodyMd, next);
+  };
+
+  const removeLink = (url: string) => {
+    const next = links.filter((l) => l !== url);
+    setLinks(next);
+    scheduleSave(bodyMd, next);
+  };
+
+  return (
+    <div className="grid gap-3">
+      <Textarea
+        value={bodyMd}
+        onChange={(e) => {
+          setBodyMd(e.target.value);
+          scheduleSave(e.target.value, links);
+        }}
+        placeholder="Add meeting notes (markdown)"
+        aria-label="Event notes"
+        className="min-h-40"
+        disabled={noteQuery.isLoading}
+      />
+
+      <FieldRow icon={Link2}>
+        <div className="grid gap-1.5">
+          {links.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {links.map((url) => (
+                <Badge key={url} variant="secondary" className="max-w-full gap-1 font-normal">
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex min-w-0 items-center gap-1 hover:underline"
+                    aria-label={`Open ${url}`}
+                  >
+                    <span className="truncate">{url.replace(/^https?:\/\//i, '')}</span>
+                    <ExternalLink className="size-3 shrink-0 opacity-60" />
+                  </a>
+                  <button
+                    type="button"
+                    aria-label={`Remove link ${url}`}
+                    className="opacity-60 hover:opacity-100"
+                    onClick={() => removeLink(url)}
+                  >
+                    <X className="size-3" />
+                  </button>
+                </Badge>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-1.5">
+            <Input
+              value={linkDraft}
+              onChange={(e) => setLinkDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  addLink();
+                }
+              }}
+              placeholder="Attach a doc link (https://...)"
+              aria-label="Add doc link"
+              className="h-8"
+            />
+            <Button type="button" variant="outline" size="sm" className="h-8" onClick={addLink}>
+              Add
+            </Button>
+          </div>
+        </div>
+      </FieldRow>
+
+      <p className="text-xs text-muted-foreground" aria-live="polite">
+        {save.isPending
+          ? 'Saving…'
+          : 'Notes save automatically and stay in Calendium — never sent to attendees.'}
+      </p>
+    </div>
   );
 }

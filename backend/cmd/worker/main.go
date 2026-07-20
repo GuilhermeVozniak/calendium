@@ -17,10 +17,13 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"calendium/backend/internal/adapter/out/googleapi"
+	"calendium/backend/internal/adapter/out/icsfeed"
 	"calendium/backend/internal/adapter/out/msgraph"
+	"calendium/backend/internal/adapter/out/nominatim"
 	"calendium/backend/internal/adapter/out/openrouter"
 	"calendium/backend/internal/adapter/out/postgres"
 	"calendium/backend/internal/adapter/out/push"
+	"calendium/backend/internal/adapter/out/todoist"
 	"calendium/backend/internal/config"
 	"calendium/backend/internal/domain"
 	"calendium/backend/internal/migrate"
@@ -37,9 +40,21 @@ const (
 	dueWorkInterval = 5 * time.Second
 	// aiJobInterval paces the background AI job queue drain.
 	aiJobInterval = 15 * time.Second
+	// todoSyncInterval paces the external todo-mirror sync (M2.8 Task 10).
+	todoSyncInterval = time.Minute
 	// expireHoldsInterval paces the booking-hold expiry sweep (unconfirmed
 	// holds past their hold_expires_at are cancelled, freeing the slot).
 	expireHoldsInterval = time.Minute
+	// automationInterval paces the calendar automation engine (FocusGuard,
+	// auto-decline, buffers, and the travel pass). RunAutomation is
+	// idempotent; 5m keeps leave-now alert arming as responsive as the old
+	// standalone travel loop while the other passes no-op when nothing
+	// changed. Delivery of due alerts rides the 5s due-work loop.
+	automationInterval = 5 * time.Minute
+	// subscriptionRefreshPass paces the ICS feed refresh sweep; each feed is
+	// only refetched when it is > 1h stale (service.SubscriptionRefresher),
+	// so the pass itself can run more often than hourly without hammering.
+	subscriptionRefreshPass = 15 * time.Minute
 	// perAccountTimeout bounds one account's sync pass.
 	perAccountTimeout = 5 * time.Minute
 )
@@ -108,6 +123,14 @@ func run(logger *slog.Logger) error {
 		pushSender = push.NewDispatcher(cfg.Push, hc)
 	}
 
+	// Maps (M2.8 Task 12): unconfigured leaves the provider nil and every
+	// travel feature degrades silently (no vendor calls, no buffers, no
+	// alerts).
+	var mapsProvider port.MapsProvider
+	if cfg.Maps.NominatimBaseURL != "" {
+		mapsProvider = nominatim.New(cfg.Maps.NominatimBaseURL, cfg.Maps.OSRMBaseURL, hc)
+	}
+
 	// --- AI job queue: gated on OPENROUTER_API_KEY, degrades to a
 	// no-op loop-that-never-starts when unset. Pass AiJobs repo only when enabled. ---
 	var aiGateway port.AI
@@ -138,6 +161,9 @@ func run(logger *slog.Logger) error {
 		Activity:    postgres.NewTeamThreadActivityRepo(store),
 		Classifiers: store.Classifiers(),
 		Clock:       service.SystemClock{},
+		// Leave-now travel alerts (M2.8 Task 12) ride the 5s due-work loop.
+		TravelAlerts:  store.TravelAlerts(),
+		CalendarPrefs: store.CalendarPrefs(),
 	})
 	calendarSvc := service.NewCalendarService(service.CalendarServiceDeps{
 		Subscriptions:     store.Subscriptions(),
@@ -174,6 +200,16 @@ func run(logger *slog.Logger) error {
 		PublicWebURL:      cfg.Instance.PublicWebURL,
 		Logger:            logger,
 	})
+	// M2.8 Task 15: hourly ICS subscription refresh. Deliberately its own
+	// loop: refresh is feed-cadenced (per-feed hourly), not per-user, and
+	// writes only subscription_events — disjoint from RunAutomation's
+	// managed-events surface.
+	subscriptionRefresher := service.NewSubscriptionRefresher(service.SubscriptionRefresherDeps{
+		Subs:    store.CalendarSubscriptions(),
+		Fetcher: icsfeed.New(hc),
+		Clock:   service.SystemClock{},
+		Logger:  logger,
+	})
 	aiJobSvc := service.NewAIJobService(service.AIJobServiceDeps{
 		Jobs:          store.AiJobs(),
 		Usage:         store.AiUsage(),
@@ -190,10 +226,48 @@ func run(logger *slog.Logger) error {
 		DailyLimit:    cfg.OpenRouter.DailyLimit,
 		Logger:        logger,
 	})
+	autoSvc := service.NewAutomationService(service.AutomationServiceDeps{
+		Prefs:       store.CalendarPrefs(),
+		Accounts:    store.Accounts(),
+		Calendars:   store.Calendars(),
+		Events:      store.Events(),
+		Managed:     store.ManagedEvents(),
+		CalendarSvc: calendarSvc,
+		// Entitlement gate: lapsed cloud users are skipped silently.
+		Subscriptions: store.Subscriptions(),
+		SelfHosted:    cfg.Instance.SelfHosted,
+		// Travel pass (M2.8 Task 12): managed "Travel to …" blocks + leave
+		// alerts, folded into the automation loop so a single writer owns
+		// every managed-events surface. mapsProvider nil disables it.
+		Maps:   mapsProvider,
+		Alerts: store.TravelAlerts(),
+		Clock:  service.SystemClock{},
+		Logger: logger,
+	})
+
+	// --- Todo mirror sync (M2.8 Task 10): gated on the Todoist OAuth app
+	// being configured; without it no vendor is wired and the loop never
+	// starts. ---
+	var todoSyncSvc *service.TodoSyncService
+	if cfg.Todoist.ClientID != "" {
+		todoSyncSvc = service.NewTodoSyncService(service.TodoSyncDeps{
+			Integrations: postgres.NewIntegrationRepo(store),
+			Tasks:        store.Tasks(),
+			SyncState:    store.SyncStates(),
+			Providers: map[domain.TaskSource]port.TodoProvider{
+				domain.TaskSourceTodoist: todoist.NewClient(hc),
+			},
+			OAuth: map[domain.IntegrationVendor]port.OAuthGateway{
+				domain.IntegrationTodoist: todoist.NewOAuth(cfg.Todoist.ClientID, cfg.Todoist.ClientSecret, hc),
+			},
+			Clock:  service.SystemClock{},
+			Logger: logger,
+		})
+	}
 
 	// --- loops ---
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		runLoop(ctx, syncInterval, func(ctx context.Context) {
@@ -216,6 +290,34 @@ func run(logger *slog.Logger) error {
 			}
 		})
 	}()
+	go func() {
+		defer wg.Done()
+		runLoop(ctx, automationInterval, func(ctx context.Context) {
+			if err := autoSvc.RunAutomation(ctx); err != nil {
+				logger.Error("worker: run automation", "error", err)
+			}
+		})
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runLoop(ctx, subscriptionRefreshPass, func(ctx context.Context) {
+			if err := subscriptionRefresher.RefreshDue(ctx); err != nil {
+				logger.Error("worker: refresh calendar subscriptions", "error", err)
+			}
+		})
+	}()
+	if todoSyncSvc != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runLoop(ctx, todoSyncInterval, func(ctx context.Context) {
+				if err := todoSyncSvc.SyncTodos(ctx); err != nil {
+					logger.Error("worker: todo sync", "error", err)
+				}
+			})
+		}()
+	}
 	if aiGateway != nil {
 		wg.Add(1)
 		go func() {
@@ -227,11 +329,13 @@ func run(logger *slog.Logger) error {
 			})
 		}()
 	}
-
 	logger.Info("worker: loops started",
 		"sync_interval", syncInterval.String(),
 		"due_work_interval", dueWorkInterval.String(),
+		"automation_interval", automationInterval.String(),
 		"ai_jobs_enabled", aiGateway != nil,
+		"travel_enabled", mapsProvider != nil,
+		"todo_sync_enabled", todoSyncSvc != nil,
 		"providers", len(mailProviders))
 	wg.Wait()
 	logger.Info("worker: shut down cleanly")

@@ -14,11 +14,15 @@ const createEventApiMock = vi.fn();
 const updateEventApiMock = vi.fn();
 const deleteEventApiMock = vi.fn();
 const sendRsvpApiMock = vi.fn();
+const fetchEventNoteApiMock = vi.fn();
+const putEventNoteApiMock = vi.fn();
 vi.mock('@/lib/calendar-data', () => ({
   createEventApi: (...args: unknown[]) => createEventApiMock(...args),
   updateEventApi: (...args: unknown[]) => updateEventApiMock(...args),
   deleteEventApi: (...args: unknown[]) => deleteEventApiMock(...args),
   sendRsvpApi: (...args: unknown[]) => sendRsvpApiMock(...args),
+  fetchEventNoteApi: (...args: unknown[]) => fetchEventNoteApiMock(...args),
+  putEventNoteApi: (...args: unknown[]) => putEventNoteApiMock(...args),
 }));
 
 // A fixed instant so the create-flow's default start/end are deterministic
@@ -210,6 +214,18 @@ beforeEach(() => {
   deleteEventApiMock.mockResolvedValue(undefined);
   sendRsvpApiMock.mockResolvedValue({ id: 'ev1' });
   fetchAccountsMock.mockResolvedValue([ACCOUNT_GOOGLE, ACCOUNT_MICROSOFT]);
+  fetchEventNoteApiMock.mockResolvedValue({
+    eventId: 'ev-note',
+    bodyMd: '',
+    links: [],
+    updatedAt: '2026-07-20T12:00:00Z',
+  });
+  putEventNoteApiMock.mockImplementation(async (eventId: unknown, bodyMd: unknown, links: unknown) => ({
+    eventId,
+    bodyMd,
+    links,
+    updatedAt: '2026-07-20T12:00:01Z',
+  }));
 });
 
 // ---------------------------------------------------------------------------
@@ -442,6 +458,64 @@ describe('EventDialog — quick-add defaults prefill', () => {
     await user.click(screen.getByRole('button', { name: /create event/i }));
     await waitFor(() => expect(createEventApiMock).toHaveBeenCalledTimes(1));
     expect(createEventApiMock.mock.calls[0]![0].recurrenceRule).toBe('FREQ=WEEKLY;BYDAY=FR');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Thread-drop prefill (M2.8 Task 18) — the email-to-event drag hands the
+// dialog a `prefill` prop (Partial<EventInput> + sourceThreadId) that merges
+// over `defaults` in create mode.
+// ---------------------------------------------------------------------------
+
+describe('EventDialog — thread-drop prefill', () => {
+  const PREFILL = {
+    title: 'Renewal terms for FY27',
+    attendeeEmails: ['ana@acme.com', 'bob@acme.com'],
+    description: 'From email thread “Renewal terms for FY27” — mailto:ana@acme.com,bob@acme.com',
+    start: new Date(2026, 6, 23, 14, 0, 0, 0).toISOString(),
+    end: new Date(2026, 6, 23, 14, 30, 0, 0).toISOString(),
+    sourceThreadId: 'thr-1',
+  };
+
+  it('renders the prefilled title, attendee chips, and thread-reference description', async () => {
+    renderDialog({ prefill: PREFILL });
+    expect(await screen.findByLabelText('Event title')).toHaveValue('Renewal terms for FY27');
+    expect(screen.getByText('ana@acme.com')).toBeInTheDocument();
+    expect(screen.getByText('bob@acme.com')).toBeInTheDocument();
+    expect(screen.getByLabelText('Description')).toHaveValue(PREFILL.description);
+    expect(screen.getByText('Created from email')).toBeInTheDocument();
+  });
+
+  it('prefills the dropped start/end slot', async () => {
+    renderDialog({ prefill: PREFILL });
+    const startInput = (await screen.findByLabelText('Start')) as HTMLInputElement;
+    const endInput = screen.getByLabelText('End') as HTMLInputElement;
+    expect(startInput.value).toBe(fmt(new Date(PREFILL.start)));
+    expect(endInput.value).toBe(fmt(new Date(PREFILL.end)));
+  });
+
+  it('merges prefill over defaults and carries everything into the create payload', async () => {
+    const user = userEvent.setup();
+    renderDialog({ defaults: { title: 'ignored', location: 'Room 4' }, prefill: PREFILL });
+    await screen.findByLabelText('Event title');
+    expect(screen.getByLabelText('Event title')).toHaveValue('Renewal terms for FY27');
+    // Non-overlapping defaults still apply.
+    expect(screen.getByLabelText('Location')).toHaveValue('Room 4');
+
+    await user.click(screen.getByRole('button', { name: /create event/i }));
+    await waitFor(() => expect(createEventApiMock).toHaveBeenCalledTimes(1));
+    const input = createEventApiMock.mock.calls[0]![0];
+    expect(input.title).toBe('Renewal terms for FY27');
+    expect(input.attendeeEmails).toEqual(['ana@acme.com', 'bob@acme.com']);
+    expect(input.description).toBe(PREFILL.description);
+    expect(input.start).toBe(PREFILL.start);
+    expect(input.end).toBe(PREFILL.end);
+  });
+
+  it('shows no from-email badge without a sourceThreadId', async () => {
+    renderDialog();
+    await screen.findByLabelText('Event title');
+    expect(screen.queryByText('Created from email')).not.toBeInTheDocument();
   });
 });
 
@@ -960,5 +1034,113 @@ describe('EventDialog — pending proposals (organizer view)', () => {
     renderDialog();
     await screen.findByLabelText('Event title');
     expect(screen.queryByTestId('proposals-list')).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Notes tab (M2.8 Task 4)
+// ---------------------------------------------------------------------------
+
+describe('EventDialog — notes tab', () => {
+  const NOTE_EVENT: Event = {
+    id: 'ev-note',
+    calendarId: 'cal-work',
+    title: 'Planning',
+    description: null,
+    location: null,
+    start: new Date(2026, 6, 8, 10, 0).toISOString(),
+    end: new Date(2026, 6, 8, 11, 0).toISOString(),
+    allDay: false,
+    recurrenceRule: null,
+    attendees: [],
+    conferencing: null,
+    status: 'confirmed',
+    visibility: 'default',
+    reminderMinutes: [10],
+  };
+
+  async function openNotesTab() {
+    const user = userEvent.setup();
+    renderDialog({ event: NOTE_EVENT });
+    await user.click(await screen.findByRole('tab', { name: 'Notes' }));
+    const textarea = (await screen.findByLabelText('Event notes')) as HTMLTextAreaElement;
+    // Wait until the fetched note has hydrated (textarea is disabled while loading).
+    await waitFor(() => expect(textarea).not.toBeDisabled());
+    return { user, textarea };
+  }
+
+  it('renders the Notes tab in edit mode only', async () => {
+    renderDialog({ event: NOTE_EVENT });
+    expect(await screen.findByRole('tab', { name: 'Notes' })).toBeInTheDocument();
+  });
+
+  it('has no Notes tab in create mode (no event id to key the note)', async () => {
+    renderDialog();
+    await screen.findByLabelText('Event title');
+    expect(screen.queryByRole('tab', { name: 'Notes' })).not.toBeInTheDocument();
+  });
+
+  it('loads and shows the stored note with an open affordance per link', async () => {
+    fetchEventNoteApiMock.mockResolvedValue({
+      eventId: 'ev-note',
+      bodyMd: 'prep doc',
+      links: ['https://notion.so/doc'],
+      updatedAt: '2026-07-20T12:00:00Z',
+    });
+    const { textarea } = await openNotesTab();
+    expect(fetchEventNoteApiMock).toHaveBeenCalledWith('ev-note');
+    expect(textarea).toHaveValue('prep doc');
+    const open = screen.getByLabelText('Open https://notion.so/doc');
+    expect(open).toHaveAttribute('href', 'https://notion.so/doc');
+    expect(open).toHaveAttribute('target', '_blank');
+  });
+
+  it('autosaves the typed body via a debounced PUT', async () => {
+    const { user, textarea } = await openNotesTab();
+    await user.type(textarea, 'agenda');
+    await waitFor(
+      () => expect(putEventNoteApiMock).toHaveBeenCalledWith('ev-note', 'agenda', []),
+      { timeout: 3000 }
+    );
+    // The debounce coalesces the six keystrokes into a single PUT.
+    expect(putEventNoteApiMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('adds a link chip and autosaves it', async () => {
+    const { user } = await openNotesTab();
+    const linkInput = screen.getByLabelText('Add doc link');
+    await user.type(linkInput, 'https://notion.so/spec{Enter}');
+    expect(screen.getByLabelText('Remove link https://notion.so/spec')).toBeInTheDocument();
+    expect(linkInput).toHaveValue('');
+    await waitFor(
+      () => expect(putEventNoteApiMock).toHaveBeenCalledWith('ev-note', '', ['https://notion.so/spec']),
+      { timeout: 3000 }
+    );
+  });
+
+  it('rejects a non-http(s) link without saving', async () => {
+    const { user } = await openNotesTab();
+    await user.type(screen.getByLabelText('Add doc link'), 'javascript:alert(1){Enter}');
+    expect(toastError).toHaveBeenCalledWith('Links must be full http(s) URLs');
+    expect(screen.queryByLabelText('Remove link javascript:alert(1)')).not.toBeInTheDocument();
+  });
+
+  it('removing a link autosaves the remaining set', async () => {
+    fetchEventNoteApiMock.mockResolvedValue({
+      eventId: 'ev-note',
+      bodyMd: 'body',
+      links: ['https://notion.so/doc', 'https://docs.google.com/d/1'],
+      updatedAt: '2026-07-20T12:00:00Z',
+    });
+    const { user } = await openNotesTab();
+    await user.click(screen.getByLabelText('Remove link https://notion.so/doc'));
+    expect(screen.queryByLabelText('Remove link https://notion.so/doc')).not.toBeInTheDocument();
+    await waitFor(
+      () =>
+        expect(putEventNoteApiMock).toHaveBeenCalledWith('ev-note', 'body', [
+          'https://docs.google.com/d/1',
+        ]),
+      { timeout: 3000 }
+    );
   });
 });
