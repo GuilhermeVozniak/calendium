@@ -17,6 +17,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"calendium/backend/internal/adapter/out/googleapi"
+	"calendium/backend/internal/adapter/out/icsfeed"
 	"calendium/backend/internal/adapter/out/msgraph"
 	"calendium/backend/internal/adapter/out/openrouter"
 	"calendium/backend/internal/adapter/out/postgres"
@@ -43,6 +44,10 @@ const (
 	// automationInterval paces the calendar automation engine (FocusGuard
 	// et al.). RunAutomation is idempotent, so a modest cadence suffices.
 	automationInterval = 15 * time.Minute
+	// subscriptionRefreshPass paces the ICS feed refresh sweep; each feed is
+	// only refetched when it is > 1h stale (service.SubscriptionRefresher),
+	// so the pass itself can run more often than hourly without hammering.
+	subscriptionRefreshPass = 15 * time.Minute
 	// perAccountTimeout bounds one account's sync pass.
 	perAccountTimeout = 5 * time.Minute
 )
@@ -177,6 +182,14 @@ func run(logger *slog.Logger) error {
 		PublicWebURL:      cfg.Instance.PublicWebURL,
 		Logger:            logger,
 	})
+	// M2.8 Task 15: hourly ICS subscription refresh. Seam note: this call
+	// moves into RunAutomation once the M2.8 AutomationService loop lands.
+	subscriptionRefresher := service.NewSubscriptionRefresher(service.SubscriptionRefresherDeps{
+		Subs:    store.CalendarSubscriptions(),
+		Fetcher: icsfeed.New(hc),
+		Clock:   service.SystemClock{},
+		Logger:  logger,
+	})
 	aiJobSvc := service.NewAIJobService(service.AIJobServiceDeps{
 		Jobs:          store.AiJobs(),
 		Usage:         store.AiUsage(),
@@ -233,6 +246,15 @@ func run(logger *slog.Logger) error {
 		runLoop(ctx, automationInterval, func(ctx context.Context) {
 			if err := autoSvc.RunAutomation(ctx); err != nil {
 				logger.Error("worker: run automation", "error", err)
+			}
+		})
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runLoop(ctx, subscriptionRefreshPass, func(ctx context.Context) {
+			if err := subscriptionRefresher.RefreshDue(ctx); err != nil {
+				logger.Error("worker: refresh calendar subscriptions", "error", err)
 			}
 		})
 	}()

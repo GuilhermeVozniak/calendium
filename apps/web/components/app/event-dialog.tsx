@@ -137,6 +137,59 @@ function FieldRow({
   );
 }
 
+/**
+ * Read-only detail view for ICS feed subscription events (M2.8 Task 15).
+ * Feed mirrors cannot be edited, RSVP'd, or deleted — the feed owns them —
+ * so this compact dialog replaces the full editor for events carrying a
+ * `subscriptionId` (see the calendar page's dialog switch).
+ */
+export function SubscriptionEventDialog({
+  open,
+  onOpenChange,
+  event,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  event: Event | null;
+}) {
+  if (!event) return null;
+  const start = new Date(event.start);
+  const end = new Date(event.end);
+  const when = event.allDay
+    ? format(start, 'EEEE, MMMM d, yyyy')
+    : `${format(start, 'EEE, MMM d · h:mm a')} – ${format(end, 'h:mm a')}`;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{event.title || '(No title)'}</DialogTitle>
+        </DialogHeader>
+        <div className="grid gap-3 text-sm">
+          <p className="text-muted-foreground">{when}</p>
+          {event.location && (
+            <FieldRow icon={MapPin}>
+              <p className="pt-1.5">{event.location}</p>
+            </FieldRow>
+          )}
+          {event.description && (
+            <FieldRow icon={AlignLeft}>
+              <p className="pt-1.5 whitespace-pre-wrap">{event.description}</p>
+            </FieldRow>
+          )}
+          <Badge variant="outline" className="w-fit font-normal">
+            Subscribed calendar · read-only
+          </Badge>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export interface EventDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;

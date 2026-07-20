@@ -1597,6 +1597,20 @@ func (c *fakeCalendarService) UpdateCalendarSet(_ context.Context, _, _ string, 
 
 func (c *fakeCalendarService) DeleteCalendarSet(_ context.Context, _, _ string) error { return nil }
 
+// Calendar subscription stubs (M2.8 Task 15).
+func (c *fakeCalendarService) ListCalendarSubscriptions(_ context.Context, _ string) ([]domain.CalendarSubscription, error) {
+	return nil, nil
+}
+func (c *fakeCalendarService) CreateCalendarSubscription(_ context.Context, _ string, _ port.CalendarSubscriptionInput) (domain.CalendarSubscription, error) {
+	return domain.CalendarSubscription{}, nil
+}
+func (c *fakeCalendarService) UpdateCalendarSubscription(_ context.Context, _, _ string, _ port.CalendarSubscriptionPatch) (domain.CalendarSubscription, error) {
+	return domain.CalendarSubscription{}, nil
+}
+func (c *fakeCalendarService) DeleteCalendarSubscription(_ context.Context, _, _ string) error {
+	return nil
+}
+
 var _ port.CalendarService = (*fakeCalendarService)(nil)
 
 // --- push --------------------------------------------------------------------

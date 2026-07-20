@@ -22,6 +22,7 @@ import (
 	"calendium/backend/internal/adapter/out/eventbus"
 	"calendium/backend/internal/adapter/out/googleapi"
 	"calendium/backend/internal/adapter/out/hubspot"
+	"calendium/backend/internal/adapter/out/icsfeed"
 	"calendium/backend/internal/adapter/out/msgraph"
 	"calendium/backend/internal/adapter/out/nominatim"
 	"calendium/backend/internal/adapter/out/openmeteo"
@@ -179,6 +180,11 @@ func run(logger *slog.Logger) error {
 		Users:  store.Users(),
 		// Local-only event notes (M2.8 Task 4).
 		Notes: store.EventNotes(),
+		// Interesting-calendar ICS subscriptions (M2.8 Task 15). No vendor
+		// config needed — the fetcher is plain HTTPS, so the routes always
+		// work.
+		CalendarSubs: store.CalendarSubscriptions(),
+		IcsFetcher:   icsfeed.New(nil),
 	})
 	search := service.NewSearchService(store.Subscriptions(), store.Threads(), store.Events(), clock, cfg.Instance.SelfHosted)
 	aiSvc := service.NewAIService(service.AIServiceDeps{

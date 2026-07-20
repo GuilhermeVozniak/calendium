@@ -27,6 +27,9 @@ import type {
   CalendarSetInput,
   CalendarShare,
   CalendarShareInput,
+  CalendarSubscription,
+  CalendarSubscriptionInput,
+  CalendarSubscriptionPatch,
   ClassifierInput,
   Comment,
   CommentInput,
@@ -959,6 +962,34 @@ export class ApiClient {
   /** Explicitly log one email to the connected CRM (per-message user action). */
   logCrmEmail(input: CrmEmailLogInput) {
     return this.request<void>('POST', '/v1/crm/log', input);
+  }
+
+  // --- Interesting-calendar ICS subscriptions (M2.8 Task 15) ---
+  // Read-only feed mirrors: their events arrive through the existing
+  // listEvents (tagged with `subscriptionId`) and are never editable.
+  listCalendarSubscriptions() {
+    return this.request<CalendarSubscription[]>('GET', '/v1/calendar-subscriptions');
+  }
+  /**
+   * Subscribes to an https ICS feed. The server fetches it synchronously, so
+   * a bad URL rejects with 400 and an unreachable/unparseable feed with 422
+   * (`unprocessable`) — surface that message inline next to the URL input.
+   */
+  createCalendarSubscription(input: CalendarSubscriptionInput) {
+    return this.request<CalendarSubscription>('POST', '/v1/calendar-subscriptions', input);
+  }
+  updateCalendarSubscription(id: string, patch: CalendarSubscriptionPatch) {
+    return this.request<CalendarSubscription>(
+      'PATCH',
+      `/v1/calendar-subscriptions/${encodeURIComponent(id)}`,
+      patch
+    );
+  }
+  deleteCalendarSubscription(id: string) {
+    return this.request<void>(
+      'DELETE',
+      `/v1/calendar-subscriptions/${encodeURIComponent(id)}`
+    );
   }
 }
 

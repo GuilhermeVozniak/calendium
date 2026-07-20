@@ -31,6 +31,7 @@ import { toast } from 'sonner';
 import type {
   AccountStatus,
   AvailabilityWindow,
+  CalendarSubscription,
   ConnectedAccount,
   EmailAddress,
   InboxSplit,
@@ -88,17 +89,23 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import {
+  createCalendarSubscriptionApi,
   createSnippetApi,
+  deleteCalendarSubscriptionApi,
   deleteSnippetApi,
   disconnectAccountApi,
   fetchAccounts,
+  fetchCalendarSubscriptions,
   fetchSnippets,
   fetchSubscription,
   setAutoBccApi,
   setSignatureApi,
   setVipSendersApi,
   startConnect,
+  updateCalendarSubscriptionApi,
 } from '@/lib/settings-data';
+import { subscriptionStatus } from '@/lib/subscription-utils';
+import { Switch } from '@/components/ui/switch';
 import { fetchSettings, updateSettingsApi } from '@/lib/scheduling-data';
 import { CalendarAutomationSection } from './calendar-automation';
 import { getApiClient } from '@/lib/api';
@@ -121,6 +128,7 @@ type SettingsTab =
   | 'snippets'
   | 'templates'
   | 'sets'
+  | 'feeds'
   | 'scheduling'
   | 'delegation'
   | 'appearance'
@@ -135,6 +143,7 @@ const KNOWN_TABS: SettingsTab[] = [
   'snippets',
   'templates',
   'sets',
+  'feeds',
   'scheduling',
   'delegation',
   'appearance',
@@ -160,6 +169,7 @@ export default function SettingsPage() {
       'snippets',
       'templates',
       'sets',
+      'feeds',
       'scheduling',
       'delegation',
       'appearance',
@@ -227,6 +237,7 @@ export default function SettingsPage() {
             <TabsTrigger value="snippets">Snippets</TabsTrigger>
             <TabsTrigger value="templates">Templates</TabsTrigger>
             <TabsTrigger value="sets">Sets</TabsTrigger>
+            <TabsTrigger value="feeds">Feeds</TabsTrigger>
             <TabsTrigger value="scheduling">Scheduling</TabsTrigger>
             <TabsTrigger value="delegation">Delegation</TabsTrigger>
             <TabsTrigger value="appearance">Appearance</TabsTrigger>
@@ -251,6 +262,9 @@ export default function SettingsPage() {
           </TabsContent>
           <TabsContent value="sets" className="mt-4">
             <SetsSection />
+          </TabsContent>
+          <TabsContent value="feeds" className="mt-4">
+            <SubscriptionsSection />
           </TabsContent>
           <TabsContent value="scheduling" className="mt-4">
             <SchedulingSection />
@@ -1556,5 +1570,200 @@ function BillingSection({
         mobile and desktop apps never charge you directly.
       </p>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Calendar feeds (M2.8 Task 15: interesting-calendar ICS subscriptions)
+// ---------------------------------------------------------------------------
+
+const SUBSCRIPTION_COLORS = ['#8b5cf6', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#ec4899'];
+
+export function SubscriptionsSection() {
+  const queryClient = useQueryClient();
+  const subsQuery = useQuery({
+    queryKey: ['calendar-subscriptions'],
+    queryFn: fetchCalendarSubscriptions,
+  });
+  const [url, setUrl] = React.useState('');
+  const [name, setName] = React.useState('');
+  const [color, setColor] = React.useState(SUBSCRIPTION_COLORS[0]!);
+  const [formError, setFormError] = React.useState<string | null>(null);
+
+  const refreshEvents = () => {
+    queryClient.invalidateQueries({ queryKey: ['calendar-subscriptions'] });
+    queryClient.invalidateQueries({ queryKey: ['events'] });
+  };
+
+  const create = useMutation({
+    mutationFn: () =>
+      createCalendarSubscriptionApi({
+        url: url.trim(),
+        name: name.trim() || undefined,
+        color,
+      }),
+    onSuccess: (sub) => {
+      refreshEvents();
+      setUrl('');
+      setName('');
+      setFormError(null);
+      toast.success(`Subscribed to ${sub.name}`);
+    },
+    onError: (err) => {
+      // The server fetches the feed synchronously, so 400 (bad URL), 422
+      // (unreachable/unparseable feed), and 409 (already subscribed) each
+      // carry a stable message worth surfacing inline.
+      setFormError(
+        err instanceof ApiRequestError ? err.message : 'Could not subscribe to the feed.'
+      );
+    },
+  });
+
+  const update = useMutation({
+    mutationFn: ({ id, isVisible }: { id: string; isVisible: boolean }) =>
+      updateCalendarSubscriptionApi(id, { isVisible }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<CalendarSubscription[]>(['calendar-subscriptions'], (prev) =>
+        prev?.map((s) => (s.id === updated.id ? updated : s))
+      );
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+    },
+    onError: () => toast.error('Could not update the feed'),
+  });
+
+  const remove = useMutation({
+    mutationFn: deleteCalendarSubscriptionApi,
+    onSuccess: (_data, id) => {
+      queryClient.setQueryData<CalendarSubscription[]>(['calendar-subscriptions'], (prev) =>
+        prev?.filter((s) => s.id !== id)
+      );
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+      toast.success('Feed removed');
+    },
+    onError: () => toast.error('Could not remove the feed'),
+  });
+
+  const subs = subsQuery.data ?? [];
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Calendar feeds</CardTitle>
+        <CardDescription>
+          Subscribe to public ICS calendars (holidays, team schedules). Feed events show on
+          your calendar read-only and never count as busy time.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        {subsQuery.isLoading && (
+          <>
+            <Skeleton className="h-14 w-full" />
+            <Skeleton className="h-14 w-full" />
+          </>
+        )}
+        {!subsQuery.isLoading && subs.length === 0 && (
+          <p className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+            No calendar feeds yet. Paste an https ICS link below to subscribe.
+          </p>
+        )}
+        {subs.map((sub) => {
+          const status = subscriptionStatus(sub);
+          return (
+            <div key={sub.id} className="flex items-center gap-3 rounded-lg border p-3">
+              <span
+                className="size-3 shrink-0 rounded-full"
+                style={{ backgroundColor: sub.color }}
+                aria-hidden
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="truncate text-sm font-medium">{sub.name}</span>
+                  {status.kind === 'error' && (
+                    <Badge variant="destructive" className="font-normal" title={status.label}>
+                      Fetch failed
+                    </Badge>
+                  )}
+                </div>
+                <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                  {sub.url}
+                  {' · '}
+                  {status.label}
+                </p>
+              </div>
+              <Switch
+                checked={sub.isVisible}
+                onCheckedChange={(checked) => update.mutate({ id: sub.id, isVisible: checked })}
+                aria-label={`Show ${sub.name} on the calendar`}
+              />
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-destructive"
+                onClick={() => remove.mutate(sub.id)}
+                disabled={remove.isPending}
+                aria-label={`Remove feed ${sub.name}`}
+              >
+                <Trash2 className="size-4" />
+              </Button>
+            </div>
+          );
+        })}
+      </CardContent>
+      <CardFooter className="flex-col items-stretch gap-3 border-t pt-6">
+        <div className="grid gap-2 sm:grid-cols-[1fr_12rem]">
+          <div className="grid gap-1.5">
+            <Label htmlFor="feed-url">ICS feed URL</Label>
+            <Input
+              id="feed-url"
+              placeholder="https://example.com/holidays.ics"
+              value={url}
+              onChange={(e) => {
+                setUrl(e.target.value);
+                setFormError(null);
+              }}
+            />
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="feed-name">Name (optional)</Label>
+            <Input
+              id="feed-name"
+              placeholder="From the feed"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">Color</span>
+          {SUBSCRIPTION_COLORS.map((c) => (
+            <button
+              key={c}
+              type="button"
+              aria-label={`Color ${c}`}
+              aria-pressed={color === c}
+              className={cn(
+                'size-5 rounded-full border-2',
+                color === c ? 'border-foreground' : 'border-transparent'
+              )}
+              style={{ backgroundColor: c }}
+              onClick={() => setColor(c)}
+            />
+          ))}
+          <div className="flex-1" />
+          <Button
+            onClick={() => create.mutate()}
+            disabled={!url.trim() || create.isPending}
+          >
+            {create.isPending ? <Loader2 className="animate-spin" /> : <Plus />}
+            Add feed
+          </Button>
+        </div>
+        {formError && (
+          <p role="alert" className="text-sm text-destructive">
+            {formError}
+          </p>
+        )}
+      </CardFooter>
+    </Card>
   );
 }

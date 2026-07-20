@@ -133,6 +133,8 @@ export interface TimeGridProps {
   weatherByDate?: Map<string, DayForecast>;
   onSlotClick: (start: Date) => void;
   onEventClick: (event: Event) => void;
+  /** subscriptionId → feed color for read-only ICS mirrors (M2.8 Task 15). */
+  subscriptionColors?: Map<string, string>;
 }
 
 export function TimeGrid({
@@ -147,6 +149,7 @@ export function TimeGrid({
   weatherByDate,
   onSlotClick,
   onEventClick,
+  subscriptionColors,
 }: TimeGridProps) {
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -222,14 +225,23 @@ export function TimeGrid({
                     className="mt-0.5"
                   />
                   {dayAllDay.slice(0, 2).map((event) => {
-                    const color = calendarById.get(event.calendarId)?.color ?? FALLBACK_COLOR;
+                    const color = event.subscriptionId
+                      ? (subscriptionColors?.get(event.subscriptionId) ?? FALLBACK_COLOR)
+                      : (calendarById.get(event.calendarId)?.color ?? FALLBACK_COLOR);
                     return (
                       <button
                         key={event.id}
                         type="button"
                         onClick={() => onEventClick(event)}
-                        className="mt-1 block w-full truncate rounded px-1.5 py-0.5 text-left text-[10px] font-medium"
-                        style={{ backgroundColor: withAlpha(color, 0.18), color }}
+                        className={cn(
+                          'mt-1 block w-full truncate rounded px-1.5 py-0.5 text-left text-[10px] font-medium',
+                          event.subscriptionId && 'border border-dashed'
+                        )}
+                        style={{
+                          backgroundColor: withAlpha(color, 0.18),
+                          color,
+                          ...(event.subscriptionId ? { borderColor: color } : null),
+                        }}
                       >
                         {event.title}
                       </button>
@@ -281,6 +293,7 @@ export function TimeGrid({
               now={now}
               onSlotClick={onSlotClick}
               onEventClick={onEventClick}
+              subscriptionColors={subscriptionColors}
             />
           ))}
         </div>
@@ -431,9 +444,18 @@ interface DayColumnProps {
   now: Date;
   onSlotClick: (start: Date) => void;
   onEventClick: (event: Event) => void;
+  subscriptionColors?: Map<string, string>;
 }
 
-function DayColumn({ day, events, calendarById, now, onSlotClick, onEventClick }: DayColumnProps) {
+function DayColumn({
+  day,
+  events,
+  calendarById,
+  now,
+  onSlotClick,
+  onEventClick,
+  subscriptionColors,
+}: DayColumnProps) {
   const positioned = React.useMemo(
     () => layoutDayEvents(day, events.filter((e) => eventTouchesDay(e, day))),
     [day, events]
@@ -464,7 +486,9 @@ function DayColumn({ day, events, calendarById, now, onSlotClick, onEventClick }
       ))}
 
       {positioned.map(({ event, top, height, leftPct, widthPct }) => {
-        const color = calendarById.get(event.calendarId)?.color ?? FALLBACK_COLOR;
+        const color = event.subscriptionId
+          ? (subscriptionColors?.get(event.subscriptionId) ?? FALLBACK_COLOR)
+          : (calendarById.get(event.calendarId)?.color ?? FALLBACK_COLOR);
         return (
           // biome-ignore lint/a11y/useSemanticElements: hosts a real <button> (JoinButton) inline — nesting a button inside a button is invalid HTML, so this outer element is a div with button semantics instead.
           <div
@@ -485,7 +509,9 @@ function DayColumn({ day, events, calendarById, now, onSlotClick, onEventClick }
             }}
             className={cn(
               'absolute z-10 flex cursor-pointer flex-col overflow-hidden rounded-md border-l-[3px] px-1.5 py-1 text-left leading-tight shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              event.status === 'tentative' && 'opacity-70'
+              event.status === 'tentative' && 'opacity-70',
+              // ICS feed mirrors are visually distinct: dashed outline in the feed color.
+              event.subscriptionId && 'border border-dashed'
             )}
             style={{
               top: top + 1,
@@ -494,6 +520,7 @@ function DayColumn({ day, events, calendarById, now, onSlotClick, onEventClick }
               width: `calc(${widthPct}% - 3px)`,
               backgroundColor: withAlpha(color, 0.16),
               borderLeftColor: color,
+              ...(event.subscriptionId ? { borderColor: color, borderLeftStyle: 'solid' } : null),
             }}
           >
             <span className="truncate text-xs font-medium" style={{ color }}>

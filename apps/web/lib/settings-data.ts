@@ -1,4 +1,12 @@
-import type { ConnectedAccount, Provider, Snippet, Subscription } from '@calendium/shared';
+import type {
+  CalendarSubscription,
+  CalendarSubscriptionInput,
+  CalendarSubscriptionPatch,
+  ConnectedAccount,
+  Provider,
+  Snippet,
+  Subscription,
+} from '@calendium/shared';
 
 import { getApiClient } from '@/lib/api';
 import { DEMO_MODE } from '@/lib/demo';
@@ -120,6 +128,58 @@ export async function fetchSubscription(): Promise<Subscription> {
     return await getApiClient().getSubscription();
   } catch (err) {
     if (DEMO_MODE) return settingsMock.getSubscription();
+    throw err;
+  }
+}
+
+// --- Interesting-calendar ICS feed subscriptions (M2.8 Task 15) ---
+
+export async function fetchCalendarSubscriptions(): Promise<CalendarSubscription[]> {
+  try {
+    return await getApiClient().listCalendarSubscriptions();
+  } catch (err) {
+    if (DEMO_MODE) return settingsMock.listCalendarSubscriptions();
+    throw err;
+  }
+}
+
+/**
+ * Subscribes to an https ICS feed. The server fetches it synchronously, so
+ * failures carry a specific ApiRequestError (400 bad URL / 422 unfetchable
+ * feed / 409 duplicate) the settings UI surfaces inline — they are NOT
+ * swallowed by the demo fallback outside demo mode.
+ */
+export async function createCalendarSubscriptionApi(
+  input: CalendarSubscriptionInput
+): Promise<CalendarSubscription> {
+  try {
+    return await getApiClient().createCalendarSubscription(input);
+  } catch (err) {
+    if (DEMO_MODE) return settingsMock.createCalendarSubscription(input);
+    throw err;
+  }
+}
+
+export async function updateCalendarSubscriptionApi(
+  id: string,
+  patch: CalendarSubscriptionPatch
+): Promise<CalendarSubscription> {
+  try {
+    return await getApiClient().updateCalendarSubscription(id, patch);
+  } catch (err) {
+    if (DEMO_MODE) return settingsMock.updateCalendarSubscription(id, patch);
+    throw err;
+  }
+}
+
+export async function deleteCalendarSubscriptionApi(id: string): Promise<void> {
+  try {
+    await getApiClient().deleteCalendarSubscription(id);
+  } catch (err) {
+    if (DEMO_MODE) {
+      settingsMock.deleteCalendarSubscription(id);
+      return;
+    }
     throw err;
   }
 }
