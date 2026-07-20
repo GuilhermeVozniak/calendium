@@ -778,3 +778,17 @@ type EventBus interface {
 type WeatherProvider interface {
 	DailyForecast(ctx context.Context, lat, lon float64, timeZone string, days int) ([]domain.DayForecast, error)
 }
+
+// ---------------------------------------------------------------------------
+// Maps (M2.8 Task 11, implemented by internal/adapter/out/nominatim)
+// ---------------------------------------------------------------------------
+
+// MapsProvider is the geocoding + routing vendor surface (Nominatim/OSRM).
+// Left unwired when MAPS_NOMINATIM_URL is not configured — consumers must
+// degrade gracefully (501 routes, hidden UI affordances).
+type MapsProvider interface {
+	// Autocomplete returns up to limit place suggestions for a partial query.
+	Autocomplete(ctx context.Context, query string, limit int) ([]domain.Place, error)
+	// TravelTime estimates door-to-door duration between two points.
+	TravelTime(ctx context.Context, fromLat, fromLon, toLat, toLon float64, mode domain.TravelMode) (time.Duration, error)
+}

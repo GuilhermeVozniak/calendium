@@ -373,6 +373,7 @@ func (s *CalendarService) createSharedEvent(ctx context.Context, userID string, 
 		}
 		created.ID = ev.ID
 		created.CalendarID = c.ID
+		carryLocalGeo(&created, ev)
 		ev = created
 	}
 	ev, err = s.events.Upsert(ctx, ev)
@@ -412,6 +413,7 @@ func (s *CalendarService) updateSharedEvent(ctx context.Context, userID, eventID
 		}
 		updated.ID = ev.ID
 		updated.CalendarID = c.ID
+		carryLocalGeo(&updated, ev)
 		ev = updated
 	}
 	ev, err = s.events.Upsert(ctx, ev)

@@ -33,6 +33,7 @@ import { detectConference } from '@calendium/shared';
 import { ConflictWarning } from '@/components/app/calendar/conflict-warning';
 import { JoinButton } from '@/components/app/calendar/join-button';
 import { FindATimeGrid, ProposalsList, ProposeTimeForm } from '@/components/app/find-a-time';
+import { LocationField } from '@/components/app/location-field';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -155,6 +156,11 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
   const [start, setStart] = React.useState('');
   const [end, setEnd] = React.useState('');
   const [location, setLocation] = React.useState('');
+  // Set only when `location` came from an autocomplete pick; free typing
+  // clears it so stale coordinates never outlive an edited location string.
+  const [locationCoords, setLocationCoords] = React.useState<{ lat: number; lon: number } | null>(
+    null
+  );
   const [recurrenceRule, setRecurrenceRule] = React.useState<string | null>(null);
   const [description, setDescription] = React.useState('');
   const [attendees, setAttendees] = React.useState<string[]>([]);
@@ -208,6 +214,11 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
       // All-day events store an exclusive end (next midnight); show the inclusive last day.
       setEnd(formatInput(event.allDay ? new Date(endDate.getTime() - 1) : endDate, event.allDay));
       setLocation(event.location ?? '');
+      setLocationCoords(
+        event.locationLat != null && event.locationLon != null
+          ? { lat: event.locationLat, lon: event.locationLon }
+          : null
+      );
       setRecurrenceRule(event.recurrenceRule);
       setDescription(event.description ?? '');
       setAttendees(event.attendees.filter((a) => !a.organizer).map((a) => a.email));
@@ -232,6 +243,11 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
       setStart(formatInput(startDate, isAllDay));
       setEnd(formatInput(endDate, isAllDay));
       setLocation(d.location ?? '');
+      setLocationCoords(
+        d.locationLat != null && d.locationLon != null
+          ? { lat: d.locationLat, lon: d.locationLon }
+          : null
+      );
       setRecurrenceRule(d.recurrenceRule ?? null);
       setDescription(d.description ?? '');
       setAttendees(d.attendeeEmails ?? []);
@@ -319,6 +335,11 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
       // PATCH instead of sending '' to actually clear them on the backend.
       description: description.trim() || undefined,
       location: location.trim() || undefined,
+      // Coordinates only ever accompany an autocomplete-picked location;
+      // free-typed text sends none (travel features skip such events).
+      ...(location.trim() && locationCoords
+        ? { locationLat: locationCoords.lat, locationLon: locationCoords.lon }
+        : {}),
       start: startIso,
       end: endIso,
       allDay,
@@ -344,6 +365,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
     setTitle(applied.title ?? '');
     setDescription(applied.description ?? '');
     setLocation(applied.location ?? '');
+    setLocationCoords(null); // templates store plain location text only
     setAllDay(applied.allDay ?? false);
     if (applied.start) setStart(formatInput(new Date(applied.start), applied.allDay ?? false));
     if (applied.end) setEnd(formatInput(new Date(applied.end), applied.allDay ?? false));
@@ -373,6 +395,9 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
         title: input.title,
         description: input.description,
         location: input.location,
+        ...(input.locationLat !== undefined
+          ? { locationLat: input.locationLat, locationLon: input.locationLon }
+          : {}),
         start: input.start,
         end: input.end,
         allDay: input.allDay,
@@ -611,12 +636,12 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
           />
 
           <FieldRow icon={MapPin}>
-            <Input
+            <LocationField
               value={location}
-              onChange={(e) => setLocation(e.target.value)}
-              placeholder="Add location"
-              aria-label="Location"
-              className="h-8"
+              onChange={(next, coords) => {
+                setLocation(next);
+                setLocationCoords(coords);
+              }}
             />
           </FieldRow>
 

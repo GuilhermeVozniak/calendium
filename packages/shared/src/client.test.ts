@@ -13,6 +13,7 @@ import {
 import type {
   AiAskRequest,
   AiComposeRequest,
+  Place,
   BookingLinkInput,
   BookingRequest,
   CalendarPrefs,
@@ -2263,6 +2264,43 @@ describe('weather (M2.8 Task 13)', () => {
       ],
     });
     await expect(client.getWeather(0, 0, 'UTC')).rejects.toMatchObject({
+      status: 501,
+      code: 'not_implemented',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Places — location autocomplete (M2.8 Task 11)
+// ---------------------------------------------------------------------------
+
+describe('places', () => {
+  it('GETs /v1/places/autocomplete with a percent-encoded user query', async () => {
+    const places: Place[] = [
+      { name: 'Alexanderplatz', address: 'Alexanderplatz, Mitte, Berlin, Germany', lat: 52.5219, lon: 13.4132 },
+    ];
+    const { client, calls } = makeClient({ responses: [{ status: 200, body: places }] });
+    const got = await client.autocompletePlaces('café & bar berlin');
+    expect(got).toEqual(places);
+    expect(calls[0]!.method).toBe('GET');
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe('/v1/places/autocomplete');
+    expect(searchParamsToObject(url.searchParams)).toEqual({ q: 'café & bar berlin' });
+    // Raw wire form must be percent-encoded — no raw multibyte chars or
+    // bare ampersands from user input in the URL.
+    expect(calls[0]!.url).toContain('caf%C3%A9%20%26%20bar%20berlin');
+  });
+
+  it('maps the unconfigured-server 501 to ApiRequestError(not_implemented)', async () => {
+    const { client } = makeClient({
+      responses: [
+        {
+          status: 501,
+          body: { error: { code: 'not_implemented', message: 'maps are not available on this instance' } },
+        },
+      ],
+    });
+    await expect(client.autocompletePlaces('berlin')).rejects.toMatchObject({
       status: 501,
       code: 'not_implemented',
     });

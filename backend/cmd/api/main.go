@@ -22,6 +22,7 @@ import (
 	"calendium/backend/internal/adapter/out/eventbus"
 	"calendium/backend/internal/adapter/out/googleapi"
 	"calendium/backend/internal/adapter/out/msgraph"
+	"calendium/backend/internal/adapter/out/nominatim"
 	"calendium/backend/internal/adapter/out/openmeteo"
 	"calendium/backend/internal/adapter/out/openrouter"
 	"calendium/backend/internal/adapter/out/postgres"
@@ -282,6 +283,21 @@ func run(logger *slog.Logger) error {
 		})
 	}
 
+	// M2.8 Task 11: location autocomplete (Nominatim) + travel times (OSRM).
+	// Unconfigured base URLs leave the provider unwired: the places route
+	// answers 501 and features.maps stays false, so clients hide the
+	// affordance (graceful degradation).
+	var placesSvc port.PlacesService
+	mapsConfigured := cfg.Maps.NominatimBaseURL != ""
+	if mapsConfigured {
+		placesSvc = service.NewPlacesService(service.PlacesServiceDeps{
+			Subscriptions: store.Subscriptions(),
+			Maps:          nominatim.New(cfg.Maps.NominatimBaseURL, cfg.Maps.OSRMBaseURL, hc),
+			Clock:         clock,
+			SelfHosted:    cfg.Instance.SelfHosted,
+		})
+	}
+
 	// --- instance discovery document (GET /v1/instance) ---
 	mode := httpapi.ModeCloud
 	if cfg.Instance.SelfHosted {
@@ -322,6 +338,7 @@ func run(logger *slog.Logger) error {
 			Microsoft: cfg.Microsoft.ClientID != "",
 			AI:        cfg.OpenRouter.APIKey != "",
 			Push:      pushConfigured,
+			Maps:      mapsConfigured,
 		},
 		Capabilities: httpapi.InstanceCapabilities{
 			Weather: cfg.Weather.BaseURL != "",
@@ -359,7 +376,9 @@ func run(logger *slog.Logger) error {
 		// M2.8: first-class tasks.
 		Tasks: tasksSvc,
 		// M2.8 Task 13: inline weather (nil when disabled → 501).
-		Weather:            weatherSvc,
+		Weather: weatherSvc,
+		// M2.8 Task 11: location autocomplete (nil when maps unconfigured).
+		Places:             placesSvc,
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 	})

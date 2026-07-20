@@ -42,6 +42,9 @@ type InstanceFeatures struct {
 	Microsoft bool `json:"microsoft"`
 	AI        bool `json:"ai"`
 	Push      bool `json:"push"`
+	// Maps reports a configured maps provider (location autocomplete +
+	// travel times, M2.8); false hides the affordances client-side.
+	Maps bool `json:"maps"`
 }
 
 // InstanceCapabilities reports which optional third-party integrations

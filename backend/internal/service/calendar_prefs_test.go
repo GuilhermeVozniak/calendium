@@ -13,8 +13,8 @@ import (
 // fakeCalendarPrefsRepo is an in-memory port.CalendarPrefsRepo mirroring the
 // real repo's contract: Get synthesizes defaults on a missing row.
 type fakeCalendarPrefsRepo struct {
-	byUser map[string]domain.CalendarPrefs
-	getErr error
+	byUser  map[string]domain.CalendarPrefs
+	getErr  error
 	saveErr error
 }
 

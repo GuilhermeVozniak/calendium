@@ -64,6 +64,10 @@ type Deps struct {
 	// 13, Open-Meteo). When nil — no vendor configured — GET /v1/weather
 	// answers 501 and clients hide the weather chips.
 	Weather port.WeatherService
+	// Places is location autocomplete backed by a MapsProvider (M2.8
+	// Task 11). When nil (maps not configured) the places route answers 501
+	// and GET /v1/instance advertises features.maps=false.
+	Places port.PlacesService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -297,6 +301,9 @@ func New(deps Deps) http.Handler {
 	// M2.8 Task 13: inline weather on calendar days. Best-effort decoration:
 	// its own endpoint, never on a calendar request's critical path.
 	authed("GET /v1/weather", s.handleGetWeather)
+
+	// M2.8 Task 11: location autocomplete (Nominatim-backed; 501 unwired).
+	authed("GET /v1/places/autocomplete", s.handlePlacesAutocomplete)
 
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins)

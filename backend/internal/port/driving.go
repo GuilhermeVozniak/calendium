@@ -591,3 +591,12 @@ type WeatherService interface {
 	// Forecast serves up to 14 days; cached ~30 minutes per location.
 	Forecast(ctx context.Context, userID string, lat, lon float64, timeZone string, days int) ([]domain.DayForecast, error)
 }
+
+// --- Places (M2.8 Task 11) ---------------------------------------------------
+
+// PlacesService is entitlement-gated location autocomplete over a
+// MapsProvider, with an in-memory result cache honoring Nominatim's
+// 1 req/s usage policy. Queries under 3 characters are ErrValidation.
+type PlacesService interface {
+	Autocomplete(ctx context.Context, userID, query string) ([]domain.Place, error)
+}
