@@ -3,6 +3,7 @@
 import { clearActingAs } from '@/lib/act-as';
 import { signOut } from '@/lib/auth-client';
 import { clearOfflineState } from '@/lib/offline/queue';
+import { clearTourState } from '@/lib/tour-state';
 
 /**
  * The single sign-out routine. EVERY sign-out surface (user menu, command
@@ -16,5 +17,6 @@ import { clearOfflineState } from '@/lib/offline/queue';
 export async function performSignOut(): Promise<void> {
   await signOut();
   clearActingAs();
+  clearTourState();
   await clearOfflineState();
 }

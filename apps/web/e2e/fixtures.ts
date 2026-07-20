@@ -39,6 +39,15 @@ const FAKE_SESSION = {
 
 export const test = base.extend<{ page: Page }>({
   page: async ({ page }, use) => {
+    // The concierge tour auto-starts for fresh users (M2.8 Task 19); mark it
+    // done so its popover never overlays unrelated specs. onboarding.spec.ts
+    // removes this key in its own init script to exercise the first-run path.
+    await page.addInitScript(() => {
+      window.localStorage.setItem(
+        'calendium.tour.v1',
+        JSON.stringify({ done: true, coachMuted: false })
+      );
+    });
     await page.route('**/api/auth/get-session*', (route) =>
       route.fulfill({ json: { user: FAKE_USER, session: FAKE_SESSION } })
     );

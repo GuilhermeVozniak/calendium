@@ -5,7 +5,9 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
   Archive,
   AtSign,
+  BellOff,
   BellRing,
+  Compass,
   CalendarCheck2,
   CalendarDays,
   BarChart3,
@@ -72,6 +74,7 @@ import { fetchSearch } from '@/lib/search-data';
 import { performSignOut } from '@/lib/sign-out';
 import { MOD_KEY, useShortcuts } from '@/lib/shortcuts';
 import { teachShortcut } from '@/lib/shortcut-hints';
+import { restartTour, setCoachMuted, useCoachMuted } from '@/lib/tour-state';
 import { fetchEventTemplates } from '@/lib/template-data';
 import { useActiveAccount } from '@/lib/use-accounts';
 import { useSelfEmails } from '@/lib/use-identity';
@@ -115,6 +118,7 @@ export function CommandPalette() {
   const { data: openThreadDetail } = useThreadDetail(openThreadId);
   const selfEmails = useSelfEmails();
   const { accounts, setActiveAccountId } = useActiveAccount();
+  const coachMuted = useCoachMuted();
 
   // Reset the query when the palette closes; debounce it for live search.
   React.useEffect(() => {
@@ -619,6 +623,22 @@ export function CommandPalette() {
               {`Theme: ${name.charAt(0).toUpperCase()}${name.slice(1)}`}
             </CommandItem>
           ))}
+        </CommandGroup>
+
+        <CommandSeparator />
+
+        <CommandGroup heading="Help">
+          <CommandItem onSelect={() => run(() => restartTour())}>
+            <Compass />
+            Restart tour
+          </CommandItem>
+          <CommandItem
+            value="mute unmute shortcut tips coach"
+            onSelect={() => run(() => setCoachMuted(!coachMuted))}
+          >
+            <BellOff />
+            {coachMuted ? 'Unmute shortcut tips' : 'Mute shortcut tips'}
+          </CommandItem>
         </CommandGroup>
 
         <CommandSeparator />

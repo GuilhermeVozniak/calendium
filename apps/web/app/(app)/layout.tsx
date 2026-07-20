@@ -35,6 +35,7 @@ import { ActAsMenuItems, ActingBanner } from '@/components/app/acting-as';
 import { AttachmentsPaneProvider } from '@/components/app/attachments-pane';
 import { CommandPalette } from '@/components/app/command-palette';
 import { ComposeProvider, useCompose } from '@/components/app/compose';
+import { OnboardingTour } from '@/components/app/onboarding-tour';
 import { OutboxIndicator } from '@/components/app/outbox-indicator';
 import { useTheme } from '@/components/theme-provider';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -110,6 +111,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 <AskSidebarPanel />
               </div>
               <CommandPalette />
+              {/* Concierge tour: auto-starts on a user's first authenticated
+                  visit; "Restart tour" in the palette re-runs it. */}
+              <OnboardingTour />
               <GlobalShortcuts />
               <OutboxReplayLifecycle />
             </TooltipProvider>
@@ -325,6 +329,7 @@ function SideRail({ user }: { user: SessionUser | null }) {
         </Link>
         <Link
           href="/settings"
+          data-tour="settings"
           className={cn(
             'flex h-8 items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors',
             pathname.startsWith('/settings')

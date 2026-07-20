@@ -520,7 +520,7 @@ export default function CalendarPage() {
         <div className="flex items-center gap-1">
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="outline" size="sm" onClick={goToday}>
+              <Button variant="outline" size="sm" onClick={goToday} data-tour="cal-today">
                 Today
               </Button>
             </TooltipTrigger>
@@ -625,11 +625,17 @@ export default function CalendarPage() {
             size="sm"
             aria-pressed={taskRailOpen}
             onClick={() => setTaskRailOpen((v) => !v)}
+            data-tour="task-rail"
           >
             <ListTodo />
             Tasks
           </Button>
-          <Button variant="outline" size="sm" onClick={() => setAvailabilityOpen(true)}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setAvailabilityOpen(true)}
+            data-tour="share-availability"
+          >
             <Clock />
             Share availability
           </Button>
