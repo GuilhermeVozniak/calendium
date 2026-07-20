@@ -68,6 +68,10 @@ type Deps struct {
 	// Task 11). When nil (maps not configured) the places route answers 501
 	// and GET /v1/instance advertises features.maps=false.
 	Places port.PlacesService
+	// Integrations manages per-user vendor OAuth connections
+	// (Todoist/HubSpot, M2.8 Task 9). When nil the integration routes
+	// answer 501.
+	Integrations port.IntegrationService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -97,6 +101,9 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("GET /v1/instance", s.handleInstance)
 	mux.HandleFunc("POST /v1/webhooks/stripe", s.handleStripeWebhook)
 	mux.HandleFunc("GET /v1/accounts/callback/{provider}", s.handleAccountCallback)
+	// M2.8 Task 9: vendor OAuth redirect target (state-validated, like the
+	// account callback above).
+	mux.HandleFunc("GET /v1/integrations/callback/{vendor}", s.handleIntegrationCallback)
 
 	// Public scheduling surface (unauthenticated, rate limited): booking
 	// pages/slots/bookings and meeting-poll view/vote. Two buckets — reads
@@ -134,6 +141,11 @@ func New(deps Deps) http.Handler {
 	authed("PUT /v1/accounts/{id}/signature", s.handleSetSignature)
 	authed("PUT /v1/accounts/{id}/auto-bcc", s.handleSetAutoBcc)
 	authed("DELETE /v1/accounts/{id}", s.handleDisconnectAccount)
+
+	// M2.8 Task 9: per-user vendor integrations (Todoist/HubSpot).
+	authed("GET /v1/integrations", s.handleListIntegrations)
+	authed("POST /v1/integrations/connect/{vendor}", s.handleConnectIntegration)
+	authed("DELETE /v1/integrations/{id}", s.handleDisconnectIntegration)
 
 	authed("GET /v1/mail/threads", s.handleListThreads)
 	authed("GET /v1/mail/threads/{id}", s.handleGetThread)

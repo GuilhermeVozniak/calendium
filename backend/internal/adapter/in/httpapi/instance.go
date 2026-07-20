@@ -29,8 +29,9 @@ type InstanceInfo struct {
 	// web push is configured; clients subscribe the service worker with it.
 	VapidPublicKey string           `json:"vapidPublicKey,omitempty"`
 	Features       InstanceFeatures `json:"features"`
-	// Capabilities lists optional third-party integrations (M2.8) so
-	// clients can hide unavailable surfaces without probing endpoints.
+	// Capabilities advertises optional vendor integrations (M2.8): a vendor
+	// flag is true only when its OAuth/API config is present in the
+	// deployment, so clients never show connect UI that can only 501.
 	Capabilities InstanceCapabilities `json:"capabilities"`
 }
 
@@ -47,12 +48,15 @@ type InstanceFeatures struct {
 	Maps bool `json:"maps"`
 }
 
-// InstanceCapabilities reports which optional third-party integrations
-// (M2.8) are wired on this deployment. Mirrors the `capabilities` block of
-// InstanceInfo in packages/shared/src/types.ts — keep the two in sync.
+// InstanceCapabilities reports which optional vendor integrations are
+// configured on this deployment (M2.8): todoist/hubspot per-user OAuth
+// (Task 9), maps geocoding (Task 11), and weather (Task 13). Only vendors
+// whose config is present are advertised; unwired vendors' endpoints
+// answer 501.
 type InstanceCapabilities struct {
-	// Weather is true when an Open-Meteo base URL is configured and
-	// GET /v1/weather is served (M2.8 Task 13).
+	Todoist bool `json:"todoist"`
+	HubSpot bool `json:"hubspot"`
+	Maps    bool `json:"maps"`
 	Weather bool `json:"weather"`
 }
 

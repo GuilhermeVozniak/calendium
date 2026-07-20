@@ -43,6 +43,8 @@ import type {
   EventTemplate,
   EventTemplateInput,
   InstanceInfo,
+  IntegrationConnection,
+  IntegrationVendor,
   Label,
   MeetingPoll,
   MemberAvailability,
@@ -208,6 +210,26 @@ export class ApiClient {
   }
   disconnectAccount(accountId: string) {
     return this.request<void>('DELETE', `/v1/accounts/${accountId}`);
+  }
+
+  // --- Integrations (M2.8) ---
+  /** The caller's per-user vendor integrations (Todoist/HubSpot). */
+  listIntegrations() {
+    return this.request<IntegrationConnection[]>('GET', '/v1/integrations');
+  }
+  /**
+   * Starts the vendor OAuth flow; open the returned URL in a browser. Throws
+   * ApiRequestError(501, 'not_implemented') when the vendor is not
+   * configured on this server — gate on InstanceInfo.capabilities first.
+   */
+  connectIntegration(vendor: IntegrationVendor, redirectUrl: string) {
+    return this.request<{ url: string }>('POST', `/v1/integrations/connect/${vendor}`, {
+      redirectUrl,
+    });
+  }
+  /** Disconnects an integration; Todoist also purges its mirrored tasks server-side. */
+  disconnectIntegration(connectionId: string) {
+    return this.request<void>('DELETE', `/v1/integrations/${encodeURIComponent(connectionId)}`);
   }
 
   // --- Mail ---

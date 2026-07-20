@@ -59,7 +59,7 @@ All endpoints JSON, Bearer-authenticated unless noted. Errors: `{ "error": { "co
 
 | Method & path | Purpose |
 | --- | --- |
-| `GET /v1/instance` | Public instance discovery (unauthenticated): `{name, mode: self_host\|cloud, version, authBaseUrl, authProviders, features}` for client self-configuration |
+| `GET /v1/instance` | Public instance discovery (unauthenticated): `{name, mode: self_host\|cloud, version, authBaseUrl, authProviders, features, capabilities}` for client self-configuration (`capabilities` = `{todoist, hubspot, maps, weather}` — only vendors whose config is present are advertised) |
 | `GET /v1/me` | Current user (upserts on first call) |
 | `GET /v1/billing/subscription` | Subscription status ($50/yr annual plan) |
 | `POST /v1/billing/checkout` | Create Stripe Checkout session `{successUrl, cancelUrl} → {url}` (501 `self_hosted` when `SELF_HOSTED`) |
@@ -69,6 +69,10 @@ All endpoints JSON, Bearer-authenticated unless noted. Errors: `{ "error": { "co
 | `POST /v1/accounts/connect/{provider}` | Begin provider OAuth `{redirectUrl} → {url}` |
 | `GET /v1/accounts/callback/{provider}` | OAuth redirect target (state-validated) |
 | `DELETE /v1/accounts/{id}` | Disconnect account |
+| `GET /v1/integrations` | List per-user vendor integrations (Todoist/HubSpot) |
+| `POST /v1/integrations/connect/{vendor}` | Begin vendor OAuth `{redirectUrl} → {url}` (501 when the vendor is unconfigured) |
+| `GET /v1/integrations/callback/{vendor}` | Vendor OAuth redirect target (state-validated, unauthenticated) |
+| `DELETE /v1/integrations/{id}` | Disconnect integration (Todoist also purges mirrored tasks) |
 | `GET /v1/mail/threads?split&labelId&q&cursor&limit` | Inbox lists (split inboxes) |
 | `GET /v1/mail/threads/{id}` | Thread + messages |
 | `POST /v1/mail/threads/{id}/actions` | `{action}` archive/trash/star/read/… |

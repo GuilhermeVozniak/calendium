@@ -21,6 +21,7 @@ import (
 	"calendium/backend/internal/adapter/out/authjwt"
 	"calendium/backend/internal/adapter/out/eventbus"
 	"calendium/backend/internal/adapter/out/googleapi"
+	"calendium/backend/internal/adapter/out/hubspot"
 	"calendium/backend/internal/adapter/out/msgraph"
 	"calendium/backend/internal/adapter/out/nominatim"
 	"calendium/backend/internal/adapter/out/openmeteo"
@@ -28,6 +29,7 @@ import (
 	"calendium/backend/internal/adapter/out/postgres"
 	"calendium/backend/internal/adapter/out/push"
 	"calendium/backend/internal/adapter/out/stripeapi"
+	"calendium/backend/internal/adapter/out/todoist"
 	"calendium/backend/internal/adapter/out/unsubscribe"
 	"calendium/backend/internal/config"
 	"calendium/backend/internal/domain"
@@ -109,6 +111,16 @@ func run(logger *slog.Logger) error {
 		calendarProviders[domain.ProviderMicrosoft] = m
 	}
 
+	// M2.8 Task 9: per-user vendor OAuth (Todoist/HubSpot). Only vendors with
+	// config present are wired; the rest answer 501 and are not advertised.
+	integrationOAuth := map[domain.IntegrationVendor]port.OAuthGateway{}
+	if cfg.Todoist.ClientID != "" {
+		integrationOAuth[domain.IntegrationTodoist] = todoist.NewOAuth(cfg.Todoist.ClientID, cfg.Todoist.ClientSecret, hc)
+	}
+	if cfg.HubSpot.ClientID != "" {
+		integrationOAuth[domain.IntegrationHubSpot] = hubspot.NewOAuth(cfg.HubSpot.ClientID, cfg.HubSpot.ClientSecret, hc)
+	}
+
 	// --- services ---
 	clock := service.SystemClock{}
 	bus := eventbus.New()
@@ -117,6 +129,15 @@ func run(logger *slog.Logger) error {
 	users := service.NewUserService(store.Users(), store.UserPreferences(), clock)
 	billing := service.NewBillingService(store.Users(), store.Subscriptions(), store.StripeEvents(), stripe, clock, store, cfg.Instance.SelfHosted)
 	accounts := service.NewAccountService(store.Accounts(), store.OAuthStates(), store.SyncStates(), oauth, cfg.OAuth.AllowedRedirectURIs, cfg.Instance.PublicAPIURL, clock)
+	integrations := service.NewIntegrationService(
+		postgres.NewIntegrationRepo(store), store.OAuthStates(), integrationOAuth,
+		cfg.OAuth.AllowedRedirectURIs, cfg.Instance.PublicAPIURL,
+		// Todoist task purge on disconnect: mirrored Todoist rows are removed
+		// so the task rail never shows tasks from a revoked grant.
+		func(ctx context.Context, userID string) error {
+			return store.Tasks().DeleteBySource(ctx, userID, domain.TaskSourceTodoist)
+		},
+		clock)
 	mail := service.NewMailService(service.MailServiceDeps{
 		Subscriptions: store.Subscriptions(),
 		Accounts:      store.Accounts(),
@@ -340,7 +361,11 @@ func run(logger *slog.Logger) error {
 			Push:      pushConfigured,
 			Maps:      mapsConfigured,
 		},
+		// Only vendors whose config is present are advertised (M2.8).
 		Capabilities: httpapi.InstanceCapabilities{
+			Todoist: cfg.Todoist.ClientID != "",
+			HubSpot: cfg.HubSpot.ClientID != "",
+			Maps:    mapsConfigured,
 			Weather: cfg.Weather.BaseURL != "",
 		},
 	}
@@ -378,7 +403,9 @@ func run(logger *slog.Logger) error {
 		// M2.8 Task 13: inline weather (nil when disabled → 501).
 		Weather: weatherSvc,
 		// M2.8 Task 11: location autocomplete (nil when maps unconfigured).
-		Places:             placesSvc,
+		Places: placesSvc,
+		// M2.8 Task 9: per-user vendor integrations.
+		Integrations:       integrations,
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 	})

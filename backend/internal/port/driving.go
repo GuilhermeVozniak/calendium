@@ -65,6 +65,28 @@ type AccountService interface {
 	SetAutoBcc(ctx context.Context, userID, accountID string, autoBcc []string) (domain.ConnectedAccount, error)
 }
 
+// --- Integrations (M2.8 Task 9) ----------------------------------------------
+
+// IntegrationService manages per-user vendor OAuth connections
+// (Todoist/HubSpot), mirroring AccountService's connect choreography: the
+// one-time CSRF state is stored server-side (OAuthStateRepo) and the
+// callback fails closed on any state mismatch.
+type IntegrationService interface {
+	List(ctx context.Context, userID string) ([]domain.IntegrationConnection, error)
+	// BeginConnect starts the vendor OAuth flow and returns the URL to open
+	// in a browser. redirectURL is the client's own return target (stored in
+	// state, never sent to the vendor); requestBaseURL builds the vendor
+	// redirect_uri when PUBLIC_API_URL is unset. Unconfigured vendors return
+	// domain.ErrNotImplemented (HTTP 501).
+	BeginConnect(ctx context.Context, userID string, vendor domain.IntegrationVendor, redirectURL, requestBaseURL string) (authURL string, err error)
+	// CompleteConnect handles the vendor OAuth callback (state-validated) and
+	// stores the connection with encrypted tokens, upserting on reconnect. It
+	// returns the client redirect URL stored in state (empty only when the
+	// state itself was invalid).
+	CompleteConnect(ctx context.Context, vendor domain.IntegrationVendor, state, code, requestBaseURL string) (conn domain.IntegrationConnection, clientRedirect string, err error)
+	Disconnect(ctx context.Context, userID, connectionID string) error
+}
+
 // DraftInput is the create/update draft payload (autosave-friendly).
 type DraftInput struct {
 	AccountID   string                `json:"accountId"`

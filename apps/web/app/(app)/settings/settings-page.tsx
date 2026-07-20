@@ -45,6 +45,7 @@ import { ApiRequestError } from '@calendium/shared';
 import { BookingLinks, localTimeZone, WindowsEditor } from '@/components/app/booking-links';
 import { ChipsRow } from '@/components/app/chips-row';
 import { DelegationSection } from '@/components/app/delegation';
+import { IntegrationsSection } from '@/components/app/integrations-section';
 import { SetSwitcher } from '@/components/app/calendar/set-switcher';
 import { TemplateManager } from '@/components/app/calendar/template-manager';
 import { MeetingPolls } from '@/components/app/meeting-polls';
@@ -116,6 +117,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 type SettingsTab =
   | 'accounts'
+  | 'integrations'
   | 'snippets'
   | 'templates'
   | 'sets'
@@ -129,6 +131,7 @@ type SettingsTab =
 
 const KNOWN_TABS: SettingsTab[] = [
   'accounts',
+  'integrations',
   'snippets',
   'templates',
   'sets',
@@ -147,10 +150,13 @@ export default function SettingsPage() {
   const pushEnabled = !!instance.data?.features.push;
   const aiEnabled = !!instance.data?.features.ai;
   const vapidPublicKey = instance.data?.vapidPublicKey;
+  const capabilities = instance.data?.capabilities;
+  const integrationsEnabled = !!(capabilities?.todoist || capabilities?.hubspot);
 
   const availableTabs = React.useMemo<SettingsTab[]>(
     () => [
       'accounts',
+      ...(integrationsEnabled ? (['integrations'] as SettingsTab[]) : []),
       'snippets',
       'templates',
       'sets',
@@ -162,7 +168,7 @@ export default function SettingsPage() {
       ...(pushEnabled ? (['notifications'] as SettingsTab[]) : []),
       ...(billingEnabled ? (['billing'] as SettingsTab[]) : []),
     ],
-    [aiEnabled, pushEnabled, billingEnabled]
+    [integrationsEnabled, aiEnabled, pushEnabled, billingEnabled]
   );
 
   const [tab, setTab] = React.useState<SettingsTab>('accounts');
@@ -215,6 +221,9 @@ export default function SettingsPage() {
         <Tabs value={activeTab} onValueChange={changeTab} className="mt-6">
           <TabsList>
             <TabsTrigger value="accounts">Accounts</TabsTrigger>
+            {integrationsEnabled && (
+              <TabsTrigger value="integrations">Integrations</TabsTrigger>
+            )}
             <TabsTrigger value="snippets">Snippets</TabsTrigger>
             <TabsTrigger value="templates">Templates</TabsTrigger>
             <TabsTrigger value="sets">Sets</TabsTrigger>
@@ -229,6 +238,11 @@ export default function SettingsPage() {
           <TabsContent value="accounts" className="mt-4">
             <AccountsSection />
           </TabsContent>
+          {integrationsEnabled && (
+            <TabsContent value="integrations" className="mt-4">
+              <IntegrationsSection capabilities={capabilities} />
+            </TabsContent>
+          )}
           <TabsContent value="snippets" className="mt-4">
             <SnippetsSection />
           </TabsContent>

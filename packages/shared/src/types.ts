@@ -798,6 +798,37 @@ export interface ApiError {
 /** How a Calendium server is run: a self-hosted instance or Calendium Cloud. */
 export type InstanceMode = 'self_host' | 'cloud';
 
+// --- Integrations (M2.8 Task 9) — mirrors backend/internal/domain/integration.go ---
+
+/** External per-user integration vendors (todo/CRM tools). */
+export type IntegrationVendor = 'todoist' | 'hubspot';
+
+/**
+ * A per-user vendor OAuth grant (one per vendor). OAuth tokens are stored
+ * encrypted server-side and never serialized — this shape carries no token
+ * and no owner id.
+ */
+export interface IntegrationConnection {
+  id: string;
+  vendor: IntegrationVendor;
+  /** Vendor login / portal label; may be empty when the vendor doesn't reveal one. */
+  externalAccount: string;
+  status: 'active' | 'error';
+  lastError: string | null;
+  createdAt: string;
+}
+
+/**
+ * Optional vendor integrations configured on a server (M2.8): only vendors
+ * whose config is present are advertised; unwired vendors' endpoints 501.
+ */
+export interface InstanceCapabilities {
+  todoist: boolean;
+  hubspot: boolean;
+  maps: boolean;
+  weather: boolean;
+}
+
 /** Capabilities a server advertises so clients can adapt their UI. */
 export interface InstanceFeatures {
   /** Stripe billing is available (false on self-hosted instances). */
@@ -831,6 +862,11 @@ export interface InstanceInfo {
   /** Web Push application server key; present only when web push is configured. */
   vapidPublicKey?: string;
   features: InstanceFeatures;
+  /**
+   * Vendor integration flags (M2.8). Current servers always send it; typed
+   * optional so pre-M2.8 servers and fixtures stay valid.
+   */
+  capabilities?: InstanceCapabilities;
 }
 
 // ---------------------------------------------------------------------------
@@ -1182,23 +1218,6 @@ export interface DayForecast {
   lowCelsius: number;
   /** Max precipitation probability for the day, 0..100. */
   precipChance: number;
-}
-
-/**
- * Optional third-party integration capabilities advertised by
- * GET /v1/instance (M2.8). Every field is optional so clients keep working
- * against older servers that don't send the block (treat absence as
- * "probe the endpoint and fall back on its 501").
- */
-export interface InstanceCapabilities {
-  /** GET /v1/weather is served (an Open-Meteo base URL is configured). */
-  weather?: boolean;
-}
-
-// Declaration-merged augmentation (add-only): TypeScript merges this into
-// the InstanceInfo interface declared earlier in this file.
-export interface InstanceInfo {
-  capabilities?: InstanceCapabilities;
 }
 
 // ---------------------------------------------------------------------------
