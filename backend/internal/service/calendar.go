@@ -257,7 +257,14 @@ func (s *CalendarService) UpdateEvent(ctx context.Context, userID, eventID strin
 		carryLocalGeo(&updated, ev)
 		ev = updated
 	}
-	return s.events.Upsert(ctx, ev)
+	saved, err := s.events.Upsert(ctx, ev)
+	if err != nil {
+		return domain.Event{}, err
+	}
+	if err := s.clearStaleGeo(ctx, &saved, patch); err != nil {
+		return domain.Event{}, err
+	}
+	return saved, nil
 }
 
 func (s *CalendarService) DeleteEvent(ctx context.Context, userID, eventID string) error {
@@ -941,6 +948,12 @@ func applyEventPatch(ev *domain.Event, patch domain.EventPatch) {
 	}
 	if patch.Location != nil {
 		ev.Location = patch.Location
+		if patchClearsGeo(patch) {
+			// A location edit without a fresh autocomplete pick invalidates
+			// the stored coordinates — they describe the OLD location (M2.8
+			// Task 12 carry-forward).
+			ev.LocationLat, ev.LocationLon = nil, nil
+		}
 	}
 	if patch.Start != nil {
 		ev.Start = *patch.Start
@@ -977,6 +990,31 @@ func applyEventPatch(ev *domain.Event, patch domain.EventPatch) {
 	if patch.LocationLon != nil {
 		ev.LocationLon = patch.LocationLon
 	}
+}
+
+// patchClearsGeo reports whether the patch edits the location text without
+// supplying fresh coordinates. The stored coordinates then belong to the OLD
+// location and must be cleared rather than trusted (M2.8 Task 12 carry-
+// forward): on a location edit, the absence of a new autocomplete pick IS
+// the clear signal — the same clearing-sentinel convention as
+// recurrenceRule "" in this PATCH path.
+func patchClearsGeo(patch domain.EventPatch) bool {
+	return patch.Location != nil && patch.LocationLat == nil && patch.LocationLon == nil
+}
+
+// clearStaleGeo nulls persisted coordinates after a geo-clearing patch.
+// EventRepo.Upsert COALESCE-preserves coordinates on NULL input (so
+// coordinate-less provider syncs cannot wipe them), which means a deliberate
+// clear needs this targeted follow-up write.
+func (s *CalendarService) clearStaleGeo(ctx context.Context, ev *domain.Event, patch domain.EventPatch) error {
+	if !patchClearsGeo(patch) {
+		return nil
+	}
+	if err := s.events.ClearGeo(ctx, ev.ID); err != nil {
+		return err
+	}
+	ev.LocationLat, ev.LocationLon = nil, nil
+	return nil
 }
 
 func declinedByUser(ev domain.Event, ownEmails map[string]struct{}) bool {

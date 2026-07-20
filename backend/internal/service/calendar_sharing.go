@@ -420,6 +420,9 @@ func (s *CalendarService) updateSharedEvent(ctx context.Context, userID, eventID
 	if err != nil {
 		return domain.Event{}, err
 	}
+	if err := s.clearStaleGeo(ctx, &ev, patch); err != nil {
+		return domain.Event{}, err
+	}
 	if err := s.recordAudit(ctx, userID, owner.UserID, "event.update", ev.ID, c.ID); err != nil {
 		return domain.Event{}, err
 	}

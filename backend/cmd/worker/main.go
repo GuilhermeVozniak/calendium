@@ -19,6 +19,7 @@ import (
 	"calendium/backend/internal/adapter/out/googleapi"
 	"calendium/backend/internal/adapter/out/icsfeed"
 	"calendium/backend/internal/adapter/out/msgraph"
+	"calendium/backend/internal/adapter/out/nominatim"
 	"calendium/backend/internal/adapter/out/openrouter"
 	"calendium/backend/internal/adapter/out/postgres"
 	"calendium/backend/internal/adapter/out/push"
@@ -48,6 +49,11 @@ const (
 	// only refetched when it is > 1h stale (service.SubscriptionRefresher),
 	// so the pass itself can run more often than hourly without hammering.
 	subscriptionRefreshPass = 15 * time.Minute
+	// travelPassInterval paces the travel-buffer pass (M2.8 Task 12): plan
+	// travel blocks + arm leave-now alerts for users with travel automation
+	// on. Delivery of due alerts rides the 5s due-work loop; only planning
+	// (which calls the routing vendor) runs at this coarser cadence.
+	travelPassInterval = 5 * time.Minute
 	// perAccountTimeout bounds one account's sync pass.
 	perAccountTimeout = 5 * time.Minute
 )
@@ -116,6 +122,14 @@ func run(logger *slog.Logger) error {
 		pushSender = push.NewDispatcher(cfg.Push, hc)
 	}
 
+	// Maps (M2.8 Task 12): unconfigured leaves the provider nil and every
+	// travel feature degrades silently (no vendor calls, no buffers, no
+	// alerts).
+	var mapsProvider port.MapsProvider
+	if cfg.Maps.NominatimBaseURL != "" {
+		mapsProvider = nominatim.New(cfg.Maps.NominatimBaseURL, cfg.Maps.OSRMBaseURL, hc)
+	}
+
 	// --- AI job queue: gated on OPENROUTER_API_KEY, degrades to a
 	// no-op loop-that-never-starts when unset. Pass AiJobs repo only when enabled. ---
 	var aiGateway port.AI
@@ -146,6 +160,23 @@ func run(logger *slog.Logger) error {
 		Activity:    postgres.NewTeamThreadActivityRepo(store),
 		Classifiers: store.Classifiers(),
 		Clock:       service.SystemClock{},
+		// Leave-now travel alerts (M2.8 Task 12) ride the 5s due-work loop.
+		TravelAlerts:  store.TravelAlerts(),
+		CalendarPrefs: store.CalendarPrefs(),
+	})
+	travelSvc := service.NewTravelService(service.TravelServiceDeps{
+		Subscriptions: store.Subscriptions(),
+		Prefs:         store.CalendarPrefs(),
+		Events:        store.Events(),
+		Alerts:        store.TravelAlerts(),
+		Maps:          mapsProvider,
+		// Blocks is the Task 6 managed-events seam (service.TravelBlockStore):
+		// nil until managed-events infrastructure merges, so the pass arms
+		// leave alerts but performs no provider block writes.
+		Blocks:     nil,
+		Clock:      service.SystemClock{},
+		Logger:     logger,
+		SelfHosted: cfg.Instance.SelfHosted,
 	})
 	calendarSvc := service.NewCalendarService(service.CalendarServiceDeps{
 		Subscriptions:     store.Subscriptions(),
@@ -269,12 +300,24 @@ func run(logger *slog.Logger) error {
 			})
 		}()
 	}
+	if mapsProvider != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runLoop(ctx, travelPassInterval, func(ctx context.Context) {
+				if err := travelSvc.RunTravelPass(ctx); err != nil {
+					logger.Error("worker: travel pass", "error", err)
+				}
+			})
+		}()
+	}
 
 	logger.Info("worker: loops started",
 		"sync_interval", syncInterval.String(),
 		"due_work_interval", dueWorkInterval.String(),
 		"automation_interval", automationInterval.String(),
 		"ai_jobs_enabled", aiGateway != nil,
+		"travel_enabled", mapsProvider != nil,
 		"providers", len(mailProviders))
 	wg.Wait()
 	logger.Info("worker: shut down cleanly")

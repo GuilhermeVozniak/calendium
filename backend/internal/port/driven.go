@@ -254,6 +254,11 @@ type EventRepo interface {
 	Delete(ctx context.Context, id string) error
 	DeleteByProviderID(ctx context.Context, calendarID, providerEventID string) error
 	Search(ctx context.Context, userID, query string, limit int) ([]domain.Event, error)
+	// ClearGeo nulls location_lat/location_lon (M2.8 Task 12). Upsert
+	// COALESCE-preserves coordinates on NULL input so coordinate-less
+	// provider syncs cannot wipe them — a deliberate clear (location edited
+	// without a fresh autocomplete pick) therefore needs this targeted write.
+	ClearGeo(ctx context.Context, id string) error
 }
 
 // --- Tasks (M2.8) ---
@@ -894,4 +899,24 @@ type CalendarSubscriptionRepo interface {
 // server honored the cached validator (etag) and events must be kept.
 type IcsFetcher interface {
 	Fetch(ctx context.Context, url, etag string) (cal ics.Calendar, newEtag string, notModified bool, err error)
+}
+
+// ---------------------------------------------------------------------------
+// Travel alerts (M2.8 Task 12, implemented by internal/adapter/out/postgres)
+// ---------------------------------------------------------------------------
+
+// TravelAlertRepo persists leave-now alerts, one per event (PK event_id,
+// ON DELETE CASCADE from events).
+type TravelAlertRepo interface {
+	// Upsert creates or refreshes the alert. A changed leave_at clears
+	// sent_at (a moved event re-arms its alert); an unchanged leave_at
+	// preserves it, so idempotent passes never cause a re-send.
+	Upsert(ctx context.Context, eventID, userID string, leaveAt time.Time) error
+	// ListDue returns unsent alerts with leave_at <= now, oldest first.
+	ListDue(ctx context.Context, now time.Time, limit int) ([]domain.TravelAlert, error)
+	// MarkSent stamps sent_at — called only AFTER an observed successful
+	// push (honesty policy); domain.ErrNotFound when the alert is missing.
+	MarkSent(ctx context.Context, eventID string, at time.Time) error
+	// Delete removes the alert; idempotent (absence is not an error).
+	Delete(ctx context.Context, eventID string) error
 }

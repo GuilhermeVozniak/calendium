@@ -867,6 +867,8 @@ type fakeEventRepo struct {
 	// event — simulates a persistence failure between provider event
 	// creation and the local mirror write inside Book/ConfirmPoll's tx.
 	upsertErr error
+	// clearedGeo records ClearGeo calls (M2.8 Task 12 coords-clear).
+	clearedGeo []string
 }
 
 func newEventRepo() *fakeEventRepo { return &fakeEventRepo{byID: map[string]domain.Event{}} }
@@ -951,6 +953,17 @@ func (r *fakeEventRepo) DeleteByProviderID(_ context.Context, calendarID, provid
 
 func (r *fakeEventRepo) Search(_ context.Context, userID, query string, limit int) ([]domain.Event, error) {
 	return r.searchResult, r.searchErr
+}
+
+func (r *fakeEventRepo) ClearGeo(_ context.Context, id string) error {
+	e, ok := r.byID[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	e.LocationLat, e.LocationLon = nil, nil
+	r.byID[id] = e
+	r.clearedGeo = append(r.clearedGeo, id)
+	return nil
 }
 
 var _ port.EventRepo = (*fakeEventRepo)(nil)

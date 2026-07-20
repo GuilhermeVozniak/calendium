@@ -14,6 +14,8 @@ import (
 const (
 	dueDraftBatch  = 50
 	dueThreadBatch = 100
+	// dueTravelAlertBatch bounds one leave-alert delivery pass (M2.8 Task 12).
+	dueTravelAlertBatch = 100
 )
 
 // SyncServiceDeps wires a SyncService.
@@ -47,6 +49,12 @@ type SyncServiceDeps struct {
 	// disables each hook.
 	Shares port.ThreadShareRepo
 	Bus    port.EventBus
+	// TravelAlerts + CalendarPrefs power leave-now travel alerts (M2.8 Task
+	// 12): due alerts are pushed inside ProcessDueWork. Both optional — nil
+	// TravelAlerts disables delivery entirely; nil CalendarPrefs falls back
+	// to UTC for the "at HH:mm" body time.
+	TravelAlerts  port.TravelAlertRepo
+	CalendarPrefs port.CalendarPrefsRepo
 }
 
 // SyncService implements port.SyncService: incremental provider sync (with
@@ -72,6 +80,9 @@ type SyncService struct {
 	clock       port.Clock
 	shares      port.ThreadShareRepo // optional (M2.7 share fan-out)
 	bus         port.EventBus        // optional (M2.7 share + activity fan-out)
+
+	travelAlerts  port.TravelAlertRepo   // optional (M2.8 Task 12 leave alerts)
+	calendarPrefs port.CalendarPrefsRepo // optional (leave-alert time zone)
 }
 
 var _ port.SyncService = (*SyncService)(nil)
@@ -97,6 +108,9 @@ func NewSyncService(d SyncServiceDeps) *SyncService {
 		clock:       d.Clock,
 		shares:      d.Shares,
 		bus:         d.Bus,
+
+		travelAlerts:  d.TravelAlerts,
+		calendarPrefs: d.CalendarPrefs,
 	}
 }
 
@@ -496,6 +510,7 @@ func (s *SyncService) ProcessDueWork(ctx context.Context) error {
 		s.deliverDueDrafts(ctx, now),
 		s.wakeSnoozedThreads(ctx, now),
 		s.fireReminders(ctx, now),
+		s.fireTravelAlerts(ctx, now),
 	)
 }
 
@@ -713,6 +728,83 @@ func (s *SyncService) notifyThread(ctx context.Context, t domain.Thread, title, 
 	for _, d := range devices {
 		_ = s.push.Send(ctx, d, title, body, map[string]string{"threadId": t.ID})
 	}
+}
+
+// fireTravelAlerts pushes due leave-now travel alerts (M2.8 Task 12).
+// Honesty policy: sent_at is stamped only AFTER an observed successful push
+// to at least one device (a user with no registered devices counts as done —
+// there is nothing to deliver). A total push failure leaves the alert unsent
+// for the next 5s pass; retries are naturally bounded because alerts whose
+// event already started are dropped, so a permanently failing sender cannot
+// retry-storm forever. Alerts fail independently (collected, never fatal).
+func (s *SyncService) fireTravelAlerts(ctx context.Context, now time.Time) error {
+	if s.travelAlerts == nil || s.push == nil {
+		return nil // travel alerts or push unconfigured: degrade silently
+	}
+	due, err := s.travelAlerts.ListDue(ctx, now, dueTravelAlertBatch)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, alert := range due {
+		ev, err := s.events.GetByID(ctx, alert.EventID)
+		if errors.Is(err, domain.ErrNotFound) {
+			_ = s.travelAlerts.Delete(ctx, alert.EventID) // event gone: alert moot
+			continue
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("travel alert %s: %w", alert.EventID, err))
+			continue
+		}
+		// Drop alerts that can no longer be honest: the event already started,
+		// or its location was edited without a fresh autocomplete pick
+		// (coordinates cleared) so the computed leave time describes the OLD
+		// location. Deleting beats sending a confidently wrong "leave now".
+		if !now.Before(ev.Start) || ev.LocationLat == nil || ev.LocationLon == nil {
+			_ = s.travelAlerts.Delete(ctx, alert.EventID)
+			continue
+		}
+		devices, err := s.devices.ListByUser(ctx, alert.UserID)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("travel alert %s: list devices: %w", alert.EventID, err))
+			continue
+		}
+		body := fmt.Sprintf("Leave now to make %s at %s",
+			ev.Title, ev.Start.In(s.userTimeZone(ctx, alert.UserID)).Format("15:04"))
+		delivered := len(devices) == 0 // nothing to deliver counts as done
+		for _, d := range devices {
+			if err := s.push.Send(ctx, d, "Time to leave", body, map[string]string{
+				"type":    "leave_alert",
+				"eventId": ev.ID,
+			}); err != nil {
+				errs = append(errs, fmt.Errorf("travel alert %s: push device %s: %w", alert.EventID, d.ID, err))
+				continue
+			}
+			delivered = true
+		}
+		if delivered {
+			if err := s.travelAlerts.MarkSent(ctx, alert.EventID, s.clock.Now()); err != nil {
+				errs = append(errs, fmt.Errorf("travel alert %s: mark sent: %w", alert.EventID, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// userTimeZone resolves the user's calendar-prefs time zone, UTC fallback.
+func (s *SyncService) userTimeZone(ctx context.Context, userID string) *time.Location {
+	if s.calendarPrefs == nil {
+		return time.UTC
+	}
+	p, err := s.calendarPrefs.Get(ctx, userID)
+	if err != nil {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(p.TimeZone)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
 }
 
 func (s *SyncService) cursor(ctx context.Context, accountID, resource string) string {
