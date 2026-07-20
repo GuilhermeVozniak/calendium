@@ -357,6 +357,16 @@ func TestTimeInsightsClassificationTable(t *testing.T) {
 			wantFocus: 90,
 		},
 		{
+			// Title precedence: IsFocusTitle is checked BEFORE the attendee
+			// count, so a focus-titled event with meeting-shaped attendees is
+			// focus time, never meeting time.
+			name: "focus-titled event with two attendees stays focus (title precedence)",
+			event: domain.Event{ID: "e", CalendarID: "c1", Title: "Focus: roadmap deep-dive", Status: domain.EventConfirmed,
+				Start: day(6, 9, 0), End: day(6, 10, 0),
+				Attendees: []domain.Attendee{att("u1@example.com", "", domain.RsvpAccepted), att("x@x.com", "", domain.RsvpAccepted)}},
+			wantFocus: 60,
+		},
+		{
 			name: "declined-by-user meeting excluded",
 			event: domain.Event{ID: "e", CalendarID: "c1", Title: "Pitch", Status: domain.EventConfirmed,
 				Start: day(6, 9, 0), End: day(6, 10, 0),

@@ -41,8 +41,12 @@ export const test = base.extend<{ page: Page }>({
   page: async ({ page }, use) => {
     // The concierge tour auto-starts for fresh users (M2.8 Task 19); mark it
     // done so its popover never overlays unrelated specs. onboarding.spec.ts
-    // removes this key in its own init script to exercise the first-run path.
+    // opts out of this seed for its WHOLE spec by setting the
+    // calendium.e2e.tour-seed-off flag on its first load — from then on the
+    // tour state is whatever the app itself persisted, so that spec's reload
+    // assertions exercise real persistence rather than this seed.
     await page.addInitScript(() => {
+      if (window.localStorage.getItem('calendium.e2e.tour-seed-off')) return;
       window.localStorage.setItem(
         'calendium.tour.v1',
         JSON.stringify({ done: true, coachMuted: false })

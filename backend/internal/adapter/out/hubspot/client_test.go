@@ -254,6 +254,64 @@ func TestLogEmailUnknownContactIsNotFound(t *testing.T) {
 	}
 }
 
+// TestDoMalformedJSON200IsDecodeError pins the `do` path's decode branch: a
+// vendor 200 carrying broken JSON surfaces as a decode error (never a panic,
+// and never misclassified as an auth failure that would trigger a token
+// refresh).
+func TestDoMalformedJSON200IsDecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total": 1, "results": [`)) // truncated mid-stream
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(srv.Client())
+	c.apiBase = srv.URL
+
+	_, err := c.ContactContext(context.Background(), "tok", "ada@northwind.com")
+	if err == nil {
+		t.Fatal("ContactContext = nil error, want decode error for malformed 200 body")
+	}
+	if !strings.Contains(err.Error(), "decode") {
+		t.Fatalf("err = %v, want a decode error", err)
+	}
+	if errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("err = %v must not map to ErrUnauthorized (would trigger a pointless token refresh)", err)
+	}
+
+	if err := c.LogEmail(context.Background(), "tok", domain.CrmEmailLog{ContactEmail: "ada@northwind.com"}); err == nil {
+		t.Fatal("LogEmail = nil error, want decode error for malformed 200 body")
+	}
+}
+
+// TestDo5xxSurfacesStatusAndBodySnippet pins the `do` path's non-2xx branch:
+// a vendor 5xx returns an error carrying the status code and (bounded) body
+// snippet, and is not mapped to ErrUnauthorized/ErrNotFound.
+func TestDo5xxSurfacesStatusAndBodySnippet(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"message":"vendor melted"}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(srv.Client())
+	c.apiBase = srv.URL
+
+	_, err := c.ContactContext(context.Background(), "tok", "ada@northwind.com")
+	if err == nil {
+		t.Fatal("ContactContext = nil error, want 5xx surfaced")
+	}
+	if !containsAll(err.Error(), "503", "vendor melted") {
+		t.Fatalf("err = %v, want status 503 and the body snippet surfaced", err)
+	}
+	if errors.Is(err, domain.ErrUnauthorized) || errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v must stay a plain vendor error (no ErrUnauthorized/ErrNotFound mapping)", err)
+	}
+
+	err = c.LogEmail(context.Background(), "tok", domain.CrmEmailLog{ContactEmail: "ada@northwind.com"})
+	if err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("LogEmail err = %v, want 5xx surfaced", err)
+	}
+}
+
 func containsAll(s string, subs ...string) bool {
 	for _, sub := range subs {
 		if !strings.Contains(s, sub) {

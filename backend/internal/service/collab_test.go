@@ -584,6 +584,38 @@ func TestCommentListScoping(t *testing.T) {
 	}
 }
 
+// TestCommentNilSharesRepoFailsClosed pins threadVisibleToTeam's fail-closed
+// doctrine: with no Shares repo wired (nil), no share can ever be proven
+// live, so a non-owner team member gets ErrNotFound on a foreign thread —
+// even though a live team share exists in the (unwired) share store. Only
+// the ownership path, which needs no share data, still passes.
+func TestCommentNilSharesRepoFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	f := newCollabFixture(t)
+	f.seedCollabTeam(t, "t1", "owner")
+	f.seedMemberUser(t, "t1", "bob", domain.TeamRoleMember)
+	f.seedOwnedThread(t, "th1", "owner")
+	f.shareThread("th1", "t1") // live share exists — but the service can't see it
+
+	// Rebuild the service with Shares deliberately omitted (nil).
+	f.svc = NewCollabService(CollabServiceDeps{
+		Comments: f.comments, Teams: f.teams, Threads: f.threads,
+		Accounts: f.accounts, Users: f.users, Devices: f.devices,
+		Push: f.push, Bus: f.bus, Clock: f.clock, SelfHost: true,
+	})
+
+	if _, err := f.svc.AddComment(ctx, "bob", "th1", port.CommentInput{TeamID: "t1", Body: "hi"}); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("AddComment err = %v, want ErrNotFound (fail closed without a share checker)", err)
+	}
+	if _, err := f.svc.ListComments(ctx, "bob", "th1", "t1"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("ListComments err = %v, want ErrNotFound (fail closed without a share checker)", err)
+	}
+	// Ownership needs no share data: the owner still comments fine.
+	if _, err := f.svc.AddComment(ctx, "owner", "th1", port.CommentInput{TeamID: "t1", Body: "mine"}); err != nil {
+		t.Fatalf("owner AddComment = %v, want nil (ownership path is share-free)", err)
+	}
+}
+
 func TestCommentEntitlementRequired(t *testing.T) {
 	ctx := context.Background()
 	f := newCollabFixture(t)

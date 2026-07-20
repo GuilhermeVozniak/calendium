@@ -2,17 +2,22 @@ import { expect, openCommandPalette, test } from './fixtures';
 
 /**
  * Concierge onboarding tour (M2.8 Task 19), in demo mode like the rest of the
- * suite. The shared fixture pre-seeds the tour as done on every navigation so
- * its popover never overlays unrelated specs; this file's init script (which
- * runs after the fixture's, in registration order) removes that seed exactly
- * once — on the first load — so the first-run auto-start path is exercised
- * for real, while later reloads keep the completed state a real user's
- * localStorage would hold.
+ * suite. The shared fixture pre-seeds the tour as done so its popover never
+ * overlays unrelated specs — but that seed would make this spec's reload
+ * assertion tautological (the fixture would re-mark the tour done on every
+ * load, hiding the popover whether or not the app persisted anything). So on
+ * the FIRST load this init script (which runs after the fixture's, in
+ * registration order) clears the seed once and sets the
+ * calendium.e2e.tour-seed-off flag; the fixture skips seeding whenever that
+ * flag is present. For the rest of the spec — including reloads — the tour
+ * state is exactly what the app itself wrote to localStorage, so "reload
+ * shows nothing" genuinely tests persistence. Other specs never set the flag
+ * and keep their pre-seed.
  */
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
-    if (!window.localStorage.getItem('calendium.e2e.tour-seed-cleared')) {
-      window.localStorage.setItem('calendium.e2e.tour-seed-cleared', '1');
+    if (!window.localStorage.getItem('calendium.e2e.tour-seed-off')) {
+      window.localStorage.setItem('calendium.e2e.tour-seed-off', '1');
       window.localStorage.removeItem('calendium.tour.v1');
     }
   });
