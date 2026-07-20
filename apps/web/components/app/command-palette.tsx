@@ -16,6 +16,8 @@ import {
   LayoutTemplate,
   Link2,
   ListChecks,
+  ListPlus,
+  ListTodo,
   LogOut,
   MailOpen,
   MessageSquareText,
@@ -462,6 +464,26 @@ export function CommandPalette() {
             <Kbd size="sm" className="ml-auto">
               C
             </Kbd>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              teachShortcut('cal-new-task', '⇧N', 'create a new task');
+              runCalendarCommand({ type: 'new-task' });
+            }}
+          >
+            <ListPlus />
+            New task
+            <KbdGroup size="sm" keys={['⇧', 'N']} className="ml-auto" />
+          </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              teachShortcut('cal-task-rail', '⇧T', 'toggle the task rail');
+              runCalendarCommand({ type: 'toggle-task-rail' });
+            }}
+          >
+            <ListTodo />
+            Toggle task rail
+            <KbdGroup size="sm" keys={['⇧', 'T']} className="ml-auto" />
           </CommandItem>
           <CommandItem
             onSelect={() => {

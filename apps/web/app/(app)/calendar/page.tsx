@@ -382,6 +382,17 @@ export default function CalendarPage() {
           if (timeTravelZone) changeTimeTravelZone(null);
           else setTimeTravelPickerOpen(true);
           break;
+        case 'toggle-task-rail':
+          setTaskRailOpen((v) => !v);
+          break;
+        case 'new-task':
+          // Open the rail if hidden, then focus its quick-add once rendered
+          // (the input is the rail's "Add a task" field, task-rail.tsx).
+          setTaskRailOpen(true);
+          requestAnimationFrame(() => {
+            document.querySelector<HTMLInputElement>('input[aria-label="Add a task"]')?.focus();
+          });
+          break;
       }
     },
     [goToday, goNext, goPrev, openCreate, applyTemplateById, toggleCalendarSet, timeTravelZone, changeTimeTravelZone]
@@ -432,7 +443,7 @@ export default function CalendarPage() {
       // `t` alone is taken by "today" on this page, so the rail toggles on ⇧T.
       keys: 'shift+t',
       description: 'Toggle task rail',
-      handler: () => setTaskRailOpen((v) => !v),
+      handler: () => runCalendarCommand({ type: 'toggle-task-rail' }),
     },
     {
       keys: '/',

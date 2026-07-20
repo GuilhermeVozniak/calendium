@@ -56,6 +56,7 @@ import {
 import { Kbd } from '@/components/ui/kbd';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { authClient } from '@/lib/auth-client';
+import { dispatchCalendarCommand, queueCalendarCommand } from '@/lib/calendar-commands';
 import { DEMO_MODE } from '@/lib/demo';
 import { startOutboxReplay } from '@/lib/offline/queue';
 import { performSignOut } from '@/lib/sign-out';
@@ -148,6 +149,23 @@ function GlobalShortcuts() {
       handler: () => openCompose(),
       // The calendar page binds 'c' to "new event"; don't double-fire there.
       enabled: pathname !== '/calendar',
+    },
+    {
+      // New task (M2.8 Task 3b). The brief's first pick was ⇧T, but the
+      // calendar page already ships ⇧T as the rail TOGGLE (t = today there),
+      // so creation lives on ⇧N — matching the app's shift+letter action
+      // convention (⇧I, ⇧H, ⇧Z…) and colliding with no existing binding.
+      // Routed like the palette entry: dispatch on /calendar, else queue+go.
+      keys: 'shift+n',
+      description: 'New task',
+      handler: () => {
+        if (pathname === '/calendar') {
+          dispatchCalendarCommand({ type: 'new-task' });
+        } else {
+          queueCalendarCommand({ type: 'new-task' });
+          router.push('/calendar');
+        }
+      },
     },
     // mod+1..9 selects the nth connected account, mod+0 all accounts (M2.6).
     ...accountSwitchShortcuts(
