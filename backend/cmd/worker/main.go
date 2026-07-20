@@ -40,6 +40,9 @@ const (
 	// expireHoldsInterval paces the booking-hold expiry sweep (unconfirmed
 	// holds past their hold_expires_at are cancelled, freeing the slot).
 	expireHoldsInterval = time.Minute
+	// automationInterval paces the calendar automation engine (FocusGuard
+	// et al.). RunAutomation is idempotent, so a modest cadence suffices.
+	automationInterval = 15 * time.Minute
 	// perAccountTimeout bounds one account's sync pass.
 	perAccountTimeout = 5 * time.Minute
 )
@@ -190,10 +193,19 @@ func run(logger *slog.Logger) error {
 		DailyLimit:    cfg.OpenRouter.DailyLimit,
 		Logger:        logger,
 	})
+	autoSvc := service.NewAutomationService(service.AutomationServiceDeps{
+		Prefs:       store.CalendarPrefs(),
+		Calendars:   store.Calendars(),
+		Events:      store.Events(),
+		Managed:     store.ManagedEvents(),
+		CalendarSvc: calendarSvc,
+		Clock:       service.SystemClock{},
+		Logger:      logger,
+	})
 
 	// --- loops ---
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		runLoop(ctx, syncInterval, func(ctx context.Context) {
@@ -216,6 +228,14 @@ func run(logger *slog.Logger) error {
 			}
 		})
 	}()
+	go func() {
+		defer wg.Done()
+		runLoop(ctx, automationInterval, func(ctx context.Context) {
+			if err := autoSvc.RunAutomation(ctx); err != nil {
+				logger.Error("worker: run automation", "error", err)
+			}
+		})
+	}()
 	if aiGateway != nil {
 		wg.Add(1)
 		go func() {
@@ -231,6 +251,7 @@ func run(logger *slog.Logger) error {
 	logger.Info("worker: loops started",
 		"sync_interval", syncInterval.String(),
 		"due_work_interval", dueWorkInterval.String(),
+		"automation_interval", automationInterval.String(),
 		"ai_jobs_enabled", aiGateway != nil,
 		"providers", len(mailProviders))
 	wg.Wait()

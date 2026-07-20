@@ -318,6 +318,18 @@ type DeviceService interface {
 	Unregister(ctx context.Context, userID, deviceID string) error
 }
 
+// --- Automation engine (M2.8 Task 6) -----------------------------------------
+
+// AutomationService is the calendar automation engine, consumed by
+// cmd/worker beside SyncService.
+type AutomationService interface {
+	// RunAutomation runs one pass of every calendar automation for every
+	// user with automation enabled: FocusGuard planning, auto buffers,
+	// travel buffers, focus/OOO auto-decline, and ICS subscription refresh.
+	// Users fail independently.
+	RunAutomation(ctx context.Context) error
+}
+
 // PrefsService covers user preferences: split reordering (layout, no
 // paywall) and the calendar automation preference document (M2.8 Task 5,
 // entitlement-gated — the prefs unlock the automation engine).
