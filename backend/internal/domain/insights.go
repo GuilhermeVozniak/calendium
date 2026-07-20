@@ -31,9 +31,9 @@ type DayStat struct {
 type TimeInsights struct {
 	From             time.Time    `json:"from"`
 	To               time.Time    `json:"to"`
-	MeetingMinutes   int          `json:"meetingMinutes"`   // events with >=2 attendees, not declined/cancelled
-	FocusMinutes     int          `json:"focusMinutes"`     // managed focus + IsFocusTitle events
-	TaskMinutes      int          `json:"taskMinutes"`      // scheduled task blocks
+	MeetingMinutes   int          `json:"meetingMinutes"` // events with >=2 attendees, not declined/cancelled
+	FocusMinutes     int          `json:"focusMinutes"`   // managed focus + IsFocusTitle events
+	TaskMinutes      int          `json:"taskMinutes"`    // scheduled task blocks
 	MeetingCount     int          `json:"meetingCount"`
 	FocusGoalMinutes int          `json:"focusGoalMinutes"` // weekly goal scaled to the range
 	TopPeople        []PersonStat `json:"topPeople"`        // top 5 by minutes, self excluded

@@ -98,7 +98,9 @@ test.describe('M2.5 compose extras & contact context', () => {
     // GET /v1/mail/contacts/{email} (demo fallback: getMockContact) resolves
     // thr_02's only participant, Daniel Cho <daniel.cho@northwind.com>.
     const pane = page.getByRole('complementary');
-    await expect(pane.getByText('Daniel Cho')).toBeVisible();
+    // M2.8's CRM card also renders the contact name inside the pane, so
+    // scope to the first match to keep strict mode satisfied.
+    await expect(pane.getByText('Daniel Cho').first()).toBeVisible();
     await expect(pane.getByText('daniel.cho@northwind.com')).toBeVisible();
   });
 });
