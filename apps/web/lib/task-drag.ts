@@ -42,17 +42,22 @@ export function readTaskDragId(dt: DataTransfer | null): string | null {
 /**
  * Wall-clock drop time for a pointer at `clientY` over a day column whose
  * bounding rect starts at `rectTop`: pixels → minutes since midnight, snapped
- * down to the half hour and clamped to [00:00, 23:30] — the same math as the
- * grid's empty-slot click-to-create.
+ * down to `snapMinutes` (default 30, matching the grid's empty-slot
+ * click-to-create) and clamped to the day. Task 18's email-to-event drag
+ * reuses this with a 15-minute snap (lib/thread-drag.ts).
  */
 export function dropTimeForDay(
   day: Date,
   clientY: number,
   rectTop: number,
-  hourHeight: number = GRID_HOUR_HEIGHT
+  hourHeight: number = GRID_HOUR_HEIGHT,
+  snapMinutes = 30
 ): Date {
   const minutes = ((clientY - rectTop) / hourHeight) * 60;
-  const snapped = Math.max(0, Math.min(23.5 * 60, Math.floor(minutes / 30) * 30));
+  const snapped = Math.max(
+    0,
+    Math.min(24 * 60 - snapMinutes, Math.floor(minutes / snapMinutes) * snapMinutes)
+  );
   return addMinutes(startOfDay(day), snapped);
 }
 

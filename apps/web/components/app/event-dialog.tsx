@@ -198,9 +198,22 @@ export interface EventDialogProps {
   event: Event | null;
   /** Prefill for the create flow (slot click / quick add). */
   defaults: Partial<EventInput> | null;
+  /**
+   * Extra create-mode prefill from an email-to-event drop (M2.8 Task 18);
+   * merged over `defaults`. `sourceThreadId` marks the event as created from
+   * a thread (renders a small badge — it is not sent to the backend).
+   */
+  prefill?: (Partial<EventInput> & { sourceThreadId?: string }) | null;
 }
 
-export function EventDialog({ open, onOpenChange, calendars, event, defaults }: EventDialogProps) {
+export function EventDialog({
+  open,
+  onOpenChange,
+  calendars,
+  event,
+  defaults,
+  prefill,
+}: EventDialogProps) {
   const queryClient = useQueryClient();
 
   const [title, setTitle] = React.useState('');
@@ -282,7 +295,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
         event.attendees.find((a) => !a.organizer);
       setRsvpChoice(self?.response ?? 'needs_action');
     } else {
-      const d = defaults ?? {};
+      const d = { ...defaults, ...prefill };
       const isAllDay = d.allDay ?? false;
       const startDate = d.start ? new Date(d.start) : nextHalfHour();
       const endDate = d.end ? new Date(d.end) : addMinutes(startDate, 30);
@@ -309,7 +322,7 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
       setRsvpChoice('needs_action');
     }
     setAttendeeDraft('');
-  }, [open, event, defaults, calendars, selfEmails]);
+  }, [open, event, defaults, prefill, calendars, selfEmails]);
 
   /** Shifting the start keeps the event duration by moving the end with it. */
   const handleStartChange = (value: string) => {
@@ -592,6 +605,12 @@ export function EventDialog({ open, onOpenChange, calendars, event, defaults }: 
             aria-label="Event title"
             className="h-10 text-base font-medium"
           />
+
+          {!event && prefill?.sourceThreadId && (
+            <Badge variant="outline" className="w-fit font-normal" data-testid="from-thread-badge">
+              Created from email
+            </Badge>
+          )}
 
           {!event && (templatesQuery.data?.length ?? 0) > 0 && (
             <FieldRow icon={LayoutTemplate}>

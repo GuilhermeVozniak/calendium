@@ -7,6 +7,12 @@ import { Check, X } from 'lucide-react';
 import type { Calendar as CalendarModel, DayForecast, Event, Task } from '@calendium/shared';
 
 import { hasTaskDrag, readTaskDragId, setTaskDragData, timeblockFromDrop } from '@/lib/task-drag';
+import {
+  decodeThreadDrag,
+  hasThreadDrag,
+  threadDropTime,
+  type ThreadDragPayload,
+} from '@/lib/thread-drag';
 import { hourLabelInZone, tzAbbrev, zoneCaption } from '@/lib/timezones';
 import { cn } from '@/lib/utils';
 
@@ -142,6 +148,13 @@ export interface TimeGridProps {
   onTaskDrop?: (taskId: string, block: { scheduledStart: string; scheduledEnd: string }) => void;
   /** In-place check-off / reopen for a grid task block. */
   onTaskToggle?: (task: Task) => void;
+  /**
+   * Fires when an email thread is dropped on the grid (M2.8 Task 18; drag
+   * contract in lib/thread-drag.ts). Timed drops on a day column pass the
+   * 15-minute-snapped `start` with `allDay: false`; drops on a day header
+   * pass local midnight with `allDay: true`.
+   */
+  onThreadDrop?: (payload: ThreadDragPayload, start: Date, allDay: boolean) => void;
 }
 
 export function TimeGrid({
@@ -160,6 +173,7 @@ export function TimeGrid({
   tasks,
   onTaskDrop,
   onTaskToggle,
+  onThreadDrop,
 }: TimeGridProps) {
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -218,7 +232,27 @@ export function TimeGrid({
             {days.map((day) => {
               const dayAllDay = allDay.filter((e) => eventTouchesDay(e, day));
               return (
-                <div key={day.toISOString()} className="border-l px-1.5 pt-2 pb-1.5 text-center">
+                // biome-ignore lint/a11y/noStaticElementInteractions: drop-only target for the email-to-event drag; keyboard users create all-day events via the dialog's All day switch.
+                <div
+                  key={day.toISOString()}
+                  data-testid={`day-header-${format(day, 'yyyy-MM-dd')}`}
+                  className="border-l px-1.5 pt-2 pb-1.5 text-center"
+                  onDragOver={(e) => {
+                    // All-day drop target for email threads (Task 18).
+                    if (onThreadDrop && hasThreadDrag(e.dataTransfer)) {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = 'copy';
+                    }
+                  }}
+                  onDrop={(e) => {
+                    if (!onThreadDrop) return;
+                    const payload = decodeThreadDrag(e.dataTransfer);
+                    if (!payload) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onThreadDrop(payload, startOfDay(day), true);
+                  }}
+                >
                   <div className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
                     {format(day, 'EEE')}
                   </div>
@@ -307,6 +341,7 @@ export function TimeGrid({
               tasks={tasks}
               onTaskDrop={onTaskDrop}
               onTaskToggle={onTaskToggle}
+              onThreadDrop={onThreadDrop}
             />
           ))}
         </div>
@@ -461,6 +496,7 @@ interface DayColumnProps {
   tasks?: Task[];
   onTaskDrop?: (taskId: string, block: { scheduledStart: string; scheduledEnd: string }) => void;
   onTaskToggle?: (task: Task) => void;
+  onThreadDrop?: (payload: ThreadDragPayload, start: Date, allDay: boolean) => void;
 }
 
 function DayColumn({
@@ -474,6 +510,7 @@ function DayColumn({
   tasks,
   onTaskDrop,
   onTaskToggle,
+  onThreadDrop,
 }: DayColumnProps) {
   const positioned = React.useMemo(
     () => layoutDayEvents(day, events.filter((e) => eventTouchesDay(e, day))),
@@ -501,23 +538,36 @@ function DayColumn({
 
   return (
     <div
+      data-testid={`day-column-${format(day, 'yyyy-MM-dd')}`}
       className="relative cursor-pointer border-l"
       style={{ height: 24 * HOUR_HEIGHT }}
       onClick={handleBackgroundClick}
       onDragOver={(e) => {
+        // Same drop affordance for both drag sources (tasks: Task 3,
+        // email threads: Task 18) — accept + a matching drop cursor.
         if (onTaskDrop && hasTaskDrag(e.dataTransfer)) {
           e.preventDefault();
           e.dataTransfer.dropEffect = 'move';
+        } else if (onThreadDrop && hasThreadDrag(e.dataTransfer)) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'copy';
         }
       }}
       onDrop={(e) => {
-        if (!onTaskDrop) return;
-        const taskId = readTaskDragId(e.dataTransfer);
-        if (!taskId) return;
-        e.preventDefault();
-        e.stopPropagation();
         const rect = e.currentTarget.getBoundingClientRect();
-        onTaskDrop(taskId, timeblockFromDrop(day, e.clientY, rect.top));
+        const taskId = onTaskDrop ? readTaskDragId(e.dataTransfer) : null;
+        if (taskId) {
+          e.preventDefault();
+          e.stopPropagation();
+          onTaskDrop!(taskId, timeblockFromDrop(day, e.clientY, rect.top));
+          return;
+        }
+        const payload = onThreadDrop ? decodeThreadDrag(e.dataTransfer) : null;
+        if (payload) {
+          e.preventDefault();
+          e.stopPropagation();
+          onThreadDrop!(payload, threadDropTime(day, e.clientY, rect.top), false);
+        }
       }}
     >
       {Array.from({ length: 24 }, (_, hour) => (
