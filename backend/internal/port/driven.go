@@ -834,6 +834,28 @@ type MapsProvider interface {
 	TravelTime(ctx context.Context, fromLat, fromLon, toLat, toLon float64, mode domain.TravelMode) (time.Duration, error)
 }
 
+// ---------------------------------------------------------------------------
+// Todo tools (M2.8 Task 10, implemented by internal/adapter/out/todoist)
+// ---------------------------------------------------------------------------
+
+// TodoSyncPage is one page of incremental todo sync.
+type TodoSyncPage struct {
+	Tasks      []domain.Task // ExternalID+Source set; ID/UserID left empty
+	DeletedIDs []string      // provider task ids removed or completed upstream
+	NextCursor string
+	HasMore    bool
+}
+
+// TodoProvider is the external todo-tool surface (Todoist first; Things,
+// Notion, Linear later). SyncTasks performs incremental sync from cursor
+// ("" = full sync; Todoist uses the Sync v9 sync_token).
+type TodoProvider interface {
+	Source() domain.TaskSource
+	SyncTasks(ctx context.Context, accessToken, cursor string) (TodoSyncPage, error)
+	CompleteTask(ctx context.Context, accessToken, externalID string) error
+	ReopenTask(ctx context.Context, accessToken, externalID string) error
+}
+
 // --- CRM integrations (M2.8 Task 16) ----------------------------------------
 
 // CrmProvider is a vendor CRM adapter (HubSpot first).

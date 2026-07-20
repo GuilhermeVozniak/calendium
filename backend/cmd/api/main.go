@@ -122,6 +122,14 @@ func run(logger *slog.Logger) error {
 		integrationOAuth[domain.IntegrationHubSpot] = hubspot.NewOAuth(cfg.HubSpot.ClientID, cfg.HubSpot.ClientSecret, hc)
 	}
 
+	// M2.8 Task 10: todo-tool adapters keyed by task source. Completing or
+	// reopening a mirrored task writes through to the vendor before the local
+	// mark; the worker owns the periodic mirror sync.
+	todoProviders := map[domain.TaskSource]port.TodoProvider{}
+	if cfg.Todoist.ClientID != "" {
+		todoProviders[domain.TaskSourceTodoist] = todoist.NewClient(hc)
+	}
+
 	// --- services ---
 	clock := service.SystemClock{}
 	bus := eventbus.New()
@@ -283,6 +291,8 @@ func run(logger *slog.Logger) error {
 		Subscriptions: store.Subscriptions(),
 		Tasks:         store.Tasks(),
 		Clock:         clock,
+		TodoProviders: todoProviders,
+		Integrations:  postgres.NewIntegrationRepo(store),
 		SelfHosted:    cfg.Instance.SelfHosted,
 	})
 
