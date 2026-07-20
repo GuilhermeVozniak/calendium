@@ -6,15 +6,18 @@ import { ApiRequestError, type DayForecast } from '@calendium/shared';
 
 import { getApiClient } from '@/lib/api';
 import { mockForecast } from '@/lib/calendar-mock';
+import { fetchCalendarPrefs } from '@/lib/calendar-prefs-data';
 import { DEMO_MODE } from '@/lib/demo';
-import { usePrefs } from '@/lib/prefs-data';
 import { useInstance } from '@/lib/use-instance';
 
 /**
- * Inline weather for calendar day headers (M2.8 Task 13). Best-effort
- * decoration with fail-soft everywhere: no location, weather pref off,
- * server capability off, endpoint 501, or any vendor failure all resolve to
- * `byDate: undefined` (chips hidden) — never an error state on the calendar.
+ * Inline weather for calendar day headers (M2.8 Task 13). Weather is opt-in:
+ * CalendarPrefs.weatherEnabled (GET /v1/prefs/calendar, M2.8 Task 5) defaults
+ * to false, so chips appear only after the user enables the toggle in
+ * Settings → Calendar automation. Best-effort decoration with fail-soft
+ * everywhere: pref off, no location, server capability off, endpoint 501, or
+ * any vendor failure all resolve to `byDate: undefined` (chips hidden) —
+ * never an error state on the calendar.
  */
 
 /** Days fetched per location: covers day, week, and the agenda strip. */
@@ -31,17 +34,6 @@ const DEMO_LOCATION: WeatherLocation = { lat: 37.77, lon: -122.42 };
 export interface WeatherLocation {
   lat: number;
   lon: number;
-}
-
-/**
- * Optional weather-related prefs. These fields ride on /v1/prefs when the
- * server supports them; this module only READS them (it never writes prefs)
- * and treats their absence as "no home location, weather on".
- */
-interface WeatherPrefFields {
-  homeLat?: number;
-  homeLon?: number;
-  showWeather?: boolean;
 }
 
 /** The browser-permission-gated geolocation cached from a previous grant. */
@@ -83,22 +75,35 @@ export interface UseWeatherResult {
 
 export function useWeather(enabled = true): UseWeatherResult {
   const instanceQuery = useInstance();
-  const prefsQuery = usePrefs();
-  const prefs = (prefsQuery.data?.prefs ?? {}) as WeatherPrefFields;
+  // Calendar automation prefs (M2.8 Task 5). Same query key as the settings
+  // section so both consumers share one cache entry; this module only READS
+  // prefs (it never writes them).
+  const prefsQuery = useQuery({
+    queryKey: ['calendar-prefs'],
+    queryFn: fetchCalendarPrefs,
+    enabled,
+    staleTime: WEATHER_STALE_MS,
+    retry: false,
+  });
+  const prefs = prefsQuery.data;
 
   // Server capability gate: hide when the server says weather is off. Older
   // servers omit the block entirely — treat that as available and let the
   // endpoint's 501 be the fallback signal.
   const capabilityOff = instanceQuery.data?.capabilities?.weather === false;
-  const prefOff = prefs.showWeather === false;
+  // Opt-in: weatherEnabled defaults to false server-side, and unknown prefs
+  // (still loading / errored) keep the chips hidden rather than flashing.
+  const weatherOn = prefs?.weatherEnabled === true;
 
+  // Home location wins when both coordinates are set (nullable server-side);
+  // otherwise fall back to browser geolocation below.
   const homeLocation: WeatherLocation | null =
-    typeof prefs.homeLat === 'number' && typeof prefs.homeLon === 'number'
+    typeof prefs?.homeLat === 'number' && typeof prefs?.homeLon === 'number'
       ? { lat: prefs.homeLat, lon: prefs.homeLon }
       : null;
 
   const [geo, setGeo] = React.useState<WeatherLocation | null>(readCachedGeo);
-  const wantGeo = enabled && !capabilityOff && !prefOff && !homeLocation && !geo;
+  const wantGeo = enabled && !capabilityOff && weatherOn && !homeLocation && !geo;
   React.useEffect(() => {
     if (!wantGeo || typeof navigator === 'undefined' || !navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(
@@ -126,7 +131,7 @@ export function useWeather(enabled = true): UseWeatherResult {
 
   const query = useQuery<DayForecast[] | null>({
     queryKey: ['weather', location?.lat ?? null, location?.lon ?? null, tz],
-    enabled: enabled && !capabilityOff && !prefOff && location !== null,
+    enabled: enabled && !capabilityOff && weatherOn && location !== null,
     // Honest freshness: a shown chip is never staler than the server's own
     // 30-minute cache window.
     staleTime: WEATHER_STALE_MS,
