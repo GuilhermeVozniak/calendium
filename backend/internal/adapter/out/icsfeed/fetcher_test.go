@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"testing"
@@ -28,7 +29,7 @@ func TestFetchParsesFeedAndCapturesEtag(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cal, etag, notModified, err := New(nil).Fetch(context.Background(), srv.URL, "")
+	cal, etag, notModified, err := newFetcher(nil, nil).Fetch(context.Background(), srv.URL, "")
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -59,7 +60,7 @@ func TestFetchSendsEtagAndHonors304(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cal, etag, notModified, err := New(nil).Fetch(context.Background(), srv.URL, `"v1"`)
+	cal, etag, notModified, err := newFetcher(nil, nil).Fetch(context.Background(), srv.URL, `"v1"`)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -82,9 +83,9 @@ func TestFetchRejectsOversizedBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _, _, err := New(nil).Fetch(context.Background(), srv.URL, "")
-	if err == nil || !strings.Contains(err.Error(), "byte limit") {
-		t.Fatalf("err = %v, want 1MiB cap error", err)
+	_, _, _, err := newFetcher(nil, nil).Fetch(context.Background(), srv.URL, "")
+	if err == nil || err.Error() != "icsfeed: feed too large" {
+		t.Fatalf("err = %v, want the coarse 1MiB cap error", err)
 	}
 }
 
@@ -95,21 +96,142 @@ func TestFetchRejectsNonIcsContent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _, _, err := New(nil).Fetch(context.Background(), srv.URL, "")
+	_, _, _, err := newFetcher(nil, nil).Fetch(context.Background(), srv.URL, "")
 	if err == nil || !strings.Contains(err.Error(), "not an ICS calendar") {
 		t.Fatalf("err = %v, want not-an-ICS error", err)
 	}
 }
 
+// TestFetchRejectsErrorStatus: HTTP failures are reported as a coarse
+// category — the status code itself must never leak into the user-visible
+// error (it is stored in last_error and echoed in 422 bodies, and
+// per-status differences would let a subscriber port-scan internal hosts).
 func TestFetchRejectsErrorStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "gone", http.StatusNotFound)
 	}))
 	defer srv.Close()
 
-	_, _, _, err := New(nil).Fetch(context.Background(), srv.URL, "")
-	if err == nil || !strings.Contains(err.Error(), "status 404") {
-		t.Fatalf("err = %v, want status error", err)
+	_, _, _, err := newFetcher(nil, nil).Fetch(context.Background(), srv.URL, "")
+	if err == nil || err.Error() != "icsfeed: feed answered an HTTP error" {
+		t.Fatalf("err = %v, want the coarse HTTP-error category", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "404") {
+		t.Fatalf("err = %v leaks the status code", err)
+	}
+}
+
+// --- SSRF dial guard ---------------------------------------------------------
+
+// TestDialGuardBlocksPrivateLiterals: the production constructor (New)
+// refuses to connect to loopback/RFC1918/link-local/ULA IP literals. The
+// loopback case runs against a real listening httptest server and asserts
+// the handler is NEVER reached; the others are guard-refused before any
+// dial. Every refusal surfaces as the same coarse "feed unreachable".
+func TestDialGuardBlocksPrivateLiterals(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		_, _ = w.Write([]byte(feedBody))
+	}))
+	defer srv.Close()
+
+	f := New(nil)
+	if _, _, _, err := f.Fetch(context.Background(), srv.URL, ""); err == nil || err.Error() != "icsfeed: feed unreachable" {
+		t.Fatalf("loopback fetch err = %v, want coarse feed-unreachable", err)
+	}
+	if hits != 0 {
+		t.Fatalf("loopback server got %d requests, want 0 (guard must refuse before connecting)", hits)
+	}
+
+	for _, url := range []string{
+		"http://10.0.0.5/feed.ics",
+		"http://192.168.1.10/feed.ics",
+		"http://169.254.169.254/latest/meta-data", // cloud metadata endpoint
+		"http://[fc00::1]/feed.ics",
+		"http://[::1]/feed.ics",
+		"http://0.0.0.0/feed.ics",
+	} {
+		if _, _, _, err := f.Fetch(context.Background(), url, ""); err == nil || err.Error() != "icsfeed: feed unreachable" {
+			t.Fatalf("%s: err = %v, want coarse feed-unreachable", url, err)
+		}
+	}
+}
+
+// TestDialGuardBlocksPrivateResolution: a hostname RESOLVING to a private
+// address is refused — the guard vets the post-resolution addresses, so a
+// rebinding-style hostname cannot reach the internal network. The fake
+// resolver stands in for hostile DNS.
+func TestDialGuardBlocksPrivateResolution(t *testing.T) {
+	lookups := 0
+	private := func(_ context.Context, host string) ([]netip.Addr, error) {
+		lookups++
+		if host != "feeds.example.com" {
+			t.Fatalf("lookup host = %q", host)
+		}
+		return []netip.Addr{netip.MustParseAddr("10.0.0.5")}, nil
+	}
+	f := newFetcher(nil, private)
+	if _, _, _, err := f.Fetch(context.Background(), "http://feeds.example.com/cal.ics", ""); err == nil || err.Error() != "icsfeed: feed unreachable" {
+		t.Fatalf("err = %v, want coarse feed-unreachable", err)
+	}
+	if lookups == 0 {
+		t.Fatal("guard never consulted the resolver")
+	}
+
+	// Mixed answers fail closed: ONE private address poisons the whole set
+	// (a rebinding attacker controls which record a later dial would use).
+	mixed := func(context.Context, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("93.184.216.34"), netip.MustParseAddr("192.168.0.7")}, nil
+	}
+	if _, _, _, err := newFetcher(nil, mixed).Fetch(context.Background(), "http://feeds.example.com/cal.ics", ""); err == nil || err.Error() != "icsfeed: feed unreachable" {
+		t.Fatalf("mixed resolution err = %v, want coarse feed-unreachable", err)
+	}
+}
+
+// TestIsPublicAddr pins the guard predicate across every refused range and
+// their IPv4-mapped IPv6 forms.
+func TestIsPublicAddr(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		{"93.184.216.34", true},      // ordinary public v4
+		{"2606:2800:220:1::1", true}, // ordinary public v6
+		{"127.0.0.1", false},
+		{"127.8.8.8", false},
+		{"::1", false},
+		{"10.0.0.5", false},
+		{"172.16.0.1", false},
+		{"192.168.1.1", false},
+		{"169.254.169.254", false},
+		{"fe80::1", false},
+		{"fc00::1", false},
+		{"fdab::12", false},
+		{"0.0.0.0", false},
+		{"::", false},
+		{"224.0.0.1", false},
+		{"::ffff:10.0.0.5", false},  // IPv4-mapped private
+		{"::ffff:127.0.0.1", false}, // IPv4-mapped loopback
+		{"::ffff:93.184.216.34", true},
+	}
+	for _, tc := range cases {
+		if got := isPublicAddr(netip.MustParseAddr(tc.addr)); got != tc.want {
+			t.Errorf("isPublicAddr(%s) = %v, want %v", tc.addr, got, tc.want)
+		}
+	}
+}
+
+// TestFetchNetworkErrorIsCoarse: a dead port yields exactly the coarse
+// category with no dial detail (address/port/errno) attached.
+func TestFetchNetworkErrorIsCoarse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close() // now guaranteed refused
+
+	_, _, _, err := newFetcher(nil, nil).Fetch(context.Background(), url, "")
+	if err == nil || err.Error() != "icsfeed: feed unreachable" {
+		t.Fatalf("err = %v, want exactly the coarse feed-unreachable message", err)
 	}
 }
 
