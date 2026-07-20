@@ -600,3 +600,14 @@ type WeatherService interface {
 type PlacesService interface {
 	Autocomplete(ctx context.Context, userID, query string) ([]domain.Place, error)
 }
+
+// --- Travel (M2.8 Task 12) ---------------------------------------------------
+
+// TravelService runs the travel-buffer pass (consumed by cmd/worker):
+// planning travel blocks for upcoming located events and arming leave-now
+// alerts. A pass with maps unconfigured is a silent no-op (no vendor calls,
+// no buffers, no alerts); per-user failures are logged and never stall the
+// fleet.
+type TravelService interface {
+	RunTravelPass(ctx context.Context) error
+}

@@ -236,6 +236,14 @@ func (r eventRepo) GetByID(ctx context.Context, id string) (domain.Event, error)
 	return scanEvent(row)
 }
 
+// ClearGeo nulls the local-only coordinates (M2.8 Task 12). Needed because
+// Upsert COALESCE-preserves coordinates on NULL input (coordinate-less
+// provider syncs must not wipe them) — a deliberate clear is a targeted write.
+func (r eventRepo) ClearGeo(ctx context.Context, id string) error {
+	return mustAffect(r.q(ctx).ExecContext(ctx,
+		`UPDATE events SET location_lat = NULL, location_lon = NULL, updated_at = now() WHERE id = $1`, id))
+}
+
 func (r eventRepo) GetByProviderID(ctx context.Context, calendarID, providerEventID string) (domain.Event, error) {
 	row := r.q(ctx).QueryRowContext(ctx,
 		`SELECT `+eventCols+` FROM events e WHERE e.calendar_id = $1 AND e.provider_event_id = $2`,
