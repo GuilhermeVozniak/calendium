@@ -21,6 +21,7 @@ import (
 	"calendium/backend/internal/adapter/out/openrouter"
 	"calendium/backend/internal/adapter/out/postgres"
 	"calendium/backend/internal/adapter/out/push"
+	"calendium/backend/internal/adapter/out/todoist"
 	"calendium/backend/internal/config"
 	"calendium/backend/internal/domain"
 	"calendium/backend/internal/migrate"
@@ -37,6 +38,8 @@ const (
 	dueWorkInterval = 5 * time.Second
 	// aiJobInterval paces the background AI job queue drain.
 	aiJobInterval = 15 * time.Second
+	// todoSyncInterval paces the external todo-mirror sync (M2.8 Task 10).
+	todoSyncInterval = time.Minute
 	// expireHoldsInterval paces the booking-hold expiry sweep (unconfirmed
 	// holds past their hold_expires_at are cancelled, freeing the slot).
 	expireHoldsInterval = time.Minute
@@ -191,6 +194,26 @@ func run(logger *slog.Logger) error {
 		Logger:        logger,
 	})
 
+	// --- Todo mirror sync (M2.8 Task 10): gated on the Todoist OAuth app
+	// being configured; without it no vendor is wired and the loop never
+	// starts. ---
+	var todoSyncSvc *service.TodoSyncService
+	if cfg.Todoist.ClientID != "" {
+		todoSyncSvc = service.NewTodoSyncService(service.TodoSyncDeps{
+			Integrations: postgres.NewIntegrationRepo(store),
+			Tasks:        store.Tasks(),
+			SyncState:    store.SyncStates(),
+			Providers: map[domain.TaskSource]port.TodoProvider{
+				domain.TaskSourceTodoist: todoist.NewClient(hc),
+			},
+			OAuth: map[domain.IntegrationVendor]port.OAuthGateway{
+				domain.IntegrationTodoist: todoist.NewOAuth(cfg.Todoist.ClientID, cfg.Todoist.ClientSecret, hc),
+			},
+			Clock:  service.SystemClock{},
+			Logger: logger,
+		})
+	}
+
 	// --- loops ---
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -216,6 +239,17 @@ func run(logger *slog.Logger) error {
 			}
 		})
 	}()
+	if todoSyncSvc != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runLoop(ctx, todoSyncInterval, func(ctx context.Context) {
+				if err := todoSyncSvc.SyncTodos(ctx); err != nil {
+					logger.Error("worker: todo sync", "error", err)
+				}
+			})
+		}()
+	}
 	if aiGateway != nil {
 		wg.Add(1)
 		go func() {
@@ -232,6 +266,7 @@ func run(logger *slog.Logger) error {
 		"sync_interval", syncInterval.String(),
 		"due_work_interval", dueWorkInterval.String(),
 		"ai_jobs_enabled", aiGateway != nil,
+		"todo_sync_enabled", todoSyncSvc != nil,
 		"providers", len(mailProviders))
 	wg.Wait()
 	logger.Info("worker: shut down cleanly")

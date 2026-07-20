@@ -17,28 +17,38 @@ type TaskServiceDeps struct {
 	Subscriptions port.SubscriptionRepo
 	Tasks         port.TaskRepo
 	Clock         port.Clock
+	// TodoProviders + Integrations power completion write-through on external
+	// (mirrored) tasks (M2.8 Task 10). Leave nil on instances without any
+	// todo vendor configured — completion then degrades to local-only.
+	TodoProviders map[domain.TaskSource]port.TodoProvider
+	Integrations  port.IntegrationRepo
 	// SelfHosted unlocks the paywall (open-core self-hosted mode).
 	SelfHosted bool
 }
 
 // TaskService implements port.TaskService: user-scoped CRUD over first-class
 // tasks. Ownership is enforced by UserID match — another user's task is
-// domain.ErrNotFound, never an oracle. Completion of external
-// (Source != local) tasks is local-only until Task 10 wires TodoProvider
-// write-through.
+// domain.ErrNotFound, never an oracle. Completing/reopening an external
+// (Source != local) task writes through to its TodoProvider FIRST; the local
+// mirror changes only after observed provider success (honesty policy — the
+// rail never claims vendor state the vendor hasn't confirmed).
 type TaskService struct {
-	ent   entitlement
-	tasks port.TaskRepo
-	clock port.Clock
+	ent           entitlement
+	tasks         port.TaskRepo
+	clock         port.Clock
+	todoProviders map[domain.TaskSource]port.TodoProvider
+	integrations  port.IntegrationRepo
 }
 
 var _ port.TaskService = (*TaskService)(nil)
 
 func NewTaskService(d TaskServiceDeps) *TaskService {
 	return &TaskService{
-		ent:   entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
-		tasks: d.Tasks,
-		clock: d.Clock,
+		ent:           entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
+		tasks:         d.Tasks,
+		clock:         d.Clock,
+		todoProviders: d.TodoProviders,
+		integrations:  d.Integrations,
 	}
 }
 
@@ -159,9 +169,12 @@ func (s *TaskService) CompleteTask(ctx context.Context, userID, taskID string) (
 	if t.Completed() {
 		return t, nil // idempotent: keep the original completion timestamp
 	}
-	// Source != local: Task 10 adds TodoProvider write-through here (provider
-	// first, local mirror rolled back on failure). Until then completion of a
-	// mirrored task is local-only.
+	// Write-through (M2.8 Task 10): the provider observes the completion
+	// FIRST; a provider failure surfaces to the caller and leaves the local
+	// task untouched (open).
+	if err := s.writeThrough(ctx, t, port.TodoProvider.CompleteTask); err != nil {
+		return domain.Task{}, err
+	}
 	now := s.clock.Now()
 	t.CompletedAt = &now
 	t.UpdatedAt = now
@@ -182,6 +195,11 @@ func (s *TaskService) ReopenTask(ctx context.Context, userID, taskID string) (do
 	if !t.Completed() {
 		return t, nil // idempotent
 	}
+	// Same write-through discipline as CompleteTask: the provider reopens the
+	// item first; on failure the local task stays completed.
+	if err := s.writeThrough(ctx, t, port.TodoProvider.ReopenTask); err != nil {
+		return domain.Task{}, err
+	}
 	t.CompletedAt = nil
 	t.UpdatedAt = s.clock.Now()
 	if err := s.tasks.Update(ctx, t); err != nil {
@@ -198,4 +216,32 @@ func (s *TaskService) DeleteTask(ctx context.Context, userID, taskID string) err
 		return err
 	}
 	return s.tasks.Delete(ctx, taskID)
+}
+
+// writeThrough runs call against the task's TodoProvider using the owning
+// user's connection tokens. Local tasks and instances without the vendor
+// adapter configured are no-ops (local-only degradation); once a provider is
+// configured, a missing connection or a provider failure surfaces as an
+// error so the local mirror is never marked ahead of the vendor.
+func (s *TaskService) writeThrough(ctx context.Context, t domain.Task, call func(p port.TodoProvider, ctx context.Context, accessToken, externalID string) error) error {
+	if t.Source == domain.TaskSourceLocal {
+		return nil
+	}
+	provider, ok := s.todoProviders[t.Source]
+	if !ok || s.integrations == nil {
+		return nil
+	}
+	vendor, ok := vendorForTaskSource(t.Source)
+	if !ok {
+		return nil
+	}
+	conn, err := s.integrations.GetByVendor(ctx, t.UserID, vendor)
+	if err != nil {
+		return fmt.Errorf("resolve %s connection: %w", vendor, err)
+	}
+	tokens, err := s.integrations.GetTokens(ctx, conn.ID)
+	if err != nil {
+		return fmt.Errorf("load %s tokens: %w", vendor, err)
+	}
+	return call(provider, ctx, tokens.AccessToken, t.ExternalID)
 }

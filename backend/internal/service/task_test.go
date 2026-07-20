@@ -294,6 +294,174 @@ func TestTaskServiceCompleteReopen(t *testing.T) {
 	})
 }
 
+// todoTaskHarness wires a TaskService with a Todoist TodoProvider and an
+// active u1 connection (id conn-u1, access token tok-u1). u2 has an active
+// subscription but NO Todoist connection.
+func todoTaskHarness(t *testing.T) (*TaskService, *fakeTaskRepo, *fakeTodoProvider) {
+	t.Helper()
+	subs := newSubscriptionRepo()
+	for _, userID := range []string{"u1", "u2"} {
+		if err := subs.Upsert(context.Background(), domain.Subscription{UserID: userID, Status: domain.SubscriptionActive}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tasks := newTaskRepo()
+	integrations := newIntegrationRepo()
+	provider := newTodoProvider()
+	clock := newClock(time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC))
+	svc := NewTaskService(TaskServiceDeps{
+		Subscriptions: subs,
+		Tasks:         tasks,
+		Clock:         clock,
+		TodoProviders: map[domain.TaskSource]port.TodoProvider{domain.TaskSourceTodoist: provider},
+		Integrations:  integrations,
+	})
+	if _, err := integrations.Create(context.Background(), domain.IntegrationConnection{
+		ID: "conn-u1", UserID: "u1", Vendor: domain.IntegrationTodoist, Status: domain.IntegrationStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := integrations.SaveTokens(context.Background(), "conn-u1", port.TokenSet{AccessToken: "tok-u1"}); err != nil {
+		t.Fatal(err)
+	}
+	return svc, tasks, provider
+}
+
+func TestCompleteTaskWritesThrough(t *testing.T) {
+	ctx := context.Background()
+	seedExternal := func(t *testing.T, tasks *fakeTaskRepo, userID string) domain.Task {
+		t.Helper()
+		task, err := tasks.Create(ctx, domain.Task{UserID: userID, Title: "mirrored", Source: domain.TaskSourceTodoist, ExternalID: "ext-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return task
+	}
+
+	t.Run("provider observes completion with token and external id, then local mark", func(t *testing.T) {
+		svc, tasks, provider := todoTaskHarness(t)
+		task := seedExternal(t, tasks, "u1")
+		done, err := svc.CompleteTask(ctx, "u1", task.ID)
+		if err != nil {
+			t.Fatalf("CompleteTask() error = %v", err)
+		}
+		if len(provider.completed) != 1 || provider.completed[0] != (todoProviderCall{"tok-u1", "ext-1"}) {
+			t.Errorf("provider.completed = %v, want one call with tok-u1/ext-1", provider.completed)
+		}
+		if done.CompletedAt == nil {
+			t.Error("CompletedAt = nil, want set after provider success")
+		}
+		// Idempotent re-complete never re-hits the vendor.
+		if _, err := svc.CompleteTask(ctx, "u1", task.ID); err != nil {
+			t.Fatal(err)
+		}
+		if len(provider.completed) != 1 {
+			t.Errorf("provider.completed after idempotent call = %d, want still 1", len(provider.completed))
+		}
+	})
+
+	t.Run("provider failure surfaces and leaves the task open", func(t *testing.T) {
+		svc, tasks, provider := todoTaskHarness(t)
+		task := seedExternal(t, tasks, "u1")
+		provider.completeErr = errors.New("todoist 500")
+		if _, err := svc.CompleteTask(ctx, "u1", task.ID); err == nil {
+			t.Fatal("CompleteTask() = nil, want provider error surfaced")
+		}
+		stored, err := tasks.GetByID(ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.CompletedAt != nil {
+			t.Errorf("CompletedAt = %v, want nil (local task untouched)", stored.CompletedAt)
+		}
+		if tasks.updateCalls != 0 {
+			t.Errorf("repo Update calls = %d, want 0 on provider failure", tasks.updateCalls)
+		}
+	})
+
+	t.Run("reopen writes through; provider failure keeps it completed", func(t *testing.T) {
+		svc, tasks, provider := todoTaskHarness(t)
+		doneAt := time.Date(2026, 7, 18, 9, 0, 0, 0, time.UTC)
+		task, err := tasks.Create(ctx, domain.Task{UserID: "u1", Title: "done", Source: domain.TaskSourceTodoist, ExternalID: "ext-1", CompletedAt: &doneAt})
+		if err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := svc.ReopenTask(ctx, "u1", task.ID)
+		if err != nil {
+			t.Fatalf("ReopenTask() error = %v", err)
+		}
+		if len(provider.reopened) != 1 || provider.reopened[0] != (todoProviderCall{"tok-u1", "ext-1"}) {
+			t.Errorf("provider.reopened = %v, want one call with tok-u1/ext-1", provider.reopened)
+		}
+		if reopened.CompletedAt != nil {
+			t.Errorf("CompletedAt = %v, want nil", reopened.CompletedAt)
+		}
+
+		// Failure path: re-complete locally, then a failing vendor reopen.
+		if _, err := svc.CompleteTask(ctx, "u1", task.ID); err != nil {
+			t.Fatal(err)
+		}
+		provider.reopenErr = errors.New("todoist 502")
+		if _, err := svc.ReopenTask(ctx, "u1", task.ID); err == nil {
+			t.Fatal("ReopenTask() = nil, want provider error surfaced")
+		}
+		stored, err := tasks.GetByID(ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.CompletedAt == nil {
+			t.Error("CompletedAt cleared despite provider failure")
+		}
+	})
+
+	t.Run("missing connection surfaces ErrNotFound and leaves the task open", func(t *testing.T) {
+		svc, tasks, provider := todoTaskHarness(t)
+		task := seedExternal(t, tasks, "u2") // u2 has no Todoist connection
+		if _, err := svc.CompleteTask(ctx, "u2", task.ID); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("CompleteTask() err = %v, want ErrNotFound (no connection)", err)
+		}
+		if len(provider.completed) != 0 {
+			t.Errorf("provider.completed = %v, want none", provider.completed)
+		}
+		stored, err := tasks.GetByID(ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.CompletedAt != nil {
+			t.Errorf("CompletedAt = %v, want nil", stored.CompletedAt)
+		}
+	})
+
+	t.Run("local tasks never call the provider", func(t *testing.T) {
+		svc, _, provider := todoTaskHarness(t)
+		task, err := svc.CreateTask(ctx, "u1", domain.TaskInput{Title: "local"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.CompleteTask(ctx, "u1", task.ID); err != nil {
+			t.Fatalf("CompleteTask() error = %v", err)
+		}
+		if len(provider.completed) != 0 {
+			t.Errorf("provider.completed = %v, want none for a local task", provider.completed)
+		}
+	})
+
+	t.Run("no provider configured degrades to local-only completion", func(t *testing.T) {
+		svc, tasks, _ := taskHarness(t) // no TodoProviders wired
+		task, err := tasks.Create(ctx, domain.Task{UserID: "u1", Title: "mirrored", Source: domain.TaskSourceTodoist, ExternalID: "ext-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		done, err := svc.CompleteTask(ctx, "u1", task.ID)
+		if err != nil {
+			t.Fatalf("CompleteTask() error = %v", err)
+		}
+		if done.CompletedAt == nil {
+			t.Error("CompletedAt = nil, want local-only completion when unconfigured")
+		}
+	})
+}
+
 func TestTaskServiceDelete(t *testing.T) {
 	ctx := context.Background()
 	svc, tasks, _ := taskHarness(t)
