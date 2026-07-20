@@ -345,6 +345,21 @@ func run(logger *slog.Logger) error {
 		})
 	}
 
+	// M2.8 Task 17: time insights — aggregated analytics computed from the
+	// LOCAL mirror (events, managed events, scheduled task blocks). Never
+	// calls a provider, so it is always wired.
+	insightsSvc := service.NewInsightsService(service.InsightsServiceDeps{
+		Subscriptions: store.Subscriptions(),
+		Users:         store.Users(),
+		Accounts:      store.Accounts(),
+		Events:        store.Events(),
+		Managed:       store.InsightsManagedEvents(),
+		Tasks:         store.Tasks(),
+		Prefs:         store.CalendarPrefs(),
+		Clock:         clock,
+		SelfHosted:    cfg.Instance.SelfHosted,
+	})
+
 	// --- instance discovery document (GET /v1/instance) ---
 	mode := httpapi.ModeCloud
 	if cfg.Instance.SelfHosted {
@@ -434,7 +449,9 @@ func run(logger *slog.Logger) error {
 		Integrations: integrations,
 		// M2.8 Task 16: CRM contact context + explicit email logging (nil
 		// when the HubSpot OAuth app is unconfigured → /v1/crm answers 501).
-		Crm:                crmSvc,
+		Crm: crmSvc,
+		// M2.8 Task 17: time insights over the local mirror.
+		Insights:           insightsSvc,
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 	})

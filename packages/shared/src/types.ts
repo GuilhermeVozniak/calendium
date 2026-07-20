@@ -1342,3 +1342,46 @@ export interface CalendarSubscriptionPatch {
   color?: string;
   isVisible?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Time insights (M2.8 Task 17) — mirrors backend/internal/domain/insights.go
+// field-for-field. Computed server-side from the local mirror only.
+// ---------------------------------------------------------------------------
+
+/** One "top person": meetings shared with them and minutes spent, in range. */
+export interface PersonStat {
+  email: string;
+  name: string;
+  meetings: number;
+  minutes: number;
+}
+
+/** One day's meeting-vs-focus split for the per-day mini bars. */
+export interface DayStat {
+  /** YYYY-MM-DD. */
+  date: string;
+  meetingMinutes: number;
+  focusMinutes: number;
+}
+
+/**
+ * Aggregated time analytics for [from, to) (GET /v1/insights/time). Meetings
+ * are events with >= 2 attendees not declined/cancelled; focus is managed
+ * focus blocks plus focus-titled events; task minutes are scheduled task
+ * blocks. The range is capped at 92 days server-side.
+ */
+export interface TimeInsights {
+  /** RFC 3339. */
+  from: string;
+  /** RFC 3339. */
+  to: string;
+  meetingMinutes: number;
+  focusMinutes: number;
+  taskMinutes: number;
+  meetingCount: number;
+  /** Weekly focus goal scaled to the range; 0 when FocusGuard is off. */
+  focusGoalMinutes: number;
+  /** Top 5 by minutes, the user's own addresses excluded. */
+  topPeople: PersonStat[];
+  byDay: DayStat[];
+}

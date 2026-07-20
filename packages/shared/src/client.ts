@@ -82,6 +82,7 @@ import type {
   ThreadAction,
   ThreadShare,
   ThreadShareCreated,
+  TimeInsights,
   TimeProposal,
   TimeProposalInput,
   UnsubscribeResult,
@@ -990,6 +991,18 @@ export class ApiClient {
       'DELETE',
       `/v1/calendar-subscriptions/${encodeURIComponent(id)}`
     );
+  }
+
+  // --- Time insights (M2.8 Task 17) ---
+  /**
+   * Aggregated time analytics for [from, to) (RFC 3339), computed server-side
+   * from the local mirror — meeting hours, focus vs meeting split, scheduled
+   * task minutes, top people, and per-day stats. The range is capped at 92
+   * days (400 beyond).
+   */
+  getTimeInsights(from: string, to: string) {
+    const qs = new URLSearchParams({ from, to });
+    return this.request<TimeInsights>('GET', `/v1/insights/time?${qs}`);
   }
 }
 

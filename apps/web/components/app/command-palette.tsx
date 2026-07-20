@@ -8,6 +8,7 @@ import {
   BellRing,
   CalendarCheck2,
   CalendarDays,
+  BarChart3,
   CalendarPlus,
   Clock,
   FileText,
@@ -484,6 +485,16 @@ export function CommandPalette() {
             <Globe />
             Time Travel: overlay a city's time zone
             <KbdGroup size="sm" keys={['⇧', 'Z']} className="ml-auto" />
+          </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              teachShortcut('cal-time-insights', '⇧I', 'open time insights');
+              runCalendarCommand({ type: 'time-insights' });
+            }}
+          >
+            <BarChart3 />
+            Time insights
+            <KbdGroup size="sm" keys={['⇧', 'I']} className="ml-auto" />
           </CommandItem>
           {templates?.slice(0, 5).map((template) => (
             <CommandItem

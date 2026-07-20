@@ -665,6 +665,15 @@ type CalendarSubscriptionInput struct {
 	Color string `json:"color,omitempty"`
 }
 
+// --- Time insights (M2.8 Task 17) --------------------------------------------
+
+// InsightsService serves aggregated time analytics (GET /v1/insights/time)
+// computed from the LOCAL mirror only — events, managed events, and
+// scheduled task blocks. It never calls a provider.
+type InsightsService interface {
+	TimeInsights(ctx context.Context, userID string, from, to time.Time) (domain.TimeInsights, error)
+}
+
 // CalendarSubscriptionPatch is a partial subscription update
 // (PATCH /v1/calendar-subscriptions/{id}); nil fields are left unchanged.
 type CalendarSubscriptionPatch struct {
