@@ -69,6 +69,19 @@ const MEMBERS: TeamMember[] = [
   },
 ];
 
+// F2: rosters arrive enriched with display identity from the server.
+const NAMED_MEMBERS: TeamMember[] = [
+  { ...MEMBERS[0]!, name: 'Uma Two', email: 'u2@x.com' },
+  {
+    teamId: 'team-1',
+    userId: 'u3',
+    role: 'admin',
+    shareReadStatuses: false,
+    joinedAt: new Date().toISOString(),
+    email: 'u3@x.com',
+  },
+];
+
 function makeTeamLink(overrides: Partial<BookingLink> = {}): BookingLink {
   return {
     id: 'link-1',
@@ -147,6 +160,35 @@ describe('BookingLinks — team links', () => {
     await waitFor(() =>
       expect(createBookingLinkApiMock).toHaveBeenCalledWith(
         expect.objectContaining({ teamId: 'team-1', memberUserIds: ['u2'] })
+      )
+    );
+  });
+
+  it('labels member toggles with server-resolved names, email then id fallback (F2)', async () => {
+    fetchBookingLinksMock.mockResolvedValue([]);
+    fetchTeamMembersMock.mockResolvedValue(NAMED_MEMBERS);
+    renderComponent();
+    await screen.findByText(/No booking links yet/);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /New booking link/ }));
+    await user.click(await screen.findByRole('combobox', { name: /Team \(optional\)/ }));
+    await user.click(await screen.findByRole('option', { name: 'Sales' }));
+    await waitFor(() => expect(fetchTeamMembersMock).toHaveBeenCalledWith('team-1'));
+
+    expect(await screen.findByRole('switch', { name: 'Include member Uma Two' })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Include member u3@x.com' })).toBeInTheDocument();
+    // Toggling still records the stable user id, not the label.
+    await user.click(screen.getByRole('switch', { name: 'Include member Uma Two' }));
+    await user.type(await screen.findByLabelText('Title'), 'Sales intro');
+    await user.type(screen.getByLabelText('Slug'), 'team-intro');
+    await user.click(screen.getByRole('combobox', { name: /^Calendar$/ }));
+    await user.click(await screen.findByRole('option', { name: 'Work' }));
+    createBookingLinkApiMock.mockResolvedValue(makeTeamLink());
+    await user.click(screen.getByRole('button', { name: /Create booking link/ }));
+    await waitFor(() =>
+      expect(createBookingLinkApiMock).toHaveBeenCalledWith(
+        expect.objectContaining({ memberUserIds: ['u2'] })
       )
     );
   });

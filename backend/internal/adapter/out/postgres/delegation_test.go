@@ -248,6 +248,21 @@ func TestAuditRepoDelegationAppendAndList(t *testing.T) {
 	}
 }
 
+func TestUserDirectoryGetByID(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	dir := NewUserDirectory(st)
+	seedUser(t, st, "u1")
+
+	u, err := dir.GetByID(ctx, "u1")
+	if err != nil || u.Email != "u1@example.com" {
+		t.Fatalf("GetByID = %+v, %v; want u1@example.com", u, err)
+	}
+	if _, err := dir.GetByID(ctx, "ghost"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("GetByID(ghost) = %v, want ErrNotFound", err)
+	}
+}
+
 func TestUserDirectoryGetByEmail(t *testing.T) {
 	st, _ := newTestStore(t)
 	ctx := context.Background()

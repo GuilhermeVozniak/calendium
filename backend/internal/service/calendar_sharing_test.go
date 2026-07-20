@@ -867,6 +867,35 @@ func TestTeamAvailabilityMembershipAndRangeValidation(t *testing.T) {
 	}
 }
 
+func TestTeamAvailabilityCarriesRosterIdentity(t *testing.T) {
+	// F2: rows carry the roster's display identity (name/email from the
+	// ListMembers join); unenriched members stay empty — never fabricated.
+	f := newShareFixture(t)
+	ctx := context.Background()
+	if err := f.teams.UpsertMember(ctx, domain.TeamMember{
+		TeamID: "t1", UserID: "u2", Role: domain.TeamRoleMember,
+		Name: "Uma Two", Email: "u2@x.com",
+	}); err != nil {
+		t.Fatalf("enrich member: %v", err)
+	}
+	from, to := f.window()
+
+	rows, err := f.svc.TeamAvailability(ctx, "u2", "t1", from, to)
+	if err != nil {
+		t.Fatalf("TeamAvailability: %v", err)
+	}
+	byUser := map[string]port.MemberAvailability{}
+	for _, row := range rows {
+		byUser[row.UserID] = row
+	}
+	if got := byUser["u2"]; got.Name != "Uma Two" || got.Email != "u2@x.com" {
+		t.Fatalf("u2 identity = %q/%q, want Uma Two/u2@x.com", got.Name, got.Email)
+	}
+	if got := byUser["u1"]; got.Name != "" || got.Email != "" {
+		t.Fatalf("u1 identity = %q/%q, want empty (unenriched roster row)", got.Name, got.Email)
+	}
+}
+
 func TestTeamAvailabilityWithoutTeamGrantSharesNothing(t *testing.T) {
 	f := newShareFixture(t)
 	ctx := context.Background()

@@ -545,22 +545,28 @@ export function BookingLinks() {
                       Collective availability: every selected member must be free, and each
                       member must have shared free/busy with this team.
                     </p>
-                    {teamMembers.map((m) => (
-                      <div key={m.userId} className="flex items-center gap-2">
-                        <Switch
-                          id={`link-member-${m.userId}`}
-                          checked={form.memberUserIds.includes(m.userId)}
-                          onCheckedChange={(v) => toggleMember(m.userId, v)}
-                          aria-label={`Include member ${m.userId}`}
-                        />
-                        <Label htmlFor={`link-member-${m.userId}`} className="font-normal">
-                          <span className="truncate">{m.userId}</span>
-                        </Label>
-                        <Badge variant="outline" className="font-normal">
-                          {m.role}
-                        </Badge>
-                      </div>
-                    ))}
+                    {teamMembers.map((m) => {
+                      // Server-resolved roster identity (F2); honest id fallback.
+                      const label = m.name || m.email || m.userId;
+                      return (
+                        <div key={m.userId} className="flex items-center gap-2">
+                          <Switch
+                            id={`link-member-${m.userId}`}
+                            checked={form.memberUserIds.includes(m.userId)}
+                            onCheckedChange={(v) => toggleMember(m.userId, v)}
+                            aria-label={`Include member ${label}`}
+                          />
+                          <Label htmlFor={`link-member-${m.userId}`} className="font-normal">
+                            <span className="truncate" title={m.userId}>
+                              {label}
+                            </span>
+                          </Label>
+                          <Badge variant="outline" className="font-normal">
+                            {m.role}
+                          </Badge>
+                        </div>
+                      );
+                    })}
                     {membersEnabled && !membersQuery.isLoading && teamMembers.length === 0 && (
                       <p className="text-xs text-muted-foreground">No members found.</p>
                     )}

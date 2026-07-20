@@ -230,23 +230,31 @@ export function FindTimeDialog({
 
         {teamId && members.length > 0 && (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-            {members.map((member) =>
-              member.shared ? (
+            {members.map((member) => {
+              // Server-resolved roster identity (F2); honest id fallback.
+              const label = member.name || member.email || member.userId;
+              return member.shared ? (
                 <label key={member.userId} className="flex items-center gap-1.5">
                   <input
                     type="checkbox"
                     checked={selectedMembers.has(member.userId)}
                     onChange={() => toggleMember(member.userId)}
-                    aria-label={`Include ${member.userId}`}
+                    aria-label={`Include ${label}`}
                   />
-                  <span className="truncate">{member.userId}</span>
+                  <span className="truncate" title={member.userId}>
+                    {label}
+                  </span>
                 </label>
               ) : (
-                <span key={member.userId} className="text-muted-foreground italic">
-                  {member.userId} (not sharing)
+                <span
+                  key={member.userId}
+                  className="text-muted-foreground italic"
+                  title={member.userId}
+                >
+                  {label} (not sharing)
                 </span>
-              )
-            )}
+              );
+            })}
           </div>
         )}
 

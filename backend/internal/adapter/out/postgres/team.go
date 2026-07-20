@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"calendium/backend/internal/domain"
@@ -119,9 +120,16 @@ func (r *TeamRepo) GetMember(ctx context.Context, teamID, userID string) (domain
 	return scanTeamMember(row)
 }
 
+// ListMembers returns the roster enriched with each member's display
+// identity (users.name / users.email via LEFT JOIN). Least-leak: this is
+// the only enrichment point, and every service caller gates it behind the
+// caller's own membership — names never resolve outside team scope.
 func (r *TeamRepo) ListMembers(ctx context.Context, teamID string) ([]domain.TeamMember, error) {
-	rows, err := r.s.q(ctx).QueryContext(ctx,
-		`SELECT `+teamMemberCols+` FROM team_members WHERE team_id = $1 ORDER BY joined_at, user_id`,
+	rows, err := r.s.q(ctx).QueryContext(ctx, `
+		SELECT m.team_id, m.user_id, m.role, m.share_read_statuses, m.joined_at, u.name, u.email
+		FROM team_members m
+		LEFT JOIN users u ON u.id = m.user_id
+		WHERE m.team_id = $1 ORDER BY m.joined_at, m.user_id`,
 		teamID)
 	if err != nil {
 		return nil, err
@@ -129,10 +137,15 @@ func (r *TeamRepo) ListMembers(ctx context.Context, teamID string) ([]domain.Tea
 	defer func() { _ = rows.Close() }()
 	members := []domain.TeamMember{}
 	for rows.Next() {
-		m, err := scanTeamMember(rows)
-		if err != nil {
-			return nil, err
+		var m domain.TeamMember
+		var role string
+		var name, email sql.NullString
+		if err := rows.Scan(&m.TeamID, &m.UserID, &role, &m.ShareReadStatuses, &m.JoinedAt, &name, &email); err != nil {
+			return nil, notFound(err)
 		}
+		m.Role = domain.TeamRole(role)
+		m.Name = name.String
+		m.Email = email.String
 		members = append(members, m)
 	}
 	return members, rows.Err()

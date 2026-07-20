@@ -88,8 +88,8 @@ function GrantRow({
 /**
  * Settings "Delegation" section (M2.7 Task 15): grant/accept/revoke EA
  * delegations plus the principal's delegated-activity audit table. Grants and
- * audit entries render server data only — the API exposes user ids, so ids are
- * what we show; nothing is fabricated client-side.
+ * audit entries render server data only — display names/emails when the API
+ * resolved them (F2), the raw id otherwise; nothing is fabricated client-side.
  */
 export function DelegationSection() {
   const queryClient = useQueryClient();
@@ -182,7 +182,11 @@ export function DelegationSection() {
             <p className="text-xs font-medium text-muted-foreground">Assistants you granted</p>
           )}
           {asPrincipal.map((d) => (
-            <GrantRow key={d.id} delegation={d} who={d.assistantId}>
+            <GrantRow
+              key={d.id}
+              delegation={d}
+              who={d.assistantName || d.assistantEmail || d.assistantId}
+            >
               {d.status !== 'revoked' && (
                 <Button
                   variant="ghost"
@@ -201,7 +205,11 @@ export function DelegationSection() {
             <p className="mt-2 text-xs font-medium text-muted-foreground">You act for</p>
           )}
           {asAssistant.map((d) => (
-            <GrantRow key={d.id} delegation={d} who={d.principalId}>
+            <GrantRow
+              key={d.id}
+              delegation={d}
+              who={d.principalName || d.principalEmail || d.principalId}
+            >
               {d.status === 'pending' && (
                 <Button
                   size="sm"

@@ -135,6 +135,90 @@ func TestListSnippetsMergesPersonalAndTeams(t *testing.T) {
 	})
 }
 
+func TestSnippetCanDeleteParity(t *testing.T) {
+	// F2: CanDelete mirrors editableSnippet exactly — author or admin+ on
+	// team snippets, always true on the caller's own personal snippets.
+	ctx := context.Background()
+
+	seed := func(t *testing.T) *mailFixture {
+		t.Helper()
+		f := newMailFixture(t)
+		seedSnippetTeam(t, f, "t1", "owner", map[string]domain.TeamRole{
+			"author": domain.TeamRoleMember,
+			"peer":   domain.TeamRoleMember,
+			"admin":  domain.TeamRoleAdmin,
+		})
+		for _, sn := range []domain.Snippet{
+			{ID: "s-team", UserID: "author", TeamID: strp("t1"), Name: "team", BodyHTML: "b"},
+			{ID: "s-personal", UserID: "peer", Name: "mine", BodyHTML: "b"},
+		} {
+			if _, err := f.snippets.Create(ctx, sn); err != nil {
+				t.Fatalf("seed %s: %v", sn.ID, err)
+			}
+		}
+		return f
+	}
+
+	canDelete := func(t *testing.T, f *mailFixture, userID, snippetID string) bool {
+		t.Helper()
+		got, err := f.svc.ListSnippets(ctx, userID)
+		if err != nil {
+			t.Fatalf("ListSnippets(%s): %v", userID, err)
+		}
+		for _, sn := range got {
+			if sn.ID == snippetID {
+				return sn.CanDelete
+			}
+		}
+		t.Fatalf("snippet %s not listed for %s", snippetID, userID)
+		return false
+	}
+
+	t.Run("plain member (non-author) may not delete a team snippet", func(t *testing.T) {
+		f := seed(t)
+		if canDelete(t, f, "peer", "s-team") {
+			t.Fatal("CanDelete = true for a plain non-author member, want false")
+		}
+		if !canDelete(t, f, "peer", "s-personal") {
+			t.Fatal("CanDelete = false on the caller's own personal snippet")
+		}
+	})
+
+	t.Run("author, admin, and owner may delete", func(t *testing.T) {
+		f := seed(t)
+		for _, uid := range []string{"author", "admin", "owner"} {
+			if !canDelete(t, f, uid, "s-team") {
+				t.Fatalf("CanDelete = false for %s, want true", uid)
+			}
+		}
+	})
+
+	t.Run("authorId rides along so the UI can attribute snippets", func(t *testing.T) {
+		f := seed(t)
+		got, err := f.svc.ListSnippets(ctx, "peer")
+		if err != nil {
+			t.Fatalf("ListSnippets: %v", err)
+		}
+		for _, sn := range got {
+			if sn.ID == "s-team" && sn.UserID != "author" {
+				t.Fatalf("team snippet author = %q, want author", sn.UserID)
+			}
+		}
+	})
+
+	t.Run("create and update responses carry CanDelete", func(t *testing.T) {
+		f := seed(t)
+		created, err := f.svc.CreateSnippet(ctx, "peer", port.SnippetInput{Name: "n", BodyHTML: "b", TeamID: strp("t1")})
+		if err != nil || !created.CanDelete {
+			t.Fatalf("created = %+v, %v; want CanDelete=true for the author", created, err)
+		}
+		updated, err := f.svc.UpdateSnippet(ctx, "admin", "s-team", port.SnippetInput{Name: "n2", BodyHTML: "b2"})
+		if err != nil || !updated.CanDelete {
+			t.Fatalf("updated = %+v, %v; want CanDelete=true for admin", updated, err)
+		}
+	})
+}
+
 func TestUpdateTeamSnippet(t *testing.T) {
 	ctx := context.Background()
 	in := port.SnippetInput{Name: "n2", BodyHTML: "b2"}
