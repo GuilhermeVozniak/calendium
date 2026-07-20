@@ -1,13 +1,16 @@
 package service
 
 // travel_test.go covers M2.8 Task 12: the pure travel planner (planTravel)
-// and the TravelService pass orchestration (prefs fan-out, entitlement,
-// user-scoped event reads, silent degrade when maps is unconfigured, alert
-// arming/re-arming, and the Task 6 managed-blocks seam).
+// and the travel pass that runs inside AutomationService.RunAutomation —
+// managed "Travel to <location>" blocks written provider-first, idempotent
+// re-runs, block moves/deletes tracking the source event, entitlement,
+// silent degrade when maps is unconfigured, and alert arming/re-arming.
 
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"sort"
 	"testing"
 	"time"
@@ -103,38 +106,6 @@ func (m *fakeTravelMaps) TravelTime(_ context.Context, fromLat, fromLon, toLat, 
 		return m.fn(fromLat, fromLon, toLat, toLon, mode)
 	}
 	return m.travel, m.err
-}
-
-// fakeTravelBlockStore stands in for the Task 6 managed-events seam.
-type fakeTravelBlockStore struct {
-	managed   map[string]struct{}
-	blocks    map[string]TravelWindow
-	ensured   []TravelPlan
-	ensureErr error
-}
-
-var _ TravelBlockStore = (*fakeTravelBlockStore)(nil)
-
-func (f *fakeTravelBlockStore) ManagedEventIDs(context.Context, string) (map[string]struct{}, error) {
-	if f.managed == nil {
-		return map[string]struct{}{}, nil
-	}
-	return f.managed, nil
-}
-
-func (f *fakeTravelBlockStore) OwnedTravelBlocks(context.Context, string) (map[string]TravelWindow, error) {
-	if f.blocks == nil {
-		return map[string]TravelWindow{}, nil
-	}
-	return f.blocks, nil
-}
-
-func (f *fakeTravelBlockStore) EnsureTravelBlock(_ context.Context, _ string, plan TravelPlan) error {
-	if f.ensureErr != nil {
-		return f.ensureErr
-	}
-	f.ensured = append(f.ensured, plan)
-	return nil
 }
 
 // --- planner helpers ---------------------------------------------------------
@@ -360,194 +331,265 @@ func TestPlanTravelModePassthrough(t *testing.T) {
 	}
 }
 
-// --- TravelService.RunTravelPass ---------------------------------------------
+// --- travel pass inside RunAutomation ----------------------------------------
 
-type travelFixture struct {
-	svc       *TravelService
-	prefs     *fakeCalendarPrefsRepo
-	events    *fakeEventRepo
-	alerts    *fakeTravelAlertRepo
-	maps      *fakeTravelMaps
-	clock     *fakeClock
-	accounts  *fakeAccountRepo
-	calendars *fakeCalendarRepo
-}
-
-// newTravelFixture wires a TravelService over user-scoped fakes: events
-// resolve event→calendar→account→user like the SQL join, so cross-tenant
-// isolation is real in these tests. seedTravelUser adds a user with one
-// calendar ("c-<user>").
-func newTravelFixture(t *testing.T, maps *fakeTravelMaps, blocks TravelBlockStore) *travelFixture {
+// travelAutomationUser seeds a user whose automation prefs enable travel
+// buffers + leave alerts (home in Amsterdam) with a primary writable
+// calendar; returns that calendar.
+func travelAutomationUser(t *testing.T, f *automationFixture, userID string) domain.Calendar {
 	t.Helper()
-	accounts := newAccountRepo()
-	calendars := newCalendarRepo()
-	events := newEventRepo()
-	events.calendars = calendars
-	events.accounts = accounts
-	prefs := newCalendarPrefsRepo()
-	alerts := newTravelAlertRepo()
-	clock := newClock(travelBase)
-	var mapsPort port.MapsProvider
-	if maps != nil {
-		mapsPort = maps
-	}
-	svc := NewTravelService(TravelServiceDeps{
-		Subscriptions: newSubscriptionRepo(),
-		Prefs:         prefs,
-		Events:        events,
-		Alerts:        alerts,
-		Maps:          mapsPort,
-		Blocks:        blocks,
-		Clock:         clock,
-		SelfHosted:    true,
-	})
-	return &travelFixture{svc, prefs, events, alerts, maps, clock, accounts, calendars}
+	return f.addUser(t, userID, func(p *domain.CalendarPrefs) { *p = travelPrefs(userID) })
 }
 
-func (f *travelFixture) seedTravelUser(t *testing.T, userID string) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := f.accounts.Create(ctx, domain.ConnectedAccount{
-		ID: "a-" + userID, UserID: userID, Provider: domain.ProviderGoogle, Email: userID + "@x.com",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.calendars.Upsert(ctx, domain.Calendar{
-		ID: "c-" + userID, AccountID: "a-" + userID, ProviderCalendarID: "pc-" + userID, CanWrite: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	f.prefs.byUser[userID] = travelPrefs(userID)
-}
-
-func (f *travelFixture) seedTravelEvent(t *testing.T, userID, id string, start time.Time) domain.Event {
+func seedTravelEventOn(t *testing.T, f *automationFixture, calID, id string, start time.Time) domain.Event {
 	t.Helper()
 	ev := locEvent(id, start, time.Hour, 48.86, 2.35)
-	ev.CalendarID = "c-" + userID
+	ev.CalendarID = calID
 	if _, err := f.events.Upsert(context.Background(), ev); err != nil {
 		t.Fatal(err)
 	}
 	return ev
 }
 
-// TestRunTravelPassArmsAlerts: the happy path upserts one alert per planned
-// event at leaveAt = start - travel - 5min, scoped to the owning user.
-func TestRunTravelPassArmsAlerts(t *testing.T) {
-	maps := &fakeTravelMaps{travel: 30 * time.Minute}
-	f := newTravelFixture(t, maps, nil)
-	f.seedTravelUser(t, "u1")
-	ev := f.seedTravelEvent(t, "u1", "ev1", travelBase.Add(3*time.Hour))
+func travelTags(t *testing.T, f *automationFixture, userID string) []domain.ManagedEvent {
+	t.Helper()
+	out, err := f.managed.ListByUser(context.Background(), userID, domain.ManagedTravel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
 
-	if err := f.svc.RunTravelPass(context.Background()); err != nil {
-		t.Fatalf("RunTravelPass: %v", err)
+// TestAutomationTravelCreatesManagedBlock: the travel pass creates a real
+// "Travel to <location>" event through the write-through path, tags it in
+// managed_events (kind travel, SourceEventID = the meeting), and arms the
+// leave alert — all inside RunAutomation.
+func TestAutomationTravelCreatesManagedBlock(t *testing.T) {
+	maps := &fakeTravelMaps{travel: 30 * time.Minute}
+	f := newAutomationFixtureWith(maps)
+	cal := travelAutomationUser(t, f, "u1")
+	ev := seedTravelEventOn(t, f, cal.ID, "ev1", travelBase.Add(3*time.Hour))
+
+	if err := f.svc.RunAutomation(context.Background()); err != nil {
+		t.Fatalf("RunAutomation: %v", err)
+	}
+	tags := travelTags(t, f, "u1")
+	if len(tags) != 1 {
+		t.Fatalf("travel tags = %d, want 1", len(tags))
+	}
+	if tags[0].SourceEventID == nil || *tags[0].SourceEventID != "ev1" {
+		t.Fatalf("tag = %+v, want SourceEventID ev1", tags[0])
+	}
+	block, err := f.events.GetByID(context.Background(), tags[0].EventID)
+	if err != nil {
+		t.Fatalf("block mirror: %v", err)
+	}
+	if block.Title != "Travel to Location ev1" {
+		t.Fatalf("block title = %q", block.Title)
+	}
+	if !block.Start.Equal(ev.Start.Add(-30*time.Minute)) || !block.End.Equal(ev.Start) {
+		t.Fatalf("block window = [%v, %v), want [start-30m, start)", block.Start, block.End)
+	}
+	if block.CalendarID != cal.ID {
+		t.Fatalf("block calendar = %q, want primary writable %q", block.CalendarID, cal.ID)
 	}
 	a, ok := f.alerts.byEvent["ev1"]
-	if !ok {
-		t.Fatal("alert not armed")
-	}
-	if a.UserID != "u1" || !a.LeaveAt.Equal(ev.Start.Add(-35*time.Minute)) || a.SentAt != nil {
-		t.Fatalf("alert = %+v, want u1 @ start-35m unsent", a)
+	if !ok || a.UserID != "u1" || !a.LeaveAt.Equal(ev.Start.Add(-35*time.Minute)) {
+		t.Fatalf("alert = %+v (ok=%v), want u1 @ start-35m", a, ok)
 	}
 }
 
-// TestRunTravelPassUnconfiguredMapsDegradesSilently: no maps provider means
-// no vendor calls, no buffers, no alerts, no error.
-func TestRunTravelPassUnconfiguredMapsDegradesSilently(t *testing.T) {
-	f := newTravelFixture(t, nil, nil)
-	f.seedTravelUser(t, "u1")
-	f.seedTravelEvent(t, "u1", "ev1", travelBase.Add(3*time.Hour))
-
-	if err := f.svc.RunTravelPass(context.Background()); err != nil {
-		t.Fatalf("RunTravelPass: %v", err)
-	}
-	if len(f.alerts.byEvent) != 0 {
-		t.Fatalf("alerts = %+v, want none with maps unconfigured", f.alerts.byEvent)
-	}
-}
-
-// TestRunTravelPassRespectsToggles: TravelBuffers off ends the user's pass
-// before any vendor call; LeaveAlerts off plans (blocks seam) but never
-// arms alerts.
-func TestRunTravelPassRespectsToggles(t *testing.T) {
+// TestAutomationTravelProviderFirst: a failed provider write leaves NOTHING
+// local — no mirrored block, no managed tag — while the leave alert (which
+// never depended on blocks) still arms; the next healthy pass creates it.
+func TestAutomationTravelProviderFirst(t *testing.T) {
 	maps := &fakeTravelMaps{travel: 30 * time.Minute}
-	f := newTravelFixture(t, maps, nil)
-	f.seedTravelUser(t, "u1")
-	f.seedTravelEvent(t, "u1", "ev1", travelBase.Add(3*time.Hour))
+	f := newAutomationFixtureWith(maps)
+	cal := travelAutomationUser(t, f, "u1")
+	seedTravelEventOn(t, f, cal.ID, "ev1", travelBase.Add(3*time.Hour))
+	f.calSvc.failUsers["u1"] = true
 
-	p := f.prefs.byUser["u1"]
-	p.TravelBuffers = false
-	f.prefs.byUser["u1"] = p
-	if err := f.svc.RunTravelPass(context.Background()); err != nil {
-		t.Fatalf("RunTravelPass: %v", err)
+	if err := f.svc.RunAutomation(context.Background()); err != nil {
+		t.Fatalf("RunAutomation: %v (per-user failures must be swallowed)", err)
 	}
-	if len(maps.calls) != 0 || len(f.alerts.byEvent) != 0 {
-		t.Fatalf("calls=%d alerts=%d, want 0/0 with TravelBuffers off", len(maps.calls), len(f.alerts.byEvent))
+	if tags := travelTags(t, f, "u1"); len(tags) != 0 {
+		t.Fatalf("tags = %+v, want none after provider failure", tags)
+	}
+	if len(f.events.byID) != 1 {
+		t.Fatalf("events = %d, want only the seeded meeting (nothing local on failure)", len(f.events.byID))
+	}
+	if _, ok := f.alerts.byEvent["ev1"]; !ok {
+		t.Fatal("leave alert must still arm when the block write fails")
 	}
 
-	p.TravelBuffers, p.LeaveAlerts = true, false
-	f.prefs.byUser["u1"] = p
-	if err := f.svc.RunTravelPass(context.Background()); err != nil {
-		t.Fatalf("RunTravelPass: %v", err)
+	// Provider recovers: the block appears on the next pass.
+	f.calSvc.failUsers["u1"] = false
+	if err := f.svc.RunAutomation(context.Background()); err != nil {
+		t.Fatalf("RunAutomation (recovered): %v", err)
 	}
-	if len(maps.calls) == 0 {
-		t.Fatal("expected planning vendor calls with TravelBuffers on")
+	if tags := travelTags(t, f, "u1"); len(tags) != 1 {
+		t.Fatalf("tags = %d, want 1 after recovery", len(tags))
+	}
+}
+
+// TestAutomationTravelIdempotentRerun: re-running the pass with nothing
+// changed writes nothing and never clears a delivered alert.
+func TestAutomationTravelIdempotentRerun(t *testing.T) {
+	maps := &fakeTravelMaps{travel: 30 * time.Minute}
+	f := newAutomationFixtureWith(maps)
+	cal := travelAutomationUser(t, f, "u1")
+	seedTravelEventOn(t, f, cal.ID, "ev1", travelBase.Add(3*time.Hour))
+	ctx := context.Background()
+
+	for i := 0; i < 2; i++ {
+		if err := f.svc.RunAutomation(ctx); err != nil {
+			t.Fatalf("RunAutomation #%d: %v", i+1, err)
+		}
+	}
+	if f.calSvc.created != 1 {
+		t.Fatalf("created = %d, want exactly 1 (re-run must be a no-op)", f.calSvc.created)
+	}
+	if len(f.calSvc.updatedIDs) != 0 || len(f.calSvc.deletedIDs) != 0 {
+		t.Fatalf("updates=%v deletes=%v, want none on idempotent re-run", f.calSvc.updatedIDs, f.calSvc.deletedIDs)
+	}
+	// A delivered alert stays delivered across idempotent passes.
+	if err := f.alerts.MarkSent(ctx, "ev1", travelBase.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.RunAutomation(ctx); err != nil {
+		t.Fatalf("RunAutomation (post-delivery): %v", err)
+	}
+	if a := f.alerts.byEvent["ev1"]; a.SentAt == nil {
+		t.Fatal("idempotent pass cleared sent_at (would re-send)")
+	}
+}
+
+// TestAutomationTravelMovedEventMovesBlock: when the meeting moves, the
+// engine MOVES its own block (same managed event id — no create/delete
+// churn) and re-arms the alert at the new leave time.
+func TestAutomationTravelMovedEventMovesBlock(t *testing.T) {
+	maps := &fakeTravelMaps{travel: 30 * time.Minute}
+	f := newAutomationFixtureWith(maps)
+	cal := travelAutomationUser(t, f, "u1")
+	ev := seedTravelEventOn(t, f, cal.ID, "ev1", travelBase.Add(3*time.Hour))
+	ctx := context.Background()
+
+	if err := f.svc.RunAutomation(ctx); err != nil {
+		t.Fatalf("RunAutomation: %v", err)
+	}
+	blockID := travelTags(t, f, "u1")[0].EventID
+	if err := f.alerts.MarkSent(ctx, "ev1", travelBase.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	ev.Start = ev.Start.Add(time.Hour)
+	ev.End = ev.End.Add(time.Hour)
+	if _, err := f.events.Upsert(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.RunAutomation(ctx); err != nil {
+		t.Fatalf("RunAutomation (moved): %v", err)
+	}
+
+	tags := travelTags(t, f, "u1")
+	if len(tags) != 1 || tags[0].EventID != blockID {
+		t.Fatalf("tags = %+v, want the SAME block %s", tags, blockID)
+	}
+	block, err := f.events.GetByID(ctx, blockID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !block.Start.Equal(ev.Start.Add(-30*time.Minute)) || !block.End.Equal(ev.Start) {
+		t.Fatalf("block window = [%v, %v), want [newStart-30m, newStart)", block.Start, block.End)
+	}
+	if f.calSvc.created != 1 || len(f.calSvc.deletedIDs) != 0 {
+		t.Fatalf("created=%d deleted=%v, want a move, not churn", f.calSvc.created, f.calSvc.deletedIDs)
+	}
+	a := f.alerts.byEvent["ev1"]
+	if a.SentAt != nil || !a.LeaveAt.Equal(ev.Start.Add(-35*time.Minute)) {
+		t.Fatalf("alert = %+v, want re-armed at newStart-35m", a)
+	}
+}
+
+// TestAutomationTravelCoordsClearedDeletesBlock: an event whose coordinates
+// were cleared (location edited without a fresh autocomplete pick) loses its
+// travel block and pending alert; the user's own event is never touched.
+func TestAutomationTravelCoordsClearedDeletesBlock(t *testing.T) {
+	maps := &fakeTravelMaps{travel: 30 * time.Minute}
+	f := newAutomationFixtureWith(maps)
+	cal := travelAutomationUser(t, f, "u1")
+	ev := seedTravelEventOn(t, f, cal.ID, "ev1", travelBase.Add(3*time.Hour))
+	ctx := context.Background()
+
+	if err := f.svc.RunAutomation(ctx); err != nil {
+		t.Fatalf("RunAutomation: %v", err)
+	}
+	blockID := travelTags(t, f, "u1")[0].EventID
+
+	ev.LocationLat, ev.LocationLon = nil, nil
+	if _, err := f.events.Upsert(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.RunAutomation(ctx); err != nil {
+		t.Fatalf("RunAutomation (coords cleared): %v", err)
+	}
+
+	if _, err := f.events.GetByID(ctx, blockID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("block still mirrored (err=%v), want deleted", err)
+	}
+	if tags := travelTags(t, f, "u1"); len(tags) != 0 {
+		t.Fatalf("tags = %+v, want none", tags)
+	}
+	if _, ok := f.alerts.byEvent["ev1"]; ok {
+		t.Fatal("pending alert must be deleted with its block")
+	}
+	// The engine only ever deleted its OWN block; the user's event survives.
+	if len(f.calSvc.deletedIDs) != 1 || f.calSvc.deletedIDs[0] != blockID {
+		t.Fatalf("deletedIDs = %v, want exactly [%s]", f.calSvc.deletedIDs, blockID)
+	}
+	if got, err := f.events.GetByID(ctx, "ev1"); err != nil || got.Title != "Meeting ev1" {
+		t.Fatalf("user event touched: %+v (%v)", got, err)
+	}
+}
+
+// TestAutomationTravelRespectsToggles: TravelBuffers off never calls the
+// vendor; LeaveAlerts off writes blocks but never alerts.
+func TestAutomationTravelRespectsToggles(t *testing.T) {
+	maps := &fakeTravelMaps{travel: 30 * time.Minute}
+	f := newAutomationFixtureWith(maps)
+	cal := f.addUser(t, "u1", func(p *domain.CalendarPrefs) {
+		*p = travelPrefs("u1")
+		p.TravelBuffers = false // LeaveAlerts alone keeps the user listed
+	})
+	seedTravelEventOn(t, f, cal.ID, "ev1", travelBase.Add(3*time.Hour))
+	ctx := context.Background()
+
+	if err := f.svc.RunAutomation(ctx); err != nil {
+		t.Fatalf("RunAutomation: %v", err)
+	}
+	if len(maps.calls) != 0 || len(f.alerts.byEvent) != 0 || f.calSvc.created != 0 {
+		t.Fatalf("TravelBuffers off wrote: calls=%d alerts=%d created=%d", len(maps.calls), len(f.alerts.byEvent), f.calSvc.created)
+	}
+
+	p := travelPrefs("u1")
+	p.LeaveAlerts = false
+	if err := f.prefs.Upsert(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.RunAutomation(ctx); err != nil {
+		t.Fatalf("RunAutomation (alerts off): %v", err)
+	}
+	if f.calSvc.created != 1 {
+		t.Fatalf("created = %d, want the travel block with alerts off", f.calSvc.created)
 	}
 	if len(f.alerts.byEvent) != 0 {
 		t.Fatalf("alerts = %+v, want none with LeaveAlerts off", f.alerts.byEvent)
 	}
 }
 
-// TestRunTravelPassEntitlement: on a cloud instance an unsubscribed user is
-// skipped silently — no vendor calls, no alerts, no error.
-func TestRunTravelPassEntitlement(t *testing.T) {
-	maps := &fakeTravelMaps{travel: 30 * time.Minute}
-	accounts := newAccountRepo()
-	calendars := newCalendarRepo()
-	events := newEventRepo()
-	events.calendars, events.accounts = calendars, accounts
-	prefs := newCalendarPrefsRepo()
-	alerts := newTravelAlertRepo()
-	subs := newSubscriptionRepo()
-	svc := NewTravelService(TravelServiceDeps{
-		Subscriptions: subs, Prefs: prefs, Events: events, Alerts: alerts,
-		Maps: maps, Clock: newClock(travelBase), SelfHosted: false,
-	})
-	ctx := context.Background()
-	if _, err := accounts.Create(ctx, domain.ConnectedAccount{ID: "a1", UserID: "u1", Provider: domain.ProviderGoogle}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := calendars.Upsert(ctx, domain.Calendar{ID: "c-u1", AccountID: "a1", ProviderCalendarID: "pc1"}); err != nil {
-		t.Fatal(err)
-	}
-	prefs.byUser["u1"] = travelPrefs("u1")
-	ev := locEvent("ev1", travelBase.Add(3*time.Hour), time.Hour, 48.86, 2.35)
-	ev.CalendarID = "c-u1"
-	if _, err := events.Upsert(ctx, ev); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := svc.RunTravelPass(ctx); err != nil {
-		t.Fatalf("RunTravelPass: %v", err)
-	}
-	if len(maps.calls) != 0 || len(alerts.byEvent) != 0 {
-		t.Fatalf("calls=%d alerts=%d, want 0/0 for unentitled user", len(maps.calls), len(alerts.byEvent))
-	}
-
-	// Subscribing unlocks the pass.
-	if err := subs.Upsert(ctx, domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive}); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.RunTravelPass(ctx); err != nil {
-		t.Fatalf("RunTravelPass (subscribed): %v", err)
-	}
-	if _, ok := alerts.byEvent["ev1"]; !ok {
-		t.Fatal("alert not armed for subscribed user")
-	}
-}
-
-// TestRunTravelPassPerUserFailureContinues: one user's vendor failure is
-// reported but never stalls the other users' passes.
-func TestRunTravelPassPerUserFailureContinues(t *testing.T) {
+// TestAutomationTravelPerUserFailureContinues: one user's vendor outage is
+// logged; the other users' passes still run.
+func TestAutomationTravelPerUserFailureContinues(t *testing.T) {
 	maps := &fakeTravelMaps{}
 	maps.fn = func(_, _, toLat, _ float64, _ domain.TravelMode) (time.Duration, error) {
 		if toLat == 99.0 { // u1's event routes to the poisoned coordinate
@@ -555,19 +597,18 @@ func TestRunTravelPassPerUserFailureContinues(t *testing.T) {
 		}
 		return 30 * time.Minute, nil
 	}
-	f := newTravelFixture(t, maps, nil)
-	f.seedTravelUser(t, "u1")
-	f.seedTravelUser(t, "u2")
+	f := newAutomationFixtureWith(maps)
+	cal1 := travelAutomationUser(t, f, "u1")
+	cal2 := travelAutomationUser(t, f, "u2")
 	bad := locEvent("ev-bad", travelBase.Add(2*time.Hour), time.Hour, 99.0, 2.35)
-	bad.CalendarID = "c-u1"
+	bad.CalendarID = cal1.ID
 	if _, err := f.events.Upsert(context.Background(), bad); err != nil {
 		t.Fatal(err)
 	}
-	f.seedTravelEvent(t, "u2", "ev-ok", travelBase.Add(3*time.Hour))
+	seedTravelEventOn(t, f, cal2.ID, "ev-ok", travelBase.Add(3*time.Hour))
 
-	err := f.svc.RunTravelPass(context.Background())
-	if err == nil {
-		t.Fatal("want joined error for u1's vendor failure")
+	if err := f.svc.RunAutomation(context.Background()); err != nil {
+		t.Fatalf("RunAutomation: %v (user failures are logged, not fatal)", err)
 	}
 	if _, ok := f.alerts.byEvent["ev-ok"]; !ok {
 		t.Fatal("u2's alert missing: one user's failure stalled the fleet")
@@ -577,18 +618,18 @@ func TestRunTravelPassPerUserFailureContinues(t *testing.T) {
 	}
 }
 
-// TestRunTravelPassCrossTenantIsolation: users only ever plan over their own
-// events; alerts carry the owning user id.
-func TestRunTravelPassCrossTenantIsolation(t *testing.T) {
+// TestAutomationTravelCrossTenantIsolation: blocks and alerts carry the
+// owning user; users never plan over each other's events.
+func TestAutomationTravelCrossTenantIsolation(t *testing.T) {
 	maps := &fakeTravelMaps{travel: 30 * time.Minute}
-	f := newTravelFixture(t, maps, nil)
-	f.seedTravelUser(t, "u1")
-	f.seedTravelUser(t, "u2")
-	f.seedTravelEvent(t, "u1", "ev-u1", travelBase.Add(3*time.Hour))
-	f.seedTravelEvent(t, "u2", "ev-u2", travelBase.Add(4*time.Hour))
+	f := newAutomationFixtureWith(maps)
+	cal1 := travelAutomationUser(t, f, "u1")
+	cal2 := travelAutomationUser(t, f, "u2")
+	seedTravelEventOn(t, f, cal1.ID, "ev-u1", travelBase.Add(3*time.Hour))
+	seedTravelEventOn(t, f, cal2.ID, "ev-u2", travelBase.Add(4*time.Hour))
 
-	if err := f.svc.RunTravelPass(context.Background()); err != nil {
-		t.Fatalf("RunTravelPass: %v", err)
+	if err := f.svc.RunAutomation(context.Background()); err != nil {
+		t.Fatalf("RunAutomation: %v", err)
 	}
 	if a := f.alerts.byEvent["ev-u1"]; a.UserID != "u1" {
 		t.Fatalf("ev-u1 alert user = %q, want u1", a.UserID)
@@ -596,76 +637,71 @@ func TestRunTravelPassCrossTenantIsolation(t *testing.T) {
 	if a := f.alerts.byEvent["ev-u2"]; a.UserID != "u2" {
 		t.Fatalf("ev-u2 alert user = %q, want u2", a.UserID)
 	}
+	if tags := travelTags(t, f, "u1"); len(tags) != 1 {
+		t.Fatalf("u1 tags = %d, want 1", len(tags))
+	}
+	if tags := travelTags(t, f, "u2"); len(tags) != 1 {
+		t.Fatalf("u2 tags = %d, want 1", len(tags))
+	}
 }
 
-// TestRunTravelPassMovedEventReArmsAlert: a delivered alert whose event
-// moves gets a fresh leave time with sent_at cleared; an unmoved event's
-// delivered alert stays delivered (no re-send).
-func TestRunTravelPassMovedEventReArmsAlert(t *testing.T) {
+// TestAutomationEntitlementSkipsLapsedUser: on a cloud instance a lapsed
+// user's whole automation pass (focus AND travel) is skipped silently — no
+// vendor calls, no provider writes, no error spam — and resumes on
+// resubscribe.
+func TestAutomationEntitlementSkipsLapsedUser(t *testing.T) {
 	maps := &fakeTravelMaps{travel: 30 * time.Minute}
-	f := newTravelFixture(t, maps, nil)
-	f.seedTravelUser(t, "u1")
-	ev := f.seedTravelEvent(t, "u1", "ev1", travelBase.Add(3*time.Hour))
+	prefs := newCalendarPrefsRepo()
+	accts := newAccountRepo()
+	cals := newCalendarRepo()
+	cals.accounts = accts
+	events := newEventRepo()
+	events.calendars, events.accounts = cals, accts
+	managed := newManagedEventRepo()
+	alerts := newTravelAlertRepo()
+	subs := newSubscriptionRepo()
+	calSvc := &automationCalendarStub{events: events, failUsers: map[string]bool{}}
+	svc := NewAutomationService(AutomationServiceDeps{
+		Prefs: prefs, Accounts: accts, Calendars: cals, Events: events,
+		Managed: managed, CalendarSvc: calSvc,
+		Subscriptions: subs, SelfHosted: false,
+		Maps: maps, Alerts: alerts,
+		Clock:  newClock(travelBase),
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
 	ctx := context.Background()
-
-	if err := f.svc.RunTravelPass(ctx); err != nil {
-		t.Fatalf("RunTravelPass: %v", err)
+	p := travelPrefs("u1")
+	p.FocusGoalMinutesPerWeek = 300
+	if err := prefs.Upsert(ctx, p); err != nil {
+		t.Fatal(err)
 	}
-	sentAt := travelBase.Add(time.Minute)
-	if err := f.alerts.MarkSent(ctx, "ev1", sentAt); err != nil {
+	if _, err := accts.Create(ctx, domain.ConnectedAccount{ID: "a1", UserID: "u1", Provider: domain.ProviderGoogle, Email: "u1@x.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cals.Upsert(ctx, domain.Calendar{ID: "c-u1", AccountID: "a1", ProviderCalendarID: "pc1", IsPrimary: true, IsVisible: true, CanWrite: true}); err != nil {
+		t.Fatal(err)
+	}
+	ev := locEvent("ev1", travelBase.Add(3*time.Hour), time.Hour, 48.86, 2.35)
+	ev.CalendarID = "c-u1"
+	if _, err := events.Upsert(ctx, ev); err != nil {
 		t.Fatal(err)
 	}
 
-	// Idempotent pass: unchanged leave time keeps the delivery stamp.
-	if err := f.svc.RunTravelPass(ctx); err != nil {
-		t.Fatalf("RunTravelPass (idempotent): %v", err)
+	if err := svc.RunAutomation(ctx); err != nil {
+		t.Fatalf("RunAutomation: %v", err)
 	}
-	if a := f.alerts.byEvent["ev1"]; a.SentAt == nil {
-		t.Fatal("idempotent pass cleared sent_at (would re-send)")
+	if len(maps.calls) != 0 || len(alerts.byEvent) != 0 || calSvc.created != 0 {
+		t.Fatalf("lapsed user wrote: maps=%d alerts=%d created=%d, want all 0", len(maps.calls), len(alerts.byEvent), calSvc.created)
 	}
 
-	// Event moves an hour later: leave time changes, alert re-arms.
-	ev.Start = ev.Start.Add(time.Hour)
-	ev.End = ev.End.Add(time.Hour)
-	if _, err := f.events.Upsert(ctx, ev); err != nil {
+	// Subscribing resumes automation.
+	if err := subs.Upsert(ctx, domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.svc.RunTravelPass(ctx); err != nil {
-		t.Fatalf("RunTravelPass (moved): %v", err)
+	if err := svc.RunAutomation(ctx); err != nil {
+		t.Fatalf("RunAutomation (subscribed): %v", err)
 	}
-	a := f.alerts.byEvent["ev1"]
-	if a.SentAt != nil {
-		t.Fatal("moved event must re-arm its alert (sent_at cleared)")
-	}
-	if !a.LeaveAt.Equal(ev.Start.Add(-35 * time.Minute)) {
-		t.Fatalf("LeaveAt = %v, want new start-35m", a.LeaveAt)
-	}
-}
-
-// TestRunTravelPassBlocksSeam: with the Task 6 seam wired, create/refresh
-// plans reach EnsureTravelBlock and keep plans do not.
-func TestRunTravelPassBlocksSeam(t *testing.T) {
-	maps := &fakeTravelMaps{travel: 30 * time.Minute}
-	blocks := &fakeTravelBlockStore{}
-	f := newTravelFixture(t, maps, blocks)
-	f.seedTravelUser(t, "u1")
-	evNew := f.seedTravelEvent(t, "u1", "ev-new", travelBase.Add(3*time.Hour))
-	evKept := f.seedTravelEvent(t, "u1", "ev-kept", travelBase.Add(6*time.Hour))
-	blocks.blocks = map[string]TravelWindow{
-		"ev-kept": {Start: evKept.Start.Add(-30 * time.Minute), End: evKept.Start},
-	}
-
-	if err := f.svc.RunTravelPass(context.Background()); err != nil {
-		t.Fatalf("RunTravelPass: %v", err)
-	}
-	if len(blocks.ensured) != 1 {
-		t.Fatalf("ensured = %+v, want only the new block", blocks.ensured)
-	}
-	got := blocks.ensured[0]
-	if got.EventID != "ev-new" || got.Action != BlockCreate {
-		t.Fatalf("ensured plan = %+v, want ev-new create", got)
-	}
-	if !got.Start.Equal(evNew.Start.Add(-30*time.Minute)) || !got.End.Equal(evNew.Start) {
-		t.Fatalf("ensured window = [%v, %v)", got.Start, got.End)
+	if _, ok := alerts.byEvent["ev1"]; !ok {
+		t.Fatal("alert not armed after resubscribe")
 	}
 }

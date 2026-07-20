@@ -4,12 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sort"
 	"time"
 
 	"calendium/backend/internal/domain"
-	"calendium/backend/internal/port"
 )
 
 const (
@@ -52,44 +50,18 @@ type TravelPlan struct {
 }
 
 // =============================================================================
-// ============ TASK 6 INTEGRATION SEAM — MANAGED TRAVEL BLOCKS ================
+// Managed travel blocks (M2.8 Task 12, wired through the Task 6 engine)
 // =============================================================================
 //
-// Travel buffer blocks are MANAGED provider events ("Travel to <location>"),
-// owned by the Task 6 managed-events infrastructure, which is NOT on this
-// branch yet. Everything provider-facing therefore goes through this seam and
-// nothing else: with TravelServiceDeps.Blocks nil (today's wiring),
-// RunTravelPass plans with an empty managed-set / no existing blocks, arms
-// leave-now alerts (fully functional), and performs NO provider writes.
-//
-// Exact wiring points for the Task 6 integrator:
-//  1. Implement TravelBlockStore on the managed-events service and pass it as
-//     TravelServiceDeps.Blocks in cmd/worker/main.go (currently nil there).
-//  2. ManagedEventIDs feeds planTravel's managed-skip set — back it with the
-//     managed_events table (kind "travel" at minimum; include every managed
-//     kind so no managed event ever gets a travel buffer of its own).
-//  3. OwnedTravelBlocks feeds move-detection, keyed by TARGET event id: the
-//     planner compares each block to [eventStart-travel, eventStart) and
-//     emits Action refresh when the event moved, keep when it matches.
-//  4. EnsureTravelBlock receives every plan whose Action is create or
-//     refresh and must create/move the managed provider event at
-//     [plan.Start, plan.End) titled "Travel to <plan.Location>", and reflect
-//     it in managed_events so (2) and (3) see it on the next pass.
-type TravelBlockStore interface {
-	// ManagedEventIDs returns the ids of the user's managed events — the
-	// planner never buffers a managed event (no travel-to-travel).
-	ManagedEventIDs(ctx context.Context, userID string) (map[string]struct{}, error)
-	// OwnedTravelBlocks returns the user's existing managed travel blocks
-	// keyed by the id of the event they lead to.
-	OwnedTravelBlocks(ctx context.Context, userID string) (map[string]TravelWindow, error)
-	// EnsureTravelBlock creates or moves the managed "Travel to <location>"
-	// provider event for the plan.
-	EnsureTravelBlock(ctx context.Context, userID string, plan TravelPlan) error
-}
-
-// =============================================================================
-// End of Task 6 seam.
-// =============================================================================
+// Travel buffer blocks are MANAGED provider events ("Travel to <location>"):
+// real calendar events created through CalendarService's write-through path
+// (provider-first — on provider failure nothing local changes) and tagged in
+// managed_events with kind 'travel', keyed to the event they lead to via
+// SourceEventID. The travel pass runs INSIDE AutomationService.runUser — the
+// single loop that owns every managed-events write — so the focus and buffer
+// planners always see a settled managed set (no cross-loop write races).
+// Leave-now alert DELIVERY stays on the worker's 5s due-work loop
+// (SyncService.fireTravelAlerts); this pass only plans blocks + arms alerts.
 
 // travelTimeFunc estimates door-to-door travel duration (MapsProvider.
 // TravelTime with ctx bound by the caller — keeps planTravel pure/testable).
@@ -191,120 +163,175 @@ func eventLocationLabel(ev domain.Event) string {
 	return ev.Title
 }
 
-// TravelServiceDeps wires a TravelService. Maps may be nil (maps not
-// configured): the whole pass then degrades silently — no vendor calls, no
-// buffers, no alerts. Blocks is the Task 6 managed-events seam (see the
-// banner above); nil until Task 6 merges.
-type TravelServiceDeps struct {
-	Subscriptions port.SubscriptionRepo
-	Prefs         port.CalendarPrefsRepo
-	Events        port.EventRepo
-	Alerts        port.TravelAlertRepo
-	Maps          port.MapsProvider
-	Blocks        TravelBlockStore
-	Clock         port.Clock
-	Logger        *slog.Logger
-	SelfHosted    bool
-}
+// travelBlockTitle names the managed travel block for a plan.
+func travelBlockTitle(location string) string { return "Travel to " + location }
 
-// TravelService implements port.TravelService: the recurring travel-buffer
-// pass over every user with travel automation enabled.
-type TravelService struct {
-	ent    entitlement
-	prefs  port.CalendarPrefsRepo
-	events port.EventRepo
-	alerts port.TravelAlertRepo
-	maps   port.MapsProvider
-	blocks TravelBlockStore
-	clock  port.Clock
-	logger *slog.Logger
-}
-
-var _ port.TravelService = (*TravelService)(nil)
-
-func NewTravelService(d TravelServiceDeps) *TravelService {
-	return &TravelService{
-		ent:    entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
-		prefs:  d.Prefs,
-		events: d.Events,
-		alerts: d.Alerts,
-		maps:   d.Maps,
-		blocks: d.Blocks,
-		clock:  d.Clock,
-		logger: d.Logger,
-	}
-}
-
-// RunTravelPass plans travel buffers and arms leave-now alerts for every
-// user with TravelBuffers enabled. Users fail independently (log +
-// continue); a lapsed subscription skips the user silently.
-func (s *TravelService) RunTravelPass(ctx context.Context) error {
-	if s.maps == nil {
-		return nil // maps unconfigured: travel features degrade silently
-	}
-	prefsList, err := s.prefs.ListAutomated(ctx)
-	if err != nil {
-		return err
+// runTravel is the travel step of AutomationService.runUser (M2.8 Task 12):
+// it plans travel buffers for the user's upcoming located events, creates or
+// moves the managed "Travel to <location>" blocks provider-first, removes
+// blocks whose source event no longer plans (deleted, cancelled, coordinates
+// cleared, or moved out of the window), and arms leave-now alerts. It only
+// ever writes events tagged in managed_events with kind 'travel' — never a
+// user's own event.
+func (s *AutomationService) runTravel(ctx context.Context, prefs domain.CalendarPrefs) error {
+	if s.maps == nil || !prefs.TravelBuffers || prefs.HomeLat == nil || prefs.HomeLon == nil {
+		return nil // maps unconfigured or travel off: degrade silently
 	}
 	now := s.clock.Now()
-	var errs []error
-	for _, p := range prefsList {
-		if err := s.runUserPass(ctx, p, now); err != nil {
-			s.logError("travel pass", p.UserID, err)
-			errs = append(errs, fmt.Errorf("travel pass user %s: %w", p.UserID, err))
-		}
-	}
-	return errors.Join(errs...)
-}
 
-func (s *TravelService) runUserPass(ctx context.Context, p domain.CalendarPrefs, now time.Time) error {
-	if !p.TravelBuffers || p.HomeLat == nil || p.HomeLon == nil {
-		return nil
-	}
-	if err := s.ent.require(ctx, p.UserID); err != nil {
-		if errors.Is(err, domain.ErrPaymentRequired) {
-			return nil // lapsed subscription: automation simply pauses
-		}
-		return err
-	}
-	events, err := s.events.ListInRange(ctx, p.UserID, now, now.Add(travelLookahead), nil)
+	cals, err := s.calendars.ListByUser(ctx, prefs.UserID)
 	if err != nil {
 		return err
 	}
+	var target *domain.Calendar
+	calendarIDs := make([]string, 0, len(cals))
+	for i, c := range cals {
+		calendarIDs = append(calendarIDs, c.ID)
+		if target == nil && c.IsPrimary && c.CanWrite {
+			target = &cals[i]
+		}
+	}
+	// Without a writable primary calendar there is nowhere to put blocks; the
+	// pass still plans and arms leave alerts (alerts never needed a calendar).
+	var listIDs []string
+	if len(calendarIDs) > 0 {
+		listIDs = calendarIDs // every calendar explicitly: visibility prefs must not hide busy time
+	}
+	events, err := s.events.ListInRange(ctx, prefs.UserID, now, now.Add(travelLookahead), listIDs)
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]domain.Event, len(events))
+	for _, ev := range events {
+		byID[ev.ID] = ev
+	}
 
-	managed := map[string]struct{}{}
-	blocks := map[string]TravelWindow{}
-	if s.blocks != nil { // Task 6 seam — nil until managed events merge
-		if managed, err = s.blocks.ManagedEventIDs(ctx, p.UserID); err != nil {
+	// Managed-skip set: EVERY managed kind, so no automation-owned event ever
+	// gets a travel buffer of its own (no travel-to-travel, no buffering a
+	// focus block) and none is used as a chain origin.
+	managedSet := map[string]struct{}{}
+	for _, kind := range []domain.ManagedKind{domain.ManagedFocus, domain.ManagedBuffer, domain.ManagedTravel} {
+		list, err := s.managed.ListByUser(ctx, prefs.UserID, kind)
+		if err != nil {
 			return err
 		}
-		if blocks, err = s.blocks.OwnedTravelBlocks(ctx, p.UserID); err != nil {
-			return err
+		for _, m := range list {
+			managedSet[m.EventID] = struct{}{}
 		}
 	}
 
-	plans, planErr := planTravel(p, events, managed, blocks, func(fromLat, fromLon, toLat, toLon float64, mode domain.TravelMode) (time.Duration, error) {
+	// Owned travel blocks keyed by the event they lead to, windows joined
+	// from the mirrored block events (move detection for planTravel).
+	ownedTravel, err := s.managed.ListByUser(ctx, prefs.UserID, domain.ManagedTravel)
+	if err != nil {
+		return err
+	}
+	blocks := map[string]TravelWindow{} // source event id -> block window
+	blockIDs := map[string]string{}     // source event id -> block event id
+	for _, m := range ownedTravel {
+		if m.SourceEventID == nil {
+			continue // defensive: a travel tag without a target is inert
+		}
+		bev, ok := byID[m.EventID]
+		if !ok {
+			var gerr error
+			bev, gerr = s.events.GetByID(ctx, m.EventID)
+			if errors.Is(gerr, domain.ErrNotFound) {
+				// Mirror row gone (the tag normally cascades with it): forget.
+				if derr := s.managed.Delete(ctx, m.EventID); derr != nil {
+					return derr
+				}
+				continue
+			}
+			if gerr != nil {
+				return gerr
+			}
+		}
+		blocks[*m.SourceEventID] = TravelWindow{Start: bev.Start, End: bev.End}
+		blockIDs[*m.SourceEventID] = m.EventID
+	}
+
+	plans, planErr := planTravel(prefs, events, managedSet, blocks, func(fromLat, fromLon, toLat, toLon float64, mode domain.TravelMode) (time.Duration, error) {
 		return s.maps.TravelTime(ctx, fromLat, fromLon, toLat, toLon, mode)
 	})
 	errs := []error{planErr}
+	desired := make(map[string]struct{}, len(plans))
 	for _, plan := range plans {
-		if s.blocks != nil && plan.Action != BlockKeep {
-			if err := s.blocks.EnsureTravelBlock(ctx, p.UserID, plan); err != nil {
-				errs = append(errs, fmt.Errorf("ensure travel block for event %s: %w", plan.EventID, err))
+		desired[plan.EventID] = struct{}{}
+		switch {
+		case plan.Action == BlockCreate && target != nil:
+			// Provider-first (honesty policy): the tag is written only after
+			// the real event exists; on provider failure nothing local changes.
+			in := domain.EventInput{
+				CalendarID:      target.ID,
+				Title:           travelBlockTitle(plan.Location),
+				Start:           plan.Start,
+				End:             plan.End,
+				ReminderMinutes: []int{},
+			}
+			ev, err := s.calendarSvc.CreateEvent(ctx, prefs.UserID, in)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("create travel block for event %s: %w", plan.EventID, err))
+				continue // the leave alert still arms below — alerts never depended on blocks
+			}
+			src := plan.EventID
+			if err := s.managed.Create(ctx, domain.ManagedEvent{
+				EventID:       ev.ID,
+				UserID:        prefs.UserID,
+				Kind:          domain.ManagedTravel,
+				SourceEventID: &src,
+			}); err != nil {
+				errs = append(errs, err)
+			}
+		case plan.Action == BlockRefresh:
+			// The event moved: move the engine's OWN block to the recomputed
+			// window (never the user's event).
+			title := travelBlockTitle(plan.Location)
+			start, end := plan.Start, plan.End
+			if _, err := s.calendarSvc.UpdateEvent(ctx, prefs.UserID, blockIDs[plan.EventID], domain.EventPatch{
+				Title: &title,
+				Start: &start,
+				End:   &end,
+			}); err != nil {
+				errs = append(errs, fmt.Errorf("move travel block for event %s: %w", plan.EventID, err))
 			}
 		}
-		if p.LeaveAlerts {
-			if err := s.alerts.Upsert(ctx, plan.EventID, p.UserID, plan.LeaveAt); err != nil {
+	}
+
+	// Arm leave-now alerts; delivery rides the worker's 5s due-work loop. A
+	// failed provider block write must not lose the "time to leave" push.
+	if prefs.LeaveAlerts && s.alerts != nil {
+		for _, plan := range plans {
+			if err := s.alerts.Upsert(ctx, plan.EventID, prefs.UserID, plan.LeaveAt); err != nil {
 				errs = append(errs, fmt.Errorf("upsert travel alert for event %s: %w", plan.EventID, err))
 			}
 		}
 	}
-	return errors.Join(errs...)
-}
 
-func (s *TravelService) logError(op, userID string, err error) {
-	if s.logger == nil {
-		return
+	// Reconcile away stale blocks: an owned FUTURE travel block whose source
+	// event no longer plans is removed provider-first (the tag is forgotten
+	// only once the real event is gone; ErrNotFound means it already is).
+	// Past blocks are history and stay.
+	for srcID, blockID := range blockIDs {
+		if _, ok := desired[srcID]; ok {
+			continue
+		}
+		if w := blocks[srcID]; !w.End.After(now) {
+			continue
+		}
+		if err := s.calendarSvc.DeleteEvent(ctx, prefs.UserID, blockID); err != nil && !errors.Is(err, domain.ErrNotFound) {
+			errs = append(errs, fmt.Errorf("delete travel block %s: %w", blockID, err))
+			continue
+		}
+		if err := s.managed.Delete(ctx, blockID); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if s.alerts != nil {
+			if err := s.alerts.Delete(ctx, srcID); err != nil {
+				errs = append(errs, err)
+			}
+		}
 	}
-	s.logger.Error(op, "user_id", userID, "error", err)
+	return errors.Join(errs...)
 }

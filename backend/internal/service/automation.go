@@ -21,8 +21,18 @@ type AutomationServiceDeps struct {
 	Events      port.EventRepo
 	Managed     port.ManagedEventRepo
 	CalendarSvc port.CalendarService
-	Clock       port.Clock
-	Logger      *slog.Logger
+	// Subscriptions + SelfHosted power the entitlement gate: a lapsed cloud
+	// subscription pauses that user's automation silently (debug log at
+	// most) instead of error-spamming every pass through provider writes.
+	Subscriptions port.SubscriptionRepo
+	SelfHosted    bool
+	// Maps + Alerts power the travel pass (M2.8 Task 12). Maps nil (maps
+	// unconfigured) disables travel entirely — no vendor calls, no blocks,
+	// no alerts; Alerts nil skips alert arming only.
+	Maps   port.MapsProvider
+	Alerts port.TravelAlertRepo
+	Clock  port.Clock
+	Logger *slog.Logger
 }
 
 // AutomationService implements port.AutomationService. Managed blocks are
@@ -30,12 +40,15 @@ type AutomationServiceDeps struct {
 // (provider-first; on provider failure nothing local changes) and tagged in
 // managed_events so re-runs only ever touch the engine's own blocks.
 type AutomationService struct {
+	ent         entitlement
 	prefs       port.CalendarPrefsRepo
 	accounts    port.AccountRepo
 	calendars   port.CalendarRepo
 	events      port.EventRepo
 	managed     port.ManagedEventRepo
 	calendarSvc port.CalendarService
+	maps        port.MapsProvider
+	alerts      port.TravelAlertRepo
 	clock       port.Clock
 	logger      *slog.Logger
 }
@@ -47,12 +60,15 @@ func NewAutomationService(d AutomationServiceDeps) *AutomationService {
 		logger = slog.Default()
 	}
 	return &AutomationService{
+		ent:         entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
 		prefs:       d.Prefs,
 		accounts:    d.Accounts,
 		calendars:   d.Calendars,
 		events:      d.Events,
 		managed:     d.Managed,
 		calendarSvc: d.CalendarSvc,
+		maps:        d.Maps,
+		alerts:      d.Alerts,
 		clock:       d.Clock,
 		logger:      logger,
 	}
@@ -82,6 +98,16 @@ func (s *AutomationService) RunAutomation(ctx context.Context) error {
 }
 
 func (s *AutomationService) runUser(ctx context.Context, prefs domain.CalendarPrefs) error {
+	// Entitlement first: a lapsed cloud subscription pauses this user's
+	// automation silently — no error spam every pass, no wedged managed-block
+	// removals; everything resumes on resubscribe.
+	if err := s.ent.require(ctx, prefs.UserID); err != nil {
+		if errors.Is(err, domain.ErrPaymentRequired) {
+			s.logger.Debug("automation: user skipped (subscription lapsed)", "user_id", prefs.UserID)
+			return nil
+		}
+		return err
+	}
 	if prefs.FocusGoalMinutesPerWeek > 0 {
 		if err := s.runFocusGuard(ctx, prefs); err != nil {
 			return fmt.Errorf("focusguard: %w", err)
@@ -97,8 +123,15 @@ func (s *AutomationService) runUser(ctx context.Context, prefs domain.CalendarPr
 			return fmt.Errorf("buffers: %w", err)
 		}
 	}
-	// Tasks 12 and 14 add travel buffers and ICS
-	// subscription refresh here.
+	// Travel buffers + leave-alert arming (Task 12) run last in this same
+	// single-writer pass: managed travel blocks land only after the focus
+	// and buffer planners saw a settled managed set. (ICS subscription
+	// refresh is feed-cadenced, not per-user, and stays on its own loop.)
+	if prefs.TravelBuffers {
+		if err := s.runTravel(ctx, prefs); err != nil {
+			return fmt.Errorf("travel: %w", err)
+		}
+	}
 	return nil
 }
 

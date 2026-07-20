@@ -23,11 +23,10 @@ type SubscriptionRefresherDeps struct {
 }
 
 // SubscriptionRefresher is the hourly ICS feed refresh pass (M2.8 Task 15).
-//
-// Seam note: the planned M2.8 AutomationService loop (Task 6) does not
-// exist yet, so the refresh lives behind this standalone service; the
-// worker calls RefreshDue on a timer today, and RunAutomation can absorb
-// that call verbatim once it lands.
+// It stays a standalone service on its own worker loop by design: refresh
+// is feed-cadenced (per-feed hourly), not per-user, and its only write
+// surface is subscription_events — disjoint from RunAutomation's
+// managed-events work.
 type SubscriptionRefresher struct {
 	subs    port.CalendarSubscriptionRepo
 	fetcher port.IcsFetcher

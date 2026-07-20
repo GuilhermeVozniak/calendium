@@ -81,6 +81,7 @@ type automationCalendarStub struct {
 	failUsers  map[string]bool
 	created    int
 	deletedIDs []string
+	updatedIDs []string
 	rsvpErr    error
 	rsvpCalls  []stubRsvpCall
 }
@@ -116,6 +117,30 @@ func (c *automationCalendarStub) DeleteEvent(ctx context.Context, userID, eventI
 	}
 	c.deletedIDs = append(c.deletedIDs, eventID)
 	return c.events.Delete(ctx, eventID)
+}
+
+// UpdateEvent mirrors the real service's provider-first move path: on
+// provider failure nothing local changes; on success the mirror reflects
+// the patched title/window (all the travel pass ever patches).
+func (c *automationCalendarStub) UpdateEvent(ctx context.Context, userID, eventID string, patch domain.EventPatch) (domain.Event, error) {
+	if c.failUsers[userID] {
+		return domain.Event{}, errors.New("provider down")
+	}
+	ev, ok := c.events.byID[eventID]
+	if !ok {
+		return domain.Event{}, domain.ErrNotFound
+	}
+	if patch.Title != nil {
+		ev.Title = *patch.Title
+	}
+	if patch.Start != nil {
+		ev.Start = *patch.Start
+	}
+	if patch.End != nil {
+		ev.End = *patch.End
+	}
+	c.updatedIDs = append(c.updatedIDs, eventID)
+	return c.events.Upsert(ctx, ev)
 }
 
 // RSVP mirrors the real service's provider-first path: on failure nothing
@@ -161,11 +186,18 @@ type automationFixture struct {
 	events  *fakeEventRepo
 	managed *fakeManagedEventRepo
 	calSvc  *automationCalendarStub
+	alerts  *fakeTravelAlertRepo
 	clock   *fakeClock
 	svc     *AutomationService
 }
 
-func newAutomationFixture() *automationFixture {
+func newAutomationFixture() *automationFixture { return newAutomationFixtureWith(nil) }
+
+// newAutomationFixtureWith wires the automation engine; a non-nil maps fake
+// enables the travel pass. Self-hosted mode keeps the entitlement gate out
+// of the way here — TestAutomationEntitlementSkipsLapsedUser covers the
+// cloud path explicitly.
+func newAutomationFixtureWith(maps *fakeTravelMaps) *automationFixture {
 	prefs := newCalendarPrefsRepo()
 	accts := newAccountRepo()
 	cals := newCalendarRepo()
@@ -175,18 +207,27 @@ func newAutomationFixture() *automationFixture {
 	events.accounts = accts
 	managed := newManagedEventRepo()
 	calSvc := &automationCalendarStub{events: events, failUsers: map[string]bool{}}
+	alerts := newTravelAlertRepo()
 	clock := newClock(autoMonday.Add(7 * time.Hour))
+	var mapsPort port.MapsProvider
+	if maps != nil {
+		mapsPort = maps
+	}
 	svc := NewAutomationService(AutomationServiceDeps{
-		Prefs:       prefs,
-		Accounts:    accts,
-		Calendars:   cals,
-		Events:      events,
-		Managed:     managed,
-		CalendarSvc: calSvc,
-		Clock:       clock,
-		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Prefs:         prefs,
+		Accounts:      accts,
+		Calendars:     cals,
+		Events:        events,
+		Managed:       managed,
+		CalendarSvc:   calSvc,
+		Subscriptions: newSubscriptionRepo(),
+		SelfHosted:    true,
+		Maps:          mapsPort,
+		Alerts:        alerts,
+		Clock:         clock,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	return &automationFixture{prefs: prefs, accts: accts, cals: cals, events: events, managed: managed, calSvc: calSvc, clock: clock, svc: svc}
+	return &automationFixture{prefs: prefs, accts: accts, cals: cals, events: events, managed: managed, calSvc: calSvc, alerts: alerts, clock: clock, svc: svc}
 }
 
 // addUser seeds prefs plus a primary writable calendar; goalMinutes 0 leaves

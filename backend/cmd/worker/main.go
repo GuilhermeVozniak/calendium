@@ -45,18 +45,16 @@ const (
 	// expireHoldsInterval paces the booking-hold expiry sweep (unconfirmed
 	// holds past their hold_expires_at are cancelled, freeing the slot).
 	expireHoldsInterval = time.Minute
-	// automationInterval paces the calendar automation engine (FocusGuard
-	// et al.). RunAutomation is idempotent, so a modest cadence suffices.
-	automationInterval = 15 * time.Minute
+	// automationInterval paces the calendar automation engine (FocusGuard,
+	// auto-decline, buffers, and the travel pass). RunAutomation is
+	// idempotent; 5m keeps leave-now alert arming as responsive as the old
+	// standalone travel loop while the other passes no-op when nothing
+	// changed. Delivery of due alerts rides the 5s due-work loop.
+	automationInterval = 5 * time.Minute
 	// subscriptionRefreshPass paces the ICS feed refresh sweep; each feed is
 	// only refetched when it is > 1h stale (service.SubscriptionRefresher),
 	// so the pass itself can run more often than hourly without hammering.
 	subscriptionRefreshPass = 15 * time.Minute
-	// travelPassInterval paces the travel-buffer pass (M2.8 Task 12): plan
-	// travel blocks + arm leave-now alerts for users with travel automation
-	// on. Delivery of due alerts rides the 5s due-work loop; only planning
-	// (which calls the routing vendor) runs at this coarser cadence.
-	travelPassInterval = 5 * time.Minute
 	// perAccountTimeout bounds one account's sync pass.
 	perAccountTimeout = 5 * time.Minute
 )
@@ -167,20 +165,6 @@ func run(logger *slog.Logger) error {
 		TravelAlerts:  store.TravelAlerts(),
 		CalendarPrefs: store.CalendarPrefs(),
 	})
-	travelSvc := service.NewTravelService(service.TravelServiceDeps{
-		Subscriptions: store.Subscriptions(),
-		Prefs:         store.CalendarPrefs(),
-		Events:        store.Events(),
-		Alerts:        store.TravelAlerts(),
-		Maps:          mapsProvider,
-		// Blocks is the Task 6 managed-events seam (service.TravelBlockStore):
-		// nil until managed-events infrastructure merges, so the pass arms
-		// leave alerts but performs no provider block writes.
-		Blocks:     nil,
-		Clock:      service.SystemClock{},
-		Logger:     logger,
-		SelfHosted: cfg.Instance.SelfHosted,
-	})
 	calendarSvc := service.NewCalendarService(service.CalendarServiceDeps{
 		Subscriptions:     store.Subscriptions(),
 		Accounts:          store.Accounts(),
@@ -216,8 +200,10 @@ func run(logger *slog.Logger) error {
 		PublicWebURL:      cfg.Instance.PublicWebURL,
 		Logger:            logger,
 	})
-	// M2.8 Task 15: hourly ICS subscription refresh. Seam note: this call
-	// moves into RunAutomation once the M2.8 AutomationService loop lands.
+	// M2.8 Task 15: hourly ICS subscription refresh. Deliberately its own
+	// loop: refresh is feed-cadenced (per-feed hourly), not per-user, and
+	// writes only subscription_events — disjoint from RunAutomation's
+	// managed-events surface.
 	subscriptionRefresher := service.NewSubscriptionRefresher(service.SubscriptionRefresherDeps{
 		Subs:    store.CalendarSubscriptions(),
 		Fetcher: icsfeed.New(hc),
@@ -247,8 +233,16 @@ func run(logger *slog.Logger) error {
 		Events:      store.Events(),
 		Managed:     store.ManagedEvents(),
 		CalendarSvc: calendarSvc,
-		Clock:       service.SystemClock{},
-		Logger:      logger,
+		// Entitlement gate: lapsed cloud users are skipped silently.
+		Subscriptions: store.Subscriptions(),
+		SelfHosted:    cfg.Instance.SelfHosted,
+		// Travel pass (M2.8 Task 12): managed "Travel to …" blocks + leave
+		// alerts, folded into the automation loop so a single writer owns
+		// every managed-events surface. mapsProvider nil disables it.
+		Maps:   mapsProvider,
+		Alerts: store.TravelAlerts(),
+		Clock:  service.SystemClock{},
+		Logger: logger,
 	})
 
 	// --- Todo mirror sync (M2.8 Task 10): gated on the Todoist OAuth app
@@ -335,18 +329,6 @@ func run(logger *slog.Logger) error {
 			})
 		}()
 	}
-	if mapsProvider != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			runLoop(ctx, travelPassInterval, func(ctx context.Context) {
-				if err := travelSvc.RunTravelPass(ctx); err != nil {
-					logger.Error("worker: travel pass", "error", err)
-				}
-			})
-		}()
-	}
-
 	logger.Info("worker: loops started",
 		"sync_interval", syncInterval.String(),
 		"due_work_interval", dueWorkInterval.String(),
