@@ -18,6 +18,11 @@ export default defineConfig({
     setupFiles: ['./vitest.setup.ts'],
     include: ['**/*.test.{ts,tsx}'],
     exclude: ['**/node_modules/**', '**/.next/**'],
+    // The lefthook pre-push gate runs this suite alongside five other jobs
+    // (including the Docker-backed backend suite); userEvent-heavy tests
+    // that take ~1s alone can exceed the 5s default under that contention
+    // and flaked pushes twice. 15s still catches genuine hangs.
+    testTimeout: 15000,
   },
   resolve: {
     alias: {
