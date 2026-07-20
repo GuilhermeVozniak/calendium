@@ -812,3 +812,40 @@ type MapsProvider interface {
 	// TravelTime estimates door-to-door duration between two points.
 	TravelTime(ctx context.Context, fromLat, fromLon, toLat, toLon float64, mode domain.TravelMode) (time.Duration, error)
 }
+
+// --- CRM integrations (M2.8 Task 16) ----------------------------------------
+
+// CrmProvider is a vendor CRM adapter (HubSpot first).
+type CrmProvider interface {
+	Vendor() domain.IntegrationVendor
+	// ContactContext resolves a contact by email with associated open deals;
+	// a missing contact returns CrmContext{Contact: nil}, not an error.
+	ContactContext(ctx context.Context, accessToken, email string) (domain.CrmContext, error)
+	// LogEmail records an email engagement on the contact's timeline.
+	LogEmail(ctx context.Context, accessToken string, log domain.CrmEmailLog) error
+}
+
+// CrmConnection is the narrow, consumer-side view of a per-user integration
+// connection the CRM service needs: vendor plus current (decrypted) tokens.
+//
+// NOTE(M2.8 integration): the parallel integration-OAuth task (Task 9) owns
+// the real storage — integration_connections, the connect/callback flow, and
+// AES-GCM token encryption at rest. This interface is deliberately minimal so
+// Task 9's repository can implement (or be thinly adapted to) it at merge;
+// the CRM side must never grow its own OAuth/token storage.
+type CrmConnection struct {
+	ID     string
+	UserID string
+	Vendor domain.IntegrationVendor
+	Tokens TokenSet
+}
+
+// CrmConnectionStore reads and refreshes per-user integration connections.
+type CrmConnectionStore interface {
+	// ListByUser returns the user's integration connections with decrypted
+	// tokens; an empty slice (never an error) when none exist.
+	ListByUser(ctx context.Context, userID string) ([]CrmConnection, error)
+	// UpdateTokens persists refreshed tokens for a connection
+	// (implementations encrypt at rest).
+	UpdateTokens(ctx context.Context, connectionID string, t TokenSet) error
+}

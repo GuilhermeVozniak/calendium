@@ -622,3 +622,12 @@ type WeatherService interface {
 type PlacesService interface {
 	Autocomplete(ctx context.Context, userID, query string) ([]domain.Place, error)
 }
+
+// CrmService is the CRM-integration surface (M2.8 Task 16): contact context
+// for the contact pane and explicit per-message email logging.
+type CrmService interface {
+	// ContactContext returns context from the user's connected CRM vendors
+	// (empty slice when none connected — the pane hides the section).
+	ContactContext(ctx context.Context, userID, email string) ([]domain.CrmContext, error)
+	LogEmail(ctx context.Context, userID string, log domain.CrmEmailLog) error
+}

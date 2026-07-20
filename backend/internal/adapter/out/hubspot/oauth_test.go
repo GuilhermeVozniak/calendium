@@ -38,9 +38,9 @@ func TestAuthURL(t *testing.T) {
 	}
 }
 
-// fakeHubSpot serves both the token endpoint (POST /token) and the
+// fakeHubSpotOAuth serves both the token endpoint (POST /token) and the
 // token-info endpoint (GET /access-tokens/{token}).
-func fakeHubSpot(t *testing.T, tokenStatus int, tokenBody string, infoBody string) (*httptest.Server, *url.Values) {
+func fakeHubSpotOAuth(t *testing.T, tokenStatus int, tokenBody string, infoBody string) (*httptest.Server, *url.Values) {
 	t.Helper()
 	var gotForm url.Values
 	mux := http.NewServeMux()
@@ -74,7 +74,7 @@ func newTestOAuth(srv *httptest.Server) *OAuth {
 }
 
 func TestExchange(t *testing.T) {
-	srv, gotForm := fakeHubSpot(t, http.StatusOK,
+	srv, gotForm := fakeHubSpotOAuth(t, http.StatusOK,
 		`{"access_token":"at-1","refresh_token":"rt-1","expires_in":1800}`,
 		`{"user":"owner@example.com","hub_domain":"acme.hubspot.com"}`)
 	o := newTestOAuth(srv)
@@ -101,7 +101,7 @@ func TestExchange(t *testing.T) {
 }
 
 func TestExchangeLabelFailureIsBestEffort(t *testing.T) {
-	srv, _ := fakeHubSpot(t, http.StatusOK,
+	srv, _ := fakeHubSpotOAuth(t, http.StatusOK,
 		`{"access_token":"at-1","refresh_token":"rt-1","expires_in":1800}`,
 		"") // token-info 401s
 	o := newTestOAuth(srv)
@@ -116,7 +116,7 @@ func TestExchangeLabelFailureIsBestEffort(t *testing.T) {
 
 func TestRefresh(t *testing.T) {
 	t.Run("rotates when the vendor returns a new refresh token", func(t *testing.T) {
-		srv, gotForm := fakeHubSpot(t, http.StatusOK,
+		srv, gotForm := fakeHubSpotOAuth(t, http.StatusOK,
 			`{"access_token":"at-2","refresh_token":"rt-2","expires_in":1800}`, "")
 		o := newTestOAuth(srv)
 		tok, err := o.Refresh(context.Background(), "rt-1")
@@ -132,7 +132,7 @@ func TestRefresh(t *testing.T) {
 		}
 	})
 	t.Run("carries the old refresh token through when not rotated", func(t *testing.T) {
-		srv, _ := fakeHubSpot(t, http.StatusOK,
+		srv, _ := fakeHubSpotOAuth(t, http.StatusOK,
 			`{"access_token":"at-2","expires_in":1800}`, "")
 		o := newTestOAuth(srv)
 		tok, err := o.Refresh(context.Background(), "rt-1")
@@ -146,7 +146,7 @@ func TestRefresh(t *testing.T) {
 }
 
 func TestTokenEndpointError(t *testing.T) {
-	srv, _ := fakeHubSpot(t, http.StatusBadRequest,
+	srv, _ := fakeHubSpotOAuth(t, http.StatusBadRequest,
 		`{"status":"BAD_AUTH_CODE","message":"expired"}`, "")
 	o := newTestOAuth(srv)
 	if _, err := o.Exchange(context.Background(), "bad", "cb", ""); err == nil {

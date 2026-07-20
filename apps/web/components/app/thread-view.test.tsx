@@ -73,6 +73,13 @@ vi.mock('@/components/app/contact-pane', () => ({
   ),
 }));
 
+// The per-message CRM overflow menu (M2.8) has its own test file
+// (crm-log-menu.test.tsx); stub it here so ThreadView renders without a
+// query client.
+vi.mock('@/components/app/crm-log-menu', () => ({
+  MessageCrmMenu: () => null,
+}));
+
 vi.mock('@/components/app/share-dialog', () => ({
   SHARE_THREAD_EVENT: 'calendium:share-thread',
   dispatchShareThread: () => window.dispatchEvent(new Event('calendium:share-thread')),

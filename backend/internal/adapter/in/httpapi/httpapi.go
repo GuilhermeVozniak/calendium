@@ -72,6 +72,10 @@ type Deps struct {
 	// (Todoist/HubSpot, M2.8 Task 9). When nil the integration routes
 	// answer 501.
 	Integrations port.IntegrationService
+	// Crm serves CRM contact context and explicit per-message email logging
+	// (M2.8 Task 16). When nil (vendor unconfigured, or the integration-
+	// connection repo not composed) the /v1/crm routes answer 501.
+	Crm port.CrmService
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -316,6 +320,10 @@ func New(deps Deps) http.Handler {
 
 	// M2.8 Task 11: location autocomplete (Nominatim-backed; 501 unwired).
 	authed("GET /v1/places/autocomplete", s.handlePlacesAutocomplete)
+
+	// M2.8 Task 16: CRM contact context + explicit email logging.
+	authed("GET /v1/crm/context", s.handleCrmContext)
+	authed("POST /v1/crm/log", s.handleCrmLog)
 
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins)

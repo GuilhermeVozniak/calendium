@@ -319,6 +319,26 @@ func run(logger *slog.Logger) error {
 		})
 	}
 
+	// M2.8 Task 16: CRM contact context + explicit per-message email logging
+	// (HubSpot). Consumes Task 9's integration-connection store (AES-GCM
+	// token vault) through the narrow crmConnectionStore adapter below. Left
+	// nil when the HubSpot OAuth app is unconfigured: /v1/crm answers 501.
+	var crmSvc port.CrmService
+	if cfg.HubSpot.ClientID != "" {
+		crmSvc = service.NewCrmService(service.CrmServiceDeps{
+			Subscriptions: store.Subscriptions(),
+			Connections:   crmConnectionStore{repo: postgres.NewIntegrationRepo(store)},
+			Providers: map[domain.IntegrationVendor]port.CrmProvider{
+				domain.IntegrationHubSpot: hubspot.NewClient(hc),
+			},
+			OAuth: map[domain.IntegrationVendor]port.OAuthGateway{
+				domain.IntegrationHubSpot: integrationOAuth[domain.IntegrationHubSpot],
+			},
+			Clock:      clock,
+			SelfHosted: cfg.Instance.SelfHosted,
+		})
+	}
+
 	// --- instance discovery document (GET /v1/instance) ---
 	mode := httpapi.ModeCloud
 	if cfg.Instance.SelfHosted {
@@ -405,7 +425,10 @@ func run(logger *slog.Logger) error {
 		// M2.8 Task 11: location autocomplete (nil when maps unconfigured).
 		Places: placesSvc,
 		// M2.8 Task 9: per-user vendor integrations.
-		Integrations:       integrations,
+		Integrations: integrations,
+		// M2.8 Task 16: CRM contact context + explicit email logging (nil
+		// when the HubSpot OAuth app is unconfigured → /v1/crm answers 501).
+		Crm:                crmSvc,
 		Instance:           instance,
 		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
 	})
@@ -428,4 +451,32 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("api: shut down cleanly")
 	return nil
+}
+
+// crmConnectionStore adapts Task 9's IntegrationRepo (connection rows + the
+// AES-GCM token vault) to port.CrmConnectionStore — the narrow decrypted-
+// token view the CRM service consumes. The CRM side never grows its own
+// OAuth/token storage.
+type crmConnectionStore struct{ repo *postgres.IntegrationRepo }
+
+var _ port.CrmConnectionStore = crmConnectionStore{}
+
+func (s crmConnectionStore) ListByUser(ctx context.Context, userID string) ([]port.CrmConnection, error) {
+	conns, err := s.repo.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]port.CrmConnection, 0, len(conns))
+	for _, c := range conns {
+		t, err := s.repo.GetTokens(ctx, c.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, port.CrmConnection{ID: c.ID, UserID: c.UserID, Vendor: c.Vendor, Tokens: t})
+	}
+	return out, nil
+}
+
+func (s crmConnectionStore) UpdateTokens(ctx context.Context, connectionID string, t port.TokenSet) error {
+	return s.repo.SaveTokens(ctx, connectionID, t)
 }
