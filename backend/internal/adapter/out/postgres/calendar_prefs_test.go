@@ -39,7 +39,7 @@ func TestCalendarPrefsUpsertRoundTrip(t *testing.T) {
 	p := domain.DefaultCalendarPrefs("u1")
 	p.TimeZone = "Europe/Amsterdam"
 	p.WorkDays = []time.Weekday{time.Tuesday, time.Thursday}
-	p.WorkdayStartMinutes, p.WorkdayEndMinutes = 8 * 60, 16 * 60
+	p.WorkdayStartMinutes, p.WorkdayEndMinutes = 8*60, 16*60
 	p.FocusGoalMinutesPerWeek = 10 * 60
 	p.FocusAutoDecline = true
 	p.FocusDeclineMessage = "Deep work — back at 4."

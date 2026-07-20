@@ -756,6 +756,21 @@ type CalendarPrefsRepo interface {
 	ListAutomated(ctx context.Context) ([]domain.CalendarPrefs, error)
 }
 
+// --- Managed events (M2.8 Task 6) -------------------------------------------
+
+// ManagedEventRepo persists the automation engine's ownership ledger
+// (table managed_events): which mirrored events the engine created and may
+// therefore move, shrink, or delete on later passes. Rows cascade away when
+// the mirrored event row is deleted.
+type ManagedEventRepo interface {
+	Create(ctx context.Context, m domain.ManagedEvent) error
+	// GetByEventID returns domain.ErrNotFound when the event is not managed.
+	GetByEventID(ctx context.Context, eventID string) (domain.ManagedEvent, error)
+	ListByUser(ctx context.Context, userID string, kind domain.ManagedKind) ([]domain.ManagedEvent, error)
+	ListBySourceEvent(ctx context.Context, sourceEventID string) ([]domain.ManagedEvent, error)
+	Delete(ctx context.Context, eventID string) error
+}
+
 // EventBus fans CollabEvents out to in-process subscribers. Publish never
 // blocks (slow subscribers drop events — SSE clients re-sync on reconnect).
 // Single-process today; the multi-instance path is a Postgres LISTEN/NOTIFY
