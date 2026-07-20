@@ -1,0 +1,19 @@
+{
+  "title": "Calendium Installer",
+  "icon": "../../bin/Calendium.app/Contents/Resources/iconfile.icns",
+  "icon-size": 128,
+  "window": {
+    "position": { "x": 360, "y": 220 },
+    "size": { "width": 660, "height": 400 }
+  },
+  "contents": [
+    {
+      "x": 165,
+      "y": 195,
+      "type": "file",
+      "path": "../../bin/Calendium.app",
+      "name": "Calendium.app"
+    },
+    { "x": 495, "y": 195, "type": "link", "path": "/Applications" }
+  ]
+}

@@ -1,0 +1,159 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+  # Dry run: builds, signs, and notarizes exactly like a tag release but
+  # uploads artifacts to the run instead of publishing a GitHub Release.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # Gate the release on the desktop-facing suites. Full-repo quality is
+  # already gated by test.yml on every push to main; this re-checks the
+  # pieces a desktop binary embeds before any signing happens.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: latest }
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: apps/desktop/go.sum
+      - run: bun install --frozen-lockfile
+      - name: Shared package tests
+        run: bun run test:shared
+      - name: Desktop frontend tests
+        run: bun run test:desktop
+      - name: Desktop frontend build (main.go embeds frontend/dist)
+        run: cd apps/desktop/frontend && bun run build
+      - name: Desktop Go vet + test
+        run: cd apps/desktop && go vet ./... && go test ./...
+
+  build-desktop:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: darwin
+            arch: universal
+          - os: windows-latest
+            platform: windows
+            arch: amd64
+          - os: ubuntu-latest
+            platform: linux
+            arch: amd64
+    runs-on: ${{ matrix.os }}
+    env:
+      # secrets are not readable in step-level `if:`; surface presence here.
+      HAS_MACOS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: latest }
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: apps/desktop/go.sum
+      - name: Install Linux system deps
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+      - name: Install Wails CLI
+        # Pinned to the wails/v2 library version in apps/desktop/go.mod
+        # (reproducible builds; avoids silent CLI/library drift).
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+      - run: bun install --frozen-lockfile
+      - name: Compute version
+        id: version
+        shell: bash
+        # Tag pushes release as vX.Y.Z; dispatch dry-runs use dev-<sha>.
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build desktop app
+        # ubuntu-latest (24.04) ships webkit2gtk-4.1 only; wails needs the
+        # webkit2_41 tag to link against it.
+        run: cd apps/desktop && wails build -platform ${{ matrix.platform }}/${{ matrix.arch }} ${{ matrix.platform == 'linux' && '-tags webkit2_41' || '' }}
+      # Signing/notarization steps are skipped when the signing secrets are
+      # absent (e.g. forks), so unsigned releases still build.
+      - name: Import signing certificate (macOS)
+        if: matrix.platform == 'darwin' && env.HAS_MACOS_SIGNING == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+          rm "$RUNNER_TEMP/cert.p12"
+          # fail here, not at codesign, if the p12 lacks a Developer ID identity.
+          security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application"
+      - name: Sign app (macOS)
+        if: matrix.platform == 'darwin' && env.HAS_MACOS_SIGNING == 'true'
+        run: |
+          codesign --force --deep --options runtime --timestamp \
+            --sign "Developer ID Application" apps/desktop/build/bin/Calendium.app
+          codesign --verify --deep --strict --verbose=2 apps/desktop/build/bin/Calendium.app
+      - name: Package artifact (macOS .dmg)
+        if: matrix.platform == 'darwin'
+        run: |
+          cd apps/desktop
+          npx --yes appdmg build/darwin/dmg/appdmg.json \
+            "build/bin/calendium_${{ steps.version.outputs.version }}_darwin_${{ matrix.arch }}.dmg"
+      - name: Sign, notarize, and staple dmg (macOS)
+        if: matrix.platform == 'darwin' && env.HAS_MACOS_SIGNING == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          DMG=(apps/desktop/build/bin/*.dmg)
+          codesign --force --timestamp --sign "Developer ID Application" "${DMG[0]}"
+          xcrun notarytool submit "${DMG[0]}" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" --wait
+          # staple fails if notarization did not fully succeed, failing the job.
+          xcrun stapler staple "${DMG[0]}"
+          xcrun stapler validate "${DMG[0]}"
+      - name: Package artifact (Windows .zip)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          cd apps/desktop/build/bin
+          Compress-Archive -Path Calendium.exe -DestinationPath "calendium_${{ steps.version.outputs.version }}_windows_${{ matrix.arch }}.zip"
+      - name: Package artifact (Linux .tar.gz)
+        if: matrix.platform == 'linux'
+        run: |
+          cd apps/desktop/build/bin
+          tar -czf "calendium_${{ steps.version.outputs.version }}_linux_${{ matrix.arch }}.tar.gz" Calendium
+      # Dry runs (workflow_dispatch) upload to the run; tag pushes publish.
+      - name: Upload artifacts (dry run)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: calendium-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            apps/desktop/build/bin/*.dmg
+            apps/desktop/build/bin/*.zip
+            apps/desktop/build/bin/*.tar.gz
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            apps/desktop/build/bin/*.dmg
+            apps/desktop/build/bin/*.zip
+            apps/desktop/build/bin/*.tar.gz
