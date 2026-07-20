@@ -802,8 +802,10 @@ type ManagedEventRepo interface {
 
 // EventBus fans CollabEvents out to in-process subscribers. Publish never
 // blocks (slow subscribers drop events — SSE clients re-sync on reconnect).
-// Single-process today; the multi-instance path is a Postgres LISTEN/NOTIFY
-// implementation behind this same port.
+// Two implementations: adapter/out/eventbus (in-memory, the API's broker)
+// and adapter/out/pgbus (Postgres NOTIFY publisher + LISTEN forwarder that
+// bridges worker-published events into the API's in-memory bus, envelope
+// {topic,type} only — payloads never cross processes).
 type EventBus interface {
 	Publish(ev CollabEvent)
 	// Subscribe returns a channel of events for the given topics and a

@@ -2,9 +2,9 @@
 // subscriber set with per-subscriber buffered channels. Publish never
 // blocks — a subscriber whose buffer is full simply misses the event (SSE
 // clients re-sync on reconnect), so a slow consumer can never stall the
-// publisher or grow memory without bound. Single-process by design; the
-// multi-instance path is a Postgres LISTEN/NOTIFY adapter behind the same
-// port.
+// publisher or grow memory without bound. Single-process by design;
+// cross-process events (cmd/worker publishes) reach this bus through the
+// Postgres LISTEN/NOTIFY bridge in adapter/out/pgbus.
 package eventbus
 
 import (

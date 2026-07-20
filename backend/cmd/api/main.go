@@ -27,6 +27,7 @@ import (
 	"calendium/backend/internal/adapter/out/nominatim"
 	"calendium/backend/internal/adapter/out/openmeteo"
 	"calendium/backend/internal/adapter/out/openrouter"
+	"calendium/backend/internal/adapter/out/pgbus"
 	"calendium/backend/internal/adapter/out/postgres"
 	"calendium/backend/internal/adapter/out/push"
 	"calendium/backend/internal/adapter/out/stripeapi"
@@ -133,6 +134,15 @@ func run(logger *slog.Logger) error {
 	// --- services ---
 	clock := service.SystemClock{}
 	bus := eventbus.New()
+	// Cross-process realtime bridge (M2 follow-up F1): forward worker-
+	// published events (share.updated on sync-delivered messages, team
+	// activity.updated) into this process's bus over Postgres LISTEN/NOTIFY.
+	// API-local publishes go straight to the in-memory bus — only the worker
+	// publishes to Postgres — so nothing is ever delivered twice. The
+	// listener reconnects with capped backoff on connection loss and never
+	// takes the server down; a notification arriving mid-reconnect is
+	// dropped, matching the bus's drop-on-full contract (clients refetch).
+	go pgbus.NewListener(cfg.DB.URL, bus, logger).Run(ctx)
 	activityRepo := postgres.NewTeamThreadActivityRepo(store)
 
 	users := service.NewUserService(store.Users(), store.UserPreferences(), clock)
