@@ -1106,6 +1106,25 @@ describe('EventDialog — notes tab', () => {
     expect(putEventNoteApiMock).toHaveBeenCalledTimes(1);
   });
 
+  it('flushes a pending autosave when the panel unmounts before the debounce fires', async () => {
+    const user = userEvent.setup();
+    const utils = renderDialog({ event: NOTE_EVENT });
+    await user.click(await screen.findByRole('tab', { name: 'Notes' }));
+    const textarea = (await screen.findByLabelText('Event notes')) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea).not.toBeDisabled());
+
+    await user.type(textarea, 'last-second edit');
+    expect(putEventNoteApiMock).not.toHaveBeenCalled(); // still inside the debounce window
+
+    // Close the dialog well before the 800ms debounce elapses: the pending
+    // payload must be saved on unmount, not dropped with the timer.
+    utils.unmount();
+    await waitFor(() =>
+      expect(putEventNoteApiMock).toHaveBeenCalledWith('ev-note', 'last-second edit', [])
+    );
+    expect(putEventNoteApiMock).toHaveBeenCalledTimes(1);
+  });
+
   it('adds a link chip and autosaves it', async () => {
     const { user } = await openNotesTab();
     const linkInput = screen.getByLabelText('Add doc link');
