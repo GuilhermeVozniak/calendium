@@ -48,6 +48,14 @@ type Delegation struct {
 	CreatedAt   time.Time         `json:"createdAt"`
 	AcceptedAt  *time.Time        `json:"acceptedAt"`
 	RevokedAt   *time.Time        `json:"revokedAt"`
+	// Display-identity enrichment resolved from the users table at read
+	// time (service-side, never persisted). Both parties already share
+	// the grant, so no new information crosses a boundary. Empty when
+	// unresolvable — clients fall back to the id (nothing fabricated).
+	PrincipalName  string `json:"principalName"`
+	PrincipalEmail string `json:"principalEmail"`
+	AssistantName  string `json:"assistantName"`
+	AssistantEmail string `json:"assistantEmail"`
 }
 
 // HasScope reports whether the grant lists s.

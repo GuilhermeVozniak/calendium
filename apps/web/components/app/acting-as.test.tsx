@@ -71,6 +71,40 @@ afterEach(() => {
   clearActingAs();
 });
 
+describe('ActingBanner — display identity (F2)', () => {
+  it('shows the principal display name resolved from the grant', async () => {
+    listDelegationsMock.mockResolvedValue({
+      asPrincipal: [],
+      asAssistant: [{ ...ACTIVE_GRANT, principalName: 'Bess Boss', principalEmail: 'boss@x.com' }],
+    });
+    setActingAs('user_boss');
+    renderWithClient(<ActingBanner />);
+    expect(await screen.findByText(/Acting for Bess Boss/)).toBeInTheDocument();
+  });
+
+  it('falls back to the email, then the raw id — nothing fabricated', async () => {
+    listDelegationsMock.mockResolvedValue({
+      asPrincipal: [],
+      asAssistant: [{ ...ACTIVE_GRANT, principalEmail: 'boss@x.com' }],
+    });
+    setActingAs('user_boss');
+    renderWithClient(<ActingBanner />);
+    expect(await screen.findByText(/Acting for boss@x\.com/)).toBeInTheDocument();
+  });
+});
+
+describe('ActAsMenuItems — display identity (F2)', () => {
+  it('labels actable principals by name when the grant carries one', async () => {
+    listDelegationsMock.mockResolvedValue({
+      asPrincipal: [],
+      asAssistant: [{ ...ACTIVE_GRANT, principalName: 'Bess Boss' }],
+    });
+    renderMenuItems();
+    expect(await screen.findByText('Bess Boss')).toBeInTheDocument();
+    expect(screen.queryByText('user_boss')).not.toBeInTheDocument();
+  });
+});
+
 describe('ActingBanner', () => {
   it('renders nothing while not acting — the act-as state is never implicit', () => {
     renderWithClient(<ActingBanner />);

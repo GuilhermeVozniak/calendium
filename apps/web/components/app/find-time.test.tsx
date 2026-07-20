@@ -151,6 +151,28 @@ describe('FindTimeDialog', () => {
     expect(screen.getByText('bob (not sharing)')).toBeInTheDocument();
   });
 
+  it('labels members with server-resolved names, id fallback otherwise (F2)', async () => {
+    const user = userEvent.setup();
+    teamAvailabilityMock.mockResolvedValue([
+      {
+        userId: 'alice',
+        name: 'Alice Adams',
+        shared: true,
+        busy: [{ start: localIso(9), end: localIso(9, 30) }],
+      },
+      { userId: 'bob', email: 'bob@x.com', shared: false, busy: [] },
+    ] satisfies MemberAvailability[]);
+    renderDialog();
+    await screen.findByRole('button', { name: /^10:00/ });
+    await pickTeam(user);
+
+    expect(await screen.findByLabelText('Include Alice Adams')).toBeInTheDocument();
+    expect(screen.getByText('bob@x.com (not sharing)')).toBeInTheDocument();
+    // Selection still keys on the stable user id.
+    await user.click(screen.getByLabelText('Include Alice Adams'));
+    await waitFor(() => expect(slotButton(/^9:00/)).toBeEnabled());
+  });
+
   it('re-enables the slot when the busy member is deselected', async () => {
     const user = userEvent.setup();
     renderDialog();

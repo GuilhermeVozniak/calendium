@@ -61,6 +61,30 @@ func mergeSnippets(lists ...[]domain.Snippet) []domain.Snippet {
 	return out
 }
 
+// annotateSnippetPermissions computes CanDelete for userID on every
+// snippet in place — EXACT parity with editableSnippet: personal snippets
+// belong to the caller (ListByUser is user-scoped), team snippets take
+// author or admin+. Roles are resolved once per team; a failed membership
+// lookup fails closed (CanDelete=false, the server still decides).
+func (s *MailService) annotateSnippetPermissions(ctx context.Context, userID string, snips []domain.Snippet) {
+	roles := map[string]domain.TeamRole{}
+	for i := range snips {
+		sn := &snips[i]
+		if sn.TeamID == nil || sn.UserID == userID {
+			sn.CanDelete = true
+			continue
+		}
+		role, ok := roles[*sn.TeamID]
+		if !ok {
+			if m, err := s.snippetTeamMember(ctx, userID, *sn.TeamID); err == nil {
+				role = m.Role
+			}
+			roles[*sn.TeamID] = role
+		}
+		sn.CanDelete = role.AtLeast(domain.TeamRoleAdmin)
+	}
+}
+
 // editableSnippet loads snippetID and authorizes userID to mutate it.
 // Personal snippet: owner only — anyone else sees ErrNotFound (M2.1
 // behavior unchanged). Team snippet: caller must be a member (non-members

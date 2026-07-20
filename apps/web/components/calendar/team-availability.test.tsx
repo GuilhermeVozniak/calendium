@@ -113,6 +113,20 @@ describe('TeamAvailabilityDialog', () => {
     }
   });
 
+  it('labels rows with the server-resolved name, id fallback otherwise (F2)', async () => {
+    teamAvailabilityMock.mockResolvedValue([
+      { userId: 'alice', name: 'Alice Adams', email: 'alice@x.com', shared: true, busy: [] },
+      { userId: 'bob', email: 'bob@x.com', shared: false, busy: [] },
+      { userId: 'carol', shared: false, busy: [] },
+    ] satisfies MemberAvailability[]);
+    renderDialog();
+
+    await waitFor(() => expect(screen.getByText('Alice Adams')).toBeInTheDocument());
+    expect(screen.getByText('bob@x.com')).toBeInTheDocument(); // email fallback
+    expect(screen.getByText('carol')).toBeInTheDocument(); // honest id fallback
+    expect(screen.queryByText('alice')).not.toBeInTheDocument();
+  });
+
   it('shows non-sharing members as "Not sharing" with zero busy cells', async () => {
     teamAvailabilityMock.mockResolvedValue([
       { userId: 'bob', shared: false, busy: [] },

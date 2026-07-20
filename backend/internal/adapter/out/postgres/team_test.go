@@ -174,6 +174,47 @@ func TestTeamRepoListMembersScoped(t *testing.T) {
 	}
 }
 
+func TestTeamRepoListMembersIdentityEnrichment(t *testing.T) {
+	// F2: ListMembers joins users for display identity. GetMember (the
+	// authz primitive) stays unenriched — enrichment exists only on the
+	// roster read that services gate behind the caller's own membership.
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	repo := NewTeamRepo(st)
+	seedUser(t, st, "u1") // email only, no display name
+	name := "Uma Member"
+	if _, err := st.Users().Upsert(ctx, domain.User{ID: "u2", Email: "u2@example.com", Name: &name}); err != nil {
+		t.Fatalf("seed named user: %v", err)
+	}
+	team := seedTeam(t, st, "u1", "Team A")
+	if err := repo.UpsertMember(ctx, domain.TeamMember{TeamID: team.ID, UserID: "u2", Role: domain.TeamRoleMember}); err != nil {
+		t.Fatalf("UpsertMember: %v", err)
+	}
+
+	members, err := repo.ListMembers(ctx, team.ID)
+	if err != nil || len(members) != 2 {
+		t.Fatalf("ListMembers = %d, %v; want 2", len(members), err)
+	}
+	byUser := map[string]domain.TeamMember{}
+	for _, m := range members {
+		byUser[m.UserID] = m
+	}
+	if got := byUser["u1"]; got.Name != "" || got.Email != "u1@example.com" {
+		t.Fatalf("u1 identity = %q/%q, want \"\"/u1@example.com (NULL name stays empty)", got.Name, got.Email)
+	}
+	if got := byUser["u2"]; got.Name != "Uma Member" || got.Email != "u2@example.com" {
+		t.Fatalf("u2 identity = %q/%q, want Uma Member/u2@example.com", got.Name, got.Email)
+	}
+
+	m, err := repo.GetMember(ctx, team.ID, "u2")
+	if err != nil {
+		t.Fatalf("GetMember: %v", err)
+	}
+	if m.Name != "" || m.Email != "" {
+		t.Fatalf("GetMember enriched (%q/%q), want the authz primitive to stay identity-free", m.Name, m.Email)
+	}
+}
+
 func TestTeamRepoRemoveMember(t *testing.T) {
 	st, _ := newTestStore(t)
 	ctx := context.Background()

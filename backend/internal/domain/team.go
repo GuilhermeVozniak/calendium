@@ -69,6 +69,14 @@ type TeamMember struct {
 	// team never exposes activity without this explicit toggle.
 	ShareReadStatuses bool      `json:"shareReadStatuses"`
 	JoinedAt          time.Time `json:"joinedAt"`
+	// Name and Email are display-identity enrichment resolved from the
+	// users table when a member roster is read (TeamRepo.ListMembers
+	// join). Least-leak: they are populated ONLY on rosters the caller
+	// can already see by being a member — never via any global user
+	// lookup. Empty when unresolvable; clients fall back to the id
+	// (nothing is fabricated).
+	Name  string `json:"name"`
+	Email string `json:"email"`
 }
 
 // InvitationStatus is the lifecycle of an email invitation.

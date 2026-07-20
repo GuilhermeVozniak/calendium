@@ -4,7 +4,7 @@ import * as React from 'react';
 import type { Comment } from '@calendium/shared';
 import { ApiRequestError } from '@calendium/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Trash2, X } from 'lucide-react';
+import { Loader2, Pencil, Trash2, X } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
@@ -62,6 +62,21 @@ export function CommentsPanel({ threadId, onClose }: CommentsPanelProps) {
     mutationFn: (commentId: string) => api.deleteComment(commentId),
     onSuccess: () => void invalidate(),
     onError: () => toast.error('Could not delete the comment.'),
+  });
+
+  // Inline author-only edit (F2). The UI only hides the control for other
+  // people's comments — the server enforces the author-only rule.
+  const [editingId, setEditingId] = React.useState<string | null>(null);
+  const [editBody, setEditBody] = React.useState('');
+  const updateMutation = useMutation({
+    mutationFn: ({ commentId, text }: { commentId: string; text: string }) =>
+      api.updateComment(commentId, text),
+    onSuccess: () => {
+      setEditingId(null);
+      setEditBody('');
+      void invalidate();
+    },
+    onError: () => toast.error('Could not update the comment.'),
   });
 
   const myId = meQuery.data?.id ?? null;
@@ -131,19 +146,74 @@ export function CommentsPanel({ threadId, onClose }: CommentsPanelProps) {
               <ul className="flex flex-col gap-3 py-1">
                 {comments.map((comment) => {
                   const mine = myId !== null && comment.authorId === myId;
+                  const editing = editingId === comment.id;
                   return (
                     <li key={comment.id} className="group rounded-md border px-2.5 py-2">
                       <div className="flex items-baseline justify-between gap-2">
                         <span className="text-xs font-medium" title={comment.authorId}>
-                          {mine ? 'You' : `Teammate ${comment.authorId.slice(0, 8)}`}
+                          {/* Server-resolved name; honest fallback to the id —
+                              nothing is fabricated client-side. */}
+                          {mine
+                            ? 'You'
+                            : comment.authorName || `Teammate ${comment.authorId.slice(0, 8)}`}
                         </span>
                         <span className="text-muted-foreground shrink-0 text-xs">
                           {formatListTime(comment.createdAt)}
                         </span>
                       </div>
-                      <p className="mt-1 text-sm whitespace-pre-wrap">{comment.body}</p>
-                      {mine && (
-                        <div className="mt-1 flex justify-end">
+                      {editing ? (
+                        <div className="mt-1 flex flex-col gap-1.5">
+                          <Textarea
+                            value={editBody}
+                            onChange={(e) => setEditBody(e.target.value)}
+                            aria-label="Edit comment body"
+                            rows={2}
+                          />
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 px-2 text-xs"
+                              onClick={() => setEditingId(null)}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              size="sm"
+                              className="h-6 px-2 text-xs"
+                              disabled={!editBody.trim() || updateMutation.isPending}
+                              onClick={() =>
+                                updateMutation.mutate({
+                                  commentId: comment.id,
+                                  text: editBody.trim(),
+                                })
+                              }
+                            >
+                              {updateMutation.isPending ? (
+                                <Loader2 className="animate-spin" />
+                              ) : null}
+                              Save
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="mt-1 text-sm whitespace-pre-wrap">{comment.body}</p>
+                      )}
+                      {mine && !editing && (
+                        <div className="mt-1 flex justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                            aria-label="Edit comment"
+                            disabled={updateMutation.isPending}
+                            onClick={() => {
+                              setEditingId(comment.id);
+                              setEditBody(comment.body);
+                            }}
+                          >
+                            <Pencil className="size-3.5" />
+                          </Button>
                           <Button
                             variant="ghost"
                             size="icon"

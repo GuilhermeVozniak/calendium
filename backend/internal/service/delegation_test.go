@@ -108,10 +108,19 @@ func (f *delegAuditFake) ListByPrincipal(_ context.Context, principalID string, 
 
 type delegUserDirFake struct {
 	byEmail map[string]domain.User
+	byID    map[string]domain.User
 }
 
 func (f *delegUserDirFake) GetByEmail(_ context.Context, email string) (domain.User, error) {
 	u, ok := f.byEmail[email]
+	if !ok {
+		return domain.User{}, domain.ErrNotFound
+	}
+	return u, nil
+}
+
+func (f *delegUserDirFake) GetByID(_ context.Context, id string) (domain.User, error) {
+	u, ok := f.byID[id]
 	if !ok {
 		return domain.User{}, domain.ErrNotFound
 	}
@@ -128,9 +137,13 @@ func newDelegService() (*DelegationService, *delegRepoFake, *delegAuditFake, *de
 	repo := newDelegRepoFake()
 	audit := &delegAuditFake{}
 	users := &delegUserDirFake{byEmail: map[string]domain.User{
-		"assistant@example.com": {ID: "assistant_1", Email: "assistant@example.com"},
+		"assistant@example.com": {ID: "assistant_1", Email: "assistant@example.com", Name: ptr("Alex Assistant")},
 		"principal@example.com": {ID: "principal_1", Email: "principal@example.com"},
 	}}
+	users.byID = map[string]domain.User{}
+	for _, u := range users.byEmail {
+		users.byID[u.ID] = u
+	}
 	svc := NewDelegationService(DelegationServiceDeps{
 		Delegations: repo,
 		Audit:       audit,
@@ -153,6 +166,85 @@ func grantActive(t *testing.T, svc *DelegationService, scopes ...domain.Delegati
 		t.Fatalf("accept grant: %v", err)
 	}
 	return d
+}
+
+// --- F2: display-identity enrichment -----------------------------------------
+
+func TestDelegationDisplayIdentityEnrichment(t *testing.T) {
+	svc, _, _, _ := newDelegService()
+	ctx := context.Background()
+
+	d, err := svc.Create(ctx, "principal_1", "assistant@example.com", []domain.DelegationScope{domain.ScopeMailRead})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	check := func(label string, d domain.Delegation) {
+		t.Helper()
+		if d.AssistantName != "Alex Assistant" || d.AssistantEmail != "assistant@example.com" {
+			t.Fatalf("%s assistant identity = %q/%q, want Alex Assistant/assistant@example.com", label, d.AssistantName, d.AssistantEmail)
+		}
+		// principal_1 has no display name: name stays empty (honest), email set.
+		if d.PrincipalName != "" || d.PrincipalEmail != "principal@example.com" {
+			t.Fatalf("%s principal identity = %q/%q, want \"\"/principal@example.com", label, d.PrincipalName, d.PrincipalEmail)
+		}
+	}
+	check("create", d)
+
+	accepted, err := svc.Accept(ctx, "assistant_1", d.ID)
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	check("accept", accepted)
+
+	asPrincipal, _, err := svc.List(ctx, "principal_1")
+	if err != nil || len(asPrincipal) != 1 {
+		t.Fatalf("List(principal) = %d grants, %v", len(asPrincipal), err)
+	}
+	check("list asPrincipal", asPrincipal[0])
+
+	_, asAssistant, err := svc.List(ctx, "assistant_1")
+	if err != nil || len(asAssistant) != 1 {
+		t.Fatalf("List(assistant) = %d grants, %v", len(asAssistant), err)
+	}
+	check("list asAssistant", asAssistant[0])
+}
+
+func TestDelegationEnrichmentUnresolvableStaysEmpty(t *testing.T) {
+	svc, _, _, users := newDelegService()
+	ctx := context.Background()
+	d := grantActive(t, svc, domain.ScopeMailRead)
+
+	// The principal's user row disappears: enrichment must yield empty
+	// fields, never a fabricated name.
+	delete(users.byID, "principal_1")
+	asPrincipal, _, err := svc.List(ctx, "principal_1")
+	if err != nil || len(asPrincipal) != 1 {
+		t.Fatalf("List = %d, %v", len(asPrincipal), err)
+	}
+	if got := asPrincipal[0]; got.PrincipalName != "" || got.PrincipalEmail != "" {
+		t.Fatalf("unresolvable principal enriched anyway: %q/%q", got.PrincipalName, got.PrincipalEmail)
+	}
+	if got := asPrincipal[0]; got.AssistantEmail != "assistant@example.com" {
+		t.Fatalf("assistant enrichment lost: %+v", got)
+	}
+	_ = d
+}
+
+func TestDelegationListOutsiderResolvesNothing(t *testing.T) {
+	// Cross-tenant negative: a user who is party to no grant gets empty
+	// lists — there is no path by which they can resolve either party's
+	// name or email.
+	svc, _, _, _ := newDelegService()
+	ctx := context.Background()
+	grantActive(t, svc, domain.ScopeMailRead)
+
+	asPrincipal, asAssistant, err := svc.List(ctx, "stranger_1")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(asPrincipal) != 0 || len(asAssistant) != 0 {
+		t.Fatalf("outsider sees grants: %d/%d, want 0/0", len(asPrincipal), len(asAssistant))
+	}
 }
 
 // --- Step 1: service behavior ------------------------------------------------

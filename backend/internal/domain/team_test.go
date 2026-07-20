@@ -172,10 +172,15 @@ func TestTeamMemberJSONShape(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 	m := jsonKeys(t, b)
-	for _, key := range []string{"teamId", "userId", "role", "shareReadStatuses", "joinedAt"} {
+	for _, key := range []string{"teamId", "userId", "role", "shareReadStatuses", "joinedAt", "name", "email"} {
 		if _, ok := m[key]; !ok {
 			t.Fatalf("TeamMember JSON = %s, want key %q", b, key)
 		}
+	}
+	// Unenriched identity serializes as empty strings — present, honest,
+	// never fabricated.
+	if m["name"] != "" || m["email"] != "" {
+		t.Fatalf("TeamMember JSON name/email = %v/%v, want empty when unenriched", m["name"], m["email"])
 	}
 	if m["shareReadStatuses"] != false {
 		t.Fatalf("TeamMember JSON shareReadStatuses = %v, want privacy default false serialized", m["shareReadStatuses"])

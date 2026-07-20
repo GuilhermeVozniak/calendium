@@ -90,6 +90,17 @@ func (s *CollabService) ListComments(ctx context.Context, userID, threadID, team
 	if cs == nil {
 		cs = []domain.Comment{}
 	}
+	// Display-identity enrichment happens only here — after membership and
+	// thread visibility passed — so author names never resolve for callers
+	// outside the team.
+	names := map[string]string{}
+	for i := range cs {
+		id := cs[i].AuthorID
+		if _, ok := names[id]; !ok {
+			names[id] = s.displayIdentity(ctx, id)
+		}
+		cs[i].AuthorName = names[id]
+	}
 	return cs, nil
 }
 
@@ -127,6 +138,7 @@ func (s *CollabService) AddComment(ctx context.Context, userID, threadID string,
 	// Best-effort after persist: realtime event + mention notifications.
 	s.publishComment("comment.created", c)
 	s.notifyMentions(ctx, c, c.Mentions)
+	c.AuthorName = s.displayIdentity(ctx, c.AuthorID)
 	return c, nil
 }
 
@@ -170,6 +182,7 @@ func (s *CollabService) UpdateComment(ctx context.Context, userID, commentID, bo
 		}
 	}
 	s.notifyMentions(ctx, c, added)
+	c.AuthorName = s.displayIdentity(ctx, c.AuthorID)
 	return c, nil
 }
 
@@ -296,6 +309,20 @@ func (s *CollabService) notifyMentions(ctx context.Context, c domain.Comment, me
 			})
 		}
 	}
+}
+
+// displayIdentity resolves a comment author's API-facing display identity:
+// name, else email, else empty. Honest by construction — an unresolvable
+// user yields "" and clients fall back to the id; nothing is fabricated.
+func (s *CollabService) displayIdentity(ctx context.Context, userID string) string {
+	u, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return ""
+	}
+	if u.Name != nil && *u.Name != "" {
+		return *u.Name
+	}
+	return u.Email
 }
 
 // authorDisplay is the push-title author name: display name, else email,

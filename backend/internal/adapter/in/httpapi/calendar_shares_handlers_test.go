@@ -186,7 +186,7 @@ func TestCalendarShareRoutesUnwiredAnswer501(t *testing.T) {
 func TestTeamAvailabilityRoute(t *testing.T) {
 	h := newHarness(t)
 	h.calendars.teamAvailRet = []port.MemberAvailability{
-		{UserID: "u1", Shared: true, Busy: []domain.AvailabilitySlot{{
+		{UserID: "u1", Name: "Ada One", Email: "u1@x.com", Shared: true, Busy: []domain.AvailabilitySlot{{
 			Start: time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC),
 			End:   time.Date(2026, 7, 7, 11, 0, 0, 0, time.UTC),
 		}}},
@@ -212,6 +212,13 @@ func TestTeamAvailabilityRoute(t *testing.T) {
 	}
 	if got[0]["userId"] != "u1" || got[0]["shared"] != true {
 		t.Fatalf("row0 = %+v", got[0])
+	}
+	// F2: display identity rides along; unenriched rows serialize empty.
+	if got[0]["name"] != "Ada One" || got[0]["email"] != "u1@x.com" {
+		t.Fatalf("row0 identity = %v/%v, want Ada One/u1@x.com", got[0]["name"], got[0]["email"])
+	}
+	if got[1]["name"] != "" || got[1]["email"] != "" {
+		t.Fatalf("row1 identity = %v/%v, want empty", got[1]["name"], got[1]["email"])
 	}
 	busy, ok := got[0]["busy"].([]any)
 	if !ok || len(busy) != 1 {

@@ -25,6 +25,11 @@ type Comment struct {
 	CreatedAt time.Time  `json:"createdAt"`
 	UpdatedAt time.Time  `json:"updatedAt"`
 	DeletedAt *time.Time `json:"-"`
+	// AuthorName is display-identity enrichment (the author's name, else
+	// their email) resolved service-side at read time, only after the
+	// caller's team membership and thread visibility were verified. Not
+	// persisted. Empty when unresolvable — clients fall back to the id.
+	AuthorName string `json:"authorName"`
 }
 
 // MaxCommentBodyChars mirrors the thread_comments body CHECK constraint.

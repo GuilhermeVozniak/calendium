@@ -237,8 +237,11 @@ type Draft struct {
 
 // Snippet is a reusable canned response with an optional keyboard shortcut.
 type Snippet struct {
-	ID     string `json:"id"`
-	UserID string `json:"-"`
+	ID string `json:"id"`
+	// UserID is the snippet's author, exposed as authorId: personal
+	// snippets only ever reach their owner and team snippets only reach
+	// that team's members, so the author id never crosses team scope.
+	UserID string `json:"authorId"`
 	// TeamID scopes the snippet to a team (M2.7 team snippets); nil means
 	// personal. Team snippets are visible to every team member.
 	TeamID     *string `json:"teamId"`
@@ -246,6 +249,11 @@ type Snippet struct {
 	Shortcut   *string `json:"shortcut"`
 	BodyHTML   string  `json:"bodyHtml"`
 	UsageCount int     `json:"usageCount"`
+	// CanDelete reports whether the REQUESTING user may edit/delete this
+	// snippet (author, or admin+ on team snippets). Computed per request
+	// in the service — exact parity with the server-side authorization
+	// (editableSnippet); never persisted.
+	CanDelete bool `json:"canDelete"`
 }
 
 // ThreadAction is a one-shot mutation on a thread.

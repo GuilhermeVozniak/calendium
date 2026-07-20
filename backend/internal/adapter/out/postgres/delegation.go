@@ -147,3 +147,12 @@ func (r *UserDirectory) GetByEmail(ctx context.Context, email string) (domain.Us
 		email)
 	return scanUser(row)
 }
+
+// GetByID resolves a grant party for display-identity enrichment. Only the
+// DelegationService calls it, and only with the ids already on a grant the
+// caller is a party to — it is not a global user-lookup surface.
+func (r *UserDirectory) GetByID(ctx context.Context, id string) (domain.User, error) {
+	row := r.s.q(ctx).QueryRowContext(ctx,
+		`SELECT `+userCols+` FROM users WHERE id = $1`, id)
+	return scanUser(row)
+}
