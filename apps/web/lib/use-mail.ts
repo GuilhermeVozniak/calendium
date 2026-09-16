@@ -20,6 +20,7 @@ import type {
   SendSuggestion,
   Thread,
   ThreadAction,
+  UndoEntry,
   UnsubscribeResult,
 } from '@calendium/shared';
 import { ApiRequestError, UndoStack } from '@calendium/shared';
@@ -508,7 +509,7 @@ export function useMailActions() {
     action: ThreadAction,
     opts?: { undoable?: boolean }
   ): Promise<boolean> {
-    const ok = await runOptimistic(
+    const pending = runOptimistic(
       threadId,
       (t) => applyActionToThread(t, action),
       REMOVES_FROM_LIST.has(action),
@@ -517,17 +518,28 @@ export function useMailActions() {
       ACTION_ERROR[action] ?? 'Could not update the conversation.',
       { kind: 'thread_action', threadId, action }
     );
+    // Register the undo entry as soon as the optimistic patch is visible, not
+    // once the request settles: a Z pressed during the round trip must still
+    // undo (before this, it found an empty stack and the action stuck). The
+    // closure waits for the original to settle and does nothing if that was
+    // rolled back (the row is already back); a failed original also drops
+    // its own entry so a later Z never targets a no-op.
     const inverse = ACTION_INVERSE[action];
-    if (ok && opts?.undoable !== false && inverse) {
-      mailUndo.push({
-        label: ACTION_UNDO_LABEL[action] ?? action,
-        undo: () =>
-          act(threadId, inverse, { undoable: false }).then((undone) => {
-            if (!undone) throw new Error(`Could not undo: ${ACTION_UNDO_LABEL[action] ?? action}`);
-            void queryClient.invalidateQueries({ queryKey: ['threads'] });
-          }),
-      });
-    }
+    const entry: UndoEntry | null =
+      opts?.undoable !== false && inverse
+        ? {
+            label: ACTION_UNDO_LABEL[action] ?? action,
+            undo: async () => {
+              if (!(await pending)) return;
+              const undone = await act(threadId, inverse, { undoable: false });
+              if (!undone) throw new Error(`Could not undo: ${ACTION_UNDO_LABEL[action] ?? action}`);
+              void queryClient.invalidateQueries({ queryKey: ['threads'] });
+            },
+          }
+        : null;
+    if (entry) mailUndo.push(entry);
+    const ok = await pending;
+    if (!ok && entry) mailUndo.remove(entry);
     return ok;
   }
 
