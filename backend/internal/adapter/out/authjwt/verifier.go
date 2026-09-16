@@ -394,11 +394,18 @@ func (k jwk) publicKey() (crypto.PublicKey, error) {
 		if err != nil {
 			return nil, fmt.Errorf("authjwt: decode EC y: %w", err)
 		}
-		return &ecdsa.PublicKey{
-			Curve: elliptic.P256(),
-			X:     new(big.Int).SetBytes(x),
-			Y:     new(big.Int).SetBytes(y),
-		}, nil
+		// RFC 7518 §6.2.1: x and y are the fixed-width (32 bytes for P-256)
+		// coordinates. Assemble the uncompressed SEC 1 point (0x04||X||Y) so
+		// the stdlib parser also verifies the point actually lies on the curve.
+		point := make([]byte, 0, 1+len(x)+len(y))
+		point = append(point, 0x04)
+		point = append(point, x...)
+		point = append(point, y...)
+		pub, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), point)
+		if err != nil {
+			return nil, fmt.Errorf("authjwt: invalid EC public key: %w", err)
+		}
+		return pub, nil
 	default:
 		return nil, fmt.Errorf("authjwt: unsupported kty %q", k.Kty)
 	}
