@@ -1,7 +1,7 @@
 import type { ConnectedAccount } from '@calendium/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { renderHook, waitFor } from '@testing-library/react';
-import * as React from 'react';
+import type * as React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const listThreadsMock = vi.fn();

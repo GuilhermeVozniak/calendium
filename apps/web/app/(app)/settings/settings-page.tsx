@@ -1231,7 +1231,6 @@ function AiSection() {
 function MailboxSection() {
   const prefsQuery = usePrefs();
   const updatePrefsAsync = useUpdatePrefs();
-  const queryClient = useQueryClient();
 
   // Derive splits from prefs, matching the pattern in mail/page.tsx
   const splits = React.useMemo(
