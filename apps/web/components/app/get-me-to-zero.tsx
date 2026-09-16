@@ -1,6 +1,5 @@
 'use client';
 
-import * as React from 'react';
 import { toast } from 'sonner';
 
 import { TimePickerDialog } from '@/components/app/snooze-menu';

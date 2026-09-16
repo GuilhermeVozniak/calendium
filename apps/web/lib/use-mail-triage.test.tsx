@@ -229,4 +229,61 @@ describe('useMailActions undo/bulk honesty', () => {
     // the label forever instead of draining the stack.
     expect(mailUndo.size).toBe(0);
   });
+
+  it('act(): Z pressed while the request is still in flight still undoes the action', async () => {
+    const queryClient = new QueryClient();
+    seedThreads(queryClient, [makeThread('t1')]);
+    let resolveArchive!: () => void;
+    actOnThreadMock.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveArchive = resolve;
+        })
+    );
+    actOnThreadMock.mockResolvedValue(undefined); // the inverse call
+
+    const { result } = renderMailActions(queryClient);
+
+    const pending = result.current.act('t1', 'archive');
+    // The row is already gone optimistically, so Z must have something to
+    // undo right now — not only once the network round trip settles.
+    expect(readThreadIds(queryClient)).toEqual([]);
+    expect(mailUndo.size).toBe(1);
+
+    const undoing = result.current.undoLast();
+    expect(mailUndo.size).toBe(0);
+    resolveArchive();
+
+    await expect(pending).resolves.toBe(true);
+    await expect(undoing).resolves.toBe(true);
+    expect(actOnThreadMock).toHaveBeenNthCalledWith(1, 't1', 'archive');
+    expect(actOnThreadMock).toHaveBeenNthCalledWith(2, 't1', 'move_to_inbox');
+  });
+
+  it('act(): a request that fails after Z was pressed mid-flight sends no inverse and leaves no entry', async () => {
+    const queryClient = new QueryClient();
+    seedThreads(queryClient, [makeThread('t1')]);
+    let rejectArchive!: (err: Error) => void;
+    actOnThreadMock.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectArchive = reject;
+        })
+    );
+
+    const { result } = renderMailActions(queryClient);
+
+    const pending = result.current.act('t1', 'archive');
+    expect(mailUndo.size).toBe(1);
+    const undoing = result.current.undoLast();
+    rejectArchive(new Error('network down'));
+
+    await expect(pending).resolves.toBe(false);
+    // The rollback already restored the row, so the undo has nothing left
+    // to do: it must not fire the inverse against a state that never changed.
+    await expect(undoing).resolves.toBe(true);
+    expect(actOnThreadMock).toHaveBeenCalledTimes(1);
+    expect(readThreadIds(queryClient)).toEqual(['t1']);
+    expect(mailUndo.size).toBe(0);
+  });
 });

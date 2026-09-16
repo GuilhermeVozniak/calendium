@@ -38,7 +38,7 @@ describe('viewRange', () => {
   describe('to (exclusive) equals the next period\'s natural start', () => {
     it('day', () => {
       const anchor = new Date(2026, 6, 17);
-      const { from, to } = viewRange('day', anchor);
+      const { to } = viewRange('day', anchor);
       expect(to.getTime()).toBe(viewRange('day', addDays(anchor, 1)).from.getTime());
     });
 

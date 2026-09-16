@@ -25,6 +25,11 @@ export default defineConfig({
   fullyParallel: true, // parallel for functional tests; perf project is serial (see below)
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
+  // Locally the suite runs against `next dev`, whose first hit on a route
+  // compiles it on demand; with several workers landing on cold routes at
+  // once that can push a single test past Playwright's 30s default. CI runs
+  // a production build and keeps the strict default.
+  timeout: process.env.CI ? 30_000 : 60_000,
   reporter: process.env.CI ? [['github'], ['list']] : [['list']],
   use: {
     baseURL: BASE_URL,

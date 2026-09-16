@@ -114,4 +114,17 @@ describe('UndoStack', () => {
     while (stack.size > 0) last = stack.pop()?.label;
     expect(last).toBe('e5');
   });
+
+  it('remove drops a specific entry and is a no-op once it was popped', () => {
+    const stack = new UndoStack();
+    const one = { label: 'one', undo: () => {} };
+    const two = { label: 'two', undo: () => {} };
+    stack.push(one);
+    stack.push(two);
+    stack.remove(one);
+    expect(stack.size).toBe(1);
+    expect(stack.pop()).toBe(two);
+    stack.remove(two); // already popped: nothing to drop, must not throw
+    expect(stack.size).toBe(0);
+  });
 });

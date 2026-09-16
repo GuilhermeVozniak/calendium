@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"net/url"
 	"sync"
@@ -136,18 +135,13 @@ func parseVAPIDKeys(cfg config.VAPID) (*ecdsa.PrivateKey, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("push: decode VAPID_PRIVATE_KEY: %w", err)
 	}
-	ek, err := ecdh.P256().NewPrivateKey(d)
+	key, err := ecdsa.ParseRawPrivateKey(elliptic.P256(), d)
 	if err != nil {
 		return nil, "", fmt.Errorf("push: VAPID_PRIVATE_KEY is not a valid P-256 scalar: %w", err)
 	}
-	pub := ek.PublicKey().Bytes() // 0x04 || X || Y
-	key := &ecdsa.PrivateKey{
-		PublicKey: ecdsa.PublicKey{
-			Curve: elliptic.P256(),
-			X:     new(big.Int).SetBytes(pub[1:33]),
-			Y:     new(big.Int).SetBytes(pub[33:65]),
-		},
-		D: new(big.Int).SetBytes(d),
+	pub, err := key.PublicKey.Bytes() // 0x04 || X || Y
+	if err != nil {
+		return nil, "", fmt.Errorf("push: encode VAPID public key: %w", err)
 	}
 	pubB64 := cfg.PublicKey
 	if pubB64 == "" {

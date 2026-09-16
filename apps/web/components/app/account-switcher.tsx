@@ -1,7 +1,5 @@
 'use client';
 
-import * as React from 'react';
-
 import { Check, ChevronsUpDown, Inbox } from 'lucide-react';
 
 import {

@@ -104,6 +104,12 @@ export class UndoStack {
     return this.entries.pop();
   }
 
+  /** Drops one specific entry; a no-op if it was already popped. */
+  remove(entry: UndoEntry): void {
+    const i = this.entries.lastIndexOf(entry);
+    if (i >= 0) this.entries.splice(i, 1);
+  }
+
   clear(): void {
     this.entries = [];
   }
