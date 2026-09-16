@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures';
+import { expect, openCommandPalette, test } from './fixtures';
 
 test.describe('Bulk triage', () => {
   test('x selects, shift+j extends, e bulk-archives, z undoes', async ({ page }) => {
@@ -41,8 +41,10 @@ test.describe('Bulk triage', () => {
     await page.keyboard.press('Shift+j');
     await expect(page.getByText('2 selected')).toBeVisible();
 
-    // Open command palette and run Archive (Meta+k on macOS, Ctrl+k on Linux)
-    await page.keyboard.press('Meta+k');
+    // Open the command palette via the platform-aware helper: the app binds
+    // `mod+k`, which is ⌘ on macOS but Ctrl on the Linux CI runner, so a
+    // hardcoded Meta+k silently does nothing there.
+    await openCommandPalette(page);
     await expect(page.getByPlaceholder('Type a command or search…')).toBeVisible();
     const archiveButton = page.getByText('Archive conversation').first();
     await archiveButton.click();
