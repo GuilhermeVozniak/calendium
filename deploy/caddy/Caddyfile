@@ -16,9 +16,12 @@
 {$DOMAIN} {
 	encode zstd gzip
 
-	# API + health checks → Go backend.
+	# API + health checks → Go backend. /v1/internal/* is server-to-server
+	# only (web → api over the compose network); never expose it at the edge.
 	@api path /v1/* /healthz
 	handle @api {
+		@internal path /v1/internal/*
+		respond @internal 404
 		# The api honours X-Request-Id from this (trusted) proxy, so never
 		# relay a client-chosen one; the api generates a fresh id.
 		reverse_proxy api:8080 {

@@ -2,7 +2,7 @@
 
 Every Calendium container reads its settings from a single `.env` file. Start
 from [`.env.example`](../../.env.example) (the compose/self-host template) and
-fill it in. Only **`DATABASE_URL`** and **`TOKEN_ENCRYPTION_KEY`** are required
+fill it in. Only **`DATABASE_URL`**, **`TOKEN_ENCRYPTION_KEY`** and **`INTERNAL_API_SECRET`** are required
 to boot; authentication (Better Auth) is built into the web app and needs only `BETTER_AUTH_SECRET`; everything else unlocks its own
 adapter when set and is otherwise ignored.
 
@@ -31,6 +31,8 @@ See also: [Quickstart](./quickstart.md) · [Clients](./clients.md) ·
 | --- | --- | --- | --- |
 | `DATABASE_URL` | **Yes** | — | Postgres DSN for `api` + `worker`. In compose the host is the service name `db`: `postgres://calendium:<pw>@db:5432/calendium?sslmode=disable`. Use `sslmode=require` for managed Postgres. |
 | `TOKEN_ENCRYPTION_KEY` | **Yes** | — | 32-byte AES-256-GCM key as **exactly 64 hex chars**. Generate with `make gen-secret` / `openssl rand -hex 32`. Encrypts provider refresh tokens at rest. Wrong length fails config validation at boot. **Back it up separately.** |
+| `INTERNAL_API_SECRET` | **Yes** | — | 32-byte secret as **exactly 64 hex chars** (`openssl rand -hex 32`), required in both modes. Authenticates the web app's server-to-server calls to `/v1/internal/*` (account deletion). **Set the same value on `api` and `web`.** Never public, never `NEXT_PUBLIC_*`. |
+| `INTERNAL_API_URL` | No | compose: `http://api:8080`; bare: `http://localhost:8080` | **Web only.** Base URL of the Go API as reachable from the web server (in-network), used for account deletion. |
 | `POSTGRES_USER` | No | `calendium` | Bundled `db` service user. |
 | `POSTGRES_PASSWORD` | **Yes** | `calendium` | Bundled `db` password — **change it**. The API refuses to boot in cloud mode (and warns loudly when `SELF_HOSTED=true`) when `DATABASE_URL` still carries `change-me-please` or `calendium`. Must match the password in `DATABASE_URL`. |
 | `POSTGRES_DB` | No | `calendium` | Bundled `db` database name. |
@@ -214,6 +216,7 @@ SELF_HOSTED=true
 POSTGRES_PASSWORD=<strong password>
 DATABASE_URL=postgres://calendium:<same password>@db:5432/calendium?sslmode=disable
 TOKEN_ENCRYPTION_KEY=<openssl rand -hex 32>
+INTERNAL_API_SECRET=<openssl rand -hex 32>   # same value for api and web
 
 # Authentication (Better Auth — built into the web app; email+password out of the box):
 BETTER_AUTH_SECRET=<openssl rand -base64 32>
