@@ -1068,6 +1068,11 @@ type fakeSettingsService struct {
 	updateErr       error
 	gotUpdateUserID string
 	gotUpdateIn     domain.UserSettings
+
+	setAIRet   domain.UserSettings
+	setAIErr   error
+	setAICalls int
+	gotSetAI   bool
 }
 
 func (f *fakeSettingsService) Get(ctx context.Context, userID string) (domain.UserSettings, error) {
@@ -1076,6 +1081,11 @@ func (f *fakeSettingsService) Get(ctx context.Context, userID string) (domain.Us
 func (f *fakeSettingsService) Update(ctx context.Context, userID string, s domain.UserSettings) (domain.UserSettings, error) {
 	f.gotUpdateUserID, f.gotUpdateIn = userID, s
 	return f.updateRet, f.updateErr
+}
+func (f *fakeSettingsService) SetAIBackground(ctx context.Context, userID string, on bool) (domain.UserSettings, error) {
+	f.setAICalls++
+	f.gotSetAI = on
+	return f.setAIRet, f.setAIErr
 }
 
 // --- EventBus ----------------------------------------------------------------
@@ -1309,6 +1319,8 @@ type harness struct {
 	events     *fakeEventBus
 	teams      *fakeTeamService
 	tasks      *fakeTaskService
+	lifecycle  *fakeLifecycleService
+	export     *fakeExportService
 }
 
 // newHarness wires every double into Deps with a discard logger and one
@@ -1336,6 +1348,8 @@ func newHarness(t *testing.T) *harness {
 		events:    newFakeEventBus(),
 		teams:     &fakeTeamService{},
 		tasks:     &fakeTaskService{},
+		lifecycle: &fakeLifecycleService{},
+		export:    &fakeExportService{},
 	}
 	h.scheduling = h.sched
 	h.deps = Deps{
@@ -1356,6 +1370,8 @@ func newHarness(t *testing.T) *harness {
 		Events:     h.events,
 		Teams:      h.teams,
 		Tasks:      h.tasks,
+		Lifecycle:  h.lifecycle,
+		Export:     h.export,
 	}
 	return h
 }

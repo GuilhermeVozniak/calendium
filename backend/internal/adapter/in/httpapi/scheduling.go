@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -376,9 +377,25 @@ func (s *server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, settings)
 }
 
+// handleUpdateSettings decodes the document twice: once into the domain
+// struct (full replace of time zone / hours / location) and once as a raw
+// object so aiBackground is tri-state — absent or null leaves the stored
+// switch alone (older mobile/desktop builds PUT the whole document without
+// it), true/false writes it through SetAIBackground.
 func (s *server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	var raw map[string]json.RawMessage
+	if err := decodeJSON(w, r, &raw); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	aiBackground, err := optionalField[bool](raw, "aiBackground")
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	delete(raw, "aiBackground") // never reaches Update (it cannot write the switch)
 	var in domain.UserSettings
-	if err := decodeJSON(w, r, &in); err != nil {
+	if err := remarshal(raw, &in); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -390,10 +407,31 @@ func (s *server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	settings, err := s.deps.Settings.Update(r.Context(), userFrom(r).ID, in)
+	userID := userFrom(r).ID
+	settings, err := s.deps.Settings.Update(r.Context(), userID, in)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
+	if aiBackground != nil && *aiBackground != nil {
+		settings, err = s.deps.Settings.SetAIBackground(r.Context(), userID, **aiBackground)
+		if err != nil {
+			s.writeError(w, r, err)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, settings)
+}
+
+// remarshal decodes an already-parsed JSON object into dst; a type mismatch
+// is a 400 validation error like any malformed body.
+func remarshal(raw map[string]json.RawMessage, dst any) error {
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("%w: invalid JSON body: %v", domain.ErrValidation, err)
+	}
+	if err := json.Unmarshal(b, dst); err != nil {
+		return fmt.Errorf("%w: invalid JSON body: %v", domain.ErrValidation, err)
+	}
+	return nil
 }
