@@ -1,4 +1,4 @@
-import { getAccessToken } from '@/lib/auth-client';
+import { getAccessToken, isApiSuspended, onApiSuspended } from '@/lib/auth-client';
 import { env } from '@/lib/env';
 
 /** One realtime collaboration notification (mirrors the Go port.CollabEvent). */
@@ -116,21 +116,33 @@ export function openCollabStream(
   const run = async (): Promise<void> => {
     let delay = initialDelay;
     while (!signal.aborted) {
-      try {
-        const token = await getToken();
-        const res = await fetchFn(`${baseUrl}${streamPath}`, {
-          headers: {
-            Accept: 'text/event-stream',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          signal,
-        });
-        if (res.ok && res.body) {
-          delay = initialDelay; // healthy connection resets the backoff
-          await readStream(res.body);
+      // Account deletion (suspendApi): no connection while paused, and the
+      // open one is dropped (below) so nothing reaches the API mid-purge.
+      if (!isApiSuspended()) {
+        const attempt = new AbortController();
+        const abortAttempt = (): void => attempt.abort();
+        signal.addEventListener('abort', abortAttempt, { once: true });
+        const offSuspend = onApiSuspended(abortAttempt);
+        try {
+          const token = await getToken();
+          if (attempt.signal.aborted) throw new Error('suspended');
+          const res = await fetchFn(`${baseUrl}${streamPath}`, {
+            headers: {
+              Accept: 'text/event-stream',
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            signal: attempt.signal,
+          });
+          if (res.ok && res.body) {
+            delay = initialDelay; // healthy connection resets the backoff
+            await readStream(res.body);
+          }
+        } catch {
+          // Network/auth failure — fall through to the backoff below.
+        } finally {
+          signal.removeEventListener('abort', abortAttempt);
+          offSuspend();
         }
-      } catch {
-        // Network/auth failure — fall through to the backoff below.
       }
       if (signal.aborted) return;
       await sleep(delay);

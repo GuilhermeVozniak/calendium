@@ -6,6 +6,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"calendium/backend/internal/domain"
 	"calendium/backend/internal/port"
 )
@@ -25,16 +27,25 @@ func scanUser(r rowScanner) (domain.User, error) {
 	return u, nil
 }
 
-// Upsert is the requireAuth provisioning write. The deleted_users check is
-// part of the same statement (one primary-key probe, no extra round trip):
-// a tombstoned id inserts nothing, RETURNING yields no row, and the caller
-// gets domain.ErrUserDeleted instead of a resurrected account. A live row
-// can never be tombstoned (Purge deletes it in the tombstone's tx).
+// sqlStateUserDeleted is raised by the users BEFORE INSERT trigger
+// (migration 0029) for an id present in deleted_users.
+const sqlStateUserDeleted = "CU001"
+
+// isUserDeleted reports whether err is the deleted_users trigger refusal.
+func isUserDeleted(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == sqlStateUserDeleted
+}
+
+// Upsert is the requireAuth provisioning write. A tombstoned id is refused
+// by the users BEFORE INSERT trigger (migration 0029), which serialises with
+// an in-flight purge on a per-id lock and so holds even for an upsert that
+// started before the purge committed; the caller gets domain.ErrUserDeleted
+// (401) instead of a resurrected account.
 func (r userRepo) Upsert(ctx context.Context, u domain.User) (domain.User, error) {
 	row := r.q(ctx).QueryRowContext(ctx, `
 		INSERT INTO users (id, email, name, avatar_url)
-		SELECT $1::text, $2::text, $3::text, $4::text
-		WHERE NOT EXISTS (SELECT 1 FROM deleted_users WHERE id = $1::text)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (id) DO UPDATE SET
 			email      = EXCLUDED.email,
 			name       = COALESCE(EXCLUDED.name, users.name),
@@ -42,13 +53,15 @@ func (r userRepo) Upsert(ctx context.Context, u domain.User) (domain.User, error
 		RETURNING `+userCols,
 		u.ID, u.Email, nullStrPtr(u.Name), nullStrPtr(u.AvatarURL))
 	got, err := scanUser(row)
-	if errors.Is(err, domain.ErrNotFound) {
+	if isUserDeleted(err) {
 		return domain.User{}, domain.ErrUserDeleted
 	}
 	return got, err
 }
 
-// Tombstone records a purged id so Upsert refuses it (idempotent).
+// Tombstone records a purged id so the users trigger refuses it
+// (idempotent). Its own trigger takes the per-id lock the users trigger
+// waits on, so call it first in the purge transaction.
 func (r userRepo) Tombstone(ctx context.Context, id string) error {
 	_, err := r.q(ctx).ExecContext(ctx,
 		`INSERT INTO deleted_users (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, id)

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"calendium/backend/internal/domain"
 	"calendium/backend/internal/port"
@@ -152,5 +153,112 @@ func TestLockMembershipsForUpdateBlocksConcurrentMembershipChanges(t *testing.T)
 	}
 	if err := try(`DELETE FROM team_members WHERE team_id = $1 AND user_id = 'u2'`, team.ID); err != nil {
 		t.Fatalf("after the lock is released the leave succeeds: %v", err)
+	}
+}
+
+// C-1: a requireAuth upsert that arrives while the purge transaction is
+// open (tombstone written, users row deleted, not yet committed) must not
+// re-create the row after the purge commits. The users BEFORE INSERT
+// trigger serialises on the same per-id lock the tombstone insert takes,
+// then sees the committed tombstone and raises; Upsert maps that to
+// ErrUserDeleted (→ 401).
+func TestConcurrentUpsertDuringPurgeIsRefused(t *testing.T) {
+	st, db := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+
+	purged := make(chan struct{})
+	release := make(chan struct{})
+	purgeDone := make(chan error, 1)
+	go func() {
+		purgeDone <- st.RunInTx(ctx, func(ctx context.Context) error {
+			if err := st.Users().Tombstone(ctx, "u1"); err != nil {
+				close(purged)
+				return err
+			}
+			if err := st.Users().Delete(ctx, "u1"); err != nil {
+				close(purged)
+				return err
+			}
+			close(purged)
+			<-release
+			return nil
+		})
+	}()
+	<-purged
+
+	users := service.NewUserService(st.Users(), st.UserPreferences(), service.SystemClock{})
+	upsertDone := make(chan error, 1)
+	go func() {
+		_, err := users.EnsureUser(ctx, port.Identity{Subject: "u1", Email: "u1@example.com", Name: "Back"})
+		upsertDone <- err
+	}()
+
+	// Wait until the upsert is parked on a lock held by the purge tx.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := db.QueryRowContext(ctx, `
+			SELECT count(*) FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND query LIKE '%INSERT INTO users%'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		select {
+		case err := <-upsertDone:
+			close(release)
+			<-purgeDone
+			t.Fatalf("upsert finished before the purge committed (err=%v); it must block", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			close(release)
+			<-purgeDone
+			t.Fatal("upsert never blocked on the purge transaction")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	close(release)
+	if err := <-purgeDone; err != nil {
+		t.Fatalf("purge tx: %v", err)
+	}
+	err := <-upsertDone
+	if !errors.Is(err, domain.ErrUserDeleted) || !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("concurrent EnsureUser = %v, want ErrUserDeleted (401)", err)
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE id = 'u1'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("users rows for u1 = %d err=%v, want 0 (not re-created)", n, err)
+	}
+}
+
+// A purge for an id that never got (or no longer has) a users row still
+// writes the tombstone, so a JWT minted before the Better Auth delete can
+// not provision a fresh row afterwards.
+func TestPurgeWithoutUsersRowStillTombstones(t *testing.T) {
+	st, db := newTestStore(t)
+	ctx := context.Background()
+	lifecycle := service.NewUserLifecycleService(service.UserLifecycleDeps{
+		Users: st.Users(), Teams: NewTeamRepo(st), Delegations: NewDelegationRepo(st),
+		Subscriptions: st.Subscriptions(), Tx: st, Clock: service.SystemClock{},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if _, err := lifecycle.Purge(ctx, "ghost"); err != nil {
+		t.Fatalf("Purge(ghost): %v", err)
+	}
+	var tomb int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM deleted_users WHERE id = 'ghost'`).Scan(&tomb); err != nil || tomb != 1 {
+		t.Fatalf("deleted_users rows for ghost = %d err=%v, want 1", tomb, err)
+	}
+	users := service.NewUserService(st.Users(), st.UserPreferences(), service.SystemClock{})
+	if _, err := users.EnsureUser(ctx, port.Identity{Subject: "ghost", Email: "g@example.com"}); !errors.Is(err, domain.ErrUserDeleted) {
+		t.Fatalf("EnsureUser(ghost) = %v, want ErrUserDeleted", err)
+	}
+	// A direct insert (any path, not just Upsert) is refused by the trigger.
+	if _, err := db.ExecContext(ctx, `INSERT INTO users (id, email) VALUES ('ghost', 'g@example.com')`); err == nil {
+		t.Fatal("raw INSERT of a tombstoned id succeeded; the trigger must refuse it")
 	}
 }

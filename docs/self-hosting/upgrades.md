@@ -54,8 +54,8 @@ curl -fsS https://your-domain/healthz     # -> 200
 That's it. `NEXT_PUBLIC_API_URL` is baked into the web bundle at build time, so
 `--build` (which `make self-host-up` does) picks up a changed API URL
 automatically. Better Auth's own vars (`BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`,
-`GOOGLE_*`, `APPLE_*`) are read at **runtime**, so changing them only needs a
-restart, not a rebuild.
+`GOOGLE_*`, `APPLE_*`) and `INTERNAL_API_SECRET` are read at **runtime**, so
+changing them only needs a restart, not a rebuild.
 
 ---
 
@@ -168,6 +168,36 @@ bunx @better-auth/cli generate
   stops `web`; a default `DATABASE_URL` password (`change-me-please` /
   `calendium`) stops the API in cloud mode and logs a warning when
   self-hosted.
+
+## Account lifecycle release (account deletion, data export, background-AI switch)
+
+**Upgrading to this version requires a new secret.** `api`, `worker` and `web`
+refuse to start without `INTERNAL_API_SECRET`, so set it before you pull:
+
+1. Generate it: `make gen-secret` (or `openssl rand -hex 32`) — exactly 64 hex
+   characters, a different value from `TOKEN_ENCRYPTION_KEY`.
+2. Set it on **`api`, `worker` and `web`**, with the same value on all three.
+   With the bundled Compose that is one line in `.env`:
+   `INTERNAL_API_SECRET=<the value>`. A split deployment (separate env files,
+   a secrets manager, a PaaS) must set it on each service.
+3. Restart all three (`make self-host-up`, which also rebuilds for the new
+   code). It is read at runtime, so later rotations need only a restart of all
+   three together.
+
+Also in this release:
+
+- **Migration `0029_account_lifecycle.sql`** applies at boot. It adds the
+  deleted-account tombstones (with a trigger on `users`), the export throttle,
+  the `ai_background` setting (default on), and re-points two foreign keys so
+  account deletion cascades.
+- **It builds two indexes non-concurrently** (`threads (account_id, id)` and
+  `events (calendar_id, id)`). On a large database that blocks writes to
+  `threads` and `events` while each index builds — sync and mail actions wait
+  until the migration finishes. Upgrade in a quiet window, and take the
+  pre-upgrade snapshot as always.
+- **`/v1/internal/*` must not be reachable from the internet.** The bundled
+  Caddy and the sample nginx config already block it; a custom proxy should
+  answer 404 for that prefix ([Security](./security.md)).
 
 ---
 

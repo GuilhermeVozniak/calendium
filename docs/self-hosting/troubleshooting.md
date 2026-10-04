@@ -36,7 +36,8 @@ docker compose logs --tail=100 api worker web caddy
 
 **Symptom:** the `api` (and `worker`) container exits immediately; logs show
 `TOKEN_ENCRYPTION_KEY is required` or
-`TOKEN_ENCRYPTION_KEY must be exactly 64 hex chars (32 bytes)`.
+`TOKEN_ENCRYPTION_KEY must be exactly 64 hex chars (32 bytes)` (or the same two
+messages for `INTERNAL_API_SECRET`, which `web` also requires).
 
 **Cause:** the key is empty or the wrong length. `FromEnv` validates it at boot
 and refuses to start otherwise (also for a missing `DATABASE_URL`, a
@@ -46,7 +47,8 @@ non-boolean `SELF_HOSTED`, or a bad `UNDO_SEND_SECONDS`).
 
 ```bash
 make gen-secret            # or: openssl rand -hex 32
-# -> paste into TOKEN_ENCRYPTION_KEY=...
+# -> paste into TOKEN_ENCRYPTION_KEY=... (and a second value into
+#    INTERNAL_API_SECRET=..., the same on api, worker and web)
 docker compose up -d
 ```
 

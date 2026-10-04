@@ -15,6 +15,10 @@ const apiMock = vi.hoisted(() => ({
 }));
 vi.mock('@/lib/api', () => ({ getApiClient: () => apiMock }));
 
+// Account deletion pauses the API (lib/auth-client suspendApi).
+const apiSuspended = vi.hoisted(() => ({ current: false }));
+vi.mock('@/lib/auth-client', () => ({ isApiSuspended: () => apiSuspended.current }));
+
 // Acting identity in effect (lib/act-as). Mutable per test: null = self.
 const actAs = vi.hoisted(() => ({ current: null as string | null }));
 vi.mock('@/lib/act-as', () => ({ getActingAs: () => actAs.current }));
@@ -110,6 +114,25 @@ describe('newLocalDraftId', () => {
 });
 
 describe('startOutboxReplay', () => {
+  it('does not replay while the API is suspended for account deletion', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    apiMock.actOnThread.mockResolvedValue({ id: 't1' });
+    await queue.queueAction({ kind: 'thread_action', threadId: 't1', action: 'archive' });
+    apiSuspended.current = true;
+    try {
+      const { client } = stubQueryClient();
+      cleanups.push(queue.startOutboxReplay(client));
+      await sleep(20);
+      window.dispatchEvent(new Event('focus'));
+      await vi.advanceTimersByTimeAsync(30_000);
+      await sleep(20);
+      expect(apiMock.actOnThread).not.toHaveBeenCalled();
+      expect(queue.getOutbox().queuedCount).toBe(1);
+    } finally {
+      apiSuspended.current = false;
+    }
+  });
+
   it('replays on the offline→online transition and invalidates thread/draft queries', async () => {
     window.dispatchEvent(new Event('offline'));
     await queue.queueAction({ kind: 'thread_action', threadId: 't1', action: 'archive' });

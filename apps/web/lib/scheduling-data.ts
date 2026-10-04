@@ -8,6 +8,7 @@ import type {
   Team,
   TeamMember,
   UserSettings,
+  UserSettingsUpdate,
 } from '@calendium/shared';
 
 import { getApiClient } from '@/lib/api';
@@ -135,7 +136,7 @@ export async function fetchSettings(): Promise<UserSettings> {
   }
 }
 
-export async function updateSettingsApi(s: UserSettings): Promise<UserSettings> {
+export async function updateSettingsApi(s: UserSettingsUpdate): Promise<UserSettings> {
   try {
     return await getApiClient().updateSettings(s);
   } catch (err) {

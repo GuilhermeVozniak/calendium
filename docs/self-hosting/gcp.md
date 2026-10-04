@@ -133,7 +133,8 @@ docker buildx build --platform linux/amd64 -f apps/web/Dockerfile \
 
 ```bash
 printf '%s' "$TOKEN_KEY" | gcloud secrets create TOKEN_ENCRYPTION_KEY --data-file=-
-# ...repeat for BETTER_AUTH_SECRET, GOOGLE_CLIENT_SECRET, MS_CLIENT_SECRET, etc.
+# ...repeat for INTERNAL_API_SECRET (api, worker and web), BETTER_AUTH_SECRET,
+#    GOOGLE_CLIENT_SECRET, MS_CLIENT_SECRET, etc.
 ```
 
 ### B4. Deploy the API

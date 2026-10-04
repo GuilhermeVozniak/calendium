@@ -41,11 +41,19 @@ const (
 	AiJobVoiceProfile   AiJobKind = "voice_profile"
 )
 
+// AiJobKinds lists every AiJobKind (tests iterate it so a new kind must be
+// classified as background or user-initiated).
+var AiJobKinds = []AiJobKind{
+	AiJobThreadSummary, AiJobInstantReplies, AiJobAutoDraft,
+	AiJobClassify, AiJobReminderDetect, AiJobVoiceProfile,
+}
+
 // ParseAiJobKind validates an AI job kind parameter.
 func ParseAiJobKind(s string) (AiJobKind, error) {
-	switch AiJobKind(s) {
-	case AiJobThreadSummary, AiJobInstantReplies, AiJobAutoDraft, AiJobClassify, AiJobReminderDetect, AiJobVoiceProfile:
-		return AiJobKind(s), nil
+	for _, k := range AiJobKinds {
+		if AiJobKind(s) == k {
+			return k, nil
+		}
 	}
 	return "", fmt.Errorf("%w: unknown ai job kind %q", ErrValidation, s)
 }

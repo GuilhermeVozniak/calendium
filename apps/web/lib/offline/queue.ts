@@ -15,6 +15,7 @@ import { toast } from 'sonner';
 
 import { getActingAs } from '@/lib/act-as';
 import { getApiClient } from '@/lib/api';
+import { isApiSuspended } from '@/lib/auth-client';
 import { isOnline, subscribeOnline } from '@/lib/offline/connectivity';
 import { ACTIVE_ACCOUNT_STORAGE_KEY } from '@/lib/use-accounts';
 
@@ -150,7 +151,7 @@ export function startOutboxReplay(queryClient: QueryClient): () => void {
   let running = false;
 
   const run = async (): Promise<void> => {
-    if (running || disposed || !isOnline()) return;
+    if (running || disposed || !isOnline() || isApiSuspended()) return;
     running = true;
     try {
       const outbox = await ready();

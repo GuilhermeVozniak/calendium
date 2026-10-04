@@ -93,6 +93,7 @@ import type {
   UserPreferences,
   UserPrefs,
   UserSettings,
+  UserSettingsUpdate,
 } from './types';
 
 /**
@@ -666,7 +667,7 @@ export class ApiClient {
   getSettings() {
     return this.request<UserSettings>('GET', '/v1/settings');
   }
-  updateSettings(s: UserSettings) {
+  updateSettings(s: UserSettingsUpdate) {
     return this.request<UserSettings>('PUT', '/v1/settings', s);
   }
 

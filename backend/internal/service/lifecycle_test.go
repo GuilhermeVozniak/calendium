@@ -373,14 +373,20 @@ func TestPurgeRevokesDelegationsBothWays(t *testing.T) {
 	}
 }
 
-func TestPurgeUnknownUserIsNoop(t *testing.T) {
+// An unknown (already purged or never provisioned) id is an idempotent
+// success that touches nothing but the tombstone: a JWT minted before the
+// auth-side delete must not provision a row afterwards (C-1).
+func TestPurgeUnknownUserOnlyTombstones(t *testing.T) {
 	f := newLifecycleFixture(t)
 	report, err := f.svc.Purge(context.Background(), "ghost")
 	if err != nil {
 		t.Fatalf("Purge(ghost) = %v, want nil (idempotent)", err)
 	}
-	if report != (port.PurgeReport{}) || f.tx.calls != 0 || len(f.payments.cancelCalls) != 0 || len(f.log) != 0 {
-		t.Fatalf("unknown user must touch nothing: report=%+v tx=%d log=%v", report, f.tx.calls, f.log)
+	if report != (port.PurgeReport{}) || f.tx.calls != 0 || len(f.payments.cancelCalls) != 0 {
+		t.Fatalf("unknown user must touch nothing else: report=%+v tx=%d cancels=%v", report, f.tx.calls, f.payments.cancelCalls)
+	}
+	if !f.users.tombstones["ghost"] || len(f.log) != 1 {
+		t.Fatalf("log = %v, want exactly the ghost tombstone", f.log)
 	}
 }
 
@@ -457,6 +463,11 @@ func TestPurgeWritesTombstoneInTx(t *testing.T) {
 	tomb, del := indexOf(f.log, "users.tombstone:u1"), indexOf(f.log, "users.delete:u1")
 	if tomb < 0 || del < 0 {
 		t.Fatalf("log = %v, want tombstone (inside the tx) and delete", f.log)
+	}
+	// The tombstone is the tx's first write: its per-id lock must be held
+	// before anything else so a racing upsert waits for the whole purge.
+	if tomb != 0 {
+		t.Fatalf("log = %v, want the tombstone first", f.log)
 	}
 	if f.tx.calls != 1 {
 		t.Fatalf("tx calls = %d, want 1", f.tx.calls)
