@@ -19,7 +19,9 @@ type TeamRepo struct{ s *Store }
 // NewTeamRepo returns the postgres port.TeamRepo backed by s.
 func NewTeamRepo(s *Store) *TeamRepo { return &TeamRepo{s: s} }
 
-const teamCols = `id, name, created_by, created_at`
+// created_by is NULL once the creator's account was deleted (0029); scan it
+// as the empty string so domain.Team.CreatedBy stays a plain string.
+const teamCols = `id, name, COALESCE(created_by, ''), created_at`
 
 func scanTeam(r rowScanner) (domain.Team, error) {
 	var t domain.Team
@@ -82,7 +84,7 @@ func (r *TeamRepo) GetByID(ctx context.Context, id string) (domain.Team, error) 
 // team_members row for are visible.
 func (r *TeamRepo) ListByUser(ctx context.Context, userID string) ([]domain.Team, error) {
 	rows, err := r.s.q(ctx).QueryContext(ctx, `
-		SELECT t.id, t.name, t.created_by, t.created_at
+		SELECT t.id, t.name, COALESCE(t.created_by, ''), t.created_at
 		FROM teams t
 		JOIN team_members m ON m.team_id = t.id AND m.user_id = $1
 		ORDER BY t.created_at, t.id`, userID)
@@ -176,6 +178,26 @@ func (r *TeamRepo) CountByRole(ctx context.Context, teamID string, role domain.T
 		`SELECT count(*) FROM team_members WHERE team_id = $1 AND role = $2`,
 		teamID, string(role)).Scan(&n)
 	return n, err
+}
+
+// ListMemberships returns every team_members row for userID — the
+// account-deletion ownership check walks these and ListMembers per team.
+func (r *TeamRepo) ListMemberships(ctx context.Context, userID string) ([]domain.TeamMember, error) {
+	rows, err := r.s.q(ctx).QueryContext(ctx,
+		`SELECT `+teamMemberCols+` FROM team_members WHERE user_id = $1 ORDER BY joined_at, team_id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	members := []domain.TeamMember{}
+	for rows.Next() {
+		m, err := scanTeamMember(rows)
+		if err != nil {
+			return nil, err
+		}
+		members = append(members, m)
+	}
+	return members, rows.Err()
 }
 
 // --- port.TeamInvitationRepo -------------------------------------------------

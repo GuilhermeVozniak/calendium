@@ -99,11 +99,16 @@ func TestTeamsMigrationConstraints(t *testing.T) {
 		t.Fatalf("cascade: %d rows left, err=%v", left, err)
 	}
 
-	// created_by is ON DELETE RESTRICT: a team pins its creator row.
-	if err := exec(`INSERT INTO teams (id, name, created_by) VALUES ('t2', 'Pinned', 'u1')`); err != nil {
+	// created_by was ON DELETE RESTRICT in 0011; migration 0029 (account
+	// deletion) relaxed it to SET NULL: the team outlives its creator.
+	if err := exec(`INSERT INTO teams (id, name, created_by) VALUES ('t2', 'Survivor', 'u1')`); err != nil {
 		t.Fatalf("insert team t2: %v", err)
 	}
-	if err := exec(`DELETE FROM users WHERE id = 'u1'`); err == nil {
-		t.Fatal("deleting team creator succeeded, want RESTRICT violation")
+	if err := exec(`DELETE FROM users WHERE id = 'u1'`); err != nil {
+		t.Fatalf("deleting team creator: %v, want SET NULL (0029)", err)
+	}
+	var creatorNull bool
+	if err := db.QueryRowContext(ctx, `SELECT created_by IS NULL FROM teams WHERE id = 't2'`).Scan(&creatorNull); err != nil || !creatorNull {
+		t.Fatalf("t2 created_by IS NULL = %v err=%v, want true", creatorNull, err)
 	}
 }

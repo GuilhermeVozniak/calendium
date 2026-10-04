@@ -42,6 +42,13 @@ func (r userRepo) GetByID(ctx context.Context, id string) (domain.User, error) {
 	return scanUser(row)
 }
 
+// Delete removes the users row; every owned table follows by FK cascade
+// (migration 0029 closes the two historical gaps). domain.ErrNotFound when
+// the row is already gone.
+func (r userRepo) Delete(ctx context.Context, id string) error {
+	return mustAffect(r.q(ctx).ExecContext(ctx, `DELETE FROM users WHERE id = $1`, id))
+}
+
 // --- port.SubscriptionRepo ---------------------------------------------------
 
 const subscriptionCols = `user_id, status, plan, price_usd, billing_customer_id,
