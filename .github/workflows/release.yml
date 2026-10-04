@@ -4,7 +4,8 @@ on:
     tags: ["v*"]
   # Dry run: builds exactly like a tag release but uploads artifacts to the
   # run instead of publishing a GitHub Release. Signing secrets are still
-  # required unless allow_unsigned is set; a TAG can never publish unsigned.
+  # required unless allow_unsigned is set on a non-tag ref; a TAG can never
+  # publish unsigned, and a dispatch (any ref) only ever uploads artifacts.
   workflow_dispatch:
     inputs:
       allow_unsigned:
@@ -60,7 +61,10 @@ jobs:
     env:
       # secrets are not readable in `if:`; surface presence here.
       HAS_MACOS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' }}
-      ALLOW_UNSIGNED: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_unsigned == true }}
+      # Rule: a tag can never publish unsigned; dispatch only uploads artifacts.
+      # The waiver needs a dispatch on a non-tag ref (a dispatch can select a
+      # tag as its ref, which must still require the signing secrets).
+      ALLOW_UNSIGNED: ${{ github.event_name == 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/') && inputs.allow_unsigned == true }}
       INPUT_VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v4
@@ -236,9 +240,11 @@ jobs:
           cd apps/desktop/build/bin
           tar -czf "calendium_${BUILD_VERSION}_linux_${{ matrix.arch }}.tar.gz" Calendium calendium.desktop calendium.png README.txt
           tar -tzf "calendium_${BUILD_VERSION}_linux_${{ matrix.arch }}.tar.gz"
-      # Dry runs (workflow_dispatch) upload to the run; tag pushes publish.
+      # Rule: a tag can never publish unsigned; dispatch only uploads artifacts.
+      # Gate on the event, not just the ref: a dispatch run with a tag selected
+      # as its ref uploads to the run and never publishes a GitHub Release.
       - name: Upload artifacts (dry run)
-        if: "!startsWith(github.ref, 'refs/tags/')"
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: calendium-${{ matrix.platform }}-${{ matrix.arch }}
@@ -248,7 +254,7 @@ jobs:
             apps/desktop/build/bin/*.zip
             apps/desktop/build/bin/*.tar.gz
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
