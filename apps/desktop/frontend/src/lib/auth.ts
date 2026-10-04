@@ -1,4 +1,5 @@
 import { createAuthClient } from 'better-auth/react';
+import { createAccessTokenCache } from '@calendium/shared';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import { getActiveServerConfig } from './server-config';
@@ -141,26 +142,50 @@ export function useSession(): { user: AuthUser | null; isPending: boolean } {
 export interface AuthResult {
   ok: boolean;
   error?: string;
+  /** Sign-up succeeded but the server requires email verification first (no session yet). */
+  verificationRequired?: boolean;
+}
+
+/** Copy shared with the web app for Better Auth client errors. */
+function describeAuthError(error: { status?: number; code?: string; message?: string }, fallback: string, retryAfter: string | null): string {
+  if (error.status === 429) {
+    const n = Number(retryAfter);
+    return `Too many attempts, try again in ${Number.isFinite(n) && n > 0 ? Math.ceil(n) : 60} s`;
+  }
+  if (error.code === 'EMAIL_NOT_VERIFIED') return 'Verify your email first — we sent a new link.';
+  return error.message ?? fallback;
+}
+
+/** Captures X-Retry-After from a Better Auth client call's onError hook. */
+function retryAfterCapture() {
+  let value: string | null = null;
+  return {
+    fetchOptions: { onError: (ctx: { response: Response }) => { value = ctx.response.headers.get('x-retry-after'); } },
+    get value() { return value; },
+  };
 }
 
 export async function signInEmail(email: string, password: string): Promise<AuthResult> {
   const c = getAuthClient();
   if (!c) return { ok: false, error: 'Connect to a server first.' };
-  const { error } = await c.signIn.email({ email, password });
-  if (error) return { ok: false, error: error.message ?? 'Could not sign in.' };
+  const retry = retryAfterCapture();
+  const { error } = await c.signIn.email({ email, password }, retry.fetchOptions);
+  if (error) return { ok: false, error: describeAuthError(error, 'Could not sign in.', retry.value) };
   await refreshSession();
   return { ok: true };
 }
 
-export async function signUpEmail(
-  name: string,
-  email: string,
-  password: string
-): Promise<AuthResult> {
+export async function signUpEmail(name: string, email: string, password: string): Promise<AuthResult> {
   const c = getAuthClient();
   if (!c) return { ok: false, error: 'Connect to a server first.' };
-  const { error } = await c.signUp.email({ name, email, password });
-  if (error) return { ok: false, error: error.message ?? 'Could not create your account.' };
+  const retry = retryAfterCapture();
+  // callbackURL is relative: Better Auth resolves it against BETTER_AUTH_URL,
+  // so the emailed link lands on the web /verify-email page.
+  const { data, error } = await c.signUp.email({ name, email, password, callbackURL: '/verify-email' }, retry.fetchOptions);
+  if (error) return { ok: false, error: describeAuthError(error, 'Could not create your account.', retry.value) };
+  // With SMTP configured the server never signs a new account in (and answers
+  // the same for an existing address): token === null means "check your inbox".
+  if (data && data.token === null) return { ok: true, verificationRequired: true };
   await refreshSession();
   return { ok: true };
 }
@@ -209,18 +234,16 @@ export async function signOut(): Promise<void> {
     // Ignore — we clear local state regardless.
   }
   clearStoredToken();
+  accessTokens.invalidate();
   await refreshSession();
 }
 
 /**
- * Mint a short-lived (default 15m) EdDSA JWT for the current session and return
- * it as the Bearer credential for the Go API. Hits the jwt() plugin mint
- * endpoint at `${authBaseUrl}/token` with the stored session token; returns
- * null when signed out or no server is configured.
- *
- * Short-lived by design — do NOT cache it; ApiClient calls this per request.
+ * Mints a short-lived (default 15m) EdDSA JWT via `${authBaseUrl}/token` with
+ * the stored session token; null when signed out, unconfigured, rate limited
+ * or unreachable (null is never cached).
  */
-export async function getAccessToken(): Promise<string | null> {
+async function mintAccessToken(): Promise<string | null> {
   const cfg = getActiveServerConfig();
   const token = getStoredToken();
   if (!cfg?.authBaseUrl || !token) return null;
@@ -235,4 +258,16 @@ export async function getAccessToken(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * JWT cache shared with lib/api.ts (piece 2): reused until 60 s before `exp`,
+ * invalidated on sign-out so a second account on this machine can never ride
+ * the first one's token.
+ */
+export const accessTokens = createAccessTokenCache(mintAccessToken);
+
+/** The Bearer credential for the Go API (cached JWT, minted on demand). */
+export function getAccessToken(): Promise<string | null> {
+  return accessTokens.get();
 }

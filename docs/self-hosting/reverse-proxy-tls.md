@@ -74,6 +74,10 @@ bring your own proxy instead — then the `caddy` service never starts.
   handy for kicking the tyres before you point a real domain at the box.
 - `api:8080` and `web:3000` are Docker **service names** on the internal
   `calendium` network; Caddy reaches them by name, no host ports involved.
+- Caddy sets `X-Forwarded-For` to the connecting client's address and ignores
+  whatever the client sent — exactly what the web app's sign-in rate limits
+  need. With this profile set `TRUST_PROXY=true` in `.env`
+  ([why](./security.md#10-sign-in-protection)).
 
 ### Before you `up`: DNS + ports
 
@@ -132,6 +136,14 @@ location /         { proxy_pass http://calendium_web; ... }
 > `http://` URLs behind your `https://` proxy and you get infinite redirect
 > loops. This is the #1 self-host support ticket across the industry. See
 > [Troubleshooting → Redirect loop](./troubleshooting.md#redirect-loop-behind-a-proxy).
+
+> **Overwrite `X-Forwarded-For` for the web app.** With `TRUST_PROXY=true` the
+> web app's sign-in rate limits key on the *first* `X-Forwarded-For` hop, so its
+> `location /` must replace the header — `proxy_set_header X-Forwarded-For $remote_addr;`
+> — not append with `$proxy_add_x_forwarded_for`, or a client can forge that hop.
+> The sample does this for `location /`. Load balancers that only append (AWS
+> ALB, Google Cloud Load Balancing) make the first hop client-controlled: there,
+> keep `TRUST_PROXY=false`.
 
 The sample sets `client_max_body_size 25m` for attachment uploads — raise it if
 your users send larger attachments. certbot's own systemd timer handles renewal.

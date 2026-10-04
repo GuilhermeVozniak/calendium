@@ -5,8 +5,9 @@ import { Icon } from '@/components/ui/icon';
 import { Input } from '@/components/ui/input';
 import { Text } from '@/components/ui/text';
 import useAuth from '@/context/auth';
-import { useServerConfig } from '@/lib/server-config';
+import { forgotPasswordUrl, useServerConfig } from '@/lib/server-config';
 import { Redirect, Stack } from 'expo-router';
+import * as Linking from 'expo-linking';
 import { CalendarRangeIcon, MoonStarIcon, SunIcon } from 'lucide-react-native';
 import { useColorScheme } from 'nativewind';
 import * as React from 'react';
@@ -32,6 +33,7 @@ export default function SignInScreen() {
   const [name, setName] = React.useState('');
   const [email, setEmail] = React.useState('');
   const [password, setPassword] = React.useState('');
+  const [notice, setNotice] = React.useState<string | null>(null);
 
   const handleSocialLogin = async (provider: 'google' | 'apple') => {
     try {
@@ -47,8 +49,15 @@ export default function SignInScreen() {
   const handleEmailAuth = async () => {
     try {
       setLoading(true);
+      setNotice(null);
       if (mode === 'sign-up') {
-        await signUpWithEmail(name.trim(), email.trim(), password);
+        const { verificationRequired } = await signUpWithEmail(name.trim(), email.trim(), password);
+        if (verificationRequired) {
+          // No session yet: the server emailed a verification link.
+          setNotice(`Check your inbox — we sent a verification link to ${email.trim()}.`);
+          setMode('sign-in');
+          setPassword('');
+        }
       } else {
         await signInWithEmail(email.trim(), password);
       }
@@ -57,6 +66,11 @@ export default function SignInScreen() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const openForgotPassword = () => {
+    const url = forgotPasswordUrl(config);
+    if (url) void Linking.openURL(url);
   };
 
   if (serverLoading || authLoading) {
@@ -138,6 +152,16 @@ export default function SignInScreen() {
             <Button onPress={handleEmailAuth} disabled={loading}>
               <Text>{mode === 'sign-up' ? 'Create account' : 'Sign in'}</Text>
             </Button>
+            {notice && (
+              <Text className="text-center text-sm text-muted-foreground" accessibilityRole="text">
+                {notice}
+              </Text>
+            )}
+            {mode === 'sign-in' && (
+              <Button variant="ghost" size="sm" disabled={loading} onPress={openForgotPassword}>
+                <Text className="text-sm text-muted-foreground">Forgot password?</Text>
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"

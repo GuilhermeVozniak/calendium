@@ -111,6 +111,68 @@ ${BETTER_AUTH_URL}/api/auth/callback/apple
 > **both** redirect URIs on it: the Better Auth login callback above **and** the
 > backend mailbox-connect callback `https://YOUR_DOMAIN/v1/accounts/callback/google`.
 
+> **Apple posts back to Better Auth.** Sign in with Apple returns with a
+> cross-site `form_post` from `https://appleid.apple.com`. That origin is always
+> in Better Auth's trusted origins (it is never reflected in CORS), so there is
+> nothing to configure — but the callback only works on your real HTTPS domain;
+> Apple rejects `localhost`.
+
+### 1d. Transactional email (SMTP)
+
+Calendium sends three kinds of mail from one instance-wide sender:
+
+| Mail | Sent by | When |
+| --- | --- | --- |
+| Verify your email (link valid 24 h) | web (Better Auth) | Email+password sign-up, and again on sign-in while still unverified |
+| Reset your password (link valid 1 h, single use) | web (Better Auth) | `/forgot-password` |
+| Team invitation | api | The inviter has **no** connected mailbox — a connected Gmail/Outlook mailbox is preferred and sends as the inviter |
+
+Any SMTP provider works — Amazon SES, Postmark, Resend, Mailgun, SendGrid,
+Fastmail, or your own relay. Set the `SMTP_*` variables
+([reference](./configuration.md#transactional-email-smtp)) in `.env`; `web`,
+`api` and `worker` all read them.
+
+```dotenv
+SMTP_HOST=smtp.your-provider.example
+SMTP_PORT=587
+SMTP_USER=<username or API token>
+SMTP_PASS=<password or API token>
+SMTP_FROM=Calendium <no-reply@mail.example.com>
+SMTP_SECURE=false          # STARTTLS on 587; use SMTP_PORT=465 + SMTP_SECURE=true for implicit TLS
+```
+
+**Deliverability — publish these for the `SMTP_FROM` domain** or verification
+and reset links land in spam (and a user who never receives the link cannot
+sign in):
+
+- **SPF** — a TXT record authorising your provider (`v=spf1 include:<provider's SPF host> ~all`; the provider documents the include).
+- **DKIM** — the CNAME/TXT keys your provider generates, so mail is signed with the `SMTP_FROM` domain.
+- **DMARC** — `_dmarc.<domain>` TXT, starting at `v=DMARC1; p=none; rua=mailto:dmarc@<domain>`; tighten to `quarantine`/`reject` once the reports are clean.
+
+**Self-host without SMTP** is supported: leave `SMTP_HOST` blank. Sign-up then
+signs users in without verification, `/forgot-password` tells them to ask you
+([reset procedure](./security.md#resetting-a-password-without-email-self-host)),
+and team invitations return a link for the inviter to share. Cloud mode
+(`SELF_HOSTED=false`) refuses to start without SMTP.
+
+**Adding SMTP later turns verification on** — existing email+password users
+verify once, on their next sign-in ([Upgrading](./upgrades.md#turning-on-email-smtp)).
+
+**Try it locally with Mailpit** (a fake inbox; ports 18025/11025 so they don't
+collide with another Mailpit on the defaults):
+
+```bash
+docker run -d --name calendium-mailpit -p 18025:8025 -p 11025:1025 axllent/mailpit
+# .env:  SMTP_HOST=127.0.0.1  SMTP_PORT=11025  SMTP_SECURE=false  SMTP_FROM=Calendium <no-reply@calendium.test>
+# inbox: http://localhost:18025
+```
+
+Plaintext SMTP is allowed only to a loopback host, so point a web app and API
+running **on the host** (`bun run dev:web`, `bun run dev:api`) at Mailpit.
+Inside the compose stack `127.0.0.1` is the container itself, and a
+non-loopback host such as `host.docker.internal` requires STARTTLS, which a
+default Mailpit does not offer.
+
 ### How clients discover what you configured
 
 Desktop and mobile clients only know your **server URL**. They call the
@@ -131,7 +193,7 @@ Auth client and hide features you didn't enable:
   "authBaseUrl": "https://your-domain/api/auth",
   "authProviders": ["email", "google", "apple"],
   "undoSendSeconds": 15,
-  "features": { "billing": false, "google": true, "microsoft": false, "ai": true, "push": false }
+  "features": { "billing": false, "google": true, "microsoft": false, "ai": true, "push": false, "email": true }
 }
 ```
 
@@ -140,6 +202,7 @@ its Better Auth client against (e.g. `${authBaseUrl}/jwks`, the sign-in
 endpoints). `authProviders` always includes `"email"`, plus `"google"`/`"apple"`
 when you configured their credentials. See
 [Pointing the Apps at Your Server](./clients.md) for the client flow.
+`features.email` is `true` when an SMTP sender is configured; the web forgot-password page falls back to the administrator instructions only when it is `false`.
 
 ---
 

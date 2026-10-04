@@ -17,6 +17,9 @@ worked top to bottom.
 - [ ] Base images updated on a schedule
 - [ ] Backups encrypted and stored off-box
 - [ ] Managed Postgres reached with `sslmode=require` (or stricter)
+- [ ] `web` behind your proxy with `TRUST_PROXY=true`, and the proxy overwrites `X-Forwarded-For`
+- [ ] `ALLOW_DEV_ORIGINS` blank (false) in production
+- [ ] SMTP configured over TLS (verification + password reset), or users know to ask you for a reset
 
 ---
 
@@ -68,7 +71,7 @@ be public and some is a signing secret — don't mix them up:
 | `BETTER_AUTH_URL` | **Public** | Public web origin; also the JWT issuer (`iss`) the backend pins. |
 | `${BETTER_AUTH_URL}/api/auth/jwks` (JWKS) | **Public** | Public Ed25519 verification keys the backend fetches. Meant to be reachable — expected to be public, fine to expose. |
 | `BETTER_AUTH_SECRET` | **SECRET** | Better Auth's root secret. Anyone with it can forge sessions and mint valid tokens. Never serve it, never log it, never put it in `NEXT_PUBLIC_*`. |
-| `GOOGLE_CLIENT_SECRET`, `APPLE_CLIENT_SECRET`, `MS_CLIENT_SECRET`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET` | **SECRET** | Backend / server-only. |
+| `GOOGLE_CLIENT_SECRET`, `APPLE_CLIENT_SECRET`, `MS_CLIENT_SECRET`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `SMTP_PASS` | **SECRET** | Backend / server-only. |
 
 The Go backend is a pure resource server: it fetches the public JWKS from
 `AUTH_JWKS_URL` (default `${BETTER_AUTH_URL}/api/auth/jwks`), verifies the
@@ -184,6 +187,89 @@ With `SELF_HOSTED=true`, the billing endpoints (`/v1/billing/checkout`,
 `self_hosted` error, and all features are unlocked without Paddle. Leave the
 `PADDLE_*` vars blank — there's no paywall to secure and no webhook secret to
 protect on a self-hosted box.
+
+---
+
+## 10. Sign-in protection
+
+### Rate limits (Postgres-backed)
+
+Better Auth rate-limits its endpoints per client IP in every environment. The
+counters live in the `rateLimit` table (migration
+`0028_better_auth_rate_limit.sql`), so they survive restarts and are shared by
+every `web` replica.
+
+| Endpoint (under `/api/auth`) | Limit |
+| --- | --- |
+| `/sign-in/email` | 5 per 60 s |
+| `/sign-up/email` | 3 per 60 s |
+| `/request-password-reset` (and the legacy `/forget-password`) | 3 per 10 min |
+| `/send-verification-email` | 3 per 10 min |
+| `/token` (the API JWT; clients cache it until 60 s before expiry) | 60 per 60 s |
+| `/change-password` | 3 per 10 s (Better Auth built-in) |
+| everything else | 100 per 60 s |
+
+Over the limit → `429` with `X-Retry-After: <seconds>`; the apps say
+"Too many attempts, try again in N s".
+
+### Client IP: `TRUST_PROXY`
+
+The web server cannot see the TCP peer, so it derives the client IP from
+headers and stamps it into a server-only header (`x-calendium-client-ip`,
+overwritten on every request — a client-supplied value is discarded):
+
+- `TRUST_PROXY=true` — the first `X-Forwarded-For` hop. Correct **only** behind
+  a proxy that overwrites the header: the bundled Caddy profile does; nginx needs
+  `proxy_set_header X-Forwarded-For $remote_addr;` in the web `location /` (the
+  [sample](../../deploy/nginx/calendium.conf) does). Behind an appending proxy a
+  client can forge the first hop and choose its own bucket.
+- `TRUST_PROXY=false` (default) — `X-Forwarded-For` only when it holds exactly
+  one address; anything else lands in one shared bucket. A client that reaches
+  `web:3000` directly can send its own single-valued header and get its own
+  bucket, which is why production logs a warning. The supported production shape
+  is Caddy (or nginx as above) + `TRUST_PROXY=true`.
+
+### Origins
+
+Better Auth accepts state-changing requests only from trusted origins:
+`BETTER_AUTH_URL`, `PUBLIC_WEB_URL`, `CORS_ALLOWED_ORIGINS`, the desktop app's
+WebView origins (`wails://wails`, `wails://wails.localhost`,
+`http(s)://wails.localhost`), the mobile scheme `calendium://`, and
+`https://appleid.apple.com` (Apple's `form_post`; never reflected in CORS).
+`http://localhost:*` / `http://127.0.0.1:*` are trusted only in development or
+with `ALLOW_DEV_ORIGINS=true`, and the Go API's CORS applies the same rule.
+Keep `ALLOW_DEV_ORIGINS` blank in production (setting it logs a warning). The
+packaged desktop app needs no configuration.
+
+### Email verification and passwords
+
+With SMTP configured, email+password accounts must verify their address
+(link valid 24 h); sign-up, resend and reset answer identically whether or not
+the address exists, and sign-in reveals "verify your email first" only after a
+correct password. Passwords are 10–128 characters and must not contain the
+address's local part. A reset (link valid 1 h, single use) signs out every
+device; a change in **Settings → Account** signs out every other device. API
+JWTs live at most 15 minutes, so a cached token never outlives its session by
+more. Without SMTP the duplicate-address error on sign-up is visible — the
+documented trade-off of running without email.
+
+### Resetting a password without email (self-host)
+
+Without SMTP users cannot reset their own password; `/forgot-password` tells
+them to ask you. As the operator:
+
+```bash
+# 1. Confirm the account exists
+docker compose exec db psql -U calendium -d calendium -c "SELECT id FROM \"user\" WHERE email = 'ada@example.com';"
+# 2. Set a temporary password and sign out every device
+docker compose exec web node apps/web/scripts/reset-password.mjs ada@example.com
+```
+
+The script hashes a fresh temporary password with Better Auth's own
+`hashPassword`, upserts the user's `credential` row in `account`, deletes all of
+their `session` rows and prints `Temporary password for <email>: <password>`
+once. Hand it over on a channel you trust; the user signs in and changes it in
+**Settings → Account**.
 
 ---
 

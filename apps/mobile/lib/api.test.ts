@@ -119,3 +119,23 @@ describe('onPaymentRequired', () => {
     expect(listener).not.toHaveBeenCalled();
   });
 });
+
+describe('access-token cache (piece 2)', () => {
+  function fakeJwt(expSeconds: number): string {
+    const payload = btoa(JSON.stringify({ sub: 'u1', exp: expSeconds })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return `eyJhbGciOiJFZERTQSJ9.${payload}.sig`;
+  }
+
+  it('reuses a fresh JWT across requests and re-mints after configureApi switches servers', async () => {
+    mockGetBetterAuthToken.mockResolvedValue(fakeJwt(Math.floor(Date.now() / 1000) + 900));
+    configureApi('https://one.example.com');
+    await api.getMe();
+    await api.getMe();
+    expect(mockGetBetterAuthToken).toHaveBeenCalledTimes(1);
+
+    // A JWT minted for one server must never be sent to the next one.
+    configureApi('https://two.example.com');
+    await api.getMe();
+    expect(mockGetBetterAuthToken).toHaveBeenCalledTimes(2);
+  });
+});

@@ -1,7 +1,7 @@
 import { ApiClient } from '@calendium/shared';
 
 import { getActiveServerConfig, isDemoMode } from './server-config';
-import { getAccessToken } from './auth';
+import { accessTokens, getAccessToken } from './auth';
 
 /** True when a server is configured; otherwise mock data drives the UI. */
 export function apiConfigured(): boolean {
@@ -41,6 +41,7 @@ export const api = new ApiClient({
     return getActiveServerConfig()?.serverUrl || 'http://localhost:8080';
   },
   getAccessToken,
+  accessTokens,
   fetch: notifyingFetch,
 });
 
