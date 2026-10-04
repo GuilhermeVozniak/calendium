@@ -512,3 +512,35 @@ func TestUpsertVotesAtomicity(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+func TestUserSettingsAIBackgroundDefaultsAndSet(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+
+	got, err := st.UserSettings().Get(ctx, "u1")
+	if err != nil || !got.AIBackground {
+		t.Fatalf("Get without a row: AIBackground=%v err=%v, want true", got.AIBackground, err)
+	}
+	if err := st.UserSettings().SetAIBackground(ctx, "u1", false); err != nil {
+		t.Fatalf("SetAIBackground on a user without a row: %v", err)
+	}
+	got, err = st.UserSettings().Get(ctx, "u1")
+	if err != nil || got.AIBackground || got.TimeZone != "UTC" {
+		t.Fatalf("after SetAIBackground(false): %+v err=%v, want AIBackground=false TimeZone=UTC", got, err)
+	}
+	// A full-document Upsert from an older client must not flip the switch back.
+	if err := st.UserSettings().Upsert(ctx, domain.UserSettings{UserID: "u1", TimeZone: "Europe/Lisbon", WorkingHours: []domain.AvailabilityWindow{}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = st.UserSettings().Get(ctx, "u1")
+	if err != nil || got.AIBackground || got.TimeZone != "Europe/Lisbon" {
+		t.Fatalf("after Upsert: %+v err=%v, want AIBackground still false", got, err)
+	}
+	if err := st.UserSettings().SetAIBackground(ctx, "u1", true); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = st.UserSettings().Get(ctx, "u1"); !got.AIBackground {
+		t.Fatal("SetAIBackground(true) did not persist")
+	}
+}

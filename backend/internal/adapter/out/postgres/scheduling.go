@@ -630,22 +630,23 @@ func (r timeProposalRepo) Update(ctx context.Context, p domain.TimeProposal) err
 
 // --- port.UserSettingsRepo ---------------------------------------------------
 
-// Get returns a zero-value UserSettings (TimeZone "UTC") when no row exists,
-// mirroring prefsRepo.Get's absent-row default rather than surfacing
-// domain.ErrNotFound — scheduling settings always have sane defaults.
+// Get returns a zero-value UserSettings (TimeZone "UTC", AIBackground true)
+// when no row exists, mirroring prefsRepo.Get's absent-row default rather
+// than surfacing domain.ErrNotFound — scheduling settings always have sane
+// defaults.
 //
 // user_settings.updated_at is write-only from this repo's perspective: it is
-// stamped via SQL now() on Upsert but never scanned back, since
+// stamped via SQL now() on every write but never scanned back, since
 // domain.UserSettings carries no UpdatedAt field (Task 1 review note).
 func (r userSettingsRepo) Get(ctx context.Context, userID string) (domain.UserSettings, error) {
 	var s domain.UserSettings
 	var workingHours []byte
 	err := r.q(ctx).QueryRowContext(ctx, `
-		SELECT user_id, time_zone, working_hours, working_location
+		SELECT user_id, time_zone, working_hours, working_location, ai_background
 		FROM user_settings WHERE user_id = $1`, userID).Scan(
-		&s.UserID, &s.TimeZone, &workingHours, &s.WorkingLocation)
+		&s.UserID, &s.TimeZone, &workingHours, &s.WorkingLocation, &s.AIBackground)
 	if errors.Is(err, sql.ErrNoRows) {
-		return domain.UserSettings{UserID: userID, TimeZone: "UTC"}, nil
+		return domain.UserSettings{UserID: userID, TimeZone: "UTC", AIBackground: true}, nil
 	}
 	if err != nil {
 		return domain.UserSettings{}, err
@@ -659,6 +660,9 @@ func (r userSettingsRepo) Get(ctx context.Context, userID string) (domain.UserSe
 	return s, nil
 }
 
+// Upsert deliberately leaves ai_background out of both the INSERT column
+// list (the column default applies) and the DO UPDATE SET list, so a client
+// that PUTs the document without the field can never flip the switch.
 func (r userSettingsRepo) Upsert(ctx context.Context, s domain.UserSettings) error {
 	workingHours, err := jsonArray(s.WorkingHours)
 	if err != nil {
@@ -673,5 +677,17 @@ func (r userSettingsRepo) Upsert(ctx context.Context, s domain.UserSettings) err
 			working_location = EXCLUDED.working_location,
 			updated_at       = now()`,
 		s.UserID, s.TimeZone, workingHours, s.WorkingLocation)
+	return err
+}
+
+// SetAIBackground writes only the switch; a missing row is created with the
+// other columns' defaults (UTC, no windows, no location).
+func (r userSettingsRepo) SetAIBackground(ctx context.Context, userID string, on bool) error {
+	_, err := r.q(ctx).ExecContext(ctx, `
+		INSERT INTO user_settings (user_id, ai_background, updated_at)
+		VALUES ($1, $2, now())
+		ON CONFLICT (user_id) DO UPDATE SET
+			ai_background = EXCLUDED.ai_background,
+			updated_at    = now()`, userID, on)
 	return err
 }

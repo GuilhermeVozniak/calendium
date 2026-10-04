@@ -106,7 +106,7 @@ func truncateAll(t *testing.T) {
 		message_reactions, teams, team_members, team_invitations, thread_shares,
 		calendar_shares, audit_entries, thread_comments, delegations, team_thread_activity,
 		tasks, calendar_prefs, integration_connections, managed_events,
-		calendar_subscriptions, subscription_events, travel_alerts
+		calendar_subscriptions, subscription_events, travel_alerts, user_exports
 		RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
