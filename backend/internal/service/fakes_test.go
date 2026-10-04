@@ -2854,6 +2854,9 @@ func (r *fakeTeamRepo) CountByRole(_ context.Context, teamID string, role domain
 	return n, nil
 }
 
+// LockMembershipsForUpdate is a no-op: the fake has no concurrency.
+func (r *fakeTeamRepo) LockMembershipsForUpdate(context.Context, string) error { return nil }
+
 func (r *fakeTeamRepo) ListMemberships(_ context.Context, userID string) ([]domain.TeamMember, error) {
 	out := []domain.TeamMember{}
 	for _, members := range r.members {

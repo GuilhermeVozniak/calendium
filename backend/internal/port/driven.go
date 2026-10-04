@@ -588,6 +588,12 @@ type TeamRepo interface {
 	// ListMemberships returns every team_members row for userID (the
 	// account-deletion team-ownership check).
 	ListMemberships(ctx context.Context, userID string) ([]domain.TeamMember, error)
+	// LockMembershipsForUpdate row-locks (SELECT … FOR UPDATE) every team
+	// userID belongs to and all of those teams' member rows until the
+	// surrounding transaction ends, so the purge's team re-check cannot race
+	// an invitation acceptance, a role change or a co-owner leaving. Only
+	// meaningful inside TxRunner.RunInTx.
+	LockMembershipsForUpdate(ctx context.Context, userID string) error
 }
 
 // TeamInvitationRepo persists email invitations (token stored hashed).

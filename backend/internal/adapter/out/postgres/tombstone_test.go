@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"calendium/backend/internal/domain"
@@ -88,5 +89,68 @@ func TestTombstoneRollsBackWithPurgeTx(t *testing.T) {
 	}
 	if err := st.Users().Tombstone(ctx, "never-existed"); err != nil {
 		t.Fatalf("Tombstone twice = %v", err)
+	}
+}
+
+// TeamRepo.LockMembershipsForUpdate holds the user's team rows and their
+// member rows: a concurrent invitation acceptance (member insert, FK key
+// share on teams) and a co-owner leaving (member delete) both block until
+// the purge transaction ends.
+func TestLockMembershipsForUpdateBlocksConcurrentMembershipChanges(t *testing.T) {
+	st, db := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	seedUser(t, st, "u2")
+	seedUser(t, st, "u3")
+	teams := NewTeamRepo(st)
+	team, err := teams.Create(ctx, domain.Team{Name: "T", CreatedBy: "u1"}, domain.TeamMember{UserID: "u1", Role: domain.TeamRoleOwner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := teams.UpsertMember(ctx, domain.TeamMember{TeamID: team.ID, UserID: "u2", Role: domain.TeamRoleOwner}); err != nil {
+		t.Fatal(err)
+	}
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- st.RunInTx(ctx, func(ctx context.Context) error {
+			if err := teams.LockMembershipsForUpdate(ctx, "u1"); err != nil {
+				close(locked)
+				return err
+			}
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+
+	try := func(stmt string, args ...any) error {
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+		if _, err := conn.ExecContext(ctx, `SET lock_timeout = '300ms'`); err != nil {
+			t.Fatal(err)
+		}
+		_, err = conn.ExecContext(ctx, stmt, args...)
+		_, _ = conn.ExecContext(ctx, `RESET lock_timeout`)
+		return err
+	}
+	if err := try(`INSERT INTO team_members (team_id, user_id, role) VALUES ($1, 'u3', 'member')`, team.ID); err == nil || !strings.Contains(err.Error(), "lock timeout") {
+		t.Errorf("member insert during the lock = %v, want a lock timeout", err)
+	}
+	if err := try(`DELETE FROM team_members WHERE team_id = $1 AND user_id = 'u2'`, team.ID); err == nil || !strings.Contains(err.Error(), "lock timeout") {
+		t.Errorf("co-owner leave during the lock = %v, want a lock timeout", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("locking tx: %v", err)
+	}
+	if err := try(`DELETE FROM team_members WHERE team_id = $1 AND user_id = 'u2'`, team.ID); err != nil {
+		t.Fatalf("after the lock is released the leave succeeds: %v", err)
 	}
 }

@@ -134,7 +134,12 @@ func (s *UserLifecycleService) Purge(ctx context.Context, userID string) (port.P
 		}
 	}
 	err = s.d.Tx.RunInTx(ctx, func(ctx context.Context) error {
-		// Race guard: a co-owner may have left between the check and the tx.
+		// Race guard: a co-owner may have left (or someone joined) between
+		// the check and the tx. Lock the teams and their member rows first,
+		// then re-plan, so nothing can change until this tx commits.
+		if err := s.d.Teams.LockMembershipsForUpdate(ctx, userID); err != nil {
+			return err
+		}
 		plan, err := s.planTeams(ctx, userID)
 		if err != nil {
 			return err

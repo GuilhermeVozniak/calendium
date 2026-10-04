@@ -501,3 +501,40 @@ func TestEnsureUserTombstonedSubjectNotRecreated(t *testing.T) {
 		t.Fatalf("EnsureUser(fresh) = %v", err)
 	}
 }
+
+func (r *loggingTeamRepo) LockMembershipsForUpdate(ctx context.Context, userID string) error {
+	entry := "teams.lock:" + userID
+	if !inFakeTx(ctx) {
+		entry = "teams.lock-outside-tx:" + userID
+	}
+	*r.log = append(*r.log, entry)
+	return r.fakeTeamRepo.LockMembershipsForUpdate(ctx, userID)
+}
+
+// Review Minor 5: the in-transaction team re-check runs under a row lock on
+// the user's teams and their member rows, taken before the re-plan, so an
+// invitation accepted (or a co-owner leaving) concurrently cannot slip
+// between the re-check and the deletes.
+func TestPurgeLocksTeamsBeforeRecheck(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.addTeam(t, "solo", "Solo", owner("u1"))
+	if _, err := f.svc.Purge(context.Background(), "u1"); err != nil {
+		t.Fatal(err)
+	}
+	lock := indexOf(f.log, "teams.lock:u1")
+	if lock < 0 {
+		t.Fatalf("log = %v, want teams.lock:u1 inside the tx", f.log)
+	}
+	// The second (in-tx) re-plan lists members after the lock.
+	recheck := -1
+	for i := lock + 1; i < len(f.log); i++ {
+		if f.log[i] == "teams.listMembers:solo" {
+			recheck = i
+			break
+		}
+	}
+	del := indexOf(f.log, "teams.delete:solo")
+	if recheck < 0 || del < recheck {
+		t.Fatalf("order = %v, want lock < re-check < delete", f.log)
+	}
+}

@@ -200,6 +200,21 @@ func (r *TeamRepo) ListMemberships(ctx context.Context, userID string) ([]domain
 	return members, rows.Err()
 }
 
+// LockMembershipsForUpdate locks the user's teams (blocking new member
+// inserts, whose FK check takes KEY SHARE on the team row) and every member
+// row of those teams (blocking leaves and role changes), in a stable order
+// to avoid deadlocks between concurrent purges.
+func (r *TeamRepo) LockMembershipsForUpdate(ctx context.Context, userID string) error {
+	// Exec runs the SELECT to completion, which acquires every row lock.
+	_, err := r.s.q(ctx).ExecContext(ctx, `
+		SELECT t.id FROM teams t
+		JOIN team_members m ON m.team_id = t.id
+		WHERE t.id IN (SELECT team_id FROM team_members WHERE user_id = $1)
+		ORDER BY t.id, m.user_id
+		FOR UPDATE OF t, m`, userID)
+	return err
+}
+
 // --- port.TeamInvitationRepo -------------------------------------------------
 
 var _ port.TeamInvitationRepo = (*TeamInvitationRepo)(nil)
