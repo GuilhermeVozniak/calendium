@@ -2,6 +2,7 @@ package smtp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -11,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"math/big"
 	"net"
 	"strconv"
@@ -32,6 +34,7 @@ type fakeServer struct {
 	implicit  bool        // listen with tls.Listen instead of offering STARTTLS
 	authMechs string      // "" = no AUTH extension; e.g. "PLAIN LOGIN"
 	silent    bool        // never send the 220 greeting (deadline tests)
+	quitFail  bool        // answer QUIT with a 4xx instead of 221 (post-DATA failure)
 
 	mu       sync.Mutex
 	commands []string
@@ -150,6 +153,10 @@ func (s *fakeServer) serve(conn net.Conn) {
 			s.mu.Unlock()
 			reply("250 queued")
 		case "QUIT":
+			if s.quitFail {
+				reply("421 shutting down")
+				return
+			}
 			reply("221 bye")
 			return
 		default:
@@ -457,5 +464,42 @@ func TestIsLoopback(t *testing.T) {
 		if got := isLoopback(host); got != want {
 			t.Errorf("isLoopback(%q) = %v, want %v", host, got, want)
 		}
+	}
+}
+
+// A QUIT failure after the server accepted DATA must not be reported as a
+// send failure: the message is already queued, and an error would make the
+// caller revoke a delivered invitation (and the inviter retry, sending twice).
+func TestSendQuitFailureAfterDataAcceptedCountsAsDelivered(t *testing.T) {
+	srv := startFakeServer(t, &fakeServer{quitFail: true})
+	c := newTestClient(t, srv, config.SMTP{}, nil)
+	var logs bytes.Buffer
+	c.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+	if err := c.Send(context.Background(), sampleMail); err != nil {
+		t.Fatalf("Send = %v, want nil (DATA was accepted)", err)
+	}
+	srv.mu.Lock()
+	data := srv.data
+	srv.mu.Unlock()
+	if !strings.Contains(data, "Subject: Hi\r\n") {
+		t.Fatalf("server never received the message:\n%s", data)
+	}
+	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "QUIT") {
+		t.Fatalf("want a WARN log mentioning QUIT, got %q", out)
+	}
+}
+
+// pickAuth matches whole mechanism tokens, never substrings.
+func TestPickAuthMatchesWholeMechanismTokens(t *testing.T) {
+	a, err := pickAuth("XPLAINX LOGIN", config.SMTP{User: "u", Pass: "p", Host: "127.0.0.1"})
+	if err != nil {
+		t.Fatalf("pickAuth: %v", err)
+	}
+	if _, ok := a.(loginAuth); !ok {
+		t.Fatalf("pickAuth picked %T, want loginAuth (XPLAINX is not PLAIN)", a)
+	}
+	if _, err := pickAuth("XPLAINX CRAM-MD5", config.SMTP{User: "u"}); err == nil {
+		t.Fatal("pickAuth must refuse when neither PLAIN nor LOGIN is offered as a token")
 	}
 }

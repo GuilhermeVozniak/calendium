@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -942,5 +943,171 @@ func TestTeamServiceSelfHostBypassesBilling(t *testing.T) {
 	f := newTeamFixture(t, true) // no subscription seeded anywhere
 	if _, err := f.svc.Create(context.Background(), "u1", port.TeamInput{Name: "X"}); err != nil {
 		t.Fatalf("Create on self-host without subscription: %v", err)
+	}
+}
+
+// A team or inviter name carrying CR/LF (ValidateTeamName only trims; Better
+// Auth names are unchecked) must not make every SMTP invite fail and revoke:
+// control characters collapse to one space before any header is built.
+func TestTeamInviteCollapsesControlCharsInNames(t *testing.T) {
+	mailer := newMailer()
+	f := newTeamFixtureWithMailer(t, true, mailer)
+	team := f.seedTeam(t, "t1", "owner")
+	team.Name = "Ops\r\nBcc: evil@example.com"
+	if err := f.teams.Update(context.Background(), team); err != nil {
+		t.Fatal(err)
+	}
+	name := "Olive\n\n\tOwner\x00"
+	if _, err := f.users.Upsert(context.Background(), domain.User{ID: "owner", Email: "olive@acme.com", Name: &name}); err != nil {
+		t.Fatal(err)
+	}
+
+	inv, err := f.svc.Invite(context.Background(), "owner", "t1", "x@example.com", domain.TeamRoleMember)
+	if err != nil {
+		t.Fatalf("Invite: %v", err)
+	}
+	if inv.Status != domain.InvitePending || inv.Delivery != domain.DeliverySMTP {
+		t.Fatalf("inv = %+v, want a pending smtp invitation", inv)
+	}
+	got := mailer.sent[0]
+	if want := "Olive Owner invited you to Ops Bcc: evil@example.com on Calendium"; got.Subject != want {
+		t.Fatalf("Subject = %q, want %q", got.Subject, want)
+	}
+	if !strings.Contains(got.Text, `Olive Owner has invited you to join the team "Ops Bcc: evil@example.com"`) {
+		t.Fatalf("Text = %q, want collapsed names", got.Text)
+	}
+}
+
+func TestHeaderSafeCollapsesControlRuns(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain":            "plain",
+		"a\r\nb":           "a b",
+		"  a \r\n\t b  ":   "a b",
+		"x y z\x7f":        "x y z",
+		"\r\n":             "",
+		"Zoë Ünïcode — ok": "Zoë Ünïcode — ok",
+	} {
+		if got := headerSafe(in); got != want {
+			t.Errorf("headerSafe(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// ctxAwareInvitationRepo fails Update on a done context, like a real
+// database driver, and records the rollback context's deadline.
+type ctxAwareInvitationRepo struct {
+	*fakeTeamInvitationRepo
+	updateDeadline time.Duration // time left on the Update ctx; 0 = no deadline
+}
+
+func (r *ctxAwareInvitationRepo) Update(ctx context.Context, inv domain.TeamInvitation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		r.updateDeadline = time.Until(dl)
+	}
+	return r.fakeTeamInvitationRepo.Update(ctx, inv)
+}
+
+// A cancelled request (client gone mid-SMTP) must still revoke the pending
+// row, or the pending-unique index blocks every retry for that address.
+func TestTeamInviteRollbackSurvivesCancelledContext(t *testing.T) {
+	mailer := newMailer()
+	mailer.sendErr = context.Canceled
+	f := newTeamFixtureWithMailer(t, true, mailer)
+	repo := &ctxAwareInvitationRepo{fakeTeamInvitationRepo: f.invites}
+	f.svc.invitations = repo
+	f.seedTeam(t, "t1", "owner")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := f.svc.Invite(ctx, "owner", "t1", "x@example.com", domain.TeamRoleMember); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want wrapped context.Canceled", err)
+	}
+	invs, _ := f.invites.ListByTeam(context.Background(), "t1")
+	if len(invs) != 1 || invs[0].Status != domain.InviteRevoked {
+		t.Fatalf("stored = %+v, want one revoked invitation despite the cancelled request", invs)
+	}
+	if repo.updateDeadline <= 0 || repo.updateDeadline > inviteRollbackTimeout {
+		t.Fatalf("rollback deadline = %v, want a short bound (0 < d <= %v)", repo.updateDeadline, inviteRollbackTimeout)
+	}
+	// The address is free again: a retry with a live context succeeds.
+	mailer.sendErr = nil
+	if _, err := f.svc.Invite(context.Background(), "owner", "t1", "x@example.com", domain.TeamRoleMember); err != nil {
+		t.Fatalf("retry after rollback: %v", err)
+	}
+}
+
+// --- Invitation email rate limit (cloud) ------------------------------------
+
+func subscribe(t *testing.T, f *teamFixture, users ...string) {
+	t.Helper()
+	for _, u := range users {
+		if err := f.subs.Upsert(context.Background(), domain.Subscription{UserID: u, Status: domain.SubscriptionActive}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func inviteN(t *testing.T, f *teamFixture, inviter string, from, n int) {
+	t.Helper()
+	for i := from; i < from+n; i++ {
+		email := inviter + "-" + strconv.Itoa(i) + "@example.com"
+		if _, err := f.svc.Invite(context.Background(), inviter, "t1", email, domain.TeamRoleMember); err != nil {
+			t.Fatalf("invite #%d: %v", i, err)
+		}
+	}
+}
+
+func TestTeamInviteRateLimitCloud(t *testing.T) {
+	mailer := newMailer()
+	f := newTeamFixtureWithMailer(t, false, mailer)
+	subscribe(t, f, "owner", "admin2")
+	f.seedTeam(t, "t1", "owner")
+	f.addMember(t, "t1", "admin2", domain.TeamRoleAdmin)
+	ctx := context.Background()
+
+	inviteN(t, f, "owner", 0, inviteEmailLimit-1)
+	// A rejected invite (duplicate pending) does not consume the budget.
+	if _, err := f.svc.Invite(ctx, "owner", "t1", "owner-0@example.com", domain.TeamRoleMember); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("duplicate err = %v, want ErrConflict", err)
+	}
+	inviteN(t, f, "owner", inviteEmailLimit-1, 1)
+
+	_, err := f.svc.Invite(ctx, "owner", "t1", "over@example.com", domain.TeamRoleMember)
+	if !errors.Is(err, domain.ErrRateLimited) {
+		t.Fatalf("invite #%d err = %v, want ErrRateLimited", inviteEmailLimit+1, err)
+	}
+	if len(mailer.sent) != inviteEmailLimit {
+		t.Fatalf("mailer sends = %d, want %d", len(mailer.sent), inviteEmailLimit)
+	}
+	invs, _ := f.invites.ListByTeam(ctx, "t1")
+	if len(invs) != inviteEmailLimit {
+		t.Fatalf("stored invitations = %d, want %d (a limited invite persists nothing)", len(invs), inviteEmailLimit)
+	}
+
+	// The budget is per inviter.
+	inviteN(t, f, "admin2", 0, 1)
+
+	// Rolling window: still limited just before the hour, free after it.
+	f.clock.Advance(inviteEmailWindow - time.Second)
+	if _, err := f.svc.Invite(ctx, "owner", "t1", "over@example.com", domain.TeamRoleMember); !errors.Is(err, domain.ErrRateLimited) {
+		t.Fatalf("err inside the window = %v, want ErrRateLimited", err)
+	}
+	f.clock.Advance(time.Second)
+	if _, err := f.svc.Invite(ctx, "owner", "t1", "over@example.com", domain.TeamRoleMember); err != nil {
+		t.Fatalf("invite after the window: %v", err)
+	}
+}
+
+func TestTeamInviteRateLimitSelfHostUnlimited(t *testing.T) {
+	mailer := newMailer()
+	f := newTeamFixtureWithMailer(t, true, mailer)
+	f.seedTeam(t, "t1", "owner")
+
+	inviteN(t, f, "owner", 0, inviteEmailLimit+5)
+	if len(mailer.sent) != inviteEmailLimit+5 {
+		t.Fatalf("mailer sends = %d, want %d", len(mailer.sent), inviteEmailLimit+5)
 	}
 }
