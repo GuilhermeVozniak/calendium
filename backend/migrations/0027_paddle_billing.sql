@@ -1,5 +1,6 @@
 -- 0027_paddle_billing.sql — Stripe → Paddle Billing (docs/payments.md).
--- No data migration: there are no live subscribers. Provider columns get
+-- No subscriber data is carried over (there are no live subscribers; rows
+-- holding the previous provider's ids are cleared below). Provider columns get
 -- provider-neutral names, the Stripe event ledger becomes a notification-id
 -- ledger, and `expired` leaves the status set (expiry is computed from time
 -- by domain.Subscription.HasAccess, never stored).
@@ -8,6 +9,23 @@ ALTER TABLE subscriptions RENAME COLUMN stripe_customer_id TO billing_customer_i
 ALTER TABLE subscriptions RENAME COLUMN stripe_subscription_id TO billing_subscription_id;
 ALTER INDEX subscriptions_stripe_customer_idx RENAME TO subscriptions_billing_customer_idx;
 ALTER INDEX subscriptions_stripe_subscription_idx RENAME TO subscriptions_billing_subscription_idx;
+
+-- Rows written by the previous provider carry its ids (customer 'cus_…',
+-- subscription 'sub_…'), which Paddle rejects; kept, they would block
+-- checkout and the portal for those users forever and make reconciliation
+-- re-read a foreign subscription id. There are no live subscribers, so:
+--   * a non-trial row with such ids (none/active/past_due/paused/canceled/
+--     expired) is deleted: the user falls back to the signup-trial path
+--     (no row -> trialing until users.created_at + 14 days, else
+--     trial_ended -> Subscribe), exactly like a user who never had a row;
+--   * a trialing row keeps its status and trial_ends_at, and loses the ids
+--     and last_event_at, so its first checkout creates a Paddle customer.
+DELETE FROM subscriptions
+WHERE status <> 'trialing'
+  AND (billing_customer_id LIKE 'cus\_%' OR billing_subscription_id LIKE 'sub\_%');
+UPDATE subscriptions
+SET billing_customer_id = NULL, billing_subscription_id = NULL, last_event_at = NULL
+WHERE billing_customer_id LIKE 'cus\_%' OR billing_subscription_id LIKE 'sub\_%';
 
 -- Defensive: nothing should hold 'expired', but the check below must apply.
 UPDATE subscriptions SET status = 'canceled' WHERE status = 'expired';
