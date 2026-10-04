@@ -170,8 +170,3 @@ func mapStatus(s string) domain.SubscriptionStatus {
 		return domain.SubscriptionNone
 	}
 }
-
-// Implemented in Task 7.
-func (c *Client) ParseWebhook([]byte, string, time.Time) (port.SubscriptionEvent, error) {
-	return port.SubscriptionEvent{}, fmt.Errorf("paddle: not implemented")
-}
