@@ -38,24 +38,45 @@ type fakeTxRunner struct{ calls int }
 
 func newTxRunner() *fakeTxRunner { return &fakeTxRunner{} }
 
+type fakeTxKey struct{}
+
 func (r *fakeTxRunner) RunInTx(ctx context.Context, fn func(context.Context) error) error {
 	r.calls++
-	return fn(ctx)
+	return fn(context.WithValue(ctx, fakeTxKey{}, true))
+}
+
+// inFakeTx reports whether ctx was handed out by fakeTxRunner.RunInTx.
+func inFakeTx(ctx context.Context) bool {
+	in, _ := ctx.Value(fakeTxKey{}).(bool)
+	return in
 }
 
 var _ port.TxRunner = (*fakeTxRunner)(nil)
 
 // --- user repo ---------------------------------------------------------------
 
+// fakeUserRepo mirrors the SQL: Upsert refuses a tombstoned id with
+// domain.ErrUserDeleted (deleted_users is consulted in the same statement).
 type fakeUserRepo struct {
-	byID map[string]domain.User
+	byID       map[string]domain.User
+	tombstones map[string]bool
 }
 
-func newUserRepo() *fakeUserRepo { return &fakeUserRepo{byID: map[string]domain.User{}} }
+func newUserRepo() *fakeUserRepo {
+	return &fakeUserRepo{byID: map[string]domain.User{}, tombstones: map[string]bool{}}
+}
 
 func (r *fakeUserRepo) Upsert(_ context.Context, u domain.User) (domain.User, error) {
+	if r.tombstones[u.ID] {
+		return domain.User{}, domain.ErrUserDeleted
+	}
 	r.byID[u.ID] = u
 	return u, nil
+}
+
+func (r *fakeUserRepo) Tombstone(_ context.Context, id string) error {
+	r.tombstones[id] = true
+	return nil
 }
 
 func (r *fakeUserRepo) GetByID(_ context.Context, id string) (domain.User, error) {
@@ -771,6 +792,16 @@ func (r *fakeSnippetRepo) ListByUser(_ context.Context, userID string) ([]domain
 	for _, id := range r.order {
 		// Personal snippets only — mirrors the SQL repo's team_id IS NULL.
 		if s, ok := r.byID[id]; ok && s.UserID == userID && s.TeamID == nil {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeSnippetRepo) ListTeamByAuthor(_ context.Context, userID string) ([]domain.Snippet, error) {
+	out := []domain.Snippet{}
+	for _, id := range r.order {
+		if s, ok := r.byID[id]; ok && s.UserID == userID && s.TeamID != nil {
 			out = append(out, s)
 		}
 	}
@@ -2342,6 +2373,26 @@ func (r *fakeBookingRepo) ListByUser(_ context.Context, userID string, limit int
 	return out, nil
 }
 
+func (r *fakeBookingRepo) ListByUserPage(_ context.Context, userID, afterID string, limit int) ([]domain.Booking, error) {
+	out := []domain.Booking{}
+	for _, b := range r.byID {
+		if r.links != nil {
+			link, ok := r.links.byID[b.LinkID]
+			if !ok || link.UserID != userID {
+				continue
+			}
+		}
+		if b.ID > afterID {
+			out = append(out, b)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (r *fakeBookingRepo) Confirm(_ context.Context, id, eventID string) error {
 	b, ok := r.byID[id]
 	if !ok {
@@ -2538,8 +2589,10 @@ var _ port.TimeProposalRepo = (*fakeProposalRepo)(nil)
 // Upsert never writes AIBackground (new rows default true, existing rows keep
 // theirs); SetAIBackground writes only the switch.
 type fakeUserSettingsRepo struct {
-	byUser map[string]domain.UserSettings
-	getErr error
+	byUser    map[string]domain.UserSettings
+	getErr    error
+	saveCalls int
+	saveErr   error
 }
 
 func newUserSettingsRepo() *fakeUserSettingsRepo {
@@ -2562,6 +2615,23 @@ func (r *fakeUserSettingsRepo) Upsert(_ context.Context, s domain.UserSettings) 
 		s.AIBackground = prev.AIBackground
 	} else {
 		s.AIBackground = true
+	}
+	r.byUser[s.UserID] = s
+	return nil
+}
+
+func (r *fakeUserSettingsRepo) Save(_ context.Context, s domain.UserSettings, aiBackground *bool) error {
+	r.saveCalls++
+	if r.saveErr != nil {
+		return r.saveErr // nothing applied: one statement
+	}
+	if prev, ok := r.byUser[s.UserID]; ok {
+		s.AIBackground = prev.AIBackground
+	} else {
+		s.AIBackground = true
+	}
+	if aiBackground != nil {
+		s.AIBackground = *aiBackground
 	}
 	r.byUser[s.UserID] = s
 	return nil
@@ -2783,6 +2853,9 @@ func (r *fakeTeamRepo) CountByRole(_ context.Context, teamID string, role domain
 	}
 	return n, nil
 }
+
+// LockMembershipsForUpdate is a no-op: the fake has no concurrency.
+func (r *fakeTeamRepo) LockMembershipsForUpdate(context.Context, string) error { return nil }
 
 func (r *fakeTeamRepo) ListMemberships(_ context.Context, userID string) ([]domain.TeamMember, error) {
 	out := []domain.TeamMember{}

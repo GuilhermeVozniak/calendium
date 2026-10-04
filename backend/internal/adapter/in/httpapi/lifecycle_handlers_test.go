@@ -154,6 +154,53 @@ func TestInternalPurgeWrongMethodIsUnknownRoute(t *testing.T) {
 	}
 }
 
+// The 1 KiB cap applies to bodies without a Content-Length too (chunked):
+// the handler drains the body under MaxBytesReader before purging.
+func TestInternalPurgeBodyCapChunked(t *testing.T) {
+	h := withSecret(newHarness(t))
+	body := io.MultiReader(strings.NewReader(strings.Repeat("x", internalBodyLimit+1))) // no Len → ContentLength -1
+	req := httptest.NewRequest(http.MethodDelete, "/v1/internal/users/u1", body)
+	if req.ContentLength != -1 {
+		t.Fatalf("test setup: ContentLength = %d, want -1 (chunked)", req.ContentLength)
+	}
+	req.Header.Set("X-Internal-Secret", hex.EncodeToString(testInternalSecret))
+	rec := httptest.NewRecorder()
+	h.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge || h.lifecycle.purgeCalls != 0 {
+		t.Fatalf("status=%d purgeCalls=%d, want 413 and no purge", rec.Code, h.lifecycle.purgeCalls)
+	}
+
+	small := httptest.NewRequest(http.MethodDelete, "/v1/internal/users/u1", io.MultiReader(strings.NewReader(strings.Repeat("x", internalBodyLimit))))
+	small.Header.Set("X-Internal-Secret", hex.EncodeToString(testInternalSecret))
+	rec = httptest.NewRecorder()
+	h.handler().ServeHTTP(rec, small)
+	if rec.Code != http.StatusNoContent || h.lifecycle.purgeCalls != 1 {
+		t.Fatalf("at the cap: status=%d purgeCalls=%d, want 204", rec.Code, h.lifecycle.purgeCalls)
+	}
+}
+
+// Controller ruling: the purge gets its own 120 s handler deadline (large
+// accounts finish in one transaction; the web caller waits 90 s), not the
+// 60 s default.
+func TestInternalPurgeDeadlineIs120s(t *testing.T) {
+	if internalPurgeDeadline != 120*time.Second {
+		t.Fatalf("internalPurgeDeadline = %v, want 120s", internalPurgeDeadline)
+	}
+	h := withSecret(newHarness(t))
+	start := time.Now()
+	rec := internalDelete(h, "u1", hex.EncodeToString(testInternalSecret))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	if !h.lifecycle.hadDeadline {
+		t.Fatal("Purge ran without a context deadline")
+	}
+	got := h.lifecycle.deadline.Sub(start)
+	if got < 119*time.Second || got > 121*time.Second {
+		t.Fatalf("purge context deadline = %v from the request, want 120s", got)
+	}
+}
+
 func TestInternalPurgeBodyCap(t *testing.T) {
 	h := withSecret(newHarness(t))
 	req := httptest.NewRequest(http.MethodDelete, "/v1/internal/users/u1", strings.NewReader(strings.Repeat("x", internalBodyLimit+1)))
@@ -269,16 +316,24 @@ func TestExportMidStreamFailureDropsConnection(t *testing.T) {
 	defer srv.Close()
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/me/export", nil)
 	req.Header.Set("Authorization", "Bearer "+defaultToken)
+	// Two files: the sink flushes the first (status + bytes on the wire)
+	// when the second is created, so the failure is truly mid-stream.
+	h.export.files = map[string]string{"profile.json": `{"id":"user_1"}`, "accounts.json": `[]`}
 	res, err := srv.Client().Do(req)
 	if err != nil {
-		return // connection reset before headers: acceptable
+		t.Fatalf("the 200 and the first file were flushed before the failure; Do = %v", err)
 	}
 	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK || res.Header.Get("Content-Type") != "application/zip" {
+		t.Fatalf("status=%d type=%q, want a started 200 zip stream", res.StatusCode, res.Header.Get("Content-Type"))
+	}
 	body, readErr := io.ReadAll(res.Body)
-	if readErr == nil {
-		if _, zerr := zip.NewReader(bytes.NewReader(body), int64(len(body))); zerr == nil {
-			t.Fatal("a mid-stream failure must not produce a complete zip")
-		}
+	_, zerr := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if readErr == nil && zerr == nil {
+		t.Fatal("a mid-stream failure must surface as a read error or an invalid zip, never a complete archive")
+	}
+	if h.export.exportCalls != 1 {
+		t.Fatalf("export calls = %d, want 1", h.export.exportCalls)
 	}
 }
 
@@ -293,14 +348,17 @@ func TestExportNotWiredIs501(t *testing.T) {
 // --- fakes ------------------------------------------------------------------
 
 type fakeLifecycleService struct {
-	purgeCalls int
-	gotUserID  string
-	purgeErr   error
+	purgeCalls  int
+	gotUserID   string
+	purgeErr    error
+	deadline    time.Time
+	hadDeadline bool
 }
 
-func (f *fakeLifecycleService) Purge(_ context.Context, userID string) (port.PurgeReport, error) {
+func (f *fakeLifecycleService) Purge(ctx context.Context, userID string) (port.PurgeReport, error) {
 	f.purgeCalls++
 	f.gotUserID = userID
+	f.deadline, f.hadDeadline = ctx.Deadline()
 	return port.PurgeReport{}, f.purgeErr
 }
 

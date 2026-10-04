@@ -28,3 +28,19 @@ CREATE TABLE user_exports (
     user_id    text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     started_at timestamptz NOT NULL
 );
+
+-- Deleted-user tombstones. Purge inserts the id in the same transaction as
+-- the users delete; UserRepo.Upsert (requireAuth provisioning) refuses a
+-- tombstoned id, so an access token still valid after the purge answers 401
+-- instead of re-creating an empty account. Deliberately NOT FK'd to users
+-- (the row outlives it). Holds only the opaque auth subject id.
+CREATE TABLE deleted_users (
+    id         text PRIMARY KEY,
+    deleted_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Export keyset pagers (ThreadRepo.ListByAccountPage, EventRepo
+-- .ListByUserPage) order by id within an account/calendar; without these a
+-- page re-sorts the scope's full set.
+CREATE INDEX threads_account_id_id_idx ON threads (account_id, id);
+CREATE INDEX events_calendar_id_id_idx ON events (calendar_id, id);

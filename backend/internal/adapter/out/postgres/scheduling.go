@@ -335,6 +335,27 @@ func (r bookingRepo) ListByUser(ctx context.Context, userID string, limit int) (
 	return collectBookings(rows)
 }
 
+// ListByUserPage keyset-pages every booking on the user's links by id
+// (the uncapped export read).
+func (r bookingRepo) ListByUserPage(ctx context.Context, userID, afterID string, limit int) ([]domain.Booking, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := r.q(ctx).QueryContext(ctx, `
+		SELECT b.id, b.link_id, b.status, b.start_at, b.end_at, b.invitee_name, b.invitee_email,
+			b.invitee_tz, b.note, b.event_id, b.hold_expires_at, b.created_at
+		FROM bookings b
+		JOIN booking_links bl ON bl.id = b.link_id
+		WHERE bl.user_id = $1 AND b.id > $2
+		ORDER BY b.id
+		LIMIT $3`, userID, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return collectBookings(rows)
+}
+
 func collectBookings(rows *sql.Rows) ([]domain.Booking, error) {
 	bookings := []domain.Booking{}
 	for rows.Next() {
@@ -664,19 +685,31 @@ func (r userSettingsRepo) Get(ctx context.Context, userID string) (domain.UserSe
 // list (the column default applies) and the DO UPDATE SET list, so a client
 // that PUTs the document without the field can never flip the switch.
 func (r userSettingsRepo) Upsert(ctx context.Context, s domain.UserSettings) error {
+	return r.Save(ctx, s, nil)
+}
+
+// Save writes the document and, when aiBackground is non-nil, the switch in
+// ONE statement (PUT /v1/settings is atomic). A NULL $5 inserts the column
+// default (true) and keeps an existing row's value.
+func (r userSettingsRepo) Save(ctx context.Context, s domain.UserSettings, aiBackground *bool) error {
 	workingHours, err := jsonArray(s.WorkingHours)
 	if err != nil {
 		return err
 	}
+	var ai sql.NullBool
+	if aiBackground != nil {
+		ai = sql.NullBool{Bool: *aiBackground, Valid: true}
+	}
 	_, err = r.q(ctx).ExecContext(ctx, `
-		INSERT INTO user_settings (user_id, time_zone, working_hours, working_location, updated_at)
-		VALUES ($1, $2, $3::jsonb, $4, now())
+		INSERT INTO user_settings (user_id, time_zone, working_hours, working_location, ai_background, updated_at)
+		VALUES ($1, $2, $3::jsonb, $4, COALESCE($5::boolean, true), now())
 		ON CONFLICT (user_id) DO UPDATE SET
 			time_zone        = EXCLUDED.time_zone,
 			working_hours    = EXCLUDED.working_hours,
 			working_location = EXCLUDED.working_location,
+			ai_background    = COALESCE($5::boolean, user_settings.ai_background),
 			updated_at       = now()`,
-		s.UserID, s.TimeZone, workingHours, s.WorkingLocation)
+		s.UserID, s.TimeZone, workingHours, s.WorkingLocation, ai)
 	return err
 }
 

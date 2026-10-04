@@ -47,6 +47,17 @@ func (r *fakeCommentRepo) ListByThreadTeam(_ context.Context, threadID, teamID s
 	return out, nil
 }
 
+func (r *fakeCommentRepo) ListByAuthor(_ context.Context, authorID string) ([]domain.Comment, error) {
+	out := []domain.Comment{}
+	for _, id := range r.order {
+		c := r.byID[id]
+		if c.AuthorID == authorID && c.DeletedAt == nil {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
 func (r *fakeCommentRepo) Update(_ context.Context, c domain.Comment) error {
 	existing, ok := r.byID[c.ID]
 	if !ok || existing.DeletedAt != nil {

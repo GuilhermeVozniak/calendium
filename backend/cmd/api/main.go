@@ -326,6 +326,8 @@ func run() error {
 	})
 	// Data export (GET /v1/me/export): one repo per zip file.
 	exportSvc := service.NewExportService(service.ExportDeps{
+		Comments: postgres.NewCommentRepo(store), CalendarSubscriptions: store.CalendarSubscriptions(),
+		Classifiers: store.Classifiers(), VoiceProfiles: store.VoiceProfiles(),
 		Users: store.Users(), Accounts: store.Accounts(), Calendars: store.Calendars(), Events: store.Events(),
 		Threads: store.Threads(), Messages: store.Messages(), Drafts: store.Drafts(), Snippets: store.Snippets(),
 		Templates: store.EventTemplates(), Sets: store.CalendarSets(), Tasks: store.Tasks(),

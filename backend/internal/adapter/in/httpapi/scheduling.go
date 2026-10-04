@@ -381,7 +381,7 @@ func (s *server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 // struct (full replace of time zone / hours / location) and once as a raw
 // object so aiBackground is tri-state — absent or null leaves the stored
 // switch alone (older mobile/desktop builds PUT the whole document without
-// it), true/false writes it through SetAIBackground.
+// it), true/false is written in the same statement as the document.
 func (s *server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var raw map[string]json.RawMessage
 	if err := decodeJSON(w, r, &raw); err != nil {
@@ -407,18 +407,16 @@ func (s *server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	userID := userFrom(r).ID
-	settings, err := s.deps.Settings.Update(r.Context(), userID, in)
+	var on *bool
+	if aiBackground != nil {
+		on = *aiBackground
+	}
+	// One service call → one statement: the document and the switch commit
+	// together, so a failure never leaves half a PUT applied.
+	settings, err := s.deps.Settings.Update(r.Context(), userFrom(r).ID, in, on)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
-	}
-	if aiBackground != nil && *aiBackground != nil {
-		settings, err = s.deps.Settings.SetAIBackground(r.Context(), userID, **aiBackground)
-		if err != nil {
-			s.writeError(w, r, err)
-			return
-		}
 	}
 	writeJSON(w, http.StatusOK, settings)
 }

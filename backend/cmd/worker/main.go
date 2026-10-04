@@ -276,6 +276,7 @@ func run() error {
 		Labels:        store.Labels(),
 		Classifiers:   store.Classifiers(),
 		VoiceProfiles: store.VoiceProfiles(),
+		UserSettings:  store.UserSettings(),
 		Calendar:      calendarSvc,
 		AI:            aiGateway,
 		Clock:         service.SystemClock{},
