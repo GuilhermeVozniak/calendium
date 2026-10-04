@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { CLIENT_IP_HEADER } from '@/lib/auth-env';
-import { DEFAULT_TRUSTED_PROXY_CIDRS, clientIpFor, proxyTrustFromEnv, withClientIp } from '@/lib/client-ip';
+import { DEFAULT_TRUSTED_PROXY_CIDRS, canonicalIp, clientIpFor, proxyTrustFromEnv, withClientIp } from '@/lib/client-ip';
 
 /**
  * X-Forwarded-For as the route handler sees it: whatever the client and any
@@ -60,6 +60,8 @@ describe('clientIpFor — TRUST_PROXY=true: right-most hop outside TRUSTED_PROXY
     ['unparseable hops are skipped', '198.51.100.7, garbage, 198.51.100.8:80, 127.0.0.1', '198.51.100.7'],
     ['IPv6 behind a loopback proxy', '2001:db8::7, ::1', '2001:db8::7'],
     ['IPv4-mapped hops are unmapped before matching', '::ffff:198.51.100.7, ::ffff:10.0.0.2', '198.51.100.7'],
+    ['hex IPv4-mapped hops are unmapped too', '::ffff:c633:6407, ::ffff:a00:2', '198.51.100.7'],
+    ['expanded hex IPv4-mapped hops are unmapped too', '0:0:0:0:0:FFFF:C633:6407, 0000::ffff:0a00:0002', '198.51.100.7'],
   ])('%s', (_label, header, expected) => {
     expect(clientIpFor(xff(header), TRUSTED)).toBe(expected);
   });
@@ -126,6 +128,20 @@ describe('proxyTrustFromEnv — TRUSTED_PROXY_CIDRS grammar', () => {
   it('a blank value means the defaults', () => {
     expect(resolved('', '172.18.0.5')).toBe('198.51.100.7');
     expect(resolved('   ', '172.18.0.5')).toBe('198.51.100.7');
+  });
+
+  it('an IPv4-mapped entry in any textual form is unmapped (bare IP = /32)', () => {
+    for (const entry of ['::ffff:a00:1', '::ffff:10.0.0.1', '0:0:0:0:0:ffff:0a00:0001']) {
+      expect(resolved(entry, '10.0.0.1')).toBe('198.51.100.7');
+      expect(resolved(entry, '10.0.0.2')).toBe('10.0.0.2');
+    }
+  });
+
+  it('canonicalIp unmaps hex IPv4-mapped addresses', () => {
+    expect(canonicalIp('::ffff:a00:1')).toBe('10.0.0.1');
+    expect(canonicalIp('::FFFF:C633:6407')).toBe('198.51.100.7');
+    expect(canonicalIp('::ffff:1:2:3')).toBe('::ffff:1:2:3'); // not a mapped address
+    expect(canonicalIp('64:ff9b::a00:1')).toBe('64:ff9b::a00:1');
   });
 
   it('a non-network-aligned prefix is accepted as its network (like netip.ParsePrefix)', () => {

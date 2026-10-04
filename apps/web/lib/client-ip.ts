@@ -33,18 +33,43 @@ export interface ProxyTrust {
   proxies: BlockList;
 }
 
-/** A canonical address (IPv4-mapped IPv6 unmapped, zone dropped, lower-cased), or null when `raw` is not a bare IP. */
+/** The eight 16-bit groups of a valid (isIP === 6), zone-free, lower-cased IPv6 address. */
+function ipv6Groups(ip: string): number[] {
+  const toGroups = (part: string): number[] =>
+    part === ''
+      ? []
+      : part.split(':').flatMap((g) => {
+          if (!g.includes('.')) return [Number.parseInt(g, 16)];
+          const [a = 0, b = 0, c = 0, d = 0] = g.split('.').map(Number);
+          return [(a << 8) | b, (c << 8) | d];
+        });
+  const [head = '', tail] = ip.split('::');
+  if (tail === undefined) return toGroups(head);
+  const left = toGroups(head);
+  const right = toGroups(tail);
+  return [...left, ...Array<number>(8 - left.length - right.length).fill(0), ...right];
+}
+
+/** The IPv4 address an IPv4-mapped IPv6 address (::ffff:a.b.c.d in any textual form, e.g. ::ffff:a00:1) carries, else null. */
+function unmapIPv4(ip: string): string | null {
+  const g = ipv6Groups(ip);
+  if (g.length !== 8 || g.slice(0, 5).some((x) => x !== 0) || g[5] !== 0xffff) return null;
+  const [hi = 0, lo = 0] = g.slice(6);
+  return [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff].join('.');
+}
+
+/**
+ * A canonical address (IPv4-mapped IPv6 unmapped in any textual form, like
+ * Go's netip Addr.Unmap; zone dropped; lower-cased), or null when `raw` is
+ * not a bare IP.
+ */
 export function canonicalIp(raw: string): string | null {
   let ip = raw.trim().toLowerCase();
   const zone = ip.indexOf('%');
   if (zone !== -1) ip = ip.slice(0, zone);
   const version = isIP(ip);
   if (version === 0) return null;
-  if (version === 6) {
-    const mapped = /^(?:0{0,4}:){0,4}:?(?:0{0,4}:)?ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(ip)?.[1];
-    if (mapped && isIP(mapped) === 4) return mapped;
-  }
-  return ip;
+  return (version === 6 && unmapIPv4(ip)) || ip;
 }
 
 /** Whether scripts/forwarded-for-peer.cjs is active in this process (the right-most XFF entry is then the real peer). */
@@ -68,7 +93,11 @@ function parseTrustedCidr(entry: string): [string, number, 'ipv4' | 'ipv6'] | nu
   const version = isIP(address);
   if (version === 0) return null;
   const max = version === 4 ? 32 : 128;
-  if (prefixText === undefined) return [address, max, family(address)];
+  if (prefixText === undefined) {
+    // A bare IPv4-mapped address is that IPv4 host, like the client addresses it is matched against.
+    const unmapped = version === 6 ? unmapIPv4(address.toLowerCase()) : null;
+    return unmapped ? [unmapped, 32, 'ipv4'] : [address, max, family(address)];
+  }
   if (!/^(?:0|[1-9]\d{0,2})$/.test(prefixText)) return null;
   const prefix = Number(prefixText);
   return prefix <= max ? [address, prefix, family(address)] : null;
