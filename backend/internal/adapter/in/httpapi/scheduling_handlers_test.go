@@ -303,8 +303,8 @@ func TestPublicRoutes_RateLimited429(t *testing.T) {
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429 after burst exhausted, got %d", rec.Code)
 	}
-	if got := rec.Header().Get("Retry-After"); got != "60" {
-		t.Fatalf("expected Retry-After: 60, got %q", got)
+	if got := rec.Header().Get("Retry-After"); got != "12" {
+		t.Fatalf("expected Retry-After: 12 (5/min, empty bucket), got %q", got)
 	}
 	if e := decodeErr(t, rec); e.Code != "rate_limited" {
 		t.Fatalf("expected code rate_limited, got %q", e.Code)
