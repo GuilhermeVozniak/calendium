@@ -21,13 +21,22 @@ var version = "dev"
 // sign-in in the system browser, and the mailbox-connect return.
 const deepLinkEvent = "deep-link"
 
+// deepLinkRoutes are the calendium://<route> prefixes a view may take with
+// TakePendingDeepLink: SignInView takes "auth", SettingsView "accounts".
+var deepLinkRoutes = map[string]bool{"auth": true, "accounts": true}
+
 // App is the Wails-bound application struct. Its exported methods are exposed
 // to the frontend as window.go.main.App.* (see frontend/src/lib/wails.ts).
 type App struct {
 	ctx context.Context
 
-	mu         sync.Mutex
-	pendingURL string
+	mu sync.Mutex
+	// pendingURL holds a deep link that arrived before any view subscribed
+	// (cold launch via URL). It stays until a view takes it with
+	// TakePendingDeepLink; frontendReady flips on that first call, after which
+	// links are emitted as events (the warm path).
+	pendingURL    string
+	frontendReady bool
 
 	// --- Task 9: global shortcuts (hotkeys.go) ---
 	hotkeys *hotkeyManager
@@ -55,23 +64,20 @@ func NewApp() *App {
 }
 
 // startup is called when the app starts; the context is saved so runtime
-// methods can be called. A deep link can arrive before the WebView is ready
-// (cold launch via URL), so we flush anything buffered once the context exists.
+// methods can be called. A link buffered by a cold launch is NOT emitted here:
+// Wails runs OnStartup before the page loads and EventsEmit has no queue, so
+// the frontend pulls it with TakePendingDeepLink once it has subscribed.
 func (a *App) startup(ctx context.Context) {
 	a.mu.Lock()
 	a.ctx = ctx
-	pending := a.pendingURL
-	a.pendingURL = ""
 	a.mu.Unlock()
-	if pending != "" {
-		runtime.EventsEmit(ctx, deepLinkEvent, pending)
-	}
 }
 
-// handleURL is the macOS URL-scheme handler (wired as mac.Options.OnUrlOpen).
-// It forwards the opened calendium:// URL to the frontend as a "deep-link"
-// event, buffering it when the WebView context isn't ready yet. Unexported so
-// it isn't bound into the JS surface — the OS invokes it, not the frontend.
+// handleURL is the macOS URL-scheme handler (wired as mac.Options.OnUrlOpen)
+// and the sink for Windows/Linux argv links. It forwards the opened
+// calendium:// URL to the frontend as a "deep-link" event once a view has
+// subscribed, and buffers it (last link wins) until then. Unexported so it
+// isn't bound into the JS surface — the OS invokes it, not the frontend.
 func (a *App) handleURL(url string) {
 	url, ok := normalizeDeepLink(url)
 	if !ok {
@@ -79,13 +85,31 @@ func (a *App) handleURL(url string) {
 	}
 	a.mu.Lock()
 	ctx := a.ctx
-	if ctx == nil {
+	if ctx == nil || !a.frontendReady {
 		a.pendingURL = url
 		a.mu.Unlock()
 		return
 	}
 	a.mu.Unlock()
 	runtime.EventsEmit(ctx, deepLinkEvent, url)
+}
+
+// TakePendingDeepLink returns the buffered cold-start link when it targets
+// calendium://<route> and clears it (consume-once); otherwise "". A view calls
+// it right after subscribing to the deep-link event, so a link that arrived
+// before the page loaded is not lost. A link for another route stays pending
+// for its own view. The first call also marks the frontend ready, so later
+// links go out as events.
+func (a *App) TakePendingDeepLink(route string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.frontendReady = true
+	if !deepLinkRoutes[route] || !strings.HasPrefix(a.pendingURL, deepLinkScheme+route) {
+		return ""
+	}
+	url := a.pendingURL
+	a.pendingURL = ""
+	return url
 }
 
 // deepLinkScheme prefixes every URL the OS hands us for the calendium scheme.
@@ -117,7 +141,7 @@ func deepLinkFromArgs(args []string) string {
 }
 
 // consumeArgs handles a cold launch via URL: main() calls it before wails.Run,
-// so the link lands in pendingURL and startup flushes it once the WebView is up.
+// so the link lands in pendingURL until a view takes it (TakePendingDeepLink).
 func (a *App) consumeArgs(args []string) {
 	if u := deepLinkFromArgs(args); u != "" {
 		a.handleURL(u)

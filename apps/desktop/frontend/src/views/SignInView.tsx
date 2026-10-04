@@ -2,9 +2,9 @@ import { Loader2 } from 'lucide-react';
 import { type FormEvent, useEffect, useState } from 'react';
 
 import { signInEmail, signUpEmail, verifyOtt } from '@/lib/auth';
-import { deepLinkTo } from '@/lib/links';
+import { subscribeDeepLink } from '@/lib/deep-link';
 import { forgotPasswordUrl, useServerConfig, webOrigin } from '@/lib/server-config';
-import { desktop, onDeepLink } from '@/lib/wails';
+import { desktop } from '@/lib/wails';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
 
@@ -79,11 +79,10 @@ export function SignInView() {
   }
 
   // Desktop deep-link handoff: the browser returns calendium://auth/callback?ott=…
+  // (an event when the app is running, or the host's pending link on a cold start).
   useEffect(
     () =>
-      onDeepLink((url) => {
-        const link = deepLinkTo(url, 'auth');
-        if (!link) return;
+      subscribeDeepLink('auth', (link) => {
         let ott = '';
         try {
           ott = new URL(link).searchParams.get('ott') ?? '';

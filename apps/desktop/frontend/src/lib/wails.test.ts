@@ -67,6 +67,11 @@ describe('wails.ts — browser fallback (no window.go/window.runtime)', () => {
     expect(openSpy).toHaveBeenCalledWith('https://example.com', '_blank', 'noopener,noreferrer');
   });
 
+  it('TakePendingDeepLink resolves to no pending link in the browser', async () => {
+    const { desktop } = await import('./wails');
+    await expect(desktop.TakePendingDeepLink('auth')).resolves.toBe('');
+  });
+
   it('onDeepLink no-ops gracefully: EventsOn/EventsEmit never invoke a handler', async () => {
     const { onDeepLink } = await import('./wails');
     const handler = vi.fn();

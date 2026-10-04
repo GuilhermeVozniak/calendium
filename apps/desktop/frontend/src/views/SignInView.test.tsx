@@ -12,9 +12,13 @@ vi.mock('@/lib/auth', () => ({
 const verifyOtt = vi.fn();
 
 const openExternal = vi.fn();
+const takePendingDeepLink = vi.fn<(route: string) => Promise<string>>();
 let deepLinkHandlers: Array<(url: string) => void> = [];
 vi.mock('@/lib/wails', () => ({
-  desktop: { OpenExternal: (...a: unknown[]) => openExternal(...a) },
+  desktop: {
+    OpenExternal: (...a: unknown[]) => openExternal(...a),
+    TakePendingDeepLink: (route: string) => takePendingDeepLink(route),
+  },
   onDeepLink: (handler: (url: string) => void) => {
     deepLinkHandlers.push(handler);
     return () => {
@@ -47,10 +51,18 @@ import { SignInView } from './SignInView';
 beforeEach(() => {
   vi.clearAllMocks();
   deepLinkHandlers = [];
+  takePendingDeepLink.mockResolvedValue('');
   verifyOtt.mockResolvedValue({ ok: false, error: 'That code expired.' });
 });
 
 describe('SignInView deep-link handoff', () => {
+  it('redeems a cold-start OTT the host buffered before the view mounted', async () => {
+    takePendingDeepLink.mockResolvedValue('calendium://auth/callback?ott=Cold42');
+    render(<SignInView />);
+    await waitFor(() => expect(verifyOtt).toHaveBeenCalledWith('Cold42'));
+    expect(takePendingDeepLink).toHaveBeenCalledWith('auth');
+  });
+
   it('redeems the OTT from a calendium://auth link in any scheme case', async () => {
     render(<SignInView />);
     for (const h of deepLinkHandlers) h('CALENDIUM://auth/callback?ott=AbC123');

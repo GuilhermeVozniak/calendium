@@ -7,29 +7,20 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 )
 
-// handleURL / startup implement a small pre-startup deep-link buffer: a
-// calendium:// URL that arrives before the WebView is ready (cold launch via
-// URL) is held in pendingURL and flushed once startup() supplies a real
-// Wails context.
+// handleURL / TakePendingDeepLink implement a pull-based cold-start buffer: a
+// calendium:// URL that arrives before the frontend has subscribed (cold
+// launch via URL on any platform) is held in pendingURL until a view takes it
+// with TakePendingDeepLink right after subscribing to the deep-link event.
+// Wails v2 runs OnStartup before the page loads and its EventsEmit has no
+// queue, so pushing the link at startup would lose it.
 //
-// LIMITATION: the actual flush — runtime.EventsEmit(ctx, deepLinkEvent, url)
-// — cannot be exercised in a unit test here. Wails' runtime package reads its
-// Events implementation off ctx.Value("events") (see
-// github.com/wailsapp/wails/v2/pkg/runtime/runtime.go's getEvents), which is
-// only populated by wails.Run() during a real application lifecycle. When
-// it's absent, getEvents calls log.Fatalf, which os.Exit(1)s the *entire test
-// binary* — not a reportable test failure, an unrecoverable process abort.
-// Duck-typing a fake frontend.Events value into the context would sidestep
-// that (Go interfaces are satisfied structurally, and frontend.Events is
-// unexported but not un-satisfiable from outside its package), but doing so
-// is exactly "stub the entire Wails runtime," which this task says not to
-// do — so that half is intentionally left uncovered.
-//
-// What IS covered below is the runtime-independent half: the pendingURL
-// buffer/flag logic in handleURL and startup. Beyond lower-casing the scheme
-// (normalizeDeepLink) handleURL treats the deep link as an opaque string
-// (buffered, then forwarded verbatim); the tests below confirm it round-trips
-// a realistic calendium:// URL unchanged.
+// LIMITATION: the warm path — runtime.EventsEmit(ctx, deepLinkEvent, url),
+// taken once a view has called TakePendingDeepLink and a real Wails context
+// exists — cannot be exercised here. Wails' runtime reads its Events
+// implementation off ctx.Value("events"), populated only by wails.Run(); when
+// it is absent, getEvents calls log.Fatalf and aborts the test binary. The
+// tests below cover the runtime-independent half: buffering, consume-once and
+// the route filter.
 
 func TestHandleURL_BuffersBeforeStartup(t *testing.T) {
 	a := NewApp()
@@ -69,23 +60,82 @@ func TestHandleURL_NoBufferingWithoutACall(t *testing.T) {
 	}
 }
 
-func TestStartup_SetsContextAndSkipsEmitWhenNothingIsPending(t *testing.T) {
+func TestStartup_KeepsThePendingLinkForTheFrontendToTake(t *testing.T) {
+	// startup must not push the buffered link: the page is not loaded yet, so
+	// an emitted event would be dropped. (Reaching runtime.EventsEmit with
+	// this bare context would also abort the test binary.)
 	a := NewApp()
+	const link = "calendium://auth/callback?ott=abc123"
+	a.handleURL(link)
 	ctx := context.Background()
-	// No deep link is pending, so startup must NOT reach
-	// runtime.EventsEmit(ctx, ...) — ctx here carries none of Wails' internal
-	// state, and that call would os.Exit(1) the test binary. Not crashing,
-	// and pendingURL staying empty, is itself the assertion that the
-	// pending-URL-empty short-circuit in startup works.
 	a.startup(ctx)
 
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.ctx != ctx {
+		a.mu.Unlock()
 		t.Fatalf("startup did not save the context")
 	}
-	if a.pendingURL != "" {
-		t.Fatalf("pendingURL = %q, want empty", a.pendingURL)
+	a.mu.Unlock()
+	if got := a.TakePendingDeepLink("auth"); got != link {
+		t.Fatalf("TakePendingDeepLink(auth) = %q, want %q", got, link)
+	}
+}
+
+func TestHandleURL_BuffersAfterStartupUntilTheFrontendSubscribes(t *testing.T) {
+	// macOS can deliver the cold-launch URL after OnStartup set the context
+	// but before any view subscribed; it must still be buffered.
+	a := NewApp()
+	a.startup(context.Background())
+	const link = "calendium://accounts/connected?status=ok"
+	a.handleURL(link)
+	if got := a.TakePendingDeepLink("accounts"); got != link {
+		t.Fatalf("TakePendingDeepLink(accounts) = %q, want %q", got, link)
+	}
+}
+
+func TestTakePendingDeepLink_ConsumesOnce(t *testing.T) {
+	a := NewApp()
+	const link = "calendium://auth/callback?ott=abc123"
+	a.consumeArgs([]string{link})
+	if got := a.TakePendingDeepLink("auth"); got != link {
+		t.Fatalf("first take = %q, want %q", got, link)
+	}
+	if got := a.TakePendingDeepLink("auth"); got != "" {
+		t.Fatalf("second take = %q, want empty (consume-once)", got)
+	}
+}
+
+func TestTakePendingDeepLink_LeavesOtherRoutesForTheirView(t *testing.T) {
+	// SignInView may mount first on a cold start; a pending mailbox-connect
+	// link must survive until SettingsView takes it.
+	a := NewApp()
+	const link = "calendium://accounts/connected?status=ok"
+	a.handleURL(link)
+	if got := a.TakePendingDeepLink("auth"); got != "" {
+		t.Fatalf("TakePendingDeepLink(auth) = %q, want empty for an accounts link", got)
+	}
+	if got := a.TakePendingDeepLink("accounts"); got != link {
+		t.Fatalf("TakePendingDeepLink(accounts) = %q, want %q", got, link)
+	}
+}
+
+func TestTakePendingDeepLink_RejectsUnknownOrEmptyRoutes(t *testing.T) {
+	a := NewApp()
+	a.handleURL("calendium://auth/callback?ott=abc123")
+	for _, route := range []string{"", "evil", "auth/../accounts"} {
+		if got := a.TakePendingDeepLink(route); got != "" {
+			t.Fatalf("TakePendingDeepLink(%q) = %q, want empty", route, got)
+		}
+	}
+	if got := a.TakePendingDeepLink("auth"); got == "" {
+		t.Fatalf("the link must still be pending after rejected takes")
+	}
+}
+
+func TestTakePendingDeepLink_EmptyWhenNothingIsPending(t *testing.T) {
+	a := NewApp()
+	if got := a.TakePendingDeepLink("auth"); got != "" {
+		t.Fatalf("TakePendingDeepLink(auth) = %q, want empty", got)
 	}
 }
 
