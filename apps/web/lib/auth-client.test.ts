@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { accessTokens, getAccessToken, invalidateAccessToken } from '@/lib/auth-client';
+import { accessTokens, getAccessToken, invalidateAccessToken, syncAccessTokenOwner } from '@/lib/auth-client';
 
-function jwt(expSeconds: number): string {
-  const payload = btoa(JSON.stringify({ sub: 'u1', exp: expSeconds })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+function jwt(expSeconds: number, sub = 'u1'): string {
+  const payload = btoa(JSON.stringify({ sub, exp: expSeconds })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   return `eyJhbGciOiJFZERTQSJ9.${payload}.sig`;
 }
 
@@ -50,5 +50,45 @@ describe('getAccessToken (web, cached)', () => {
     invalidateAccessToken();
     expect(await getAccessToken()).toBe(second);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('syncAccessTokenOwner (cache follows the session user)', () => {
+  const exp = () => Math.floor(Date.now() / 1000) + 900;
+  const mintResponse = (token: string) => new Response(JSON.stringify({ token }), { status: 200 });
+
+  it('drops the cached JWT when the session user changes, and when the session ends', async () => {
+    const a = jwt(exp(), 'user-a');
+    const b = jwt(exp(), 'user-b');
+    syncAccessTokenOwner('user-a');
+    fetchMock.mockResolvedValueOnce(mintResponse(a)).mockResolvedValueOnce(mintResponse(b));
+    expect(await getAccessToken()).toBe(a);
+
+    syncAccessTokenOwner('user-a'); // same user re-render: keep the token
+    expect(await getAccessToken()).toBe(a);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    syncAccessTokenOwner(null); // session expired / revoked elsewhere
+    syncAccessTokenOwner('user-b'); // next account on the same tab
+    expect(await getAccessToken()).toBe(b);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a mint started for the previous user is never handed to the next one', async () => {
+    const a = jwt(exp(), 'user-a');
+    const b = jwt(exp(), 'user-b');
+    syncAccessTokenOwner('user-a');
+    let resolveA!: (r: Response) => void;
+    fetchMock
+      .mockImplementationOnce(() => new Promise<Response>((r) => { resolveA = r; }))
+      .mockResolvedValueOnce(mintResponse(b));
+
+    const pendingA = getAccessToken(); // user A's mint is in flight
+    syncAccessTokenOwner('user-b'); // …when user B takes over the tab
+    const forB = getAccessToken();
+    resolveA(mintResponse(a));
+    expect(await pendingA).toBe(a);
+    expect(await forB).toBe(b);
+    expect(await getAccessToken()).toBe(b);
   });
 });

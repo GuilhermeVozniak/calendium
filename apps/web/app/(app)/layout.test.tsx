@@ -16,10 +16,13 @@ vi.mock('@/components/app/paywall', () => ({
   BillingTrialBanner: () => null,
 }));
 
+const syncAccessTokenOwner = vi.fn();
+const sessionState = vi.hoisted(() => ({
+  value: { data: { user: { id: 'u1', email: 'ada@example.com', name: 'Ada' } } as unknown, isPending: false },
+}));
 vi.mock('@/lib/auth-client', () => ({
-  authClient: {
-    useSession: () => ({ data: { user: { id: 'u1', email: 'ada@example.com', name: 'Ada' } }, isPending: false }),
-  },
+  authClient: { useSession: () => sessionState.value },
+  syncAccessTokenOwner: (id: string | null) => syncAccessTokenOwner(id),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -78,6 +81,29 @@ function renderLayout() {
 beforeEach(() => {
   vi.clearAllMocks();
   gate.denied = false;
+  sessionState.value = { data: { user: { id: 'u1', email: 'ada@example.com', name: 'Ada' } }, isPending: false };
+});
+
+describe('(app) layout access-token owner', () => {
+  it('ties the JWT cache to the session user id, including the signed-out transition', () => {
+    const { rerender } = renderLayout();
+    expect(syncAccessTokenOwner).toHaveBeenLastCalledWith('u1');
+    sessionState.value = { data: null, isPending: false };
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <AppLayout>
+          <div data-testid="page">inbox</div>
+        </AppLayout>
+      </QueryClientProvider>
+    );
+    expect(syncAccessTokenOwner).toHaveBeenLastCalledWith(null);
+  });
+
+  it('does not report an owner while the session is still loading', () => {
+    sessionState.value = { data: null, isPending: true };
+    renderLayout();
+    expect(syncAccessTokenOwner).not.toHaveBeenCalled();
+  });
 });
 
 describe('(app) layout billing gate', () => {

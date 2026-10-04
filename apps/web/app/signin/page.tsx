@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/input';
 import { Kbd } from '@/components/ui/kbd';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
-import { authClient, signIn, signUp } from '@/lib/auth-client';
+import { authClient, invalidateAccessToken, signIn, signUp } from '@/lib/auth-client';
 import { RESEND_COOLDOWN_SECONDS, captureRetryAfter, describeAuthError } from '@/lib/auth-copy';
 import { PASSWORD_MIN_LENGTH, passwordPolicyError } from '@/lib/auth-env';
 import { useInstance } from '@/lib/use-instance';
@@ -172,6 +172,9 @@ export default function SignInPage() {
           return;
         }
       }
+      // A new session may belong to a different user than whatever JWT this
+      // tab still caches (client-side navigation keeps module state).
+      invalidateAccessToken();
       router.replace(nextDestination());
     } finally {
       setPending(null);
