@@ -23,6 +23,14 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: replaceMock, pu
 const signOutMock = vi.fn(async () => {});
 vi.mock('@/lib/sign-out', () => ({ performSignOut: () => signOutMock() }));
 
+const paymentRequiredListeners = new Set<() => void>();
+vi.mock('@/lib/api', () => ({
+  onPaymentRequired: (listener: () => void) => {
+    paymentRequiredListeners.add(listener);
+    return () => paymentRequiredListeners.delete(listener);
+  },
+}));
+
 const toastError = vi.fn();
 vi.mock('sonner', () => ({ toast: { error: (...a: unknown[]) => toastError(...a), success: vi.fn(), info: vi.fn() } }));
 
@@ -208,6 +216,20 @@ describe('BillingGate', () => {
     await act(() => qc.refetchQueries({ queryKey: ['subscription'] }));
     await waitFor(() => expect(qc.getQueryState(['subscription'])?.status).toBe('error'));
     expect(screen.getByRole('heading', { name: 'Your subscription has ended' })).toBeInTheDocument();
+    expect(screen.queryByTestId('app')).not.toBeInTheDocument();
+  });
+
+  // Mid-session lapse: any 402 from the API client re-evaluates the gate
+  // immediately instead of waiting for the 5-minute poll.
+  it('re-evaluates the subscription when the API client sees a 402', async () => {
+    fetchSubscriptionMock.mockResolvedValueOnce(sub('active'));
+    renderWithQuery(<BillingGate>{child}</BillingGate>);
+    expect(await screen.findByTestId('app')).toBeInTheDocument();
+    fetchSubscriptionMock.mockResolvedValue(sub('canceled'));
+    act(() => {
+      for (const listener of paymentRequiredListeners) listener();
+    });
+    expect(await screen.findByRole('heading', { name: 'Your subscription has ended' })).toBeInTheDocument();
     expect(screen.queryByTestId('app')).not.toBeInTheDocument();
   });
 

@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Lock, LogOut, X } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -10,6 +10,7 @@ import type { PaymentRequiredReason, Subscription } from '@calendium/shared';
 import { ApiRequestError, subscriptionDenialReason, TRIAL_BANNER_DAYS, trialDaysLeft } from '@calendium/shared';
 
 import { Button } from '@/components/ui/button';
+import { onPaymentRequired } from '@/lib/api';
 import { fetchSubscription, openBillingPortal, startCheckout } from '@/lib/settings-data';
 import { performSignOut } from '@/lib/sign-out';
 import { useInstance } from '@/lib/use-instance';
@@ -203,6 +204,20 @@ export function BillingGate({ children }: { children: React.ReactNode }) {
     staleTime: 60_000,
     refetchInterval: 5 * 60_000,
   });
+
+  // Any 402 from the API client means the server now denies access (e.g. the
+  // trial ended mid-session): re-evaluate right away instead of waiting for
+  // the poll. cancelRefetch:false joins an in-flight fetch rather than
+  // restarting it, so a burst of 402s (or a 402 from the subscription
+  // endpoint itself) can never loop.
+  const queryClient = useQueryClient();
+  React.useEffect(
+    () =>
+      onPaymentRequired(() => {
+        void queryClient.invalidateQueries({ queryKey: ['subscription'] }, { cancelRefetch: false });
+      }),
+    [queryClient]
+  );
 
   if (instance.isPending || (billing && subscription.isPending)) {
     return (
