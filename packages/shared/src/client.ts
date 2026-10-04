@@ -147,6 +147,9 @@ export function isAccessTokenRejection(status: number, body: unknown): boolean {
 }
 
 export class ApiRequestError extends Error {
+  /** Seconds to wait before retrying, from a Retry-After header (export throttle). */
+  retryAfterSeconds?: number;
+
   constructor(
     public readonly status: number,
     public readonly code: string,
@@ -665,6 +668,43 @@ export class ApiClient {
   }
   updateSettings(s: UserSettings) {
     return this.request<UserSettings>('PUT', '/v1/settings', s);
+  }
+
+  /**
+   * GET /v1/me/export — streams the account's data as a zip. Unlike every
+   * other call this returns the raw Blob (no JSON parsing). A 409
+   * export_throttled carries `retryAfterSeconds` from the Retry-After header.
+   * Never delegable (403 under act-as). Mobile/desktop never call it: they
+   * link to the web settings page instead. Shares request()'s token cache and
+   * its single re-mint on an access-token rejection.
+   */
+  downloadExport(): Promise<Blob> {
+    return this.fetchExport(false);
+  }
+
+  private async fetchExport(retried: boolean): Promise<Blob> {
+    const tokens = this.opts.accessTokens;
+    const token = tokens ? await tokens.get() : await this.opts.getAccessToken();
+    const doFetch = this.opts.fetch ?? fetch;
+    const res = await doFetch(`${this.opts.baseUrl}/v1/me/export`, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/zip',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    if (res.ok) return res.blob();
+    const json = await res.json().catch(() => null);
+    if (token && tokens && !retried && isAccessTokenRejection(res.status, json)) {
+      tokens.invalidate(token);
+      return this.fetchExport(true);
+    }
+    const code = json?.error?.code ?? 'unknown';
+    const message = json?.error?.message ?? `Request failed with status ${res.status}`;
+    const err = new ApiRequestError(res.status, code, message, json?.error?.details);
+    const retryAfter = Number(res.headers.get('Retry-After'));
+    if (Number.isFinite(retryAfter) && retryAfter > 0) err.retryAfterSeconds = retryAfter;
+    throw err;
   }
 
   // --- Teams (M2.7) ---

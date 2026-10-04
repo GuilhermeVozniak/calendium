@@ -1051,7 +1051,10 @@ function SchedulingSection() {
 
   const save = useMutation({
     mutationFn: () => {
-      const next: UserSettings = { timeZone, workingHours, workingLocation };
+      // Carry the stored background-AI switch through untouched: this form
+      // only edits scheduling fields (an absent field is kept server-side).
+      const current = queryClient.getQueryData<UserSettings>(['scheduling-settings']);
+      const next = { ...current, timeZone, workingHours, workingLocation } as UserSettings;
       return updateSettingsApi(next);
     },
     onSuccess: (s) => {
