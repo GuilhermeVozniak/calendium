@@ -23,6 +23,7 @@ import "errors"
 //	ErrAlreadySubscribed  → 409
 //	ErrNoBillingProfile   → 400
 //	ErrBillingUnavailable → 502
+//	ErrUpstream           → 502
 var (
 	ErrNotFound     = errors.New("not found")
 	ErrUnauthorized = errors.New("unauthorized")
@@ -33,6 +34,13 @@ var (
 	ErrPaymentRequired = errors.New("payment required")
 	ErrValidation      = errors.New("validation failed")
 	ErrConflict        = errors.New("conflict")
+	// ErrUpstream marks a failure of a service the PLATFORM depends on with
+	// the platform's own credentials (AI gateway, the Better Auth JWKS
+	// endpoint) — never a per-user provider grant, which keeps
+	// ErrUnauthorized so services can drive a token refresh. The HTTP adapter
+	// maps it to 502 Bad Gateway; the provider is named only in server logs.
+	// (The Paddle billing adapter keeps its own ErrBillingUnavailable.)
+	ErrUpstream = errors.New("upstream unavailable")
 	// ErrUnprocessable marks input that is syntactically valid but cannot be
 	// acted on (e.g. a well-formed subscription URL whose feed cannot be
 	// fetched or parsed). The HTTP adapter maps it to 422 Unprocessable

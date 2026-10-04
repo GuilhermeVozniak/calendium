@@ -118,6 +118,8 @@ func statusFor(err error) (int, string) {
 		return http.StatusNotImplemented, "self_hosted"
 	case errors.Is(err, domain.ErrNotImplemented):
 		return http.StatusNotImplemented, "not_implemented"
+	case errors.Is(err, domain.ErrUpstream):
+		return http.StatusBadGateway, "upstream_unavailable"
 	case errors.Is(err, domain.ErrAIOutput):
 		return http.StatusBadGateway, "ai_output_invalid"
 	case errors.Is(err, domain.ErrAIUnavailable):
@@ -166,6 +168,8 @@ func safeMessage(code string) string {
 		return "The request took too long to complete. Please try again."
 	case "payload_too_large":
 		return "The request body is too large."
+	case "upstream_unavailable":
+		return "A service Calendium depends on is unavailable. Please try again later."
 	case "already_subscribed":
 		return "You already have an active subscription. Manage it from billing."
 	case "no_billing_profile":

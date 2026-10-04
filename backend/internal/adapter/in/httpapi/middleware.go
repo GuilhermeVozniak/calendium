@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"runtime/debug"
@@ -34,6 +35,10 @@ func (s *server) requireAuth(next http.HandlerFunc) http.Handler {
 		}
 		identity, err := s.deps.Verifier.Verify(r.Context(), token)
 		if err != nil {
+			if errors.Is(err, domain.ErrUpstream) {
+				s.writeError(w, r, err) // 502: the JWKS endpoint is down, the token may well be fine
+				return
+			}
 			s.deps.Logger.Debug("token rejected", "error", err)
 			writeJSON(w, http.StatusUnauthorized, errorBody{Error: errorDetail{
 				Code:      "unauthorized",

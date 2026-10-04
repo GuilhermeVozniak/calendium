@@ -19,6 +19,7 @@ func TestStatusFor(t *testing.T) {
 	}{
 		{"validation", fmt.Errorf("x: %w", domain.ErrValidation), http.StatusBadRequest, "validation_failed"},
 		{"payload too large", fmt.Errorf("x: %w", errPayloadTooLarge), http.StatusRequestEntityTooLarge, "payload_too_large"},
+		{"upstream", fmt.Errorf("x: %w", domain.ErrUpstream), http.StatusBadGateway, "upstream_unavailable"},
 		{"unauthorized", fmt.Errorf("x: %w", domain.ErrUnauthorized), http.StatusUnauthorized, "unauthorized"},
 		{"forbidden", fmt.Errorf("x: %w", domain.ErrForbidden), http.StatusForbidden, "forbidden"},
 		{"payment required", fmt.Errorf("x: %w", domain.ErrPaymentRequired), http.StatusPaymentRequired, "payment_required"},
@@ -48,6 +49,7 @@ func TestSafeMessage(t *testing.T) {
 		{"validation_failed", "The request was invalid."},
 		{"timeout", "The request took too long to complete. Please try again."},
 		{"payload_too_large", "The request body is too large."},
+		{"upstream_unavailable", "A service Calendium depends on is unavailable. Please try again later."},
 		{"unauthorized", "Authentication is required or has failed."},
 		{"forbidden", "You do not have permission to perform this action."},
 		{"payment_required", "An active subscription is required."},
@@ -89,6 +91,7 @@ func TestStatusForViaHandler(t *testing.T) {
 		{"ai output invalid", fmt.Errorf("wrapped: %w", domain.ErrAIOutput), http.StatusBadGateway, "ai_output_invalid"},
 		{"ai unavailable", fmt.Errorf("wrapped: %w", domain.ErrAIUnavailable), http.StatusServiceUnavailable, "ai_unavailable"},
 		{"rate limited", fmt.Errorf("wrapped: %w", domain.ErrRateLimited), http.StatusTooManyRequests, "rate_limited"},
+		{"upstream", fmt.Errorf("wrapped: %w", domain.ErrUpstream), http.StatusBadGateway, "upstream_unavailable"},
 		{"internal", errors.New("boom"), http.StatusInternalServerError, "internal"},
 	}
 	for _, tt := range tests {
