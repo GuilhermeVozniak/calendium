@@ -6,6 +6,7 @@ import type {
   MeetingPoll,
   PollInput,
   UserSettings,
+  UserSettingsUpdate,
 } from '@calendium/shared';
 import { ApiRequestError } from '@calendium/shared';
 
@@ -258,9 +259,13 @@ export const schedulingMock = {
     return { ...s, workingHours: s.workingHours.map((w) => ({ ...w })) };
   },
 
-  updateSettings(next: UserSettings): UserSettings {
+  updateSettings(next: UserSettingsUpdate): UserSettings {
     const s = getStore();
-    s.settings = { ...next, workingHours: next.workingHours.map((w) => ({ ...w })) };
+    s.settings = {
+      ...next,
+      aiBackground: next.aiBackground ?? s.settings.aiBackground,
+      workingHours: next.workingHours.map((w) => ({ ...w })),
+    };
     return { ...s.settings, workingHours: s.settings.workingHours.map((w) => ({ ...w })) };
   },
 

@@ -1035,7 +1035,7 @@ function tzOptions(): string[] {
   }
 }
 
-function SchedulingSection() {
+export function SchedulingSection() {
   const queryClient = useQueryClient();
   const settingsQuery = useQuery({ queryKey: ['scheduling-settings'], queryFn: fetchSettings });
   const zones = React.useMemo(tzOptions, []);
@@ -1056,13 +1056,10 @@ function SchedulingSection() {
   }, [settingsQuery.data]);
 
   const save = useMutation({
-    mutationFn: () => {
-      // Carry the stored background-AI switch through untouched: this form
-      // only edits scheduling fields (an absent field is kept server-side).
-      const current = queryClient.getQueryData<UserSettings>(['scheduling-settings']);
-      const next = { ...current, timeZone, workingHours, workingLocation } as UserSettings;
-      return updateSettingsApi(next);
-    },
+    // Only the fields this form edits: aiBackground is omitted, so the server
+    // keeps the stored switch (a cached copy may be stale, e.g. turned off on
+    // another device since this tab loaded).
+    mutationFn: () => updateSettingsApi({ timeZone, workingHours, workingLocation }),
     onSuccess: (s) => {
       queryClient.setQueryData<UserSettings>(['scheduling-settings'], s);
       toast.success('Scheduling settings saved');

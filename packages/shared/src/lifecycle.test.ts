@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ApiClient, ApiRequestError } from './client';
-import type { UserSettings } from './types';
+import type { UserSettings, UserSettingsUpdate } from './types';
 
 const BASE = 'https://api.test';
 
@@ -109,5 +109,14 @@ describe('UserSettings.aiBackground', () => {
     expect(got.aiBackground).toBe(false);
     const [, init] = fetchFn.mock.calls[0] as unknown as [string, RequestInit];
     expect(JSON.parse(init.body as string)).toMatchObject({ aiBackground: false });
+  });
+
+  it('updateSettings accepts a document without the switch and sends no aiBackground (server keeps it)', async () => {
+    const stored: UserSettings = { timeZone: 'UTC', workingHours: [], workingLocation: 'Office', aiBackground: false };
+    const fetchFn = vi.fn(async () => jsonResponse(200, stored));
+    const update: UserSettingsUpdate = { timeZone: 'UTC', workingHours: [], workingLocation: 'Office' };
+    await makeClient(fetchFn).updateSettings(update);
+    const [, init] = fetchFn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).not.toHaveProperty('aiBackground');
   });
 });

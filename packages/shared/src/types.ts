@@ -711,6 +711,13 @@ export interface UserSettings {
   aiBackground: boolean;
 }
 
+/**
+ * PUT /v1/settings body: the scheduling fields are replaced; aiBackground is
+ * written only when present. A form that edits one part sends only that
+ * part, so a stale cached switch is never written back.
+ */
+export type UserSettingsUpdate = Omit<UserSettings, 'aiBackground'> & { aiBackground?: boolean };
+
 // ---------------------------------------------------------------------------
 // M2.5 — Recent Opens, Smart Send, attachment quick-access, contact summary
 // (mirrors backend/internal/domain/mail.go field-for-field).
