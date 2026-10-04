@@ -25,6 +25,9 @@ docker compose logs --tail=100 api worker web caddy
 | Infinite HTTPS redirects behind a proxy | [Redirect loop behind a proxy](#redirect-loop-behind-a-proxy) |
 | No TLS certificate issued | [Certificate issuance fails](#certificate-issuance-fails) |
 | Dead "Subscribe" screen on self-host | [Billing UI on self-host](#billing-ui-on-self-host) |
+| `SMTP_*` startup error, "We couldn't send the email" | [Email not sending / SMTP errors](#email-not-sending--smtp-errors) |
+| "Too many attempts, try again in N s" / `429` on sign-in | [Sign-in rate limits](#too-many-attempts-try-again-in-n-s-http-429) |
+| `403 Invalid origin` on sign-in, CORS errors from a new origin | [Invalid origin](#invalid-origin-403-on-sign-in) |
 
 ---
 
@@ -291,6 +294,74 @@ false` so up-to-date clients **hide** the subscribe UI entirely.
 in effect (`curl -s https://your-domain/v1/instance | jq '.mode, .features.billing'`
 should show `"self_host"` and `false`), and that your web client was **rebuilt**
 after setting it — a stale bundle may still show cloud-only UI.
+
+---
+
+## Email not sending / SMTP errors
+
+**Symptom:** `api`, `worker` or `web` exits with
+`SMTP_HOST and SMTP_FROM are required when SELF_HOSTED=false (cloud mode); set them or run with SELF_HOSTED=true`
+or `SMTP_* is partially configured: <missing>`; or sign-up / forgot-password
+shows "We couldn't send the email. Try again in a minute."; or inviting a
+teammate fails with `sending invitation email: …` (500).
+
+**Fix, by cause:**
+
+- **Startup error** — set `SMTP_HOST` and `SMTP_FROM` (and `SMTP_USER` +
+  `SMTP_PASS` together, or neither), or run self-hosted with `SELF_HOSTED=true`.
+- **`smtp: server does not offer STARTTLS; refusing to send credentials in clear`**
+  (api log) or a STARTTLS/`requireTLS` error in the `web` log — the server on
+  `SMTP_PORT` offers no STARTTLS. Use the provider's STARTTLS port (`587`) with
+  `SMTP_SECURE=false`, or its implicit-TLS port (`465`) with `SMTP_SECURE=true`.
+  Plaintext is allowed only to loopback (`127.0.0.1`, `localhost`).
+- **`535` / authentication failed** — wrong `SMTP_USER`/`SMTP_PASS` (many
+  providers use an API token for both).
+- **Certificate errors** — the server certificate is always verified; set
+  `SMTP_HOST` to the provider's hostname, not an IP address.
+- The `web` log line `email.send_failed` carries the recipient's domain and the
+  provider's error (never the message) — start there.
+
+**Mail is sent but never arrives:** check spam, then SPF/DKIM/DMARC
+([Providers → Transactional email](./providers.md#1d-transactional-email-smtp)).
+**`/forgot-password` says reset by email isn't available:** no SMTP is
+configured (`curl -s https://your-domain/v1/instance | jq .features.email` is
+`false`) — configure it, or reset the password yourself
+([procedure](./security.md#resetting-a-password-without-email-self-host)).
+
+---
+
+## "Too many attempts, try again in N s" (HTTP 429)
+
+**Symptom:** sign-in, sign-up or forgot-password answers `429` with an
+`X-Retry-After` header.
+
+**Cause:** the per-IP sign-in limits ([Security → Rate limits](./security.md#rate-limits-postgres-backed)).
+If *everyone* hits them at once, the web app cannot tell clients apart and they
+share one bucket: the `web` log shows
+`TRUST_PROXY is not true in production: …` at startup.
+
+**Fix:** behind Caddy, or nginx overwriting `X-Forwarded-For`, set
+`TRUST_PROXY=true` and restart `web`. To clear the counters (for example after a
+load test): `docker compose exec db psql -U calendium -d calendium -c 'DELETE FROM "rateLimit";'`.
+
+---
+
+## "Invalid origin" (403) on sign-in
+
+**Symptom:** sign-in from a browser, desktop or mobile client fails with `403`
+`Invalid origin` (the `web` log names the rejected origin), or the browser blocks
+API calls with a CORS error.
+
+**Cause:** the request's `Origin` is not trusted. Production trusts
+`BETTER_AUTH_URL`, `PUBLIC_WEB_URL`, `CORS_ALLOWED_ORIGINS`, the desktop WebView
+origins, `calendium://` and `https://appleid.apple.com`; `localhost` /
+`127.0.0.1` origins only with `ALLOW_DEV_ORIGINS=true`.
+
+**Fix:** make `BETTER_AUTH_URL` and `PUBLIC_WEB_URL` exactly your public origin
+(scheme, host and port; no trailing slash), add any other web origin to
+`CORS_ALLOWED_ORIGINS`, and restart `web` and `api`. For a local dev web app
+pointed at a production server, `ALLOW_DEV_ORIGINS=true` works (and logs a
+warning).
 
 ---
 

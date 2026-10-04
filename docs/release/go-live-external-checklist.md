@@ -90,6 +90,15 @@ Services ID `com.calendium.app.service`, Key ID `8MX6Q9WW35`, the `.p8`
 - [ ] An SMTP sender (any provider): set `SMTP_HOST`, `SMTP_PORT`,
       `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, `SMTP_SECURE`.
 - [ ] SPF, DKIM and DMARC records for the sending domain.
+- [ ] From the production domain, sign up with a real inbox: the verification
+      mail arrives (not in spam) and its link opens `https://<DOMAIN>/verify-email`.
+- [ ] The proxy overwrites `X-Forwarded-For` (bundled Caddy does; nginx:
+      `proxy_set_header X-Forwarded-For $remote_addr;` in the web `location /`)
+      and `TRUST_PROXY=true` is set for `web` — otherwise every client shares
+      one sign-in rate-limit bucket.
+- [ ] `ALLOW_DEV_ORIGINS` blank in the production `.env`.
+- Code dependency: piece 2 makes `api`, `worker` and `web` refuse to start
+  with `SELF_HOSTED=false` and no `SMTP_HOST`/`SMTP_FROM`.
 
 ## 6. Apple notarization for the desktop app (release workflow)
 

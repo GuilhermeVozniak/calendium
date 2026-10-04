@@ -112,6 +112,32 @@ bunx @better-auth/cli generate
 
 ---
 
+## Turning on email (SMTP)
+
+- **Adding `SMTP_HOST`/`SMTP_FROM` turns email verification on** for
+  email+password accounts. Existing users are not grandfathered: their next
+  sign-in answers "Verify your email first — we sent a new link." and mails the
+  link; after one click they sign in as before. Google/Apple sign-ins are
+  unaffected. Tell your users before you flip it. Removing SMTP turns
+  verification off again; nothing in the database changes.
+- This release adds migration `0028_better_auth_rate_limit.sql` (the `rateLimit`
+  table behind the sign-in rate limits); the API applies it at boot like any other.
+- **Cloud (`SELF_HOSTED=false`)**: `api`, `worker` and `web` now refuse to start
+  without `SMTP_HOST` and `SMTP_FROM` — set them before upgrading.
+- **`web` now reads `SELF_HOSTED`.** The compose stack already passes `.env` to
+  `web`. If you run the web app another way (for example `bun run dev:web` with
+  `apps/web/.env`), add `SELF_HOSTED=true` for a self-hosted instance, or it
+  boots in cloud mode and stops with the SMTP error.
+- **localhost origins are no longer trusted in production.** If a browser client
+  served from `http://localhost:<port>` talks to a production server, add that
+  origin to `CORS_ALLOWED_ORIGINS` (or set `ALLOW_DEV_ORIGINS=true`, which logs a
+  warning). The desktop app is unaffected.
+- **Behind a proxy, set `TRUST_PROXY=true`** (and make nginx overwrite
+  `X-Forwarded-For`, see [Reverse proxy](./reverse-proxy-tls.md)); otherwise every
+  client shares one sign-in rate-limit bucket.
+
+---
+
 ## Keep migrations backward-compatible
 
 Because the API applies new migrations the moment a new image starts, design
