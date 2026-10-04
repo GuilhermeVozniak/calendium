@@ -179,5 +179,169 @@ func TestRequireActiveMatrix(t *testing.T) {
 	}
 }
 
+// --- CreateCheckout -----------------------------------------------------------
+
+func TestCreateCheckoutFirstTimeCreatesCustomerAndTrialRow(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	h.seedUser(t, "u1", now.Add(-time.Hour))
+	h.payments.customerID = "ctm_new"
+	h.payments.checkoutURL = "https://app/checkout?_ptxn=txn_1"
+
+	url, err := h.svc.CreateCheckout(ctx, "u1")
+	if err != nil {
+		t.Fatalf("CreateCheckout: %v", err)
+	}
+	if url != "https://app/checkout?_ptxn=txn_1" {
+		t.Fatalf("url = %q", url)
+	}
+	if h.payments.ensureCustomerCalls != 1 || h.payments.lastEnsureUser.ID != "u1" {
+		t.Fatalf("EnsureCustomer calls = %d (user %q), want 1 for u1", h.payments.ensureCustomerCalls, h.payments.lastEnsureUser.ID)
+	}
+	if h.payments.lastCheckoutParams != (port.CheckoutParams{UserID: "u1", CustomerID: "ctm_new"}) {
+		t.Fatalf("CheckoutParams = %+v", h.payments.lastCheckoutParams)
+	}
+	row, err := h.subs.GetByUserID(ctx, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != domain.SubscriptionTrialing || row.BillingCustomerID != "ctm_new" {
+		t.Fatalf("row = %+v, want trialing with the customer id persisted", row)
+	}
+}
+
+func TestCreateCheckoutReusesStoredCustomer(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	h.seedUser(t, "u1", now)
+	h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionTrialing, TrialEndsAt: tptr(now.Add(24 * time.Hour)), BillingCustomerID: "ctm_old"})
+	h.payments.checkoutURL = "https://co"
+
+	if _, err := h.svc.CreateCheckout(ctx, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	if h.payments.ensureCustomerCalls != 0 {
+		t.Fatalf("EnsureCustomer must not run when a customer id is stored")
+	}
+	if h.payments.lastCheckoutParams.CustomerID != "ctm_old" {
+		t.Fatalf("CustomerID = %q, want ctm_old", h.payments.lastCheckoutParams.CustomerID)
+	}
+}
+
+func TestCreateCheckoutRefusesLiveSubscriptions(t *testing.T) {
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	for _, status := range []domain.SubscriptionStatus{domain.SubscriptionActive, domain.SubscriptionPastDue, domain.SubscriptionPaused} {
+		t.Run(string(status), func(t *testing.T) {
+			h := newBillingHarness(now)
+			h.seedUser(t, "u1", now)
+			h.seedSub(t, domain.Subscription{UserID: "u1", Status: status, BillingCustomerID: "ctm_1", BillingSubscriptionID: "sub_1"})
+			_, err := h.svc.CreateCheckout(context.Background(), "u1")
+			if !errors.Is(err, domain.ErrAlreadySubscribed) {
+				t.Fatalf("err = %v, want ErrAlreadySubscribed", err)
+			}
+			if h.payments.ensureCustomerCalls != 0 || h.payments.lastCheckoutParams != (port.CheckoutParams{}) {
+				t.Fatal("no provider call may happen for an already-subscribed user")
+			}
+		})
+	}
+	t.Run("canceled with an old subscription id may resubscribe", func(t *testing.T) {
+		h := newBillingHarness(now)
+		h.seedUser(t, "u1", now)
+		h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionCanceled, BillingCustomerID: "ctm_1", BillingSubscriptionID: "sub_old"})
+		h.payments.checkoutURL = "https://co"
+		if _, err := h.svc.CreateCheckout(context.Background(), "u1"); err != nil {
+			t.Fatalf("canceled user must be able to resubscribe: %v", err)
+		}
+	})
+}
+
+func TestCreateCheckoutMapsProviderFailuresTo502(t *testing.T) {
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	t.Run("EnsureCustomer fails", func(t *testing.T) {
+		h := newBillingHarness(now)
+		h.seedUser(t, "u1", now)
+		h.payments.ensureErr = errors.New("paddle: http 500")
+		_, err := h.svc.CreateCheckout(context.Background(), "u1")
+		if !errors.Is(err, domain.ErrBillingUnavailable) {
+			t.Fatalf("err = %v, want ErrBillingUnavailable", err)
+		}
+	})
+	t.Run("CreateCheckout fails", func(t *testing.T) {
+		h := newBillingHarness(now)
+		h.seedUser(t, "u1", now)
+		h.payments.customerID = "ctm_1"
+		h.payments.checkoutErr = errors.New("paddle: http 503")
+		_, err := h.svc.CreateCheckout(context.Background(), "u1")
+		if !errors.Is(err, domain.ErrBillingUnavailable) {
+			t.Fatalf("err = %v, want ErrBillingUnavailable", err)
+		}
+	})
+}
+
+// --- CreatePortalSession ----------------------------------------------------
+
+func TestCreatePortalSession(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	full := port.PortalURLs{Overview: "https://p/o", Cancel: "https://p/c", UpdatePayment: "https://p/u"}
+
+	t.Run("no row is no_billing_profile", func(t *testing.T) {
+		h := newBillingHarness(now)
+		_, err := h.svc.CreatePortalSession(ctx, "u1")
+		if !errors.Is(err, domain.ErrNoBillingProfile) {
+			t.Fatalf("err = %v, want ErrNoBillingProfile", err)
+		}
+	})
+	t.Run("row without customer is no_billing_profile", func(t *testing.T) {
+		h := newBillingHarness(now)
+		h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionTrialing})
+		_, err := h.svc.CreatePortalSession(ctx, "u1")
+		if !errors.Is(err, domain.ErrNoBillingProfile) {
+			t.Fatalf("err = %v, want ErrNoBillingProfile", err)
+		}
+		if h.payments.lastPortalCustomerID != "" {
+			t.Fatal("provider must not be called")
+		}
+	})
+	t.Run("customer without subscription returns overview only", func(t *testing.T) {
+		h := newBillingHarness(now)
+		h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionTrialing, BillingCustomerID: "ctm_1"})
+		h.payments.portalURLs = full // provider might echo links; service blanks them
+		urls, err := h.svc.CreatePortalSession(ctx, "u1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.payments.lastPortalCustomerID != "ctm_1" || h.payments.lastPortalSubscriptionID != "" {
+			t.Fatalf("provider args = %q/%q", h.payments.lastPortalCustomerID, h.payments.lastPortalSubscriptionID)
+		}
+		if urls != (port.PortalURLs{Overview: "https://p/o"}) {
+			t.Fatalf("urls = %+v, want cancel/update blanked without a subscription id", urls)
+		}
+	})
+	t.Run("customer with subscription passes every link through", func(t *testing.T) {
+		h := newBillingHarness(now)
+		h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive, BillingCustomerID: "ctm_1", BillingSubscriptionID: "sub_1"})
+		h.payments.portalURLs = full
+		urls, err := h.svc.CreatePortalSession(ctx, "u1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.payments.lastPortalSubscriptionID != "sub_1" || urls != full {
+			t.Fatalf("urls = %+v (sub id %q)", urls, h.payments.lastPortalSubscriptionID)
+		}
+	})
+	t.Run("provider failure is 502", func(t *testing.T) {
+		h := newBillingHarness(now)
+		h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive, BillingCustomerID: "ctm_1"})
+		h.payments.portalErr = errors.New("paddle: http 500")
+		_, err := h.svc.CreatePortalSession(ctx, "u1")
+		if !errors.Is(err, domain.ErrBillingUnavailable) {
+			t.Fatalf("err = %v, want ErrBillingUnavailable", err)
+		}
+	})
+}
+
 // Keep the port import used by later tasks' tests in this file.
 var _ port.SubscriptionEvent

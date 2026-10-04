@@ -103,20 +103,71 @@ func (s *BillingService) grantTrial(ctx context.Context, userID string) (domain.
 	return s.subs.GetByUserID(ctx, userID)
 }
 
-// Implemented in Task 9.
+// CreateCheckout starts the hosted checkout: grants the trial row if
+// missing, refuses a second live subscription, ensures the provider
+// customer (persisting its id), then creates the transaction. No URLs are
+// accepted from clients; Paddle returns the checkout url.
 func (s *BillingService) CreateCheckout(ctx context.Context, userID string) (string, error) {
 	if s.selfHosted {
 		return "", fmt.Errorf("%w: billing is disabled on self-hosted instances", domain.ErrSelfHosted)
 	}
-	return "", domain.ErrNotImplemented
+	sub, err := s.GetSubscription(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if sub.BillingSubscriptionID != "" {
+		switch sub.Status {
+		case domain.SubscriptionActive, domain.SubscriptionPastDue, domain.SubscriptionPaused:
+			return "", fmt.Errorf("%w: subscription %s is %s", domain.ErrAlreadySubscribed, sub.BillingSubscriptionID, sub.Status)
+		}
+	}
+	if sub.BillingCustomerID == "" {
+		user, err := s.users.GetByID(ctx, userID)
+		if err != nil {
+			return "", err
+		}
+		customerID, err := s.payments.EnsureCustomer(ctx, user)
+		if err != nil {
+			return "", billingUnavailable("ensure customer", err)
+		}
+		sub.BillingCustomerID = customerID
+		if err := s.subs.Upsert(ctx, sub); err != nil {
+			return "", err
+		}
+	}
+	url, err := s.payments.CreateCheckout(ctx, port.CheckoutParams{UserID: userID, CustomerID: sub.BillingCustomerID})
+	if err != nil {
+		return "", billingUnavailable("create checkout", err)
+	}
+	return url, nil
 }
 
-// Implemented in Task 9.
+// CreatePortalSession returns temporary portal links. Cancellation and
+// payment-method updates happen in Paddle's portal and flow back by webhook.
 func (s *BillingService) CreatePortalSession(ctx context.Context, userID string) (port.PortalURLs, error) {
 	if s.selfHosted {
 		return port.PortalURLs{}, fmt.Errorf("%w: billing is disabled on self-hosted instances", domain.ErrSelfHosted)
 	}
-	return port.PortalURLs{}, domain.ErrNotImplemented
+	sub, err := s.subs.GetByUserID(ctx, userID)
+	if errors.Is(err, domain.ErrNotFound) || (err == nil && sub.BillingCustomerID == "") {
+		return port.PortalURLs{}, fmt.Errorf("%w: no billing profile yet; start a checkout first", domain.ErrNoBillingProfile)
+	}
+	if err != nil {
+		return port.PortalURLs{}, err
+	}
+	urls, err := s.payments.CreatePortalSession(ctx, sub.BillingCustomerID, sub.BillingSubscriptionID)
+	if err != nil {
+		return port.PortalURLs{}, billingUnavailable("create portal session", err)
+	}
+	if sub.BillingSubscriptionID == "" {
+		urls.Cancel, urls.UpdatePayment = "", ""
+	}
+	return urls, nil
+}
+
+// billingUnavailable wraps a provider failure for the HTTP layer (502).
+func billingUnavailable(op string, err error) error {
+	return fmt.Errorf("%w: %s: %v", domain.ErrBillingUnavailable, op, err)
 }
 
 // Implemented in Task 10.
