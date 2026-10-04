@@ -23,6 +23,27 @@ auto-renewing HTTPS with zero manual certificate work. Use **nginx** if you
 already run it or need fine-grained tuning; use **Traefik** if you run a dynamic
 Docker fleet.
 
+### Proxy trust (`TRUST_PROXY`)
+
+Behind any proxy the API and the web app must know the *real* client address:
+the API for its per-IP rate limits, request logs and the OAuth callback origin,
+the web app for its sign-in rate limits. The compose file sets
+`TRUST_PROXY=${TRUST_PROXY:-true}` on both `api` and `web`, which makes them
+honour `X-Forwarded-For` (and, on the API, `X-Forwarded-Proto` and
+`X-Forwarded-Host`) — but only from a peer inside `TRUSTED_PROXY_CIDRS`
+(default: loopback, RFC 1918, `fc00::/7`). The client is the right-most
+`X-Forwarded-For` hop that is *not* a trusted proxy. Caddy replaces
+client-supplied `X-Forwarded-*`; nginx must either append with
+`$proxy_add_x_forwarded_for` or overwrite with `$remote_addr` (the sample does
+the former for the API, the latter for the web app). Never set
+`TRUST_PROXY=true` when clients can reach port 8080 or 3000 directly — that is
+why the compose file publishes both on `127.0.0.1` only
+(`API_BIND`/`WEB_BIND`). Full rule:
+[Security → Client IP](./security.md#client-ip-trust_proxy-and-trusted_proxy_cidrs).
+
+`/readyz` (database ping, `503 draining` during shutdown) is for the compose
+health check only — keep it out of the proxy; route `/healthz` instead.
+
 ---
 
 ## Caddy (recommended, bundled)
@@ -75,10 +96,11 @@ bring your own proxy instead — then the `caddy` service never starts.
 - `api:8080` and `web:3000` are Docker **service names** on the internal
   `calendium` network; Caddy reaches them by name, no host ports involved.
 - Caddy sets `X-Forwarded-For` to the connecting client's address and ignores
-  whatever the client sent. Compose sets `TRUST_PROXY=true` on `web` by
-  default, and Caddy's Compose-network address is inside the default
-  `TRUSTED_PROXY_CIDRS`, so the web app's auth rate limits see the real client
-  and each client gets its own bucket, LAN clients included
+  whatever the client sent. Compose sets `TRUST_PROXY=true` on `api` and `web`
+  by default, and Caddy's Compose-network address is inside the default
+  `TRUSTED_PROXY_CIDRS`, so the web app's auth rate limits and the API's
+  public-endpoint limits and logs see the real client and each client gets its
+  own bucket, LAN clients included
   ([why](./security.md#client-ip-trust_proxy-and-trusted_proxy_cidrs)). Do not
   set `TRUST_PROXY=false` with this profile.
 
@@ -113,9 +135,10 @@ tuning. The repo ships a sample at
 [`deploy/nginx/calendium.conf`](../../deploy/nginx/calendium.conf).
 
 Run the stack **without** the caddy profile so nginx (on the host) can reach the
-published ports — `docker-compose.yml` publishes `web` on `${WEB_PORT:-3000}`
-and `api` on `${API_PORT:-8080}`, which the sample proxies as
-`127.0.0.1:3000` / `127.0.0.1:8080`.
+published ports — `docker-compose.yml` publishes `web` on
+`127.0.0.1:${WEB_PORT:-3000}` and `api` on `127.0.0.1:${API_PORT:-8080}` by
+default, which the sample proxies as `127.0.0.1:3000` / `127.0.0.1:8080`. No
+`.env` change is needed for a same-host nginx.
 
 ```bash
 sudo cp deploy/nginx/calendium.conf /etc/nginx/sites-available/calendium.conf
@@ -126,7 +149,11 @@ sudo certbot certonly --webroot -w /var/www/certbot -d your-domain
 # then uncomment the HTTPS server block + the :80 -> :443 redirect, reload nginx
 ```
 
-The sample already sets the headers that matter. The same path routing applies:
+The sample already sets the headers that matter (`X-Forwarded-For`,
+`X-Forwarded-Proto`, `X-Forwarded-Host`). nginx runs on the host and reaches
+the containers through the published loopback ports, so the address `api` and
+`web` see as their peer (the Docker bridge gateway, or `127.0.0.1`) is inside
+the default `TRUSTED_PROXY_CIDRS`. The same path routing applies:
 
 ```nginx
 location /v1/      { proxy_pass http://calendium_api; ... }
@@ -140,9 +167,9 @@ location /         { proxy_pass http://calendium_web; ... }
 > loops. This is the #1 self-host support ticket across the industry. See
 > [Troubleshooting → Redirect loop](./troubleshooting.md#redirect-loop-behind-a-proxy).
 
-> **Keep `TRUST_PROXY=true` for the web app** (the Compose default; set it
-> yourself if you run `web` outside Compose). Its auth rate limits key on the
-> right-most `X-Forwarded-For` entry that is not inside `TRUSTED_PROXY_CIDRS`.
+> **Keep `TRUST_PROXY=true` for the web app and the API** (the Compose default;
+> set it yourself if you run either outside Compose). Their rate limits key on
+> the right-most `X-Forwarded-For` entry that is not inside `TRUSTED_PROXY_CIDRS`.
 > Overwriting the header (`proxy_set_header X-Forwarded-For $remote_addr;`, which
 > the sample does for `location /`) and appending it (`$proxy_add_x_forwarded_for`,
 > AWS ALB, Google Cloud Load Balancing) both work. Every proxy hop must be inside
@@ -190,8 +217,11 @@ specificity than the catch-all web rule.
 On AWS ALB / GCP HTTPS LB / Azure Container Apps ingress, the platform
 terminates TLS with a managed cert — don't run Caddy. Create two routes on your
 domain: one matching `/v1/*` and `/healthz` → the API target (port 8080, health
-check `GET /healthz`), and a default route → the web target (port 3000, health
-check `/`). See the cloud sections of the deployment guide for per-provider
+check `GET /readyz`, which also fails while the database is unreachable or the
+API is draining for shutdown; keep `/readyz` itself out of the public routes),
+and a default route → the web target (port 3000, health check `/api/health`).
+The load balancer's own addresses must be inside `TRUSTED_PROXY_CIDRS` (they
+usually are private VPC addresses) for `TRUST_PROXY=true` to see real clients. See the cloud sections of the deployment guide for per-provider
 steps.
 
 ---
@@ -202,7 +232,10 @@ For a home server with no public domain, set `DOMAIN=your-host.lan` and let
 Caddy mint an internal cert (`tls internal`-style, which the bundled
 `DOMAIN=localhost` path does automatically), then trust Caddy's root CA on your
 clients — or skip the proxy entirely and reach `web` on `:3000` and `api` on
-`:8080` directly over the LAN (no TLS). Note that native mobile apps generally
+`:8080` directly over the LAN (no TLS). Without a proxy, set
+`API_BIND=0.0.0.0`, `WEB_BIND=0.0.0.0` **and** `TRUST_PROXY=false` in `.env`:
+the compose file publishes both on loopback only by default, and with
+`TRUST_PROXY=true` a LAN client could spoof `X-Forwarded-For`. Note that native mobile apps generally
 require HTTPS, so an internal cert (trusted on-device) is the better LAN path.
 
 ---

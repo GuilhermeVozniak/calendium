@@ -8,7 +8,8 @@
 # by this app at /api/auth/*; its secrets are runtime env, not build args.
 
 # ── deps: install the whole bun workspace (cached on the manifests) ─────────
-FROM oven/bun:1 AS deps
+# oven/bun:1.3 resolved 2026-10-04 (docker buildx imagetools inspect)
+FROM oven/bun:1.3@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 AS deps
 WORKDIR /app
 # Copy every workspace manifest so `bun install --frozen-lockfile` resolves
 # the full graph, then install once (hoisted to /app/node_modules).
@@ -24,7 +25,8 @@ COPY packages/shared/package.json packages/shared/package.json
 RUN bun install --frozen-lockfile --ignore-scripts
 
 # ── build: compile the Next.js standalone bundle ────────────────────────────
-FROM oven/bun:1 AS build
+# oven/bun:1.3 resolved 2026-10-04 (docker buildx imagetools inspect)
+FROM oven/bun:1.3@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 AS build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 # bun keeps each workspace's deps in that workspace's node_modules (it does not
@@ -48,7 +50,8 @@ ENV NEXT_PUBLIC_PADDLE_CLIENT_TOKEN=$NEXT_PUBLIC_PADDLE_CLIENT_TOKEN \
 RUN bun run --cwd apps/web build
 
 # ── runtime: minimal Node server for the standalone output ──────────────────
-FROM node:22-alpine AS runner
+# node:22-alpine resolved 2026-10-04 (docker buildx imagetools inspect)
+FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
@@ -71,6 +74,11 @@ COPY --from=build --chown=nextjs:nodejs /app/apps/web/scripts ./apps/web/scripts
 
 USER nextjs
 EXPOSE 3000
+# Readiness for compose/orchestrators (busybox wget ships in node:22-alpine);
+# /api/health is force-dynamic so a cached 200 can never mask a dead server.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1
+
 # The preload appends the socket peer to X-Forwarded-For (Next only fills it
 # when absent), so auth rate limits key on the real immediate peer.
 CMD ["node", "--require", "./apps/web/scripts/forwarded-for-peer.cjs", "apps/web/server.js"]

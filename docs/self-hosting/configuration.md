@@ -32,11 +32,12 @@ See also: [Quickstart](./quickstart.md) · [Clients](./clients.md) ·
 | `DATABASE_URL` | **Yes** | — | Postgres DSN for `api` + `worker`. In compose the host is the service name `db`: `postgres://calendium:<pw>@db:5432/calendium?sslmode=disable`. Use `sslmode=require` for managed Postgres. |
 | `TOKEN_ENCRYPTION_KEY` | **Yes** | — | 32-byte AES-256-GCM key as **exactly 64 hex chars**. Generate with `make gen-secret` / `openssl rand -hex 32`. Encrypts provider refresh tokens at rest. Wrong length fails config validation at boot. **Back it up separately.** |
 | `POSTGRES_USER` | No | `calendium` | Bundled `db` service user. |
-| `POSTGRES_PASSWORD` | **Yes** | `calendium` | Bundled `db` password — **change it** (the example ships `change-me-please`). Must match the password in `DATABASE_URL`. |
+| `POSTGRES_PASSWORD` | **Yes** | `calendium` | Bundled `db` password — **change it**. The API refuses to boot in cloud mode (and warns loudly when `SELF_HOSTED=true`) when `DATABASE_URL` still carries `change-me-please` or `calendium`. Must match the password in `DATABASE_URL`. |
 | `POSTGRES_DB` | No | `calendium` | Bundled `db` database name. |
 | `HTTP_ADDR` | No | `:8080` | Listen address for the API. Compose sets `:8080` on the `api` service; only relevant when running the binary directly. `PORT` is honored as an alternative. |
 | `WEB_PORT` | No | `3000` | Host port mapped to the `web` container's `3000`. |
 | `API_PORT` | No | `8080` | Host port mapped to the `api` container's `8080`. |
+| `API_BIND` / `WEB_BIND` | No | `127.0.0.1` | Host interface the `api`/`web` ports bind to. Loopback keeps them reachable only through a proxy on the same host; `0.0.0.0` exposes them on the LAN (then set `TRUST_PROXY=false`). |
 
 ## Instance identity & self-host mode
 
@@ -45,7 +46,7 @@ See also: [Quickstart](./quickstart.md) · [Clients](./clients.md) ·
 | `SELF_HOSTED` | No | `false` | `true` puts the instance in self-host mode: entitlement gating becomes a no-op (**all features unlocked**), the billing endpoints return `501 self_hosted`, and `GET /v1/instance` reports `mode: self_host`. The root `.env.example` defaults it to `true`. Read by `api`, `worker` **and `web`**: with `false` (cloud mode) all three refuse to start unless `SMTP_HOST` and `SMTP_FROM` are set ([Transactional email](#transactional-email-smtp)). |
 | `INSTANCE_NAME` | No | `Calendium` | Display name shown to clients on the connect screen and via `GET /v1/instance`. |
 | `APP_URL` | No | — | Public web origin, used to build absolute links (no trailing slash). Fallback source for `PUBLIC_WEB_URL`. |
-| `PUBLIC_WEB_URL` | No | falls back to `APP_URL` | Public web origin advertised to clients (the `authBaseUrl` in `GET /v1/instance`). **When both are set, `PUBLIC_WEB_URL` wins over `APP_URL`;** blank falls back to `APP_URL`. The web app also adds it to Better Auth's trusted origins. |
+| `PUBLIC_WEB_URL` | No | falls back to `APP_URL` | Public web origin advertised to clients (the `authBaseUrl` in `GET /v1/instance`). **When both are set, `PUBLIC_WEB_URL` wins over `APP_URL`;** blank falls back to `APP_URL`. The web app also adds it to Better Auth's trusted origins. Required by `api` in both modes; the `worker` errors without it in cloud mode and warns when self-hosted. |
 | `DOMAIN` | No | `localhost` | Domain the bundled Caddy proxy serves (automatic HTTPS). With `localhost`, Caddy serves a locally-trusted internal cert. |
 | `ACME_EMAIL` | No | — | Email Let's Encrypt uses for expiry notices (Caddy profile). Set it for a real domain. |
 
@@ -59,7 +60,7 @@ ES256 also supported). Email + password works out of the box. Full setup:
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `BETTER_AUTH_SECRET` | **Yes** (web) | — | Better Auth signing/encryption secret. Generate with `openssl rand -base64 32`. **Secret — never expose.** The web app won't start without it. |
+| `BETTER_AUTH_SECRET` | **Yes** (web) | — | Better Auth signing/encryption secret, **at least 32 bytes** (`openssl rand -base64 32`). The web server refuses to start with a shorter value — in production, in `bun run dev`, everywhere. **Secret — never expose.** |
 | `BETTER_AUTH_URL` | **Yes** | — | Public web origin hosting Better Auth (your domain, **no trailing slash**), e.g. `https://mail.example.com`. Read by the web app, and by the Go API to derive JWKS/issuer. |
 | `AUTH_JWKS_URL` | No | in-network `http://web:3000/api/auth/jwks` (compose) | JWKS endpoint the backend fetches Better Auth's public keys from, **server-to-server**. The bundled `docker-compose.yml` defaults it to the in-network `web` service (the public `BETTER_AUTH_URL` usually isn't reachable from the `api` container), so **leave it blank**. Running the API binary directly it derives from `BETTER_AUTH_URL` (`${BETTER_AUTH_URL}/api/auth/jwks`). Override only to a URL the API can actually reach. |
 | `AUTH_ISSUER` | No | `${BETTER_AUTH_URL}` | Expected token `iss`, pinned by the backend. Empty disables issuer pinning. |
@@ -77,8 +78,8 @@ is `NEXT_PUBLIC_API_URL`.
 | `NEXT_PUBLIC_API_URL` | No | `http://localhost:8080` | Where the browser reaches the Go API. **Inlined at build time** (Docker build arg) — rebuild the `web` image to change it. Behind the bundled proxy set it to your domain, or **leave blank** to use same-origin relative `/v1/…` requests. |
 | `CORS_ALLOWED_ORIGINS` | No | — | Comma-separated extra browser origins trusted by **both** the Go API (CORS) and Better Auth (trusted origins). Always trusted without listing them: `BETTER_AUTH_URL`, `PUBLIC_WEB_URL`, the desktop app's WebView origins (`wails://wails`, `wails://wails.localhost`, `http(s)://wails.localhost`), `calendium://` and `https://appleid.apple.com` (Apple's sign-in `form_post`; trusted, never reflected in CORS). |
 | `ALLOW_DEV_ORIGINS` | No | `false` | Also allow `http://localhost:*` / `http://127.0.0.1:*` (and `[::1]` in CORS). The Go API allows these origins **only** when this is `true`, in every environment. Better Auth (`web`) also trusts them under `next dev`. The desktop WebView origins, `CORS_ALLOWED_ORIGINS`, `PUBLIC_WEB_URL` and `BETTER_AUTH_URL` are always allowed, whatever this is set to. In production keep it blank: `true` makes `web` log a startup warning. Read by `web` and `api`. |
-| `TRUST_PROXY` | No | `true` under Compose (`false` when `web` runs outside it) | How the web app finds the client IP for its auth rate limits (every `/api/auth/*` endpoint, including session reads and JWT minting): the right-most `X-Forwarded-For` entry that is not a trusted proxy, or the left-most entry when every hop is trusted (a LAN/VPN client behind the proxy). `true`: entries in `TRUSTED_PROXY_CIDRS` are skipped from the right, so behind the bundled Caddy each client gets its own bucket. `false`: no proxy is trusted, so only the immediate peer counts and a client-supplied `X-Forwarded-For` is never used. Behind a proxy every client then shares the proxy's bucket on all auth endpoints, and production logs a warning. Set `false` only when `web:3000` is exposed directly to a LAN with no proxy in front. Accepts `true`/`1`/`yes` and `false`/`0`/`no` (case-insensitive); anything else stops `web` at boot. Read by `web` only. The Go API keys its own limits on the TCP peer. See [Security → Client IP](./security.md#client-ip-trust_proxy-and-trusted_proxy_cidrs). |
-| `TRUSTED_PROXY_CIDRS` | No | `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7` | Comma-separated proxy ranges skipped from the right of `X-Forwarded-For` when `TRUST_PROXY=true`; ignored when it is `false`. The default covers loopback and private networks, including the bundled Caddy on the Compose network. Add your CDN or load balancer ranges if they are public. Narrow it to your proxy's own address if untrusted clients can reach `web` from a private range. Read by `web`. |
+| `TRUST_PROXY` | No | `true` under Compose (`false` when `web`/`api` run outside it) | How the web app and the Go API find the client IP — the web app for its auth rate limits (every `/api/auth/*` endpoint, including session reads and JWT minting), the API for its public-endpoint rate limits, request logs and (with `X-Forwarded-Proto`/`Host`) the OAuth callback origin: the right-most `X-Forwarded-For` entry that is not a trusted proxy. When every hop is trusted (a LAN/VPN client behind the proxy) the web app takes the left-most entry and the API the socket peer. Forwarded headers count only when the socket peer is itself inside `TRUSTED_PROXY_CIDRS`. `true`: entries in `TRUSTED_PROXY_CIDRS` are skipped from the right, so behind the bundled Caddy each client gets its own bucket. `false`: no proxy is trusted, so only the immediate peer counts and a client-supplied `X-Forwarded-For` is never used. Behind a proxy every client then shares the proxy's bucket on all auth endpoints, and production logs a warning. Set `false` only when `web:3000` / `api:8080` are exposed directly to a LAN with no proxy in front (`WEB_BIND`/`API_BIND=0.0.0.0`). Accepts `true`/`1`/`yes` and `false`/`0`/`no` (case-insensitive); anything else stops the service at boot. `docker-compose.yml` sets `${TRUST_PROXY:-true}` on both `web` and `api`. See [Security → Client IP](./security.md#client-ip-trust_proxy-and-trusted_proxy_cidrs). |
+| `TRUSTED_PROXY_CIDRS` | No | `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7` | Comma-separated proxy ranges skipped from the right of `X-Forwarded-For` when `TRUST_PROXY=true`; ignored when it is `false`. The default covers loopback and private networks, including the bundled Caddy on the Compose network. Add your CDN or load balancer ranges if they are public. Narrow it to your proxy's own address if untrusted clients can reach `web` or `api` from a private range. An invalid entry stops the service at boot. Read by `web` and `api`. |
 
 ## Transactional email (SMTP)
 
@@ -177,6 +178,32 @@ adapter stays unwired and the checkout/portal/webhook endpoints return
 | `NEXT_PUBLIC_PADDLE_ENV` | No | `sandbox` | `sandbox` or `production`, inlined at web build time; `sandbox` while `PADDLE_ENV=sandbox`, `production` when `PADDLE_ENV=live` (Paddle.js uses `production`, the API uses `live`). |
 
 ---
+
+## Platform hardening
+
+Reverse-proxy trust, rate limits, shutdown and logging. Every value has a safe
+default; the compose file only overrides `TRUST_PROXY`.
+
+| Variable | Where | Default | Description |
+| --- | --- | --- | --- |
+| `TRUST_PROXY` | api, web | `false` (`true` under Compose) | Honour `X-Forwarded-For` (API: also `X-Forwarded-Proto/Host`) from peers inside `TRUSTED_PROXY_CIDRS`. `docker-compose.yml` sets `${TRUST_PROXY:-true}` on `api` and `web`. Keep `false` when clients reach the API directly. Full rule in the [Web app table](#web-app-nextjs). |
+| `TRUSTED_PROXY_CIDRS` | api, web | `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7` | Comma-separated proxy allowlist; an invalid entry fails boot. Narrow it to your proxy's address when clients share the private network. |
+| `RATE_LIMIT_PUBLIC_READ_PER_MIN` | api | `60` (burst 30) | Per client IP: public booking/poll/share GETs. |
+| `RATE_LIMIT_PUBLIC_WRITE_PER_MIN` | api | `5` (burst 5) | Per client IP: public booking/poll POSTs. |
+| `RATE_LIMIT_USER_PER_MIN` | api | `600` | Per user: every authenticated route not in a class below. `0` disables the class. |
+| `RATE_LIMIT_MUTATE_HEAVY_PER_MIN` | api | `30` | Per user: sends, bulk actions, inbox zero, subscriptions, invitations, booking links, polls, thread shares, AI calls. |
+| `RATE_LIMIT_SEARCH_PER_MIN` | api | `120` | Per user: search, attachment search, place autocomplete. |
+| `SHUTDOWN_TIMEOUT` | api, worker | `30s` | Go duration. In-flight requests / loop passes get this long after SIGTERM; the worker exits 1 if a loop overruns it. |
+| `SHUTDOWN_DRAIN_DELAY` | api | `0s` | How long `/readyz` answers `503 draining` before listeners close (set `2s`–`5s` behind a load balancer that polls readiness). |
+| `LOG_FORMAT` | api, worker | `json` | `json` for log shippers, `text` for a terminal. Request lines carry `request_id` (also sent as `X-Request-Id`), method, route pattern, status, duration, bytes, client IP, user id and actor id; tokens and query strings are never logged. |
+| `LOG_LEVEL` | api, worker | `info` | `debug`, `info`, `warn` or `error`. |
+| `CSP_REPORT_ONLY` | web (runtime) | `true` | `true` sends the web app's Content-Security-Policy as report-only (violations are logged as `csp_violation` lines via `/api/csp-report`); `false` enforces it. Runtime, no rebuild. |
+
+Rate limits are **per process**; the reference stack runs one `api` replica.
+A limited request answers `429` with a `Retry-After` header; an oversized body
+answers `413 payload_too_large` (1 MiB default, 10 MiB for drafts, 16 KiB on
+public routes); a field over its limit answers `400 validation_failed` with
+`details: {"field", "limit"}`.
 
 ## Minimum viable configuration
 
