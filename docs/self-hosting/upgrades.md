@@ -112,6 +112,42 @@ bunx @better-auth/cli generate
 
 ---
 
+## Turning on email (SMTP)
+
+- **Adding `SMTP_HOST`/`SMTP_FROM` turns email verification on** for
+  email+password accounts. Existing users are not grandfathered: their next
+  sign-in answers "Verify your email first — we sent a new link." and mails the
+  link; after one click they sign in as before. Google/Apple sign-ins are
+  unaffected. Tell your users before you flip it. Removing SMTP turns
+  verification off again; nothing in the database changes.
+- This release adds migration `0028_better_auth_rate_limit.sql` (the `rateLimit`
+  table behind the sign-in rate limits); the API applies it at boot like any other.
+- **Cloud (`SELF_HOSTED=false`)**: `api`, `worker` and `web` now refuse to start
+  without `SMTP_HOST` and `SMTP_FROM` — set them before upgrading.
+- **`web` now reads `SELF_HOSTED`.** The compose stack already passes `.env` to
+  `web`. If you run the web app another way (for example `bun run dev:web` with
+  `apps/web/.env`), add `SELF_HOSTED=true` for a self-hosted instance, or it
+  boots in cloud mode and stops with the SMTP error.
+- **localhost origins now need `ALLOW_DEV_ORIGINS=true`.** The API allows
+  `http://localhost:*` / `http://127.0.0.1:*` origins only with it, in every
+  environment. `web` also trusts them under `next dev`. If a browser client
+  served from `http://localhost:<port>` talks to a production server, add that
+  origin to `CORS_ALLOWED_ORIGINS`, or set `ALLOW_DEV_ORIGINS=true` (which logs a
+  warning). The desktop app is unaffected.
+- **`TRUST_PROXY` defaults to `true` under Compose.** The `web` service sets
+  `TRUST_PROXY: ${TRUST_PROXY:-true}`, so behind the bundled Caddy each client
+  gets its own auth rate-limit bucket without touching `.env`. Keep the proxy's
+  address inside `TRUSTED_PROXY_CIDRS` (the default covers loopback and private
+  ranges; see
+  [Security → Client IP](./security.md#client-ip-trust_proxy-and-trusted_proxy_cidrs)).
+  If you run `web` outside Compose behind a proxy, set `TRUST_PROXY=true`
+  yourself: with `false` only the immediate peer, the proxy, is used, so every
+  client shares one bucket on all auth endpoints, including JWT minting. Set
+  `TRUST_PROXY=false` only if `web:3000` is exposed directly to a LAN with no
+  proxy in front.
+
+---
+
 ## Keep migrations backward-compatible
 
 Because the API applies new migrations the moment a new image starts, design

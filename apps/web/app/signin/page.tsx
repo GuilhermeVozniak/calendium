@@ -3,7 +3,7 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { CalendarRange, Loader2, Zap } from 'lucide-react';
+import { CalendarRange, Loader2, MailCheck, Zap } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
@@ -11,7 +11,9 @@ import { Input } from '@/components/ui/input';
 import { Kbd } from '@/components/ui/kbd';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
-import { authClient, signIn, signUp } from '@/lib/auth-client';
+import { authClient, invalidateAccessToken, signIn, signUp } from '@/lib/auth-client';
+import { RESEND_COOLDOWN_SECONDS, captureRetryAfter, describeAuthError } from '@/lib/auth-copy';
+import { PASSWORD_MIN_LENGTH, passwordPolicyError } from '@/lib/auth-env';
 import { useInstance } from '@/lib/use-instance';
 import { cn } from '@/lib/utils';
 
@@ -67,28 +69,63 @@ function AppleIcon(props: React.SVGProps<SVGSVGElement>) {
 type SocialProvider = 'google' | 'apple';
 type Pending = SocialProvider | 'email' | null;
 
+type Mode = 'signin' | 'signup' | 'check-email';
+
+/** Second-based countdown; returns the remaining seconds and a restart function. */
+function useCooldown(seconds: number): [number, () => void] {
+  const [remaining, setRemaining] = React.useState(0);
+  React.useEffect(() => {
+    if (remaining <= 0) return;
+    const id = window.setInterval(() => setRemaining((r) => (r > 0 ? r - 1 : 0)), 1000);
+    return () => window.clearInterval(id);
+  }, [remaining]);
+  const restart = React.useCallback(() => setRemaining(seconds), [seconds]);
+  return [remaining, restart];
+}
+
 export default function SignInPage() {
   const router = useRouter();
-  const [mode, setMode] = React.useState<'signin' | 'signup'>('signin');
+  const [mode, setMode] = React.useState<Mode>('signin');
   const [pending, setPending] = React.useState<Pending>(null);
   const [name, setName] = React.useState('');
   const [email, setEmail] = React.useState('');
   const [password, setPassword] = React.useState('');
+  // check-email state: which address we told the user to look at, and why.
+  const [checkEmail, setCheckEmail] = React.useState('');
+  const [notice, setNotice] = React.useState<string | null>(null);
+  const [cooldown, restartCooldown] = useCooldown(RESEND_COOLDOWN_SECONDS);
 
   // Only offer the social providers the server actually advertises (a
-  // self-host without Google/Apple creds omits them from /v1/instance), so we
-  // never render a button that can only fail.
+  // self-host without Google/Apple creds omits them from /v1/instance).
   const { data: instance } = useInstance();
   const providers = instance?.authProviders ?? [];
   const showGoogle = providers.includes('google');
   const showApple = providers.includes('apple');
   const showSocial = showGoogle || showApple;
 
+  // Entering or leaving the check-email state swaps out the focused control:
+  // move focus to the new state's heading so it is announced.
+  const headingRef = React.useRef<HTMLHeadingElement>(null);
+  const inCheckEmail = mode === 'check-email';
+  const shownCheckEmail = React.useRef(inCheckEmail);
+  React.useEffect(() => {
+    if (shownCheckEmail.current === inCheckEmail) return;
+    shownCheckEmail.current = inCheckEmail;
+    headingRef.current?.focus();
+  }, [inCheckEmail]);
+
   // Already signed in → honor ?next=, else straight to the inbox.
   const { data: session } = authClient.useSession();
   React.useEffect(() => {
     if (session) router.replace(nextDestination());
   }, [session, router]);
+
+  function showCheckEmail(address: string, message: string | null) {
+    setCheckEmail(address);
+    setNotice(message);
+    setMode('check-email');
+    restartCooldown();
+  }
 
   async function social(provider: SocialProvider) {
     if (!providers.includes(provider)) {
@@ -108,19 +145,69 @@ export default function SignInPage() {
 
   async function submitEmail(e: React.FormEvent) {
     e.preventDefault();
+    if (mode === 'signup') {
+      const violation = passwordPolicyError(password, email);
+      if (violation) {
+        toast.error(violation.message);
+        return;
+      }
+    }
     setPending('email');
+    const retry = captureRetryAfter();
     try {
       if (mode === 'signup') {
-        const { error } = await signUp.email({ name: name || email, email, password });
-        if (error) throw new Error(error.message ?? 'Could not create account');
+        const { data, error } = await signUp.email(
+          { name: name || email, email, password, callbackURL: '/verify-email' },
+          retry.fetchOptions
+        );
+        if (error) {
+          toast.error(describeAuthError(error, { fallback: 'Could not create account', retryAfter: retry.value, sendsMail: true }));
+          return;
+        }
+        // With SMTP configured the server never signs a new account in:
+        // `token === null` for a new address AND for an existing one (no
+        // enumeration), so both land on the same "check your inbox" screen.
+        if (data && data.token === null) {
+          showCheckEmail(email, null);
+          return;
+        }
       } else {
-        const { error } = await signIn.email({ email, password });
-        if (error) throw new Error(error.message ?? 'Invalid email or password');
+        // callbackURL is the post-sign-in destination (Better Auth's client
+        // redirects there on success). The verification link this call emails
+        // to an unverified account lands on /verify-email instead: the server
+        // rewrites it (lib/email/verification-link.ts).
+        const { error } = await signIn.email({ email, password, callbackURL: nextDestination() }, retry.fetchOptions);
+        if (error) {
+          if (error.code === 'EMAIL_NOT_VERIFIED') {
+            // The server re-sent the verification link (sendOnSignIn).
+            showCheckEmail(email, describeAuthError(error, { fallback: 'Invalid email or password' }));
+            return;
+          }
+          toast.error(describeAuthError(error, { fallback: 'Invalid email or password', retryAfter: retry.value }));
+          return;
+        }
       }
+      // A new session may belong to a different user than whatever JWT this
+      // tab still caches (client-side navigation keeps module state).
+      invalidateAccessToken();
       router.replace(nextDestination());
-    } catch (err) {
+    } finally {
       setPending(null);
-      toast.error(err instanceof Error ? err.message : 'Something went wrong. Try again.');
+    }
+  }
+
+  async function resend() {
+    setPending('email');
+    const retry = captureRetryAfter();
+    try {
+      const { error } = await authClient.sendVerificationEmail({ email: checkEmail, callbackURL: '/verify-email' }, retry.fetchOptions);
+      if (error) {
+        toast.error(describeAuthError(error, { fallback: 'Could not resend the email', retryAfter: retry.value, sendsMail: true }));
+        return;
+      }
+      restartCooldown();
+    } finally {
+      setPending(null);
     }
   }
 
@@ -139,133 +226,135 @@ export default function SignInPage() {
           <CalendarRange className="size-6" />
         </div>
 
-        <h1 className="mt-6 text-2xl font-semibold tracking-tight">Calendium</h1>
-        <p className="text-muted-foreground mt-2 text-center text-sm text-balance">
-          The fastest email and calendar experience. One inbox, one calendar, zero friction.
-        </p>
-
-        {showSocial && (
+        {mode === 'check-email' ? (
           <>
-            <div className="mt-8 flex w-full flex-col gap-2.5">
-              {showGoogle && (
-                <Button
-                  variant="outline"
-                  size="lg"
-                  className="w-full"
-                  disabled={busy}
-                  onClick={() => social('google')}>
-                  {pending === 'google' ? (
-                    <Loader2 className="animate-spin" />
-                  ) : (
-                    <GoogleIcon className="size-4" />
+            <h1 ref={headingRef} tabIndex={-1} className="mt-6 text-2xl font-semibold tracking-tight outline-none">
+              Check your inbox
+            </h1>
+            <div className="text-muted-foreground mt-2 flex flex-col gap-1 text-center text-sm text-balance" role="status" aria-live="polite">
+              {notice && <p className="text-foreground">{notice}</p>}
+              <p>
+                {notice ? 'We sent it to' : 'If that address is new to Calendium, we sent a verification link to'}{' '}
+                <span className="text-foreground font-medium">{checkEmail}</span>. Open it to continue.
+              </p>
+            </div>
+            <MailCheck className="text-muted-foreground mt-8 size-8" aria-hidden />
+            <Button
+              variant="outline"
+              size="lg"
+              className="mt-6 w-full"
+              disabled={busy || cooldown > 0}
+              onClick={() => void resend()}>
+              {pending === 'email' ? <Loader2 className="animate-spin" /> : null}
+              {cooldown > 0 ? `Resend in ${cooldown} s` : 'Resend email'}
+            </Button>
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-foreground mt-4 text-xs transition-colors"
+              onClick={() => setMode('signin')}
+              disabled={busy}>
+              Back to sign in
+            </button>
+          </>
+        ) : (
+          <>
+            <h1 ref={headingRef} tabIndex={-1} className="mt-6 text-2xl font-semibold tracking-tight outline-none">
+              Calendium
+            </h1>
+            <p className="text-muted-foreground mt-2 text-center text-sm text-balance">
+              The fastest email and calendar experience. One inbox, one calendar, zero friction.
+            </p>
+
+            {showSocial && (
+              <>
+                <div className="mt-8 flex w-full flex-col gap-2.5">
+                  {showGoogle && (
+                    <Button variant="outline" size="lg" className="w-full" disabled={busy} onClick={() => social('google')}>
+                      {pending === 'google' ? <Loader2 className="animate-spin" /> : <GoogleIcon className="size-4" />}
+                      Continue with Google
+                    </Button>
                   )}
-                  Continue with Google
-                </Button>
-              )}
-              {showApple && (
-                <Button
-                  variant="outline"
-                  size="lg"
-                  className="w-full"
-                  disabled={busy}
-                  onClick={() => social('apple')}>
-                  {pending === 'apple' ? (
-                    <Loader2 className="animate-spin" />
-                  ) : (
-                    <AppleIcon className="size-4" />
+                  {showApple && (
+                    <Button variant="outline" size="lg" className="w-full" disabled={busy} onClick={() => social('apple')}>
+                      {pending === 'apple' ? <Loader2 className="animate-spin" /> : <AppleIcon className="size-4" />}
+                      Continue with Apple
+                    </Button>
                   )}
-                  Continue with Apple
-                </Button>
+                </div>
+
+                <div className="mt-6 flex w-full items-center gap-3">
+                  <Separator className="flex-1" />
+                  <span className="text-muted-foreground text-xs">or with email</span>
+                  <Separator className="flex-1" />
+                </div>
+              </>
+            )}
+
+            <form onSubmit={submitEmail} className={cn('flex w-full flex-col gap-3', showSocial ? 'mt-6' : 'mt-8')}>
+              {mode === 'signup' && (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="name">Name</Label>
+                  <Input id="name" type="text" autoComplete="name" placeholder="Ada Lovelace" value={name} onChange={(e) => setName(e.target.value)} disabled={busy} />
+                </div>
               )}
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="email">Email</Label>
+                <Input id="email" type="email" autoComplete="email" required placeholder="you@calendium.app" value={email} onChange={(e) => setEmail(e.target.value)} disabled={busy} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="password">Password</Label>
+                  {mode === 'signin' && (
+                    <Link href="/forgot-password" className="text-muted-foreground hover:text-foreground text-xs underline-offset-2 hover:underline">
+                      Forgot password?
+                    </Link>
+                  )}
+                </div>
+                <Input
+                  id="password"
+                  type="password"
+                  autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                  required
+                  // The policy applies to NEW passwords only: existing
+                  // accounts may still have 8–9 character ones.
+                  minLength={mode === 'signup' ? PASSWORD_MIN_LENGTH : undefined}
+                  placeholder="••••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={busy}
+                />
+                {mode === 'signup' && (
+                  <p className="text-muted-foreground text-xs">At least {PASSWORD_MIN_LENGTH} characters, and not your email address.</p>
+                )}
+              </div>
+              <Button type="submit" size="lg" className="w-full" disabled={busy}>
+                {pending === 'email' ? <Loader2 className="animate-spin" /> : null}
+                {mode === 'signup' ? 'Create account' : 'Sign in'}
+              </Button>
+            </form>
+
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-foreground mt-4 text-xs transition-colors"
+              onClick={() => setMode((m) => (m === 'signin' ? 'signup' : 'signin'))}
+              disabled={busy}>
+              {mode === 'signin' ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
+            </button>
+
+            <div className="text-muted-foreground mt-6 flex items-center gap-2 text-xs">
+              <Zap className="size-3.5" />
+              <span>
+                Every action is a keystroke away — hit <Kbd size="sm">⌘</Kbd> <Kbd size="sm">K</Kbd> once you're in.
+              </span>
             </div>
 
-            <div className="mt-6 flex w-full items-center gap-3">
-              <Separator className="flex-1" />
-              <span className="text-muted-foreground text-xs">or with email</span>
-              <Separator className="flex-1" />
-            </div>
+            <p className="text-muted-foreground mt-8 text-center text-xs text-balance">
+              {instance?.features.billing ? '14-day free trial, then $50/year. ' : ''}By continuing you agree to the{' '}
+              <Link href="/terms" className="hover:text-foreground underline underline-offset-2">Terms</Link> and{' '}
+              <Link href="/privacy" className="hover:text-foreground underline underline-offset-2">Privacy Policy</Link>.
+            </p>
           </>
         )}
-
-        <form
-          onSubmit={submitEmail}
-          className={cn('flex w-full flex-col gap-3', showSocial ? 'mt-6' : 'mt-8')}>
-          {mode === 'signup' && (
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="name">Name</Label>
-              <Input
-                id="name"
-                type="text"
-                autoComplete="name"
-                placeholder="Ada Lovelace"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                disabled={busy}
-              />
-            </div>
-          )}
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="email">Email</Label>
-            <Input
-              id="email"
-              type="email"
-              autoComplete="email"
-              required
-              placeholder="you@calendium.app"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              disabled={busy}
-            />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="password">Password</Label>
-            <Input
-              id="password"
-              type="password"
-              autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-              required
-              minLength={8}
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              disabled={busy}
-            />
-          </div>
-          <Button type="submit" size="lg" className="w-full" disabled={busy}>
-            {pending === 'email' ? <Loader2 className="animate-spin" /> : null}
-            {mode === 'signup' ? 'Create account' : 'Sign in'}
-          </Button>
-        </form>
-
-        <button
-          type="button"
-          className="text-muted-foreground hover:text-foreground mt-4 text-xs transition-colors"
-          onClick={() => setMode((m) => (m === 'signin' ? 'signup' : 'signin'))}
-          disabled={busy}>
-          {mode === 'signin'
-            ? "Don't have an account? Sign up"
-            : 'Already have an account? Sign in'}
-        </button>
-
-        <div className="text-muted-foreground mt-6 flex items-center gap-2 text-xs">
-          <Zap className="size-3.5" />
-          <span>
-            Every action is a keystroke away — hit <Kbd size="sm">⌘</Kbd> <Kbd size="sm">K</Kbd>{' '}
-            once you're in.
-          </span>
-        </div>
-
-        <p className="text-muted-foreground mt-8 text-center text-xs text-balance">
-          {instance?.features.billing ? '14-day free trial, then $50/year. ' : ''}By continuing you agree to the{' '}
-          <Link href="/terms" className="hover:text-foreground underline underline-offset-2">
-            Terms
-          </Link>{' '}
-          and{' '}
-          <Link href="/privacy" className="hover:text-foreground underline underline-offset-2">
-            Privacy Policy
-          </Link>
-          .
-        </p>
       </div>
     </main>
   );

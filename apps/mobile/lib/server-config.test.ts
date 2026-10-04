@@ -27,10 +27,12 @@ import {
   DEMO_CONFIG,
   clearStoredServerConfig,
   discoverServer,
+  forgotPasswordUrl,
   getStoredServerConfig,
   normalizeServerUrl,
   setStoredServerConfig,
   type ServerConfig,
+  verifyEmailCallbackUrl,
 } from './server-config';
 
 beforeEach(() => {
@@ -173,5 +175,25 @@ describe('AsyncStorage persistence', () => {
   it('getStoredServerConfig returns null (rather than throwing) on corrupt JSON', async () => {
     await AsyncStorage.setItem('calendium.serverConfig', '{not valid json');
     await expect(getStoredServerConfig()).resolves.toBeNull();
+  });
+});
+
+describe('forgotPasswordUrl (piece 2)', () => {
+  const base: ServerConfig = { ...DEMO_CONFIG, authBaseUrl: 'https://mail.example.com/api/auth', demoMode: false };
+
+  it('prefers webUrl, falls back to the Better Auth origin, and is null without either', () => {
+    expect(forgotPasswordUrl({ ...base, webUrl: 'https://app.example.com/' })).toBe('https://app.example.com/forgot-password');
+    expect(forgotPasswordUrl({ ...base, webUrl: '' })).toBe('https://mail.example.com/forgot-password');
+    expect(forgotPasswordUrl({ ...base, webUrl: '', authBaseUrl: '' })).toBeNull();
+    expect(forgotPasswordUrl(null)).toBeNull();
+  });
+
+  it('verifyEmailCallbackUrl is absolute so the Expo client does not rewrite it into a deep link', () => {
+    expect(verifyEmailCallbackUrl({ ...base, webUrl: 'https://app.example.com' })).toBe('https://app.example.com/verify-email');
+    expect(verifyEmailCallbackUrl({ ...base, webUrl: '' })).toBe('https://mail.example.com/verify-email');
+  });
+
+  it('DEMO_CONFIG advertises features.email=false', () => {
+    expect(DEMO_CONFIG.features.email).toBe(false);
   });
 });

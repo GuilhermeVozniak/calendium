@@ -74,6 +74,13 @@ bring your own proxy instead — then the `caddy` service never starts.
   handy for kicking the tyres before you point a real domain at the box.
 - `api:8080` and `web:3000` are Docker **service names** on the internal
   `calendium` network; Caddy reaches them by name, no host ports involved.
+- Caddy sets `X-Forwarded-For` to the connecting client's address and ignores
+  whatever the client sent. Compose sets `TRUST_PROXY=true` on `web` by
+  default, and Caddy's Compose-network address is inside the default
+  `TRUSTED_PROXY_CIDRS`, so the web app's auth rate limits see the real client
+  and each client gets its own bucket, LAN clients included
+  ([why](./security.md#client-ip-trust_proxy-and-trusted_proxy_cidrs)). Do not
+  set `TRUST_PROXY=false` with this profile.
 
 ### Before you `up`: DNS + ports
 
@@ -132,6 +139,17 @@ location /         { proxy_pass http://calendium_web; ... }
 > `http://` URLs behind your `https://` proxy and you get infinite redirect
 > loops. This is the #1 self-host support ticket across the industry. See
 > [Troubleshooting → Redirect loop](./troubleshooting.md#redirect-loop-behind-a-proxy).
+
+> **Keep `TRUST_PROXY=true` for the web app** (the Compose default; set it
+> yourself if you run `web` outside Compose). Its auth rate limits key on the
+> right-most `X-Forwarded-For` entry that is not inside `TRUSTED_PROXY_CIDRS`.
+> Overwriting the header (`proxy_set_header X-Forwarded-For $remote_addr;`, which
+> the sample does for `location /`) and appending it (`$proxy_add_x_forwarded_for`,
+> AWS ALB, Google Cloud Load Balancing) both work. Every proxy hop must be inside
+> `TRUSTED_PROXY_CIDRS`: the default covers loopback and private ranges, so add
+> any public CDN ranges yourself. With `TRUST_PROXY=false` every client shares
+> the proxy's bucket on all auth endpoints, including JWT minting, so one
+> client can lock everyone out.
 
 The sample sets `client_max_body_size 25m` for attachment uploads — raise it if
 your users send larger attachments. certbot's own systemd timer handles renewal.

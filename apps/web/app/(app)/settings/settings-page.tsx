@@ -103,6 +103,7 @@ import { subscriptionStatus } from '@/lib/subscription-utils';
 import { Switch } from '@/components/ui/switch';
 import { fetchSettings, updateSettingsApi } from '@/lib/scheduling-data';
 import { CalendarAutomationSection } from './calendar-automation';
+import { AccountSection } from './settings-account';
 import { getApiClient } from '@/lib/api';
 import { DEFAULT_SPLITS, orderSplits } from '@/lib/mail-utils';
 import { usePrefs, useUpdatePrefs } from '@/lib/prefs-data';
@@ -119,6 +120,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 type SettingsTab =
   | 'accounts'
+  | 'account'
   | 'integrations'
   | 'snippets'
   | 'templates'
@@ -134,6 +136,7 @@ type SettingsTab =
 
 const KNOWN_TABS: SettingsTab[] = [
   'accounts',
+  'account',
   'integrations',
   'snippets',
   'templates',
@@ -160,6 +163,7 @@ export default function SettingsPage() {
   const availableTabs = React.useMemo<SettingsTab[]>(
     () => [
       'accounts',
+      'account',
       ...(integrationsEnabled ? (['integrations'] as SettingsTab[]) : []),
       'snippets',
       'templates',
@@ -205,7 +209,7 @@ export default function SettingsPage() {
       <div className="mx-auto max-w-3xl px-6 py-8">
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Accounts, snippets, templates, sets, scheduling, delegation, appearance, mailbox
+          Accounts, account security, snippets, templates, sets, scheduling, delegation, appearance, mailbox
           {pushEnabled ? ', notifications' : ''}
           {billingEnabled ? ', and billing' : ''}.
         </p>
@@ -213,6 +217,7 @@ export default function SettingsPage() {
         <Tabs value={activeTab} onValueChange={changeTab} className="mt-6">
           <TabsList>
             <TabsTrigger value="accounts">Accounts</TabsTrigger>
+            <TabsTrigger value="account">Account</TabsTrigger>
             {integrationsEnabled && (
               <TabsTrigger value="integrations">Integrations</TabsTrigger>
             )}
@@ -230,6 +235,9 @@ export default function SettingsPage() {
           </TabsList>
           <TabsContent value="accounts" className="mt-4">
             <AccountsSection />
+          </TabsContent>
+          <TabsContent value="account" className="mt-4">
+            <AccountSection />
           </TabsContent>
           {integrationsEnabled && (
             <TabsContent value="integrations" className="mt-4">

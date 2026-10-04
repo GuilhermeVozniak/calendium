@@ -1,92 +1,75 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-// lib/auth.ts also constructs the full Better Auth server (`export const
-// auth = betterAuth({ database: db(), ... })`), but `db()` builds a `pg.Pool`
-// lazily — the Pool constructor does not open a connection — so importing the
-// module is safe under jsdom without a real Postgres instance or env vars.
-// Only `isAllowedOrigin` is exported; `isLocalhostDevOrigin`, `envAllowedOrigins`,
-// and `trustedOrigins` are private helpers, so their behavior is exercised
-// indirectly below (and, for `trustedOrigins`, via the constructed `auth`
-// instance's own config — see the last describe block).
-import { auth, isAllowedOrigin } from '@/lib/auth';
+// lib/auth.ts constructs the Better Auth server at import. `db()` builds a
+// pg.Pool lazily (no connection) and readMailConfig sees no SMTP_* in the
+// Vitest environment, so the module loads under jsdom without Postgres or
+// SMTP. The origin/IP/policy helpers live in lib/auth-env.ts and are covered
+// by auth-env.test.ts; this file pins what lib/auth.ts hands to betterAuth().
+import { auth } from '@/lib/auth';
 
-describe('isAllowedOrigin', () => {
-  it('rejects a missing origin', () => {
-    expect(isAllowedOrigin(null)).toBe(false);
-    expect(isAllowedOrigin(undefined)).toBe(false);
-    expect(isAllowedOrigin('')).toBe(false);
+interface Options {
+  trustedOrigins?: string[];
+  rateLimit?: {
+    enabled?: boolean;
+    storage?: string;
+    window?: number;
+    max?: number;
+    customRules?: Record<string, { window: number; max: number }>;
+    customStorage?: { consume?: unknown };
+  };
+  emailAndPassword?: {
+    requireEmailVerification?: boolean;
+    minPasswordLength?: number;
+    maxPasswordLength?: number;
+    resetPasswordTokenExpiresIn?: number;
+    revokeSessionsOnPasswordReset?: boolean;
+    sendResetPassword?: unknown;
+  };
+  emailVerification?: unknown;
+  advanced?: { ipAddress?: { ipAddressHeaders?: string[] } };
+  hooks?: { before?: unknown };
+}
+
+const options = auth.options as unknown as Options;
+
+describe('auth options', () => {
+  it('trusts the fixed origins (native scheme, Apple form_post, four Wails origins)', () => {
+    for (const o of ['calendium://', 'https://appleid.apple.com', 'wails://wails', 'wails://wails.localhost', 'http://wails.localhost', 'https://wails.localhost']) {
+      expect(options.trustedOrigins).toContain(o);
+    }
   });
 
-  it('allows every exact Wails WebView origin', () => {
-    expect(isAllowedOrigin('wails://wails')).toBe(true);
-    expect(isAllowedOrigin('wails://wails.localhost')).toBe(true);
-    expect(isAllowedOrigin('http://wails.localhost')).toBe(true);
-    expect(isAllowedOrigin('https://wails.localhost')).toBe(true);
-  });
-
-  it('allows any port on the wails.localhost hostname', () => {
-    expect(isAllowedOrigin('http://wails.localhost:1420')).toBe(true);
-    expect(isAllowedOrigin('https://wails.localhost:9999')).toBe(true);
-  });
-
-  it('allows localhost / 127.0.0.1 / ::1 dev origins on http or https', () => {
-    expect(isAllowedOrigin('http://localhost:3000')).toBe(true);
-    expect(isAllowedOrigin('https://localhost')).toBe(true);
-    expect(isAllowedOrigin('http://127.0.0.1:8080')).toBe(true);
-    expect(isAllowedOrigin('http://[::1]:3000')).toBe(true);
-  });
-
-  it('rejects localhost on a non-http(s) protocol', () => {
-    expect(isAllowedOrigin('ftp://localhost')).toBe(false);
-  });
-
-  it('rejects an arbitrary external origin', () => {
-    expect(isAllowedOrigin('https://evil.example.com')).toBe(false);
-  });
-
-  it('rejects an unparseable origin instead of throwing', () => {
-    expect(isAllowedOrigin('not a url')).toBe(false);
-  });
-
-  describe('CORS_ALLOWED_ORIGINS env allowlist', () => {
-    afterEach(() => {
-      vi.unstubAllEnvs();
-    });
-
-    it('allows an origin listed in CORS_ALLOWED_ORIGINS (with whitespace trimmed)', () => {
-      vi.stubEnv(
-        'CORS_ALLOWED_ORIGINS',
-        ' https://ops.example.com , https://partner.example.com ',
-      );
-      expect(isAllowedOrigin('https://ops.example.com')).toBe(true);
-      expect(isAllowedOrigin('https://partner.example.com')).toBe(true);
-      expect(isAllowedOrigin('https://unlisted.example.com')).toBe(false);
-    });
-
-    it('treats an unset/empty CORS_ALLOWED_ORIGINS as an empty allowlist', () => {
-      vi.stubEnv('CORS_ALLOWED_ORIGINS', '');
-      expect(isAllowedOrigin('https://ops.example.com')).toBe(false);
-    });
-
-    it('does not leak the stubbed env into a later test', () => {
-      expect(isAllowedOrigin('https://ops.example.com')).toBe(false);
+  it('enables database-backed rate limiting with the per-route rules', () => {
+    expect(options.rateLimit).toMatchObject({ enabled: true, storage: 'database', window: 60, max: 100 });
+    // lib/rate-limit-storage.ts: int8-safe reads and 600 s row retention.
+    expect(typeof options.rateLimit?.customStorage?.consume).toBe('function');
+    expect(options.rateLimit?.customRules).toEqual({
+      '/sign-in/email': { window: 60, max: 5 },
+      '/sign-up/email': { window: 60, max: 3 },
+      '/request-password-reset': { window: 600, max: 3 },
+      '/forget-password': { window: 600, max: 3 },
+      '/send-verification-email': { window: 600, max: 3 },
+      '/token': { window: 60, max: 60 },
     });
   });
-});
 
-describe('trustedOrigins (via the constructed auth instance)', () => {
-  it('includes the native deep link, Wails origins, and localhost wildcards by default', () => {
-    // `trustedOrigins()` is a private, unexported helper; its return value is
-    // passed straight through to betterAuth() with no transformation, so
-    // reading it back off `auth.options` exercises the real function output
-    // without requiring a source-code export change.
-    const trusted = (auth.options as { trustedOrigins?: string[] }).trustedOrigins ?? [];
-    expect(trusted).toContain('calendium://');
-    expect(trusted).toContain('wails://wails');
-    expect(trusted).toContain('wails://wails.localhost');
-    expect(trusted).toContain('http://wails.localhost');
-    expect(trusted).toContain('https://wails.localhost');
-    expect(trusted).toContain('http://localhost:*');
-    expect(trusted).toContain('http://127.0.0.1:*');
+  it('reads the client IP only from the server-set header', () => {
+    expect(options.advanced?.ipAddress?.ipAddressHeaders).toEqual(['x-calendium-client-ip']);
+  });
+
+  it('applies the password bounds and reset semantics; verification follows SMTP (unset in this run)', () => {
+    expect(options.emailAndPassword).toMatchObject({
+      minPasswordLength: 10,
+      maxPasswordLength: 128,
+      resetPasswordTokenExpiresIn: 3600,
+      revokeSessionsOnPasswordReset: true,
+      requireEmailVerification: false,
+    });
+    expect(options.emailAndPassword?.sendResetPassword).toBeUndefined();
+    expect(options.emailVerification).toBeUndefined();
+  });
+
+  it('installs a before hook (the password policy)', () => {
+    expect(typeof options.hooks?.before).toBe('function');
   });
 });

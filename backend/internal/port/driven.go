@@ -992,3 +992,23 @@ type TravelAlertRepo interface {
 type InsightsManagedEventRepo interface {
 	ListAllByUser(ctx context.Context, userID string) ([]domain.ManagedEvent, error)
 }
+
+// ---------------------------------------------------------------------------
+// Transactional email (piece 2)
+// ---------------------------------------------------------------------------
+
+// Email is a transactional message sent from the instance's own address
+// (SMTP_FROM), independent of any user's connected mailbox.
+type Email struct {
+	To      []string
+	ReplyTo string // optional
+	Subject string
+	Text    string // required
+	HTML    string // optional; multipart/alternative when set
+}
+
+// Mailer delivers transactional email. Implementations are safe for
+// concurrent use and honour ctx deadlines.
+type Mailer interface {
+	Send(ctx context.Context, msg Email) error
+}

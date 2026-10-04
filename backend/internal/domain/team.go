@@ -91,6 +91,17 @@ const (
 
 // TeamInvitation is an email invitation to join a team. The raw token is
 // shown once in the invite link; only its SHA-256 hash is stored.
+// InvitationDelivery reports how an invitation was delivered: through the
+// inviter's connected mailbox, the instance's SMTP sender, or — when neither
+// exists — a link the inviter shares by hand. Response-only; never stored.
+type InvitationDelivery string
+
+const (
+	DeliveryMailbox InvitationDelivery = "mailbox"
+	DeliverySMTP    InvitationDelivery = "smtp"
+	DeliveryLink    InvitationDelivery = "link"
+)
+
 type TeamInvitation struct {
 	ID        string           `json:"id"`
 	TeamID    string           `json:"teamId"`
@@ -101,6 +112,11 @@ type TeamInvitation struct {
 	TokenHash string           `json:"-"`
 	ExpiresAt time.Time        `json:"expiresAt"`
 	CreatedAt time.Time        `json:"createdAt"`
+	// Delivery and InviteURL are response-only (set by TeamService.Invite,
+	// never persisted). InviteURL is populated only for DeliveryLink, where
+	// the inviter must share the accept link themselves.
+	Delivery  InvitationDelivery `json:"delivery,omitempty"`
+	InviteURL string             `json:"inviteUrl,omitempty"`
 }
 
 // Usable reports whether the invitation can still be accepted at now.

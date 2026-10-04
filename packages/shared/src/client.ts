@@ -1,3 +1,4 @@
+import { type AccessTokenCache, createAccessTokenCache } from './access-token-cache';
 import type {
   AiAskRequest,
   AiAskResponse,
@@ -122,6 +123,27 @@ export interface ApiClientOptions {
   /** Returns the current Better Auth access token (JWT) or null when signed out. */
   getAccessToken: () => Promise<string | null>;
   fetch?: typeof fetch;
+  /**
+   * Shared JWT cache (internal). ApiClient creates one over getAccessToken
+   * when absent; the web app passes its own so sign-out and the 401 retry
+   * invalidate the single copy every caller uses.
+   */
+  accessTokens?: AccessTokenCache;
+}
+
+/**
+ * The exact 401 the Go API's auth middleware (httpapi.requireAuth) writes when
+ * it cannot verify the bearer JWT. Other 401s share the `unauthorized` code
+ * (provider rejections mapped from domain.ErrUnauthorized) but carry the
+ * generic safeMessage, so the message is what tells them apart.
+ */
+export const ACCESS_TOKEN_REJECTED_MESSAGE = 'invalid or expired access token';
+
+/** Whether a response is the API rejecting the Calendium access token itself (the only 401 worth a re-mint). */
+export function isAccessTokenRejection(status: number, body: unknown): boolean {
+  if (status !== 401 || !body || typeof body !== 'object') return false;
+  const error = (body as { error?: { code?: unknown; message?: unknown } }).error;
+  return error?.code === 'unauthorized' && error.message === ACCESS_TOKEN_REJECTED_MESSAGE;
 }
 
 export class ApiRequestError extends Error {
@@ -149,10 +171,20 @@ export class ApiRequestError extends Error {
  * Used by web, desktop, and mobile apps.
  */
 export class ApiClient {
-  constructor(private readonly opts: ApiClientOptions) {}
+  constructor(private readonly opts: ApiClientOptions) {
+    // Attach the cache to the SAME options object — never copy opts: desktop
+    // passes a live `baseUrl` getter and mobile mutates `baseUrl` in place.
+    opts.accessTokens ??= createAccessTokenCache(() => opts.getAccessToken());
+  }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const token = await this.opts.getAccessToken();
+  /** Drops the cached JWT so the next request mints a fresh one (sign-out, server switch). */
+  invalidateAccessToken(): void {
+    this.opts.accessTokens?.invalidate();
+  }
+
+  private async request<T>(method: string, path: string, body?: unknown, retried = false): Promise<T> {
+    const tokens = this.opts.accessTokens;
+    const token = tokens ? await tokens.get() : await this.opts.getAccessToken();
     const doFetch = this.opts.fetch ?? fetch;
     const res = await doFetch(`${this.opts.baseUrl}${path}`, {
       method,
@@ -164,6 +196,15 @@ export class ApiClient {
     });
     if (res.status === 204) return undefined as T;
     const json = await res.json().catch(() => null);
+    if (token && tokens && !retried && isAccessTokenRejection(res.status, json)) {
+      // The API's auth middleware rejected the JWT (revoked by a password
+      // reset, or expired): drop THAT token, re-mint once and retry once. A
+      // second 401 surfaces as-is. Provider failures that the API also maps
+      // to 401 `unauthorized` (Google/Graph/HubSpot… rejections) are not
+      // retried — the JWT was fine and the request already reached a handler.
+      tokens.invalidate(token);
+      return this.request<T>(method, path, body, true);
+    }
     if (!res.ok) {
       const code = json?.error?.code ?? 'unknown';
       const message = json?.error?.message ?? `Request failed with status ${res.status}`;
@@ -672,7 +713,7 @@ export class ApiClient {
       `/v1/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(userId)}`
     );
   }
-  /** Admin+; emails an invite link through the inviter's own connected account. */
+  /** Admin+; emails the invite from the inviter's connected mailbox, else the instance SMTP sender, else returns delivery "link" with inviteUrl to share by hand. */
   invite(teamId: string, email: string, role: TeamRole) {
     return this.request<TeamInvitation>(
       'POST',

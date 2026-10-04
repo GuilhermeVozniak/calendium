@@ -8,6 +8,7 @@ import {
   fetchPublicBookingPage,
   fetchPublicPoll,
   fetchPublicSlots,
+  isAccessTokenRejection,
   votePublicPoll,
 } from './client';
 import type {
@@ -2520,5 +2521,143 @@ describe('billing (Paddle)', () => {
     ]);
     const info = await fetchInstance('https://api.test/', asFetch(fetchFn));
     expect(info.webUrl).toBe('https://web');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Access-token cache + single 401 retry (piece 2)
+// ---------------------------------------------------------------------------
+
+function fakeJwt(expSeconds: number): string {
+  const payload = Buffer.from(JSON.stringify({ sub: 'u1', exp: expSeconds })).toString('base64url');
+  return `eyJhbGciOiJFZERTQSJ9.${payload}.sig`;
+}
+
+describe('access-token cache and 401 retry', () => {
+  const fresh = () => fakeJwt(Math.floor(Date.now() / 1000) + 900);
+
+  it('reuses a cached JWT across requests', async () => {
+    const { client, getAccessToken } = makeClient({ token: fresh(), responses: [{ status: 200, body: {} }] });
+    await client.getMe();
+    await client.listCalendars();
+    expect(getAccessToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps minting per request for an opaque token (pre-existing fixtures unchanged)', async () => {
+    const { client, getAccessToken } = makeClient({ responses: [{ status: 200, body: {} }] });
+    await client.getMe();
+    await client.getMe();
+    expect(getAccessToken).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries exactly once with a re-minted token on 401 and returns the retry result', async () => {
+    const first = fresh();
+    const second = fakeJwt(Math.floor(Date.now() / 1000) + 950);
+    const { client, calls, getAccessToken } = makeClient({
+      token: first,
+      responses: [
+        { status: 401, body: { error: { code: 'unauthorized', message: 'invalid or expired access token' } } },
+        { status: 200, body: { id: 'me1' } },
+      ],
+    });
+    getAccessToken.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    const result = await client.getMe();
+    expect(result).toEqual({ id: 'me1' });
+    expect(calls).toHaveLength(2);
+    expect(calls[0].headers.Authorization).toBe(`Bearer ${first}`);
+    expect(calls[1].headers.Authorization).toBe(`Bearer ${second}`);
+    expect(getAccessToken).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws ApiRequestError(401) after the single retry', async () => {
+    const { client, calls } = makeClient({
+      token: fresh(),
+      responses: [{ status: 401, body: { error: { code: 'unauthorized', message: 'invalid or expired access token' } } }],
+    });
+    await expect(client.getMe()).rejects.toMatchObject({ status: 401, code: 'unauthorized' });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('does not retry or drop the token on a provider 401 (Google/Graph/… rejection surfaced as unauthorized)', async () => {
+    const token = fresh();
+    const { client, calls, getAccessToken } = makeClient({
+      token,
+      responses: [
+        { status: 401, body: { error: { code: 'unauthorized', message: 'Authentication is required or has failed.' } } },
+        { status: 200, body: {} },
+      ],
+    });
+    await expect(client.sendDraft('d1')).rejects.toMatchObject({
+      status: 401,
+      code: 'unauthorized',
+      message: 'Authentication is required or has failed.',
+    });
+    expect(calls).toHaveLength(1);
+    await client.getMe();
+    expect(getAccessToken).toHaveBeenCalledTimes(1); // the JWT was still good
+  });
+
+  it('does not retry a 401 whose body is not the API envelope', async () => {
+    const { client, calls } = makeClient({ token: fresh(), responses: [{ status: 401, body: null }] });
+    await expect(client.getMe()).rejects.toMatchObject({ status: 401, code: 'unknown' });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('isAccessTokenRejection matches only the auth middleware 401', () => {
+    expect(isAccessTokenRejection(401, { error: { code: 'unauthorized', message: 'invalid or expired access token' } })).toBe(true);
+    expect(isAccessTokenRejection(401, { error: { code: 'unauthorized', message: 'Authentication is required or has failed.' } })).toBe(false);
+    expect(isAccessTokenRejection(403, { error: { code: 'unauthorized', message: 'invalid or expired access token' } })).toBe(false);
+    expect(isAccessTokenRejection(401, null)).toBe(false);
+  });
+
+  it('two concurrent 401s on the same JWT mint once and both retry with the new token', async () => {
+    const first = fresh();
+    const second = fakeJwt(Math.floor(Date.now() / 1000) + 950);
+    const rejection = { status: 401, body: { error: { code: 'unauthorized', message: 'invalid or expired access token' } } };
+    const { client, calls, getAccessToken } = makeClient({
+      token: first,
+      responses: [rejection, rejection, { status: 200, body: {} }, { status: 200, body: {} }],
+    });
+    getAccessToken.mockResolvedValueOnce(first).mockResolvedValueOnce(second).mockResolvedValueOnce('should-not-mint');
+    await Promise.all([client.getMe(), client.listCalendars()]);
+    expect(getAccessToken).toHaveBeenCalledTimes(2);
+    expect(calls.slice(2).map((c) => c.headers.Authorization)).toEqual([`Bearer ${second}`, `Bearer ${second}`]);
+  });
+
+  it('does not retry a 401 when no token was attached (the e2e /token stub yields null)', async () => {
+    const { client, calls, getAccessToken } = makeClient({
+      token: null,
+      responses: [{ status: 401, body: { error: { code: 'unauthorized', message: 'nope' } } }],
+    });
+    await expect(client.getMe()).rejects.toMatchObject({ status: 401 });
+    expect(calls).toHaveLength(1);
+    expect(getAccessToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('invalidateAccessToken() forces a re-mint on the next request', async () => {
+    const { client, getAccessToken } = makeClient({ token: fresh(), responses: [{ status: 200, body: {} }] });
+    await client.getMe();
+    client.invalidateAccessToken();
+    await client.getMe();
+    expect(getAccessToken).toHaveBeenCalledTimes(2);
+  });
+
+  it('actAs() shares the parent cache', async () => {
+    const { client, getAccessToken } = makeClient({ token: fresh(), responses: [{ status: 200, body: {} }] });
+    await client.getMe();
+    await client.actAs('user_principal').getThread('t1');
+    expect(getAccessToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('an explicit accessTokens option is used instead of a private cache', async () => {
+    const { fetchFn } = createFakeFetch([{ status: 200, body: {} }]);
+    const shared = { get: vi.fn(async () => fresh()), invalidate: vi.fn() };
+    const getAccessToken = vi.fn(async () => 'never-called');
+    const client = new ApiClient({ baseUrl: BASE_URL, getAccessToken, fetch: fetchFn as unknown as typeof fetch, accessTokens: shared });
+    await client.getMe();
+    client.invalidateAccessToken();
+    expect(shared.get).toHaveBeenCalledTimes(1);
+    expect(shared.invalidate).toHaveBeenCalledTimes(1);
+    expect(getAccessToken).not.toHaveBeenCalled();
   });
 });

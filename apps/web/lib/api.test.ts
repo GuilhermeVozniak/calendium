@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/lib/auth-client', () => ({ getAccessToken: async () => 'tok' }));
+vi.mock('@/lib/auth-client', () => ({ getAccessToken: async () => 'tok', accessTokens: undefined }));
 const actingAs: { id: string | null } = { id: null };
 vi.mock('@/lib/act-as', () => ({ getActingAs: () => actingAs.id }));
 

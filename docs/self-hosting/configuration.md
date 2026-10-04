@@ -13,6 +13,13 @@ adapter when set and is otherwise ignored.
 > backend binary *directly* (defaults to `SELF_HOSTED=false`, `DATABASE_URL`
 > host `localhost`, and adds `HTTP_ADDR`/`PORT`). Self-hosters use the root one.
 
+> **Booleans.** `SELF_HOSTED`, `SMTP_SECURE`, `ALLOW_DEV_ORIGINS` and
+> `TRUST_PROXY` accept `true`/`1`/`yes` and `false`/`0`/`no`
+> (case-insensitive); blank means `false` (except `TRUST_PROXY` under
+> Compose, which defaults to `true`). Every service that reads one parses it
+> the same way, and any other value stops that service at boot with the
+> variable named.
+
 See also: [Quickstart](./quickstart.md) · [Clients](./clients.md) ·
 [Overview](./README.md).
 
@@ -35,10 +42,10 @@ See also: [Quickstart](./quickstart.md) · [Clients](./clients.md) ·
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `SELF_HOSTED` | No | `false` | `true` puts the instance in self-host mode: entitlement gating becomes a no-op (**all features unlocked**), the billing endpoints return `501 self_hosted`, and `GET /v1/instance` reports `mode: self_host`. The root `.env.example` defaults it to `true`. |
+| `SELF_HOSTED` | No | `false` | `true` puts the instance in self-host mode: entitlement gating becomes a no-op (**all features unlocked**), the billing endpoints return `501 self_hosted`, and `GET /v1/instance` reports `mode: self_host`. The root `.env.example` defaults it to `true`. Read by `api`, `worker` **and `web`**: with `false` (cloud mode) all three refuse to start unless `SMTP_HOST` and `SMTP_FROM` are set ([Transactional email](#transactional-email-smtp)). |
 | `INSTANCE_NAME` | No | `Calendium` | Display name shown to clients on the connect screen and via `GET /v1/instance`. |
 | `APP_URL` | No | — | Public web origin, used to build absolute links (no trailing slash). Fallback source for `PUBLIC_WEB_URL`. |
-| `PUBLIC_WEB_URL` | No | falls back to `APP_URL` | Public web origin advertised to clients (the `authBaseUrl` in `GET /v1/instance`). **When both are set, `PUBLIC_WEB_URL` wins over `APP_URL`;** blank falls back to `APP_URL`. |
+| `PUBLIC_WEB_URL` | No | falls back to `APP_URL` | Public web origin advertised to clients (the `authBaseUrl` in `GET /v1/instance`). **When both are set, `PUBLIC_WEB_URL` wins over `APP_URL`;** blank falls back to `APP_URL`. The web app also adds it to Better Auth's trusted origins. |
 | `DOMAIN` | No | `localhost` | Domain the bundled Caddy proxy serves (automatic HTTPS). With `localhost`, Caddy serves a locally-trusted internal cert. |
 | `ACME_EMAIL` | No | — | Email Let's Encrypt uses for expiry notices (Caddy profile). Set it for a real domain. |
 
@@ -68,7 +75,38 @@ is `NEXT_PUBLIC_API_URL`.
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `NEXT_PUBLIC_API_URL` | No | `http://localhost:8080` | Where the browser reaches the Go API. **Inlined at build time** (Docker build arg) — rebuild the `web` image to change it. Behind the bundled proxy set it to your domain, or **leave blank** to use same-origin relative `/v1/…` requests. |
-| `CORS_ALLOWED_ORIGINS` | No | — | Comma-separated extra browser origins allowed for CORS by **both** the Go API and the Better Auth routes. The desktop app's `wails://wails.localhost` (and `http(s)://wails.localhost`, any port) plus localhost dev origins are allowed by default; add any other origin that serves the web client from a different host than the API. |
+| `CORS_ALLOWED_ORIGINS` | No | — | Comma-separated extra browser origins trusted by **both** the Go API (CORS) and Better Auth (trusted origins). Always trusted without listing them: `BETTER_AUTH_URL`, `PUBLIC_WEB_URL`, the desktop app's WebView origins (`wails://wails`, `wails://wails.localhost`, `http(s)://wails.localhost`), `calendium://` and `https://appleid.apple.com` (Apple's sign-in `form_post`; trusted, never reflected in CORS). |
+| `ALLOW_DEV_ORIGINS` | No | `false` | Also allow `http://localhost:*` / `http://127.0.0.1:*` (and `[::1]` in CORS). The Go API allows these origins **only** when this is `true`, in every environment. Better Auth (`web`) also trusts them under `next dev`. The desktop WebView origins, `CORS_ALLOWED_ORIGINS`, `PUBLIC_WEB_URL` and `BETTER_AUTH_URL` are always allowed, whatever this is set to. In production keep it blank: `true` makes `web` log a startup warning. Read by `web` and `api`. |
+| `TRUST_PROXY` | No | `true` under Compose (`false` when `web` runs outside it) | How the web app finds the client IP for its auth rate limits (every `/api/auth/*` endpoint, including session reads and JWT minting): the right-most `X-Forwarded-For` entry that is not a trusted proxy, or the left-most entry when every hop is trusted (a LAN/VPN client behind the proxy). `true`: entries in `TRUSTED_PROXY_CIDRS` are skipped from the right, so behind the bundled Caddy each client gets its own bucket. `false`: no proxy is trusted, so only the immediate peer counts and a client-supplied `X-Forwarded-For` is never used. Behind a proxy every client then shares the proxy's bucket on all auth endpoints, and production logs a warning. Set `false` only when `web:3000` is exposed directly to a LAN with no proxy in front. Accepts `true`/`1`/`yes` and `false`/`0`/`no` (case-insensitive); anything else stops `web` at boot. Read by `web` only. The Go API keys its own limits on the TCP peer. See [Security → Client IP](./security.md#client-ip-trust_proxy-and-trusted_proxy_cidrs). |
+| `TRUSTED_PROXY_CIDRS` | No | `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7` | Comma-separated proxy ranges skipped from the right of `X-Forwarded-For` when `TRUST_PROXY=true`; ignored when it is `false`. The default covers loopback and private networks, including the bundled Caddy on the Compose network. Add your CDN or load balancer ranges if they are public. Narrow it to your proxy's own address if untrusted clients can reach `web` from a private range. Read by `web`. |
+
+## Transactional email (SMTP)
+
+One instance-wide sender. The **web** app sends email-verification and
+password-reset mail; the **api** sends team invitations when the inviter has
+no connected mailbox. All three containers read the same variables.
+Provider setup and DNS: [Providers → Transactional email](./providers.md#1d-transactional-email-smtp).
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `SMTP_HOST` | Cloud: **yes**. Self-host: no | — | SMTP server hostname. Required together with `SMTP_FROM` as soon as any of `SMTP_HOST`, `SMTP_FROM`, `SMTP_USER` or `SMTP_PASS` is set. `SMTP_PORT` and `SMTP_SECURE` alone never trigger it, and the env templates pre-fill both. Blank on self-host = email off. |
+| `SMTP_PORT` | No | `587` | Integer 1–65535 (`465` for implicit TLS). |
+| `SMTP_USER` / `SMTP_PASS` | No | — | Login; set both or neither. **`SMTP_PASS` is a secret.** |
+| `SMTP_FROM` | With `SMTP_HOST` | — | `addr` or `Name <addr>`, e.g. `Calendium <no-reply@mail.example.com>`. |
+| `SMTP_SECURE` | No | `false` | `true` = implicit TLS; `false` = STARTTLS, **required** unless `SMTP_HOST` is loopback (`127.0.0.1`, `localhost`, `::1`). The server certificate is always verified. |
+
+| | SMTP configured | No SMTP (self-host only) |
+| --- | --- | --- |
+| Email+password sign-up | Must verify the address (link valid 24 h); same response whether or not the address exists | Signed in immediately; a duplicate address is reported |
+| Forgot password | Reset link by email (valid 1 h, signs out every device) | Page explains the administrator resets passwords ([procedure](./security.md#resetting-a-password-without-email-self-host)) |
+| Team invitation, inviter has no connected mailbox | Sent from `SMTP_FROM`, `Reply-To` = inviter | The inviter gets a link to share (`delivery: "link"`, expires in 14 days) |
+| `GET /v1/instance` `features.email` | `true` | `false` |
+
+Startup: with `SELF_HOSTED=false` and no SMTP, `api`, `worker` and `web` exit
+with `SMTP_HOST and SMTP_FROM are required when SELF_HOSTED=false (cloud mode); set them or run with SELF_HOSTED=true`;
+a half-configured block exits with `SMTP_* is partially configured: <missing>`. A block is half-configured when any of `SMTP_HOST`, `SMTP_FROM`, `SMTP_USER` or `SMTP_PASS` is set but `SMTP_HOST` or `SMTP_FROM` is missing, or when only one of `SMTP_USER` and `SMTP_PASS` is set.
+Self-host without SMTP boots and logs
+`email: disabled (no SMTP_HOST); verification off, invitations fall back to links`.
 
 ## Provider OAuth apps (mail + calendar) & social login
 
@@ -155,9 +193,10 @@ BETTER_AUTH_SECRET=<openssl rand -base64 32>
 BETTER_AUTH_URL=https://mail.example.com   # your public web origin, no trailing slash
 ```
 
-Add `GOOGLE_*` / `APPLE_*` for social sign-in (the Google creds also connect
-Gmail/Calendar), `MS_*` for Outlook, `OPENROUTER_API_KEY` for AI, and push keys as
-needed — each unlocks its adapter without touching the rest.
+Add `SMTP_*` to turn on email verification and self-service password reset
+(required in cloud mode), `GOOGLE_*` / `APPLE_*` for social sign-in (the Google
+creds also connect Gmail/Calendar), `MS_*` for Outlook, `OPENROUTER_API_KEY` for
+AI, and push keys as needed — each unlocks its adapter without touching the rest.
 
 ---
 
@@ -203,7 +242,8 @@ shape:
     "google": true,
     "microsoft": false,
     "ai": true,
-    "push": false
+    "push": false,
+    "email": true
   }
 }
 ```
@@ -223,6 +263,7 @@ shape:
 | `features.microsoft` | `true` when `MS_CLIENT_ID` is set. |
 | `features.ai` | `true` when `OPENROUTER_API_KEY` is set. |
 | `features.push` | `true` when APNs (`APNS_KEY_P8`), FCM (`FCM_SERVICE_ACCOUNT_JSON`), or Web Push (both VAPID keys) is configured. |
+| `features.email` | `true` when `SMTP_HOST` is set (an SMTP sender is configured). The web forgot-password page shows the administrator instructions only when this is explicitly `false`. |
 
 The TypeScript mirror (`InstanceInfo`, `InstanceMode`, `InstanceFeatures`) and
 the `fetchInstance(baseUrl)` / `ApiClient.getInstance()` helpers live in

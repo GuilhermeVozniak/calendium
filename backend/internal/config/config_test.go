@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -28,6 +29,7 @@ var configEnvKeys = []string{
 	"INSTANCE_NAME", "PUBLIC_WEB_URL", "APP_URL", "PUBLIC_API_URL", "APP_BASE_URL",
 	"SELF_HOSTED", "OAUTH_ALLOWED_REDIRECT_URIS", "CORS_ALLOWED_ORIGINS",
 	"OPEN_METEO_URL",
+	"SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "SMTP_FROM", "SMTP_SECURE", "ALLOW_DEV_ORIGINS",
 }
 
 // clearEnv blanks every config env var for the duration of the test; t.Setenv
@@ -190,7 +192,7 @@ func TestFromEnv(t *testing.T) {
 		},
 		{
 			name:    "SELF_HOSTED invalid errors",
-			env:     withBase(map[string]string{"SELF_HOSTED": "yes"}),
+			env:     withBase(map[string]string{"SELF_HOSTED": "maybe"}),
 			wantErr: true,
 		},
 		// ---- OpenRouter model ----
@@ -590,5 +592,179 @@ func TestValidateCloudBilling(t *testing.T) {
 				t.Fatalf("ValidateCloudBilling() = %v, want error containing %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestSMTPFromEnv covers the transactional-email knobs (piece 2): unset is
+// "disabled", a full block parses with defaults, half-set blocks and bad
+// port/bool/address values error, and ALLOW_DEV_ORIGINS parses as a bool.
+// SMTP_PORT/SMTP_SECURE alone are NOT "partial" (the env templates ship
+// them pre-filled next to a blank SMTP_HOST).
+func TestSMTPFromEnv(t *testing.T) {
+	full := map[string]string{"SMTP_HOST": "smtp.example.test", "SMTP_FROM": "Calendium <noreply@example.test>"}
+	withFull := func(extra map[string]string) map[string]string {
+		m := withBase(full)
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+	tests := []struct {
+		name    string
+		env     map[string]string
+		wantErr string // substring of the joined error; "" = success
+		check   func(t *testing.T, c Config)
+	}{
+		{
+			name:  "unset leaves SMTP unconfigured",
+			env:   withBase(nil),
+			check: func(t *testing.T, c Config) { assertBool(t, "SMTP.Configured", c.SMTP.Configured(), false) },
+		},
+		{
+			name:  "port and secure alone are not a partial block",
+			env:   withBase(map[string]string{"SMTP_PORT": "587", "SMTP_SECURE": "false"}),
+			check: func(t *testing.T, c Config) { assertBool(t, "SMTP.Configured", c.SMTP.Configured(), false) },
+		},
+		{
+			name: "host+from parse with port 587 and STARTTLS defaults",
+			env:  withBase(map[string]string{"SMTP_HOST": " smtp.example.test ", "SMTP_FROM": "Calendium <noreply@example.test>"}),
+			check: func(t *testing.T, c Config) {
+				assertBool(t, "SMTP.Configured", c.SMTP.Configured(), true)
+				assertEq(t, "SMTP.Host", c.SMTP.Host, "smtp.example.test")
+				assertInt(t, "SMTP.Port", c.SMTP.Port, 587)
+				assertBool(t, "SMTP.Secure", c.SMTP.Secure, false)
+				assertEq(t, "SMTP.From", c.SMTP.From, "Calendium <noreply@example.test>")
+				assertEq(t, "SMTP.User", c.SMTP.User, "")
+			},
+		},
+		{
+			name: "user+pass+port+secure",
+			env:  withFull(map[string]string{"SMTP_USER": "apikey", "SMTP_PASS": "s3cret", "SMTP_PORT": "465", "SMTP_SECURE": "true"}),
+			check: func(t *testing.T, c Config) {
+				assertEq(t, "SMTP.User", c.SMTP.User, "apikey")
+				assertEq(t, "SMTP.Pass", c.SMTP.Pass, "s3cret")
+				assertInt(t, "SMTP.Port", c.SMTP.Port, 465)
+				assertBool(t, "SMTP.Secure", c.SMTP.Secure, true)
+			},
+		},
+		{name: "SMTP_PORT zero errors", env: withFull(map[string]string{"SMTP_PORT": "0"}), wantErr: `SMTP_PORT must be an integer between 1 and 65535, got "0"`},
+		{name: "SMTP_PORT too large errors", env: withFull(map[string]string{"SMTP_PORT": "65536"}), wantErr: "SMTP_PORT must be an integer"},
+		{name: "SMTP_PORT non-int errors", env: withFull(map[string]string{"SMTP_PORT": "abc"}), wantErr: `SMTP_PORT must be an integer between 1 and 65535, got "abc"`},
+		{name: "SMTP_SECURE invalid errors", env: withFull(map[string]string{"SMTP_SECURE": "maybe"}), wantErr: `SMTP_SECURE must be true or false (also 1/0, yes/no), got "maybe"`},
+		{name: "SMTP_FROM malformed errors", env: withFull(map[string]string{"SMTP_FROM": "not-an-address"}), wantErr: `SMTP_FROM must be an email address or "Name <addr>", got "not-an-address"`},
+		{name: "host without from is partial", env: withBase(map[string]string{"SMTP_HOST": "h"}), wantErr: "SMTP_* is partially configured: SMTP_FROM"},
+		{name: "from without host is partial", env: withBase(map[string]string{"SMTP_FROM": "a@b.test"}), wantErr: "SMTP_* is partially configured: SMTP_HOST"},
+		{name: "user without pass is partial", env: withFull(map[string]string{"SMTP_USER": "u"}), wantErr: "SMTP_* is partially configured: SMTP_PASS"},
+		{name: "pass without user is partial", env: withFull(map[string]string{"SMTP_PASS": "p"}), wantErr: "SMTP_* is partially configured: SMTP_USER"},
+		{name: "only user set names host, from and pass", env: withBase(map[string]string{"SMTP_USER": "u"}), wantErr: "SMTP_* is partially configured: SMTP_HOST, SMTP_FROM, SMTP_PASS"},
+		{name: "ALLOW_DEV_ORIGINS default false", env: withBase(nil), check: func(t *testing.T, c Config) { assertBool(t, "AllowDevOrigins", c.HTTP.AllowDevOrigins, false) }},
+		{name: "ALLOW_DEV_ORIGINS true", env: withBase(map[string]string{"ALLOW_DEV_ORIGINS": "true"}), check: func(t *testing.T, c Config) { assertBool(t, "AllowDevOrigins", c.HTTP.AllowDevOrigins, true) }},
+		{name: "ALLOW_DEV_ORIGINS invalid errors", env: withBase(map[string]string{"ALLOW_DEV_ORIGINS": "maybe"}), wantErr: `ALLOW_DEV_ORIGINS must be true or false (also 1/0, yes/no), got "maybe"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearEnv(t)
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			c, err := FromEnv()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("FromEnv() error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FromEnv() unexpected error: %v", err)
+			}
+			if tt.check != nil {
+				tt.check(t, c)
+			}
+		})
+	}
+}
+
+// TestValidateCloudEmail pins the startup rule: cloud mode refuses to run
+// without an SMTP sender (verification, reset and invitations depend on it);
+// self-host boots with or without one. Same shape as ValidateCloudBilling.
+func TestValidateCloudEmail(t *testing.T) {
+	const want = "SMTP_HOST and SMTP_FROM are required when SELF_HOSTED=false (cloud mode); set them or run with SELF_HOSTED=true"
+	tests := []struct {
+		name       string
+		selfHosted bool
+		smtp       SMTP
+		wantErr    bool
+	}{
+		{"self-host without SMTP boots", true, SMTP{}, false},
+		{"self-host with SMTP boots", true, SMTP{Host: "h", From: "a@b.test", Port: 587}, false},
+		{"cloud with SMTP boots", false, SMTP{Host: "h", From: "a@b.test", Port: 587}, false},
+		{"cloud without SMTP refuses", false, SMTP{}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := Config{Instance: Instance{SelfHosted: tt.selfHosted}, SMTP: tt.smtp}
+			err := c.ValidateCloudEmail()
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("ValidateCloudEmail() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != want {
+				t.Fatalf("ValidateCloudEmail() = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
+// TestBooleanEnvParsing pins the boolean grammar shared with the web tier
+// (apps/web/lib/auth-env.ts envBool, same table in auth-env.test.ts):
+// true/1/yes are true and false/0/no/blank are false, case-insensitively and
+// ignoring surrounding spaces; anything else is a boot error naming the
+// variable. Before, Go accepted strconv.ParseBool's set (t, F, ...) while the
+// web accepted only the literal "true", so SELF_HOSTED=1 booted api+worker as
+// self-host and web as cloud.
+func TestBooleanEnvParsing(t *testing.T) {
+	truthy := []string{"true", "TRUE", "True", "1", "yes", "YES", "Yes", " true "}
+	falsy := []string{"false", "FALSE", "False", "0", "no", "NO", "", "  "}
+	invalid := []string{"t", "f", "T", "F", "on", "off", "y", "n", "2", "maybe", "truee"}
+	vars := map[string]func(Config) bool{
+		"SELF_HOSTED":       func(c Config) bool { return c.Instance.SelfHosted },
+		"SMTP_SECURE":       func(c Config) bool { return c.SMTP.Secure },
+		"ALLOW_DEV_ORIGINS": func(c Config) bool { return c.HTTP.AllowDevOrigins },
+	}
+	for name, get := range vars {
+		for _, want := range []bool{true, false} {
+			values := falsy
+			if want {
+				values = truthy
+			}
+			for _, v := range values {
+				t.Run(fmt.Sprintf("%s=%q is %v", name, v, want), func(t *testing.T) {
+					clearEnv(t)
+					for k, val := range withBase(map[string]string{name: v}) {
+						t.Setenv(k, val)
+					}
+					c, err := FromEnv()
+					if err != nil {
+						t.Fatalf("FromEnv() unexpected error: %v", err)
+					}
+					assertBool(t, name, get(c), want)
+				})
+			}
+		}
+		for _, v := range invalid {
+			t.Run(fmt.Sprintf("%s=%q errors", name, v), func(t *testing.T) {
+				clearEnv(t)
+				for k, val := range withBase(map[string]string{name: v}) {
+					t.Setenv(k, val)
+				}
+				_, err := FromEnv()
+				want := fmt.Sprintf("%s must be true or false (also 1/0, yes/no), got %q", name, v)
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("FromEnv() error = %v, want containing %q", err, want)
+				}
+			})
+		}
 	}
 }

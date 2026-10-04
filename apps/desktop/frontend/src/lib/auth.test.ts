@@ -500,3 +500,190 @@ describe('signOut', () => {
     expect(fn).not.toHaveBeenCalled();
   });
 });
+
+function fakeJwt(expSeconds: number): string {
+  const payload = btoa(JSON.stringify({ sub: 'u1', exp: expSeconds })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return `eyJhbGciOiJFZERTQSJ9.${payload}.sig`;
+}
+
+describe('signUpEmail — verification required (piece 2)', () => {
+  it('reports verificationRequired when the server returns token === null and does not fetch a session', async () => {
+    configureServer();
+    const { calls } = installFetch({
+      '/sign-up/email': { status: 200, body: { token: null, user: { id: 'u2', email: 'ada@test.dev' } } },
+    });
+    const { signUpEmail, getStoredToken } = await import('./auth');
+    const result = await signUpEmail('Ada Lovelace', 'ada@test.dev', 'correct-horse-battery');
+    expect(result).toEqual({ ok: true, verificationRequired: true });
+    expect(getStoredToken()).toBeNull();
+    expect(calls.some((c) => c.url.includes('/get-session'))).toBe(false);
+    const signUpCall = calls.find((c) => c.url.includes('/sign-up/email'));
+    expect(signUpCall?.body).toMatchObject({ callbackURL: '/verify-email' });
+  });
+});
+
+describe('signInEmail — verification and rate-limit copy (piece 2)', () => {
+  it('maps 403 EMAIL_NOT_VERIFIED to the verify-first message', async () => {
+    configureServer();
+    installFetch({ '/sign-in/email': { status: 403, body: { code: 'EMAIL_NOT_VERIFIED', message: 'Email not verified' } } });
+    const { signInEmail } = await import('./auth');
+    expect(await signInEmail('ada@test.dev', 'correct-horse-battery')).toEqual({
+      ok: false,
+      error: 'Verify your email first — we sent a new link.',
+    });
+  });
+
+  it('maps 429 to the retry-after copy', async () => {
+    configureServer();
+    installFetch({ '/sign-in/email': { status: 429, body: { message: 'Too many requests. Please try again later.' }, headers: { 'X-Retry-After': '42' } } });
+    const { signInEmail } = await import('./auth');
+    expect(await signInEmail('ada@test.dev', 'correct-horse-battery')).toEqual({ ok: false, error: 'Too many attempts, try again in 42 s' });
+  });
+});
+
+describe('getAccessToken cache (piece 2)', () => {
+  it('reuses a fresh JWT across calls and returns null without re-minting after signOut', async () => {
+    const config = configureServer();
+    localStorage.setItem('calendium.bearerToken', 'stored-token');
+    const token = fakeJwt(Math.floor(Date.now() / 1000) + 900);
+    const { calls } = installFetch({
+      '/token': { status: 200, body: { token } },
+      '/sign-out': { status: 200, body: {} },
+    });
+    const { getAccessToken, signOut } = await import('./auth');
+    expect(await getAccessToken()).toBe(token);
+    expect(await getAccessToken()).toBe(token);
+    expect(calls.filter((c) => c.url === `${config.authBaseUrl}/token`)).toHaveLength(1);
+
+    await signOut();
+    // Signed out: no stored token, so the cache is empty AND minting short-circuits.
+    expect(await getAccessToken()).toBeNull();
+    expect(calls.filter((c) => c.url === `${config.authBaseUrl}/token`)).toHaveLength(1);
+  });
+});
+
+describe('getAccessToken cache — invalidation on sign-in and server switch (fix wave)', () => {
+  const sessionUser = { status: 200, body: { user: { id: 'u1', email: 'ada@test.dev' }, session: {} } };
+
+  function tokenRoutes() {
+    const exp = Math.floor(Date.now() / 1000) + 900;
+    const first = fakeJwt(exp);
+    const second = `${fakeJwt(exp)}2`;
+    return { first, second, route: [{ status: 200, body: { token: first } }, { status: 200, body: { token: second } }] };
+  }
+
+  it('signInEmail drops the JWT minted for the previous session', async () => {
+    configureServer();
+    localStorage.setItem('calendium.bearerToken', 'old-session');
+    const t = tokenRoutes();
+    const { calls } = installFetch({
+      '/sign-in/email': { status: 200, body: {}, headers: { 'set-auth-token': 'new-session' } },
+      '/get-session': sessionUser,
+      '/token': t.route,
+    });
+    const { getAccessToken, signInEmail } = await import('./auth');
+    expect(await getAccessToken()).toBe(t.first);
+    expect(await signInEmail('ada@test.dev', 'hunter2')).toEqual({ ok: true });
+    expect(await getAccessToken()).toBe(t.second);
+    expect(calls.filter((c) => c.url.endsWith('/token'))).toHaveLength(2);
+  });
+
+  it('a failed signInEmail keeps the cached JWT', async () => {
+    configureServer();
+    localStorage.setItem('calendium.bearerToken', 'old-session');
+    const t = tokenRoutes();
+    const { calls } = installFetch({
+      '/sign-in/email': { status: 401, body: { message: 'Invalid email or password' } },
+      '/token': t.route,
+    });
+    const { getAccessToken, signInEmail } = await import('./auth');
+    expect(await getAccessToken()).toBe(t.first);
+    expect((await signInEmail('ada@test.dev', 'wrong')).ok).toBe(false);
+    expect(await getAccessToken()).toBe(t.first);
+    expect(calls.filter((c) => c.url.endsWith('/token'))).toHaveLength(1);
+  });
+
+  it('signUpEmail that signs in drops the cached JWT', async () => {
+    configureServer();
+    localStorage.setItem('calendium.bearerToken', 'old-session');
+    const t = tokenRoutes();
+    installFetch({
+      '/sign-up/email': { status: 200, body: { token: 'new-session', user: { id: 'u2' } }, headers: { 'set-auth-token': 'new-session' } },
+      '/get-session': sessionUser,
+      '/token': t.route,
+    });
+    const { getAccessToken, signUpEmail } = await import('./auth');
+    expect(await getAccessToken()).toBe(t.first);
+    expect(await signUpEmail('Ada', 'ada@test.dev', 'correct-horse-battery')).toEqual({ ok: true });
+    expect(await getAccessToken()).toBe(t.second);
+  });
+
+  it('verifyOtt drops the JWT minted for the previous session', async () => {
+    configureServer();
+    localStorage.setItem('calendium.bearerToken', 'old-session');
+    const t = tokenRoutes();
+    installFetch({
+      '/one-time-token/verify': { status: 200, body: {}, headers: { 'set-auth-token': 'ott-session' } },
+      '/get-session': sessionUser,
+      '/token': t.route,
+    });
+    const { getAccessToken, verifyOtt } = await import('./auth');
+    expect(await getAccessToken()).toBe(t.first);
+    expect(await verifyOtt('the-code')).toEqual({ ok: true });
+    expect(await getAccessToken()).toBe(t.second);
+  });
+
+  it('switching servers drops the JWT minted for the previous server', async () => {
+    configureServer();
+    localStorage.setItem('calendium.bearerToken', 'stored-token');
+    const t = tokenRoutes();
+    const { calls } = installFetch({ '/token': t.route });
+    const { getAccessToken } = await import('./auth');
+    expect(await getAccessToken()).toBe(t.first);
+    expect(await getAccessToken()).toBe(t.first);
+    const next = configureServer({ serverUrl: 'https://other.test' });
+    expect(await getAccessToken()).toBe(t.second);
+    expect(calls.at(-1)?.url).toBe(`${next.authBaseUrl}/token`);
+  });
+});
+
+describe('accessTokens.invalidate(failedToken) — only the failing token is dropped (final fix)', () => {
+  it('a late 401 on an already-replaced token keeps the fresher one', async () => {
+    configureServer();
+    localStorage.setItem('calendium.bearerToken', 'stored-token');
+    const exp = Math.floor(Date.now() / 1000) + 900;
+    const t1 = fakeJwt(exp);
+    const t2 = `${fakeJwt(exp)}2`;
+    const { calls } = installFetch({
+      '/token': [
+        { status: 200, body: { token: t1 } },
+        { status: 200, body: { token: t2 } },
+      ],
+    });
+    const { accessTokens } = await import('./auth');
+    expect(await accessTokens.get()).toBe(t1);
+    accessTokens.invalidate(t1); // request A's 401
+    expect(await accessTokens.get()).toBe(t2);
+    accessTokens.invalidate(t1); // request B's 401 on the same stale token
+    expect(await accessTokens.get()).toBe(t2);
+    expect(calls.filter((c) => c.url.endsWith('/token'))).toHaveLength(2);
+  });
+
+  it('invalidate() without a token still drops the cached JWT', async () => {
+    configureServer();
+    localStorage.setItem('calendium.bearerToken', 'stored-token');
+    const exp = Math.floor(Date.now() / 1000) + 900;
+    const t1 = fakeJwt(exp);
+    const t2 = `${fakeJwt(exp)}2`;
+    installFetch({
+      '/token': [
+        { status: 200, body: { token: t1 } },
+        { status: 200, body: { token: t2 } },
+      ],
+    });
+    const { accessTokens } = await import('./auth');
+    expect(await accessTokens.get()).toBe(t1);
+    accessTokens.invalidate();
+    expect(await accessTokens.get()).toBe(t2);
+  });
+});

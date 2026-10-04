@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"html"
+	htmltemplate "html/template"
 	netmail "net/mail"
 	"strings"
+	texttemplate "text/template"
 	"time"
+	"unicode"
 
 	"calendium/backend/internal/domain"
 	"calendium/backend/internal/port"
@@ -17,6 +19,18 @@ import (
 
 // inviteTTL is how long an emailed team invitation stays redeemable.
 const inviteTTL = 14 * 24 * time.Hour
+
+// inviteRollbackTimeout bounds the best-effort revoke after a failed send. It
+// runs detached from the request context, so a cancelled request still frees
+// the pending-unique index for a retry.
+const inviteRollbackTimeout = 5 * time.Second
+
+// Cloud anti-abuse budget: an inviter may send at most inviteEmailLimit
+// invitation emails per rolling inviteEmailWindow.
+const (
+	inviteEmailLimit  = 20
+	inviteEmailWindow = time.Hour
+)
 
 // TeamServiceDeps wires a TeamService.
 type TeamServiceDeps struct {
@@ -26,9 +40,13 @@ type TeamServiceDeps struct {
 	Accounts    port.AccountRepo
 	Mail        map[domain.Provider]port.MailProvider
 	OAuth       map[domain.Provider]port.OAuthGateway
-	Subs        port.SubscriptionRepo
-	Tx          port.TxRunner
-	Clock       port.Clock
+	// Mailer is the instance's own SMTP sender, used for invitations when the
+	// inviter has no connected mailbox. nil when SMTP_HOST is unset: the
+	// invitation is then returned with a copyable link instead.
+	Mailer port.Mailer
+	Subs   port.SubscriptionRepo
+	Tx     port.TxRunner
+	Clock  port.Clock
 	// SelfHost unlocks the paywall (open-core self-hosted mode).
 	SelfHost bool
 	// AppBaseURL prefixes the emailed invite link <AppBaseURL>/invite/<token>.
@@ -39,7 +57,8 @@ type TeamServiceDeps struct {
 // live here, never in adapters: non-members always get ErrNotFound (team
 // existence is never leaked), known members lacking the required role get
 // ErrForbidden. Invitation emails go out through the inviter's own connected
-// account send pipeline — there is no transactional-email vendor in the stack.
+// account when one exists, else through the instance's SMTP sender, else the
+// response carries a link the inviter shares by hand.
 type TeamService struct {
 	ent         entitlement
 	teams       port.TeamRepo
@@ -47,15 +66,40 @@ type TeamService struct {
 	users       port.UserRepo
 	accounts    port.AccountRepo
 	mail        map[domain.Provider]port.MailProvider
+	mailer      port.Mailer
 	tokens      tokenSource
 	tx          port.TxRunner
 	clock       port.Clock
 	appBaseURL  string
+	// inviteLimit caps invitation emails per inviter on cloud; nil on
+	// self-host (unlimited).
+	inviteLimit *rollingLimiter
 }
 
 var _ port.TeamService = (*TeamService)(nil)
 
+// Invitation wording mirrors apps/web/lib/email/templates/team-invitation.ts
+// so an invite reads the same whichever sender delivered it. html/template
+// escapes the inviter name and team name contextually; the text template
+// keeps them raw.
+var (
+	inviteTextTmpl = texttemplate.Must(texttemplate.New("invite-text").Parse(
+		"{{.Inviter}} has invited you to join the team \"{{.Team}}\" on Calendium.\n\n" +
+			"Accept the invitation: {{.Link}}\n\n" +
+			"The link expires in 14 days. If you weren't expecting this, you can safely ignore this email.\n"))
+	inviteHTMLTmpl = htmltemplate.Must(htmltemplate.New("invite-html").Parse(
+		`<p>{{.Inviter}} has invited you to join the team <strong>{{.Team}}</strong> on Calendium.</p>` +
+			`<p><a href="{{.Link}}">Accept the invitation</a></p>` +
+			`<p>The link expires in 14 days. If you weren&rsquo;t expecting this, you can safely ignore this email.</p>`))
+)
+
+type inviteEmailData struct{ Inviter, Team, Link string }
+
 func NewTeamService(d TeamServiceDeps) *TeamService {
+	var limit *rollingLimiter
+	if !d.SelfHost {
+		limit = newRollingLimiter(inviteEmailLimit, inviteEmailWindow)
+	}
 	return &TeamService{
 		ent:         entitlement{subs: d.Subs, users: d.Users, clock: d.Clock, selfHost: d.SelfHost},
 		teams:       d.Teams,
@@ -63,10 +107,12 @@ func NewTeamService(d TeamServiceDeps) *TeamService {
 		users:       d.Users,
 		accounts:    d.Accounts,
 		mail:        d.Mail,
+		mailer:      d.Mailer,
 		tokens:      tokenSource{accounts: d.Accounts, oauth: d.OAuth, clock: d.Clock},
 		tx:          d.Tx,
 		clock:       d.Clock,
 		appBaseURL:  strings.TrimRight(d.AppBaseURL, "/"),
+		inviteLimit: limit,
 	}
 }
 
@@ -312,18 +358,41 @@ func (s *TeamService) Invite(ctx context.Context, userID, teamID, email string, 
 	if err != nil {
 		return domain.TeamInvitation{}, err
 	}
-	acct, provider, err := s.senderAccount(ctx, userID)
+	// Pick the sender BEFORE persisting anything so a broken mailbox never
+	// leaves a dangling pending invitation behind: (a) the inviter's own
+	// connected mailbox, (b) the instance SMTP sender, (c) a link the inviter
+	// shares by hand. Cloud always has (b), so (c) only happens on self-host.
+	acct, provider, hasMailbox, err := s.senderAccount(ctx, userID)
 	if err != nil {
 		return domain.TeamInvitation{}, err
 	}
-	// Resolve the access token BEFORE persisting anything so a broken
-	// account never leaves a dangling pending invitation behind.
-	accessToken, err := s.tokens.accessToken(ctx, acct)
-	if err != nil {
-		return domain.TeamInvitation{}, err
+	delivery := domain.DeliveryLink
+	var accessToken string
+	switch {
+	case hasMailbox:
+		delivery = domain.DeliveryMailbox
+		accessToken, err = s.tokens.accessToken(ctx, acct)
+		if err != nil {
+			return domain.TeamInvitation{}, err
+		}
+	case s.mailer != nil:
+		delivery = domain.DeliverySMTP
 	}
 	now := s.clock.Now()
 	raw := randomToken(32)
+	link := s.appBaseURL + "/invite/" + raw
+	inviter, replyTo := s.inviterIdentity(ctx, userID, acct)
+	// Render before persisting so a render failure never strands a pending row.
+	subject, htmlBody, textBody, err := renderInviteEmail(inviter, team.Name, link)
+	if err != nil {
+		return domain.TeamInvitation{}, err
+	}
+	// Cloud anti-abuse: reserve one of the inviter's invitation emails
+	// before persisting, so a limited request leaves no row behind.
+	limited := s.inviteLimit != nil && delivery != domain.DeliveryLink
+	if limited && !s.inviteLimit.reserve(userID, now) {
+		return domain.TeamInvitation{}, fmt.Errorf("%w: at most %d invitation emails per hour; try again later", domain.ErrRateLimited, inviteEmailLimit)
+	}
 	inv, err := s.invitations.Create(ctx, domain.TeamInvitation{
 		ID:        newID(),
 		TeamID:    teamID,
@@ -336,23 +405,44 @@ func (s *TeamService) Invite(ctx context.Context, userID, teamID, email string, 
 		CreatedAt: now,
 	})
 	if err != nil {
+		if limited {
+			s.inviteLimit.release(userID, now) // nothing was sent
+		}
 		return domain.TeamInvitation{}, err
 	}
-	link := s.appBaseURL + "/invite/" + raw
-	subject, htmlBody, textBody := s.buildInviteEmail(ctx, team, userID, acct, link)
-	if _, err := provider.Send(ctx, accessToken, port.OutgoingMessage{
-		From:     domain.EmailAddress{Email: acct.Email},
-		To:       []domain.EmailAddress{{Email: canonical}},
-		Subject:  subject,
-		BodyHTML: htmlBody,
-		BodyText: textBody,
-	}); err != nil {
-		// Best-effort rollback so the pending-unique index does not block
-		// a retry after a transient provider failure.
-		inv.Status = domain.InviteRevoked
-		_ = s.invitations.Update(ctx, inv)
-		return domain.TeamInvitation{}, fmt.Errorf("sending invitation email: %w", err)
+	switch delivery {
+	case domain.DeliveryMailbox:
+		_, err = provider.Send(ctx, accessToken, port.OutgoingMessage{
+			From:     domain.EmailAddress{Email: acct.Email},
+			To:       []domain.EmailAddress{{Email: canonical}},
+			Subject:  subject,
+			BodyHTML: htmlBody,
+			BodyText: textBody,
+		})
+	case domain.DeliverySMTP:
+		err = s.mailer.Send(ctx, port.Email{
+			To:      []string{canonical},
+			ReplyTo: replyTo,
+			Subject: subject,
+			Text:    textBody,
+			HTML:    htmlBody,
+		})
+	case domain.DeliveryLink:
+		inv.InviteURL = link
 	}
+	if err != nil {
+		// Best-effort rollback so the pending-unique index does not block
+		// a retry after a transient send failure. Detached from ctx: the
+		// send most often fails BECAUSE the request was cancelled.
+		rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), inviteRollbackTimeout)
+		inv.Status = domain.InviteRevoked
+		_ = s.invitations.Update(rbCtx, inv)
+		cancel()
+		// writeError logs this at error level: keep the invitee's domain,
+		// never the address (mailbox and SMTP replies may echo it).
+		return domain.TeamInvitation{}, fmt.Errorf("sending invitation email: %w", domain.RedactEmailsInError(err, canonical))
+	}
+	inv.Delivery = delivery
 	return inv, nil
 }
 
@@ -479,43 +569,69 @@ func canonicalInviteEmail(email string) (string, error) {
 }
 
 // senderAccount picks the inviter's first active connected account that has a
-// configured mail provider — the invitation email goes through the inviter's
-// own send pipeline.
-func (s *TeamService) senderAccount(ctx context.Context, userID string) (domain.ConnectedAccount, port.MailProvider, error) {
+// configured mail provider. found=false (with a nil error) means the inviter
+// has no usable mailbox and the caller falls back to SMTP or a link.
+func (s *TeamService) senderAccount(ctx context.Context, userID string) (acct domain.ConnectedAccount, provider port.MailProvider, found bool, err error) {
 	accounts, err := s.accounts.ListByUser(ctx, userID)
 	if err != nil {
-		return domain.ConnectedAccount{}, nil, err
+		return domain.ConnectedAccount{}, nil, false, err
 	}
 	for _, a := range accounts {
 		if a.Status != domain.AccountActive {
 			continue
 		}
 		if p, ok := s.mail[a.Provider]; ok {
-			return a, p, nil
+			return a, p, true, nil
 		}
 	}
-	return domain.ConnectedAccount{}, nil, fmt.Errorf("%w: no active connected account to send the invitation from", domain.ErrValidation)
+	return domain.ConnectedAccount{}, nil, false, nil
 }
 
-// buildInviteEmail renders the invitation subject and bodies. The inviter's
-// display name falls back to their account email when the user row is
-// unavailable.
-func (s *TeamService) buildInviteEmail(ctx context.Context, team domain.Team, inviterID string, acct domain.ConnectedAccount, link string) (subject, htmlBody, textBody string) {
-	inviter := acct.Email
+// inviterIdentity resolves the display name used in the invitation and the
+// Reply-To for SMTP delivery: the user row's name (else its email), with the
+// connected mailbox address as the fallback when the user row is missing.
+func (s *TeamService) inviterIdentity(ctx context.Context, inviterID string, acct domain.ConnectedAccount) (name, replyTo string) {
+	name, replyTo = acct.Email, acct.Email
 	if u, err := s.users.GetByID(ctx, inviterID); err == nil {
-		switch {
-		case u.Name != nil && strings.TrimSpace(*u.Name) != "":
-			inviter = strings.TrimSpace(*u.Name)
-		case u.Email != "":
-			inviter = u.Email
+		if u.Email != "" {
+			name, replyTo = u.Email, u.Email
+		}
+		if u.Name != nil && strings.TrimSpace(*u.Name) != "" {
+			name = strings.TrimSpace(*u.Name)
 		}
 	}
-	subject = fmt.Sprintf("%s invited you to %s on Calendium", inviter, team.Name)
-	textBody = fmt.Sprintf(
-		"%s has invited you to join the team %q on Calendium.\n\nAccept the invitation: %s\n\nThe link expires in 14 days. If you weren't expecting this, you can safely ignore this email.",
-		inviter, team.Name, link)
-	htmlBody = fmt.Sprintf(
-		"<p>%s has invited you to join the team <strong>%s</strong> on Calendium.</p><p><a href=%q>Accept the invitation</a></p><p>The link expires in 14 days. If you weren&rsquo;t expecting this, you can safely ignore this email.</p>",
-		html.EscapeString(inviter), html.EscapeString(team.Name), link)
-	return subject, htmlBody, textBody
+	if name == "" {
+		name = "A teammate"
+	}
+	return name, replyTo
+}
+
+// renderInviteEmail renders the subject and both bodies from the shared
+// templates. Both names are user-controlled (ValidateTeamName only trims;
+// Better Auth names are unchecked), so they pass through headerSafe first: a
+// line break would otherwise make the mail builder reject the Subject and
+// fail every invitation from that team or inviter.
+func renderInviteEmail(inviter, team, link string) (subject, htmlBody, textBody string, err error) {
+	inviter, team = headerSafe(inviter), headerSafe(team)
+	if inviter == "" {
+		inviter = "A teammate"
+	}
+	data := inviteEmailData{Inviter: inviter, Team: team, Link: link}
+	var textOut, htmlOut strings.Builder
+	if err := inviteTextTmpl.Execute(&textOut, data); err != nil {
+		return "", "", "", fmt.Errorf("rendering invitation text: %w", err)
+	}
+	if err := inviteHTMLTmpl.Execute(&htmlOut, data); err != nil {
+		return "", "", "", fmt.Errorf("rendering invitation html: %w", err)
+	}
+	return fmt.Sprintf("%s invited you to %s on Calendium", inviter, team), htmlOut.String(), textOut.String(), nil
+}
+
+// headerSafe collapses every run of control characters and whitespace
+// (CR, LF, TAB, NUL, DEL, U+2028/U+2029, …) to a single space and trims the
+// ends, so a user-controlled name can be placed in a one-line header.
+func headerSafe(s string) string {
+	return strings.Join(strings.FieldsFunc(s, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}), " ")
 }

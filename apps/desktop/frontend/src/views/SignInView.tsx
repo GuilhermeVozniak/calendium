@@ -2,7 +2,7 @@ import { Loader2 } from 'lucide-react';
 import { type FormEvent, useEffect, useState } from 'react';
 
 import { signInEmail, signUpEmail, verifyOtt } from '@/lib/auth';
-import { useServerConfig, webOrigin } from '@/lib/server-config';
+import { forgotPasswordUrl, useServerConfig, webOrigin } from '@/lib/server-config';
 import { desktop, onDeepLink } from '@/lib/wails';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
@@ -63,6 +63,7 @@ export function SignInView() {
   const [code, setCode] = useState('');
   const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   async function handleVerify(token: string) {
     setError(null);
@@ -95,6 +96,7 @@ export function SignInView() {
   async function submitEmail(e: FormEvent) {
     e.preventDefault();
     setError(null);
+    setNotice(null);
     setBusy('email');
     const res =
       mode === 'signin'
@@ -103,7 +105,25 @@ export function SignInView() {
     if (!res.ok) {
       setError(res.error ?? 'Something went wrong.');
       setBusy(null);
+      return;
     }
+    if (res.verificationRequired) {
+      // No session yet: the server emailed a verification link. Flip to
+      // sign-in so the user can continue once the link is clicked.
+      setNotice(`Check your inbox — we sent a verification link to ${email}.`);
+      setMode('signin');
+      setPassword('');
+      setBusy(null);
+    }
+  }
+
+  function openForgotPassword() {
+    const url = forgotPasswordUrl(config);
+    if (!url) {
+      setError('Connect to a server first.');
+      return;
+    }
+    desktop.OpenExternal(url);
   }
 
   function openWebSignIn() {
@@ -246,6 +266,21 @@ export function SignInView() {
                 disabled={busy !== null}
               />
               {error && <p className="text-sm text-destructive">{error}</p>}
+              {notice && (
+                <p className="text-sm text-muted-foreground" role="status">
+                  {notice}
+                </p>
+              )}
+              {!isSignup && (
+                <button
+                  type="button"
+                  className="self-end text-xs text-muted-foreground underline-offset-4 hover:underline"
+                  onClick={openForgotPassword}
+                  disabled={busy !== null}
+                >
+                  Forgot password?
+                </button>
+              )}
               <Button type="submit" className="mt-1 gap-2" disabled={busy !== null}>
                 {busy === 'email' && <Loader2 className="animate-spin" />}
                 {isSignup ? 'Create account' : 'Sign in'}

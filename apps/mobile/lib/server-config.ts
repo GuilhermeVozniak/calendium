@@ -62,7 +62,7 @@ export const DEMO_CONFIG: ServerConfig = {
   mode: 'cloud',
   name: 'Calendium Demo',
   authProviders: ['email', 'google', 'apple'],
-  features: { billing: true, google: true, microsoft: true, ai: true, push: false },
+  features: { billing: true, google: true, microsoft: true, ai: true, push: false, email: false },
   webUrl: '',
   demoMode: true,
 };
@@ -72,6 +72,31 @@ export function normalizeServerUrl(url: string): string {
   const trimmed = url.trim().replace(/\/+$/, '');
   if (!trimmed) return trimmed;
   return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+/** The server's web origin: the advertised webUrl, else authBaseUrl without /api/auth. */
+function webBase(config: ServerConfig | null): string | null {
+  const fromWebUrl = config?.webUrl?.replace(/\/+$/, '');
+  if (fromWebUrl) return fromWebUrl;
+  const fromAuth = config?.authBaseUrl?.replace(/\/+$/, '').replace(/\/api\/auth$/, '');
+  return fromAuth || null;
+}
+
+/** "Forgot password?" opens the web app's reset page in the system browser; null until a server is configured. */
+export function forgotPasswordUrl(config: ServerConfig | null): string | null {
+  const base = webBase(config);
+  return base ? `${base}/forgot-password` : null;
+}
+
+/**
+ * Absolute callbackURL for email sign-up. The @better-auth/expo client
+ * rewrites any RELATIVE callbackURL into a calendium:// deep link, which the
+ * app has no verify-email screen for; an absolute web URL lands the emailed
+ * link on the web /verify-email page instead (trusted via PUBLIC_WEB_URL /
+ * BETTER_AUTH_URL).
+ */
+export function verifyEmailCallbackUrl(config: ServerConfig): string {
+  return `${webBase(config) ?? ''}/verify-email`;
 }
 
 export async function getStoredServerConfig(): Promise<ServerConfig | null> {

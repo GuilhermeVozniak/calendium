@@ -17,6 +17,9 @@ worked top to bottom.
 - [ ] Base images updated on a schedule
 - [ ] Backups encrypted and stored off-box
 - [ ] Managed Postgres reached with `sslmode=require` (or stricter)
+- [ ] `web` behind your proxy with `TRUST_PROXY=true` (the Compose default), and the proxy's address inside `TRUSTED_PROXY_CIDRS`
+- [ ] `ALLOW_DEV_ORIGINS` blank (false) in production
+- [ ] SMTP configured over TLS (verification + password reset), or users know to ask you for a reset
 
 ---
 
@@ -68,7 +71,7 @@ be public and some is a signing secret — don't mix them up:
 | `BETTER_AUTH_URL` | **Public** | Public web origin; also the JWT issuer (`iss`) the backend pins. |
 | `${BETTER_AUTH_URL}/api/auth/jwks` (JWKS) | **Public** | Public Ed25519 verification keys the backend fetches. Meant to be reachable — expected to be public, fine to expose. |
 | `BETTER_AUTH_SECRET` | **SECRET** | Better Auth's root secret. Anyone with it can forge sessions and mint valid tokens. Never serve it, never log it, never put it in `NEXT_PUBLIC_*`. |
-| `GOOGLE_CLIENT_SECRET`, `APPLE_CLIENT_SECRET`, `MS_CLIENT_SECRET`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET` | **SECRET** | Backend / server-only. |
+| `GOOGLE_CLIENT_SECRET`, `APPLE_CLIENT_SECRET`, `MS_CLIENT_SECRET`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `SMTP_PASS` | **SECRET** | Backend / server-only. |
 
 The Go backend is a pure resource server: it fetches the public JWKS from
 `AUTH_JWKS_URL` (default `${BETTER_AUTH_URL}/api/auth/jwks`), verifies the
@@ -184,6 +187,124 @@ With `SELF_HOSTED=true`, the billing endpoints (`/v1/billing/checkout`,
 `self_hosted` error, and all features are unlocked without Paddle. Leave the
 `PADDLE_*` vars blank — there's no paywall to secure and no webhook secret to
 protect on a self-hosted box.
+
+---
+
+## 10. Sign-in protection
+
+### Rate limits (Postgres-backed)
+
+Better Auth rate-limits its endpoints per client IP in every environment. The
+counters live in the `rateLimit` table (migration
+`0028_better_auth_rate_limit.sql`), so they survive restarts and are shared by
+every `web` replica.
+
+| Endpoint (under `/api/auth`) | Limit |
+| --- | --- |
+| `/sign-in/email` | 5 per 60 s |
+| `/sign-up/email` | 3 per 60 s |
+| `/request-password-reset` (and the legacy `/forget-password`) | 3 per 10 min |
+| `/send-verification-email` | 3 per 10 min |
+| `/token` (the API JWT; clients cache it until 60 s before expiry) | 60 per 60 s |
+| `/change-password` | 3 per 10 s (Better Auth built-in) |
+| everything else | 100 per 60 s |
+
+Over the limit → `429` with `X-Retry-After: <seconds>`; the apps say
+"Too many attempts, try again in N s".
+
+### Client IP: `TRUST_PROXY` and `TRUSTED_PROXY_CIDRS`
+
+The web app stamps the client IP into a server-only header
+(`x-calendium-client-ip`) and overwrites it on every request, so a value the
+client sends is discarded. The client IP is the **right-most `X-Forwarded-For`
+entry that is not a trusted proxy**. The right-most entry is always the
+immediate peer: the Docker image starts Next.js with a small preload
+(`scripts/forwarded-for-peer.cjs`) that appends the socket address the
+connection came from. If you run the web app outside the image (`next start`
+on a host), start it the same way, `node -r ./scripts/forwarded-for-peer.cjs`,
+or a client could forge the right-most entry; production logs a warning when
+the preload is missing.
+
+- `TRUST_PROXY=true` (the default under Docker Compose): entries inside
+  `TRUSTED_PROXY_CIDRS` are skipped from the right, and the first entry outside
+  them is the client. When every entry is inside them (a LAN or VPN client
+  behind the proxy), the left-most entry is the client: a forged left entry
+  cannot win, because every hop to its right is a trusted proxy. Behind the
+  bundled Caddy each client therefore gets its own bucket. The default
+  `TRUSTED_PROXY_CIDRS` is `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7`
+  (loopback and private ranges). It covers the bundled Caddy on the Compose
+  network and nginx on the host in front of the published port. A client can
+  prepend whatever it likes, but it cannot get past the entry its proxy added.
+  Appending proxies (`$proxy_add_x_forwarded_for`, cloud load balancers) and
+  overwriting ones (Caddy, nginx with `$remote_addr`) both work, as long as
+  every proxy hop is inside `TRUSTED_PROXY_CIDRS`. Add a CDN's public ranges
+  if one sits in front. If untrusted clients can reach `web:3000` from a
+  private range, narrow the list to your proxy's own address.
+- `TRUST_PROXY=false` (the default when `web` runs outside Compose): no proxy
+  is trusted, so only the immediate peer is used. A client-supplied
+  `X-Forwarded-For` is never trusted. Use it when `web:3000` is exposed
+  directly to a LAN with no proxy in front; with `true` a client on a private
+  range could choose its own bucket. Behind a reverse proxy the immediate peer
+  is the proxy, so every client shares the proxy's bucket on **all** auth
+  endpoints: one client's typos, or an attacker's requests, block sign-in,
+  session reads and JWT minting for everyone. That is why production logs a
+  warning.
+
+`TRUST_PROXY` accepts `true`/`1`/`yes` and `false`/`0`/`no`
+(case-insensitive); any other value stops `web` at boot.
+
+The supported production shape is Caddy (or nginx) + `TRUST_PROXY=true`.
+
+The Go API rate-limits only its public endpoints (booking pages, polls and
+shared threads: reads 60/min with a burst of 30, writes 5/min with a burst
+of 5). It keys those limits on the TCP peer address (`RemoteAddr`). It reads
+neither `X-Forwarded-For` nor `TRUST_PROXY`, so behind a proxy all callers of
+those endpoints share the proxy's bucket.
+
+### Origins
+
+Better Auth accepts state-changing requests only from trusted origins:
+`BETTER_AUTH_URL`, `PUBLIC_WEB_URL`, `CORS_ALLOWED_ORIGINS`, the desktop app's
+WebView origins (`wails://wails`, `wails://wails.localhost`,
+`http(s)://wails.localhost`), the mobile scheme `calendium://`, and
+`https://appleid.apple.com` (Apple's `form_post`; never reflected in CORS).
+The Go API's CORS always allows the desktop WebView origins plus
+`CORS_ALLOWED_ORIGINS`, `PUBLIC_WEB_URL` and `BETTER_AUTH_URL`.
+`http://localhost:*`, `http://127.0.0.1:*` and `[::1]` origins are allowed by
+the API **only** with `ALLOW_DEV_ORIGINS=true`, in every environment. Better
+Auth trusts `localhost` / `127.0.0.1` with `ALLOW_DEV_ORIGINS=true` and also
+under `next dev`. Keep `ALLOW_DEV_ORIGINS` blank in production (setting it
+makes `web` log a warning). The packaged desktop app needs no configuration.
+
+### Email verification and passwords
+
+With SMTP configured, email+password accounts must verify their address
+(link valid 24 h); sign-up, resend and reset answer identically whether or not
+the address exists, and sign-in reveals "verify your email first" only after a
+correct password. Passwords are 10–128 characters and must not contain the
+address's local part. A reset (link valid 1 h, single use) signs out every
+device; a change in **Settings → Account** signs out every other device. API
+JWTs live at most 15 minutes, so a cached token never outlives its session by
+more. Without SMTP the duplicate-address error on sign-up is visible — the
+documented trade-off of running without email.
+
+### Resetting a password without email (self-host)
+
+Without SMTP users cannot reset their own password; `/forgot-password` tells
+them to ask you. As the operator:
+
+```bash
+# 1. Confirm the account exists
+docker compose exec db psql -U calendium -d calendium -c "SELECT id FROM \"user\" WHERE email = 'ada@example.com';"
+# 2. Set a temporary password and sign out every device
+docker compose exec web node apps/web/scripts/reset-password.mjs ada@example.com
+```
+
+The script hashes a fresh temporary password with Better Auth's own
+`hashPassword`, upserts the user's `credential` row in `account`, deletes all of
+their `session` rows and prints `Temporary password for <email>: <password>`
+once. Hand it over on a channel you trust; the user signs in and changes it in
+**Settings → Account**.
 
 ---
 
