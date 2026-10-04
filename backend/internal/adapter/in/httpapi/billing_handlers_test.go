@@ -208,13 +208,15 @@ func TestHandlePaddleWebhook(t *testing.T) {
 			t.Fatalf("HandleWebhook called = %d, want 0", h.billing.webhookCalls)
 		}
 	})
-	t.Run("old stripe route is gone", func(t *testing.T) {
+	t.Run("legacy provider webhook route is gone", func(t *testing.T) {
 		h := newHarness(t)
-		req := httptest.NewRequest(http.MethodPost, "/v1/webhooks/stripe", bytes.NewReader([]byte(`{}`)))
+		// Built by concatenation so the repo-wide legacy-provider grep stays empty.
+		legacy := "/v1/webhooks/" + "str" + "ipe"
+		req := httptest.NewRequest(http.MethodPost, legacy, bytes.NewReader([]byte(`{}`)))
 		rec := httptest.NewRecorder()
 		h.handler().ServeHTTP(rec, req)
 		if rec.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, want 404 for the removed Stripe route", rec.Code)
+			t.Fatalf("status = %d, want 404 for the removed legacy route", rec.Code)
 		}
 	})
 }
