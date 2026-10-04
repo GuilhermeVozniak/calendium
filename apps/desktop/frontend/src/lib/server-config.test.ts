@@ -194,6 +194,7 @@ describe('getActiveServerConfig / isDemoMode — reads persisted state at module
       microsoft: false,
       ai: false,
       push: false,
+      email: false,
     });
   });
 
@@ -241,5 +242,21 @@ describe('discoverServer', () => {
   it('propagates a rejection from fetchInstance (e.g. unreachable server)', async () => {
     fetchInstanceMock.mockRejectedValue(new Error('network error'));
     await expect(discoverServer('https://down.example.com')).rejects.toThrow('network error');
+  });
+});
+
+describe('forgotPasswordUrl', () => {
+  it('prefers the advertised webUrl, falls back to the Better Auth origin, and is null without either', async () => {
+    const { forgotPasswordUrl, DEMO_CONFIG } = await import('./server-config');
+    const base = { ...DEMO_CONFIG, authBaseUrl: 'https://mail.example.com/api/auth' };
+    expect(forgotPasswordUrl({ ...base, webUrl: 'https://app.example.com/' })).toBe('https://app.example.com/forgot-password');
+    expect(forgotPasswordUrl({ ...base, webUrl: '' })).toBe('https://mail.example.com/forgot-password');
+    expect(forgotPasswordUrl({ ...base, webUrl: '', authBaseUrl: '' })).toBeNull();
+    expect(forgotPasswordUrl(null)).toBeNull();
+  });
+
+  it('DEFAULT_FEATURES and DEMO_CONFIG carry features.email=false', async () => {
+    const { DEMO_CONFIG } = await import('./server-config');
+    expect(DEMO_CONFIG.features.email).toBe(false);
   });
 });

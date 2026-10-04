@@ -21,6 +21,7 @@ const DEFAULT_FEATURES: InstanceFeatures = {
   microsoft: false,
   ai: false,
   push: false,
+  email: false,
 };
 
 /** Calendium Cloud — our managed, paid server (docs/payments.md). */
@@ -57,7 +58,7 @@ export const DEMO_CONFIG: ServerConfig = {
   authProviders: ['email', 'google', 'apple'],
   mode: 'cloud',
   name: 'Calendium Demo',
-  features: { billing: true, google: true, microsoft: true, ai: true, push: false },
+  features: { billing: true, google: true, microsoft: true, ai: true, push: false, email: false },
   undoSendSeconds: 15,
   webUrl: '',
 };
@@ -70,6 +71,17 @@ export function webOrigin(config: ServerConfig | null): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Where "Forgot password?" sends the user: the web app's forgot-password page
+ * on the server's advertised web URL (InstanceInfo.webUrl), falling back to
+ * the Better Auth origin. Opened in the system browser; the desktop never
+ * handles reset itself.
+ */
+export function forgotPasswordUrl(config: ServerConfig | null): string | null {
+  const base = config?.webUrl?.replace(/\/+$/, '') || webOrigin(config);
+  return base ? `${base}/forgot-password` : null;
 }
 
 /** Where billing lives: the server-advertised web origin, else the auth origin. */
