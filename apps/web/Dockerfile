@@ -17,7 +17,11 @@ COPY apps/web/package.json apps/web/package.json
 COPY apps/mobile/package.json apps/mobile/package.json
 COPY apps/desktop/frontend/package.json apps/desktop/frontend/package.json
 COPY packages/shared/package.json packages/shared/package.json
-RUN bun install --frozen-lockfile
+# --ignore-scripts: the root package's `prepare` runs `lefthook install`, a
+# developer git-hook step that needs git and a .git dir — neither exists in
+# this image (.git is dockerignored), so without the flag the install fails
+# with "exec: git: executable file not found".
+RUN bun install --frozen-lockfile --ignore-scripts
 
 # ── build: compile the Next.js standalone bundle ────────────────────────────
 FROM oven/bun:1 AS build
