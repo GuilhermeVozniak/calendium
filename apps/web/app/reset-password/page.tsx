@@ -31,9 +31,20 @@ export default function ResetPasswordPage() {
   const [pending, setPending] = React.useState(false);
   const [invalid, setInvalid] = React.useState(false);
 
+  // Read the link once (StrictMode re-runs effects), then drop the token from
+  // the address bar and history so it is not left lying around.
+  const linkRead = React.useRef(false);
   React.useEffect(() => {
+    if (linkRead.current) return;
+    linkRead.current = true;
     const sp = new URLSearchParams(window.location.search);
-    setParams({ token: sp.get('token'), error: sp.get('error') });
+    const token = sp.get('token');
+    setParams({ token, error: sp.get('error') });
+    if (token !== null) {
+      sp.delete('token');
+      const query = sp.toString();
+      window.history.replaceState(window.history.state, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
+    }
   }, []);
 
   async function submit(e: React.FormEvent) {
@@ -73,7 +84,7 @@ export default function ResetPasswordPage() {
   if (!params) {
     return (
       <AuthShell title="Reset your password">
-        <Loader2 className="text-muted-foreground mx-auto size-5 animate-spin" aria-label="Loading" />
+        <Loader2 className="text-muted-foreground mx-auto size-5 animate-spin" role="img" aria-label="Loading" />
       </AuthShell>
     );
   }
@@ -96,14 +107,14 @@ export default function ResetPasswordPage() {
       <form onSubmit={submit} className="flex flex-col gap-3">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="new-password">New password</Label>
-          <Input id="new-password" type="password" autoComplete="new-password" required minLength={PASSWORD_MIN_LENGTH} value={next} onChange={(e) => setNext(e.target.value)} disabled={pending} />
+          <Input id="new-password" type="password" autoComplete="new-password" required minLength={PASSWORD_MIN_LENGTH} aria-invalid={formError ? true : undefined} aria-describedby={formError ? 'reset-error' : undefined} value={next} onChange={(e) => setNext(e.target.value)} disabled={pending} />
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="confirm-password">Confirm new password</Label>
           <Input id="confirm-password" type="password" autoComplete="new-password" required minLength={PASSWORD_MIN_LENGTH} value={confirm} onChange={(e) => setConfirm(e.target.value)} disabled={pending} />
         </div>
         {formError && (
-          <p className="text-destructive text-sm" role="alert">
+          <p id="reset-error" className="text-destructive text-sm" role="alert">
             {formError}
           </p>
         )}

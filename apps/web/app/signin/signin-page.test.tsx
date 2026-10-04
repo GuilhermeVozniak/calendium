@@ -16,6 +16,7 @@ const signInEmail = vi.fn();
 const signUpEmail = vi.fn();
 const sendVerificationEmail = vi.fn();
 const useSessionMock = vi.fn(() => ({ data: null, isPending: false }));
+const invalidateAccessToken = vi.fn();
 vi.mock('@/lib/auth-client', () => ({
   authClient: {
     useSession: () => useSessionMock(),
@@ -23,6 +24,7 @@ vi.mock('@/lib/auth-client', () => ({
   },
   signIn: { email: (...args: unknown[]) => signInEmail(...args), social: vi.fn() },
   signUp: { email: (...args: unknown[]) => signUpEmail(...args) },
+  invalidateAccessToken: () => invalidateAccessToken(),
 }));
 
 vi.mock('@/lib/use-instance', () => ({
@@ -52,10 +54,26 @@ afterEach(() => {
 });
 
 describe('SignInPage', () => {
-  it('links to /forgot-password and requires a 10-character password', () => {
+  it('links to /forgot-password; only sign-up enforces the 10-character minimum', async () => {
+    const user = userEvent.setup();
     render(<SignInPage />);
     expect(screen.getByRole('link', { name: 'Forgot password?' })).toHaveAttribute('href', '/forgot-password');
+    // Existing accounts may have 8–9 character passwords (the old minimum):
+    // sign-in must not block them client-side.
+    expect(screen.getByLabelText('Password')).not.toHaveAttribute('minlength');
+    await user.click(screen.getByRole('button', { name: "Don't have an account? Sign up" }));
     expect(screen.getByLabelText('Password')).toHaveAttribute('minlength', '10');
+  });
+
+  it('submits a 9-character password in sign-in mode', async () => {
+    const user = userEvent.setup();
+    signInEmail.mockResolvedValue({ data: { token: 'sess' }, error: null });
+    render(<SignInPage />);
+    await user.type(screen.getByLabelText('Email'), 'ada@example.test');
+    await user.type(screen.getByLabelText('Password'), 'nine-char');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(screen.getByLabelText('Password')).toBeValid();
+    await waitFor(() => expect(signInEmail).toHaveBeenCalledWith(expect.objectContaining({ password: 'nine-char' }), expect.anything()));
   });
 
   it('sign-up with token === null shows "Check your inbox" with a 60 s resend cooldown, then resends', async () => {
@@ -101,6 +119,9 @@ describe('SignInPage', () => {
     render(<SignInPage />);
     await fillAndSubmit(user);
     expect(await screen.findByText('Verify your email first — we sent a new link.')).toBeInTheDocument();
+    // The swapped-in state is announced: focus on its heading, polite status.
+    expect(screen.getByRole('heading', { name: 'Check your inbox' })).toHaveFocus();
+    expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');
     expect(screen.getByRole('button', { name: /Resend in 60 s/ })).toBeDisabled();
     expect(replaceMock).not.toHaveBeenCalled();
   });
@@ -124,5 +145,40 @@ describe('SignInPage', () => {
     await fillAndSubmit(user);
     expect(signInEmail).toHaveBeenCalledWith(expect.objectContaining({ email: 'ada@example.test', callbackURL: '/calendar' }), expect.anything());
     await waitFor(() => expect(replaceMock).toHaveBeenCalledWith('/calendar'));
+  });
+
+  it('drops any cached API token after a successful sign-in, before navigating', async () => {
+    const user = userEvent.setup();
+    signInEmail.mockResolvedValue({ data: { token: 'sess' }, error: null });
+    replaceMock.mockImplementation(() => expect(invalidateAccessToken).toHaveBeenCalledTimes(1));
+    render(<SignInPage />);
+    await fillAndSubmit(user);
+    await waitFor(() => expect(replaceMock).toHaveBeenCalled());
+    replaceMock.mockReset();
+  });
+
+  it('drops any cached API token after a sign-up that signs in (SMTP off), not after one that only sends mail', async () => {
+    const user = userEvent.setup();
+    signUpEmail.mockResolvedValueOnce({ data: { token: 'sess', user: {} }, error: null });
+    const { unmount } = render(<SignInPage />);
+    await fillAndSubmit(user, { signup: true });
+    await waitFor(() => expect(invalidateAccessToken).toHaveBeenCalledTimes(1));
+    unmount();
+
+    invalidateAccessToken.mockClear();
+    signUpEmail.mockResolvedValueOnce({ data: { token: null, user: {} }, error: null });
+    render(<SignInPage />);
+    await fillAndSubmit(user, { signup: true });
+    expect(await screen.findByText('Check your inbox')).toBeInTheDocument();
+    expect(invalidateAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('does not touch the token cache when sign-in fails', async () => {
+    const user = userEvent.setup();
+    signInEmail.mockResolvedValue({ data: null, error: { status: 401, code: 'INVALID_EMAIL_OR_PASSWORD', message: 'Invalid email or password' } });
+    render(<SignInPage />);
+    await fillAndSubmit(user);
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(invalidateAccessToken).not.toHaveBeenCalled();
   });
 });

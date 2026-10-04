@@ -62,10 +62,15 @@ RUN addgroup -S nodejs && adduser -S -G nodejs nextjs
 COPY --from=build --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
 COPY --from=build --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/.next/static
 COPY --from=build --chown=nextjs:nodejs /app/apps/web/public ./apps/web/public
-# Operator CLI (self-host password reset without SMTP); runs against the
-# traced node_modules next to the standalone server.
+# Operator CLI (self-host password reset without SMTP). It imports only
+# node:* builtins, its sibling password-hash.mjs and `pg` — `pg` (with
+# pg-pool/pg-protocol/pg-types/pgpass…) is in the standalone trace at
+# /app/node_modules because lib/auth.ts uses it; better-auth is NOT, which is
+# why the CLI hashes with node:crypto (scripts/password-hash.test.ts).
 COPY --from=build --chown=nextjs:nodejs /app/apps/web/scripts ./apps/web/scripts
 
 USER nextjs
 EXPOSE 3000
-CMD ["node", "apps/web/server.js"]
+# The preload appends the socket peer to X-Forwarded-For (Next only fills it
+# when absent), so auth rate limits key on the real immediate peer.
+CMD ["node", "--require", "./apps/web/scripts/forwarded-for-peer.cjs", "apps/web/server.js"]

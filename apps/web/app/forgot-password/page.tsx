@@ -24,11 +24,12 @@ const BACK_TO_SIGN_IN = (
  * same whether or not the address exists (Better Auth answers generically
  * and in constant time). When the server reports `features.email === false`
  * (self-host without SMTP) the page explains the administrator path instead
- * — any other instance state (unknown, unreachable, pre-piece-2) shows the
- * form.
+ * — any other settled instance state (unreachable, pre-piece-2) shows the
+ * form. Nothing renders while the instance is still loading, so a no-email
+ * server never flashes the form first.
  */
 export default function ForgotPasswordPage() {
-  const { data: instance } = useInstance();
+  const { data: instance, isError } = useInstance();
   const emailDisabled = instance?.features?.email === false;
   const [email, setEmail] = React.useState('');
   const [sent, setSent] = React.useState(false);
@@ -50,6 +51,8 @@ export default function ForgotPasswordPage() {
     }
   }
 
+  if (!instance && !isError) return <main className="min-h-svh" aria-busy="true" />;
+
   if (emailDisabled) {
     return (
       <AuthShell title="Password reset by email isn't available on this server">
@@ -70,7 +73,7 @@ export default function ForgotPasswordPage() {
   if (sent) {
     return (
       <AuthShell title="Check your inbox">
-        <p className="text-muted-foreground text-center text-sm" role="status">
+        <p className="text-muted-foreground text-center text-sm" role="status" aria-live="polite">
           If an account exists for that address, we sent a link.
         </p>
         <p className="text-muted-foreground text-center text-xs">The link expires in 1 hour.</p>

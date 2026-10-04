@@ -1,7 +1,8 @@
 /**
  * Pure, DB-free helpers behind lib/auth.ts and app/api/auth/[...all]/route.ts:
- * trusted origins, CORS reflection, rate-limit rules, client-IP resolution,
- * the password policy and startup warnings. Everything takes `env`
+ * trusted origins, CORS reflection, rate-limit rules, the client-IP header
+ * name, the password policy and startup warnings (client-IP resolution is
+ * server-only: lib/client-ip.ts). Everything takes `env`
  * explicitly so it is unit-testable without process.env or Better Auth.
  * Mirrors the Go side (config.FromEnv + httpapi.corsMiddleware).
  */
@@ -32,7 +33,8 @@ export const NATIVE_SCHEME_ORIGIN = 'calendium://';
 
 /**
  * The server-set header Better Auth reads the client IP from. route.ts
- * overwrites it on every request, so a caller can never choose its bucket.
+ * overwrites it on every request (lib/client-ip.ts), so a caller can never
+ * choose its bucket.
  */
 export const CLIENT_IP_HEADER = 'x-calendium-client-ip';
 
@@ -125,32 +127,6 @@ export function rateLimitRules(): Record<string, RateLimitRule> {
   };
 }
 
-/**
- * The client IP for rate limiting, from X-Forwarded-For. trustProxy=true:
- * the first hop (the proxy MUST overwrite the header — Caddy does). Else: the
- * header only when single-valued (Next.js fills it from the socket when
- * absent); a multi-hop value is untrusted and yields '' → Better Auth's
- * shared `no-trusted-ip` bucket.
- */
-export function clientIpFor(headers: Headers, trustProxy: boolean): string {
-  const hops = (headers.get('x-forwarded-for') ?? '')
-    .split(',')
-    .map((h) => h.trim())
-    .filter(Boolean);
-  if (hops.length === 0) return '';
-  if (trustProxy) return hops[0] ?? '';
-  return hops.length === 1 ? (hops[0] ?? '') : '';
-}
-
-/** A copy of `req` whose CLIENT_IP_HEADER is always the server-resolved value (forged values are overwritten). */
-export function withClientIp(req: Request, trustProxy: boolean): Request {
-  const headers = new Headers(req.headers);
-  headers.set(CLIENT_IP_HEADER, clientIpFor(req.headers, trustProxy));
-  // `duplex` is required by undici when re-wrapping a request that carries a
-  // body stream; it is absent from lib.dom's RequestInit, hence the cast.
-  return new Request(req, { headers, duplex: 'half' } as RequestInit);
-}
-
 export const PASSWORD_MIN_LENGTH = 10;
 export const PASSWORD_MAX_LENGTH = 128;
 
@@ -185,7 +161,7 @@ export function startupWarnings(env: EnvLike): string[] {
   if (env.NODE_ENV !== 'production') return out;
   if (env.TRUST_PROXY !== 'true') {
     out.push(
-      'TRUST_PROXY is not true in production: auth rate limits are keyed on a client-controlled X-Forwarded-For. Run behind the bundled Caddy profile (which overwrites the header) with TRUST_PROXY=true — see docs/self-hosting/security.md.'
+      'TRUST_PROXY is not true in production: auth rate limits key on the immediate peer, so behind a reverse proxy every client shares the proxy\'s bucket. Behind the bundled Caddy profile (or any proxy in TRUSTED_PROXY_CIDRS) set TRUST_PROXY=true — see docs/self-hosting/security.md.'
     );
   }
   if (env.ALLOW_DEV_ORIGINS === 'true') {

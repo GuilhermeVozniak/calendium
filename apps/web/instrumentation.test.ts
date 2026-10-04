@@ -8,7 +8,7 @@ describe('instrumentation.register', () => {
   let warn: MockInstance<typeof console.warn>;
 
   beforeEach(() => {
-    for (const k of [...SMTP_KEYS, 'SELF_HOSTED', 'TRUST_PROXY', 'ALLOW_DEV_ORIGINS']) vi.stubEnv(k, '');
+    for (const k of [...SMTP_KEYS, 'SELF_HOSTED', 'TRUST_PROXY', 'TRUSTED_PROXY_CIDRS', 'ALLOW_DEV_ORIGINS']) vi.stubEnv(k, '');
     vi.stubEnv('NEXT_RUNTIME', 'nodejs');
     warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
@@ -42,5 +42,20 @@ describe('instrumentation.register', () => {
     const messages = warn.mock.calls.map((c) => String(c[0]));
     expect(messages.some((m) => m.startsWith('TRUST_PROXY is not true in production'))).toBe(true);
     expect(messages.some((m) => m.startsWith('ALLOW_DEV_ORIGINS=true in production'))).toBe(true);
+    // This test process was not started with the peer-appending preload.
+    expect(messages.some((m) => m.startsWith('scripts/forwarded-for-peer.cjs is not preloaded'))).toBe(true);
+  });
+
+  it('aborts on an invalid TRUSTED_PROXY_CIDRS', async () => {
+    vi.stubEnv('SELF_HOSTED', 'true');
+    vi.stubEnv('TRUST_PROXY', 'true');
+    vi.stubEnv('TRUSTED_PROXY_CIDRS', '10.0.0.0/8,bogus');
+    await expect(register()).rejects.toThrow(/TRUSTED_PROXY_CIDRS/);
+  });
+
+  it('does not warn about the preload outside production', async () => {
+    vi.stubEnv('SELF_HOSTED', 'true');
+    await register();
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('forwarded-for-peer'))).toBe(false);
   });
 });

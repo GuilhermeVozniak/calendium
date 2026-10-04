@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/input';
 import { Kbd } from '@/components/ui/kbd';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
-import { authClient, signIn, signUp } from '@/lib/auth-client';
+import { authClient, invalidateAccessToken, signIn, signUp } from '@/lib/auth-client';
 import { RESEND_COOLDOWN_SECONDS, captureRetryAfter, describeAuthError } from '@/lib/auth-copy';
 import { PASSWORD_MIN_LENGTH, passwordPolicyError } from '@/lib/auth-env';
 import { useInstance } from '@/lib/use-instance';
@@ -103,6 +103,17 @@ export default function SignInPage() {
   const showApple = providers.includes('apple');
   const showSocial = showGoogle || showApple;
 
+  // Entering or leaving the check-email state swaps out the focused control:
+  // move focus to the new state's heading so it is announced.
+  const headingRef = React.useRef<HTMLHeadingElement>(null);
+  const inCheckEmail = mode === 'check-email';
+  const shownCheckEmail = React.useRef(inCheckEmail);
+  React.useEffect(() => {
+    if (shownCheckEmail.current === inCheckEmail) return;
+    shownCheckEmail.current = inCheckEmail;
+    headingRef.current?.focus();
+  }, [inCheckEmail]);
+
   // Already signed in → honor ?next=, else straight to the inbox.
   const { data: session } = authClient.useSession();
   React.useEffect(() => {
@@ -172,6 +183,9 @@ export default function SignInPage() {
           return;
         }
       }
+      // A new session may belong to a different user than whatever JWT this
+      // tab still caches (client-side navigation keeps module state).
+      invalidateAccessToken();
       router.replace(nextDestination());
     } finally {
       setPending(null);
@@ -210,8 +224,10 @@ export default function SignInPage() {
 
         {mode === 'check-email' ? (
           <>
-            <h1 className="mt-6 text-2xl font-semibold tracking-tight">Check your inbox</h1>
-            <div className="text-muted-foreground mt-2 flex flex-col gap-1 text-center text-sm text-balance" role="status">
+            <h1 ref={headingRef} tabIndex={-1} className="mt-6 text-2xl font-semibold tracking-tight outline-none">
+              Check your inbox
+            </h1>
+            <div className="text-muted-foreground mt-2 flex flex-col gap-1 text-center text-sm text-balance" role="status" aria-live="polite">
               {notice && <p className="text-foreground">{notice}</p>}
               <p>
                 {notice ? 'We sent it to' : 'If that address is new to Calendium, we sent a verification link to'}{' '}
@@ -238,7 +254,9 @@ export default function SignInPage() {
           </>
         ) : (
           <>
-            <h1 className="mt-6 text-2xl font-semibold tracking-tight">Calendium</h1>
+            <h1 ref={headingRef} tabIndex={-1} className="mt-6 text-2xl font-semibold tracking-tight outline-none">
+              Calendium
+            </h1>
             <p className="text-muted-foreground mt-2 text-center text-sm text-balance">
               The fastest email and calendar experience. One inbox, one calendar, zero friction.
             </p>
@@ -293,7 +311,9 @@ export default function SignInPage() {
                   type="password"
                   autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
                   required
-                  minLength={PASSWORD_MIN_LENGTH}
+                  // The policy applies to NEW passwords only: existing
+                  // accounts may still have 8–9 character ones.
+                  minLength={mode === 'signup' ? PASSWORD_MIN_LENGTH : undefined}
                   placeholder="••••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}

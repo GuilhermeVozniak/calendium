@@ -57,3 +57,21 @@ export function getAccessToken(): Promise<string | null> {
 export function invalidateAccessToken(): void {
   accessTokens.invalidate();
 }
+
+/** The session user the cached JWT belongs to; `undefined` until the first session is observed. */
+let tokenOwner: string | null | undefined;
+
+/**
+ * Ties the JWT cache to the signed-in user. Called with the session user id
+ * (null when signed out) by the app shell: any change — session expiry,
+ * remote revocation, a different account signing in on the same tab —
+ * drops the cached token and discards an in-flight mint, so the next account
+ * can never call the API with the previous one's JWT. The first observation
+ * only records the owner (nothing can be cached for anyone else yet).
+ */
+export function syncAccessTokenOwner(userId: string | null): void {
+  if (userId === tokenOwner) return;
+  const known = tokenOwner !== undefined;
+  tokenOwner = userId;
+  if (known) accessTokens.invalidate();
+}

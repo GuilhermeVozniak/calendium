@@ -57,7 +57,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Kbd } from '@/components/ui/kbd';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { authClient } from '@/lib/auth-client';
+import { authClient, syncAccessTokenOwner } from '@/lib/auth-client';
 import { dispatchCalendarCommand, queueCalendarCommand } from '@/lib/calendar-commands';
 import { DEMO_MODE } from '@/lib/demo';
 import { startOutboxReplay } from '@/lib/offline/queue';
@@ -77,6 +77,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     if (!isPending && !session) router.replace('/signin');
   }, [isPending, session, router]);
+
+  // The cached API JWT belongs to exactly one user: a session that ends or
+  // changes hands (expiry, revocation, another account on this tab) drops it.
+  const sessionUserId = session?.user.id ?? null;
+  React.useEffect(() => {
+    if (!isPending) syncAccessTokenOwner(sessionUserId);
+  }, [isPending, sessionUserId]);
 
   // Eager service-worker registration so static-asset caching works before any
   // push opt-in (lib/web-push.ts reuses this same registration — no double

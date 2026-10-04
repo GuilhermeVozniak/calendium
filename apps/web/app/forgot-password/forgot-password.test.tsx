@@ -57,6 +57,25 @@ describe('ForgotPasswordPage', () => {
     expect(screen.queryByLabelText('Email')).not.toBeInTheDocument();
   });
 
+  it('renders nothing until the instance features load (no form flash before the admin notice)', () => {
+    instanceState.value = { data: undefined, isError: false };
+    const { container } = render(<ForgotPasswordPage />);
+    expect(screen.queryByLabelText('Email')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading')).not.toBeInTheDocument();
+    expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+  });
+
+  it('the sent state moves focus to its heading and announces the status politely', async () => {
+    const user = userEvent.setup();
+    requestPasswordReset.mockResolvedValue({ data: { status: true }, error: null });
+    render(<ForgotPasswordPage />);
+    await user.type(screen.getByLabelText('Email'), 'ada@example.test');
+    await user.click(screen.getByRole('button', { name: 'Send reset link' }));
+    expect(await screen.findByRole('heading', { name: 'Check your inbox' })).toHaveFocus();
+    expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');
+    expect(screen.getByRole('status')).toHaveTextContent('If an account exists for that address, we sent a link.');
+  });
+
   it('renders the form when the instance is unavailable or does not report features.email', () => {
     instanceState.value = { data: undefined, isError: true };
     const { unmount } = render(<ForgotPasswordPage />);

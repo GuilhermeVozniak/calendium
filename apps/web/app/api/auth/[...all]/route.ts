@@ -1,12 +1,18 @@
 import { toNextJsHandler } from 'better-auth/next-js';
 
 import { auth } from '@/lib/auth';
-import { isAllowedOrigin, withClientIp } from '@/lib/auth-env';
+import { isAllowedOrigin } from '@/lib/auth-env';
+import { type ProxyTrust, proxyTrustFromEnv, withClientIp } from '@/lib/client-ip';
 
 /** Better Auth catch-all: hosts sign-in, OAuth callbacks, JWKS, token mint. */
 const handlers = toNextJsHandler(auth);
 
-const trustProxy = () => process.env.TRUST_PROXY === 'true';
+/** TRUST_PROXY / TRUSTED_PROXY_CIDRS, parsed once (instrumentation.ts already validated them at boot). */
+let proxyTrust: ProxyTrust | undefined;
+const trustProxy = (): ProxyTrust => {
+  proxyTrust ??= proxyTrustFromEnv(process.env);
+  return proxyTrust;
+};
 
 /**
  * Cross-origin auth support for native clients. The Wails desktop WebView
@@ -38,7 +44,7 @@ function withCors(res: Response, req: Request): Response {
 }
 
 // Every request is re-wrapped with the server-resolved client IP before Better
-// Auth sees it (rate-limit buckets are keyed on it); see lib/auth-env.ts.
+// Auth sees it (rate-limit buckets are keyed on it); see lib/client-ip.ts.
 export async function GET(req: Request): Promise<Response> {
   return withCors(await handlers.GET(withClientIp(req, trustProxy())), req);
 }

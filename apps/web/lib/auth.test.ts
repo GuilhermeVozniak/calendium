@@ -9,7 +9,14 @@ import { auth } from '@/lib/auth';
 
 interface Options {
   trustedOrigins?: string[];
-  rateLimit?: { enabled?: boolean; storage?: string; window?: number; max?: number; customRules?: Record<string, { window: number; max: number }> };
+  rateLimit?: {
+    enabled?: boolean;
+    storage?: string;
+    window?: number;
+    max?: number;
+    customRules?: Record<string, { window: number; max: number }>;
+    customStorage?: { consume?: unknown };
+  };
   emailAndPassword?: {
     requireEmailVerification?: boolean;
     minPasswordLength?: number;
@@ -34,6 +41,8 @@ describe('auth options', () => {
 
   it('enables database-backed rate limiting with the per-route rules', () => {
     expect(options.rateLimit).toMatchObject({ enabled: true, storage: 'database', window: 60, max: 100 });
+    // lib/rate-limit-storage.ts: int8-safe reads and 600 s row retention.
+    expect(typeof options.rateLimit?.customStorage?.consume).toBe('function');
     expect(options.rateLimit?.customRules).toEqual({
       '/sign-in/email': { window: 60, max: 5 },
       '/sign-up/email': { window: 60, max: 3 },

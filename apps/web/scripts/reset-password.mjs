@@ -4,15 +4,17 @@
  *
  *   docker compose exec web node apps/web/scripts/reset-password.mjs <email>
  *
- * Hashes a fresh temporary password with Better Auth's own hashPassword,
- * upserts the user's `credential` row in "account", deletes every "session"
- * row (all devices are signed out) and prints the temporary password once.
- * Reads DATABASE_URL like the web server does.
+ * Hashes a fresh temporary password in Better Auth's scrypt format (see
+ * password-hash.mjs — node:crypto only, because the standalone image ships
+ * `pg` but not better-auth), upserts the user's `credential` row in
+ * "account", deletes every "session" row (all devices are signed out) and
+ * prints the temporary password once. Reads DATABASE_URL like the web server.
  */
 import { randomBytes } from 'node:crypto';
 
-import { hashPassword } from 'better-auth/crypto';
 import pg from 'pg';
+
+import { hashPassword } from './password-hash.mjs';
 
 const email = process.argv[2]?.trim().toLowerCase();
 if (!email) {
@@ -25,14 +27,32 @@ if (!process.env.DATABASE_URL) {
 }
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-const client = await pool.connect();
+/** @type {pg.PoolClient | undefined} */
+let client;
 try {
+  client = await pool.connect();
   const { rows } = await client.query('SELECT "id" FROM "user" WHERE lower("email") = $1', [email]);
   if (rows.length === 0) {
     console.error(`no user with email ${email}`);
-    process.exit(1);
+    process.exitCode = 1;
+  } else {
+    await resetPassword(client, rows[0].id);
   }
-  const userId = rows[0].id;
+} catch (err) {
+  await client?.query('ROLLBACK').catch(() => {});
+  console.error(err instanceof Error ? err.message : err);
+  process.exitCode = 1;
+} finally {
+  // process.exitCode (never process.exit) so the client and pool always close.
+  client?.release();
+  await pool.end();
+}
+
+/**
+ * @param {pg.PoolClient} client
+ * @param {string} userId
+ */
+async function resetPassword(client, userId) {
   const password = randomBytes(12).toString('base64url');
   const hash = await hashPassword(password);
 
@@ -52,11 +72,4 @@ try {
 
   console.log(`Temporary password for ${email}: ${password}`);
   console.log('All sessions were signed out. Ask the user to sign in and change it in Settings → Account.');
-} catch (err) {
-  await client.query('ROLLBACK').catch(() => {});
-  console.error(err instanceof Error ? err.message : err);
-  process.exit(1);
-} finally {
-  client.release();
-  await pool.end();
 }

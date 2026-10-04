@@ -1,15 +1,16 @@
-import { betterAuth } from 'better-auth';
-import { APIError, createAuthMiddleware, getSessionFromCtx } from 'better-auth/api';
+import { type DBAdapter, betterAuth } from 'better-auth';
 import { bearer, jwt, oneTimeToken } from 'better-auth/plugins';
 import { nextCookies } from 'better-auth/next-js';
 import { expo } from '@better-auth/expo';
 import { Pool } from 'pg';
 
-import { CLIENT_IP_HEADER, buildTrustedOrigins, passwordPolicyError, rateLimitRules } from '@/lib/auth-env';
+import { CLIENT_IP_HEADER, buildTrustedOrigins } from '@/lib/auth-env';
 import { readMailConfig } from '@/lib/email/config';
 import { resetPasswordEmail } from '@/lib/email/templates/reset-password';
 import { verifyEmail } from '@/lib/email/templates/verify-email';
 import { sendMail } from '@/lib/email/transport';
+import { passwordPolicyHook } from '@/lib/password-policy-hook';
+import { rateLimitConfig } from '@/lib/rate-limit-storage';
 
 /**
  * Better Auth server — the identity provider for web, desktop, and mobile.
@@ -57,29 +58,8 @@ function socialProviders() {
  */
 const mail = readMailConfig(process.env);
 
-/**
- * Password policy, enforced server-side on every password-setting route (the
- * pages mirror it for instant feedback). The email the policy checks against
- * comes from the request body (sign-up), the session (change-password) or the
- * reset token's verification row (reset-password).
- */
-const passwordPolicyHook = createAuthMiddleware(async (ctx) => {
-  if (ctx.path !== '/sign-up/email' && ctx.path !== '/change-password' && ctx.path !== '/reset-password') return;
-  const body = (ctx.body ?? {}) as { password?: unknown; newPassword?: unknown; email?: unknown; token?: unknown };
-  const password =
-    typeof body.password === 'string' ? body.password : typeof body.newPassword === 'string' ? body.newPassword : '';
-  let email: string | null = null;
-  if (ctx.path === '/sign-up/email') {
-    email = typeof body.email === 'string' ? body.email : null;
-  } else if (ctx.path === '/change-password') {
-    email = (await getSessionFromCtx(ctx))?.user.email ?? null;
-  } else if (typeof body.token === 'string') {
-    const verification = await ctx.context.internalAdapter.findVerificationValue(`reset-password:${body.token}`);
-    if (verification) email = (await ctx.context.internalAdapter.findUserById(verification.value))?.email ?? null;
-  }
-  const violation = passwordPolicyError(password, email);
-  if (violation) throw new APIError('BAD_REQUEST', { message: violation.message, code: violation.code });
-});
+/** This instance's database adapter, for the rate-limit storage (set right after construction). */
+let authAdapter: (() => Promise<DBAdapter>) | undefined;
 
 export const auth = betterAuth({
   database: db(),
@@ -114,7 +94,11 @@ export const auth = betterAuth({
       }
     : undefined,
   // Per-IP limits in Postgres (replica-safe, restart-safe); keys are ip+path.
-  rateLimit: { enabled: true, storage: 'database', window: 60, max: 100, customRules: rateLimitRules() },
+  // The storage reads through this instance's own adapter, resolved lazily.
+  rateLimit: rateLimitConfig(() => {
+    if (!authAdapter) throw new Error('auth: rate-limit storage used before Better Auth initialised');
+    return authAdapter();
+  }),
   // The ONLY header Better Auth reads the client IP from; route.ts overwrites
   // it on every request from X-Forwarded-For per TRUST_PROXY.
   advanced: { ipAddress: { ipAddressHeaders: [CLIENT_IP_HEADER] } },
@@ -144,3 +128,5 @@ export const auth = betterAuth({
     nextCookies(),
   ],
 });
+
+authAdapter = () => auth.$context.then((context) => context.adapter as unknown as DBAdapter);
