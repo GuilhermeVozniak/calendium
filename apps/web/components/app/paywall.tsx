@@ -1,136 +1,216 @@
 'use client';
 
-import { useMutation } from '@tanstack/react-query';
-import { Lock } from 'lucide-react';
+import * as React from 'react';
+import { useRouter } from 'next/navigation';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { Lock, LogOut, X } from 'lucide-react';
 import { toast } from 'sonner';
 
-import type { Subscription } from '@calendium/shared';
+import type { PaymentRequiredReason, Subscription } from '@calendium/shared';
+import { ApiRequestError, subscriptionDenialReason, TRIAL_BANNER_DAYS, trialDaysLeft } from '@calendium/shared';
 
 import { Button } from '@/components/ui/button';
-import { getApiClient } from '@/lib/api';
+import { fetchSubscription, openBillingPortal, startCheckout } from '@/lib/settings-data';
+import { performSignOut } from '@/lib/sign-out';
+import { useInstance } from '@/lib/use-instance';
 import { cn } from '@/lib/utils';
 
 /**
- * Billing helpers + paywall banner (docs/payments.md - Spotify model).
- * Stripe Checkout / Billing Portal always run on the web; this module is the
- * single place the web app starts those redirects from.
+ * Billing UI (docs/payments.md — Spotify model on Paddle). The web app is
+ * the only purchase surface: checkout is a Paddle overlay on /checkout and
+ * cancel/update-card happen in Paddle's portal; this module owns every
+ * redirect into those.
  */
 
+export type PortalTarget = 'overview' | 'cancel' | 'updatePayment';
+
+/** Starts a checkout; a 409 already_subscribed falls through to the portal. */
 export function useCheckoutMutation() {
   return useMutation({
     mutationFn: async () => {
-      const origin = window.location.origin;
-      const { url } = await getApiClient().createCheckoutSession(
-        `${origin}/settings?checkout=success`,
-        `${origin}/settings?checkout=canceled`
-      );
-      return url;
+      try {
+        const { url } = await startCheckout();
+        return url;
+      } catch (err) {
+        if (err instanceof ApiRequestError && err.code === 'already_subscribed') {
+          const urls = await openBillingPortal();
+          return urls.overviewUrl;
+        }
+        throw err;
+      }
     },
-    onSuccess: (url) => {
-      window.location.assign(url);
-    },
-    onError: () => toast.error('Could not start checkout - the billing API is unreachable.'),
+    onSuccess: (url) => window.location.assign(url),
+    onError: () => toast.error('Could not start checkout — the billing service is unavailable.'),
   });
 }
 
-export function useBillingPortalMutation() {
+/** Opens one of the portal links, falling back to the overview when that link is empty. */
+export function useBillingPortalMutation(target: PortalTarget = 'overview') {
   return useMutation({
     mutationFn: async () => {
-      const { url } = await getApiClient().createBillingPortalSession(
-        `${window.location.origin}/settings`
-      );
-      return url;
+      const urls = await openBillingPortal();
+      const picked =
+        target === 'cancel' ? urls.cancelUrl : target === 'updatePayment' ? urls.updatePaymentUrl : urls.overviewUrl;
+      return picked || urls.overviewUrl;
     },
-    onSuccess: (url) => {
-      window.location.assign(url);
-    },
-    onError: () => toast.error('Could not open the billing portal - the billing API is unreachable.'),
+    onSuccess: (url) => window.location.assign(url),
+    onError: () => toast.error('Could not open billing — the billing service is unavailable.'),
   });
 }
 
-/**
- * Whether the subscription still grants product access.
- * `past_due` keeps access through Stripe's retry grace window; `canceled`
- * keeps access until the paid period ends.
- */
-export function subscriptionHasAccess(subscription: Subscription | null | undefined): boolean {
-  if (!subscription) return true; // unknown -> do not block
-  switch (subscription.status) {
-    case 'trialing':
-    case 'active':
-    case 'past_due':
-      return true;
-    case 'canceled':
-      return subscription.currentPeriodEnd
-        ? new Date(subscription.currentPeriodEnd).getTime() > Date.now()
-        : false;
-    default:
-      return false;
-  }
+const COPY: Record<PaymentRequiredReason, { title: string; body: string }> = {
+  trial_ended: {
+    title: 'Your free trial has ended',
+    body: 'Subscribe to keep using Calendium on web, desktop, and mobile. Your mail keeps syncing in the meantime.',
+  },
+  none: {
+    title: 'Subscribe to keep using Calendium',
+    body: 'Calendium is $50/year — one plan for email + calendar on every platform.',
+  },
+  canceled: {
+    title: 'Your subscription has ended',
+    body: 'Resubscribe any time to pick up right where you left off.',
+  },
+  past_due: {
+    title: 'Payment failed',
+    body: 'We could not charge your card and the grace period has passed. Update your payment method to restore access.',
+  },
+  paused: {
+    title: 'Your subscription is paused',
+    body: 'Update your payment method or resume the plan from billing to restore access.',
+  },
+};
+
+/** Full-pane paywall rendered by the (app) layout in place of the page. */
+export function PaywallScreen({ reason, className }: { reason: PaymentRequiredReason; className?: string }) {
+  const router = useRouter();
+  const checkout = useCheckoutMutation();
+  const updatePayment = useBillingPortalMutation('updatePayment');
+  const manage = useBillingPortalMutation('overview');
+  const needsPayment = reason === 'past_due' || reason === 'paused';
+  const copy = COPY[reason];
+
+  return (
+    <section aria-label="Subscription required" className={cn('flex h-full items-center justify-center p-6', className)}>
+      <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-lg border p-8 text-center">
+        <div className="bg-background flex size-10 items-center justify-center rounded-md border">
+          <Lock className="size-5" />
+        </div>
+        <h1 className="text-lg font-semibold">{copy.title}</h1>
+        <p className="text-muted-foreground text-sm">{copy.body}</p>
+        {needsPayment ? (
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button onClick={() => updatePayment.mutate()} disabled={updatePayment.isPending}>
+              Update payment method
+            </Button>
+            <Button variant="outline" onClick={() => manage.mutate()} disabled={manage.isPending}>
+              Manage billing
+            </Button>
+          </div>
+        ) : (
+          <Button onClick={() => checkout.mutate()} disabled={checkout.isPending}>
+            Subscribe · $50/year
+          </Button>
+        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={async () => {
+            await performSignOut();
+            router.replace('/signin');
+          }}
+        >
+          <LogOut /> Sign out
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+const TRIAL_BANNER_KEY = 'calendium.trial-banner.dismissed';
+const todayKey = () => new Date().toISOString().slice(0, 10);
+
+/** Last-3-days trial reminder, dismissible once per calendar day. */
+export function TrialBanner({ subscription }: { subscription: Subscription | null | undefined }) {
+  const checkout = useCheckoutMutation();
+  const [dismissedDay, setDismissedDay] = React.useState<string | null>(() => {
+    try {
+      return window.localStorage.getItem(TRIAL_BANNER_KEY);
+    } catch {
+      return null;
+    }
+  });
+  if (!subscription) return null;
+  const days = trialDaysLeft(subscription);
+  if (days === null || days > TRIAL_BANNER_DAYS || dismissedDay === todayKey()) return null;
+  const when = days <= 0 ? 'today' : days === 1 ? 'in 1 day' : `in ${days} days`;
+
+  return (
+    <div role="status" className="bg-muted text-muted-foreground flex shrink-0 items-center gap-3 border-b px-4 py-1.5 text-xs">
+      <span className="flex-1">
+        <span className="text-foreground font-medium">Your free trial ends {when}.</span> Subscribe to keep Calendium on
+        every device.
+      </span>
+      <Button size="sm" variant="outline" onClick={() => checkout.mutate()} disabled={checkout.isPending}>
+        Subscribe · $50/year
+      </Button>
+      <button
+        type="button"
+        aria-label="Dismiss for today"
+        className="hover:text-foreground"
+        onClick={() => {
+          const key = todayKey();
+          try {
+            window.localStorage.setItem(TRIAL_BANNER_KEY, key);
+          } catch {
+            // Best effort.
+          }
+          setDismissedDay(key);
+        }}
+      >
+        <X className="size-3.5" />
+      </button>
+    </div>
+  );
 }
 
 /**
- * Banner shown when the subscription lapsed (blocking) or a payment failed
- * (warning). Renders nothing while access is healthy, so it is safe to drop
- * anywhere: settings, mail list header, calendar header, etc.
+ * Gate for the authenticated shell: when the server bills, fetch the
+ * subscription (which also grants the signup trial server-side) before
+ * rendering the page; deny → PaywallScreen; grant → TrialBanner + page.
+ * Fails OPEN when discovery or the subscription request errors — an
+ * unreachable billing API must never lock a paying user out.
  */
-export function PaywallBanner({
-  subscription,
-  className,
-}: {
-  subscription: Subscription | null | undefined;
-  className?: string;
-}) {
-  const checkout = useCheckoutMutation();
-  const portal = useBillingPortalMutation();
+export function BillingGate({ children }: { children: React.ReactNode }) {
+  const instance = useInstance();
+  const billing = !!instance.data?.features.billing;
+  const subscription = useQuery({
+    queryKey: ['subscription'],
+    queryFn: fetchSubscription,
+    enabled: billing,
+    retry: 1,
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,
+  });
 
-  if (!subscription) return null;
-  const pastDue = subscription.status === 'past_due';
-  const lapsed = !subscriptionHasAccess(subscription);
-  if (!lapsed && !pastDue) return null;
+  // The (app) layout's <main> is a flex column so the banner can sit above
+  // the page; the page keeps its full-height box through this wrapper.
+  const page = <div className="min-h-0 flex-1">{children}</div>;
 
-  const headline = pastDue
-    ? 'Payment failed'
-    : subscription.status === 'expired' || subscription.status === 'canceled'
-      ? 'Your subscription has ended'
-      : subscription.status === 'none' && subscription.trialEndsAt
-        ? 'Your free trial has ended'
-        : 'Subscribe to keep using Calendium';
-
-  const detail = pastDue
-    ? 'We could not charge your card. Access pauses after the 7-day grace period - update your payment method to stay active.'
-    : 'Calendium is $50/year - one plan for email + calendar on web, desktop, and mobile.';
-
+  if (instance.isPending || (billing && subscription.isPending)) {
+    return (
+      <div role="status" aria-label="Loading" className="flex h-full items-center justify-center">
+        <div className="bg-primary size-8 animate-pulse rounded-lg" />
+      </div>
+    );
+  }
+  if (!billing || subscription.isError || !subscription.data) return page;
+  const reason = subscriptionDenialReason(subscription.data);
+  if (reason) return <PaywallScreen reason={reason} />;
   return (
-    <div
-      role="status"
-      className={cn(
-        'flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center',
-        pastDue ? 'border-destructive/40 bg-destructive/5' : 'bg-muted/50',
-        className
-      )}
-    >
-      <div
-        className={cn(
-          'flex size-9 shrink-0 items-center justify-center rounded-md',
-          pastDue ? 'bg-destructive/10 text-destructive' : 'bg-background text-foreground border'
-        )}
-      >
-        <Lock className="size-4" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium">{headline}</p>
-        <p className="text-sm text-muted-foreground">{detail}</p>
-      </div>
-      {pastDue ? (
-        <Button size="sm" onClick={() => portal.mutate()} disabled={portal.isPending}>
-          Update payment method
-        </Button>
-      ) : (
-        <Button size="sm" onClick={() => checkout.mutate()} disabled={checkout.isPending}>
-          Subscribe - $50/year
-        </Button>
-      )}
-    </div>
+    <>
+      <TrialBanner subscription={subscription.data} />
+      {page}
+    </>
   );
 }

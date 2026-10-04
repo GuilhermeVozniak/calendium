@@ -9,10 +9,12 @@ export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost
 
 /**
  * Offline demo descriptor — used only in explicit demo mode (lib/demo.ts)
- * when the real GET /v1/instance is unreachable, so the AI suite (and other
- * feature-gated UI) has something to render for Playwright/local demo
- * browsing without a live backend. `ai: true` is the one that matters here;
- * billing/push stay off to match the pre-existing (no-backend) demo shell.
+ * when the real GET /v1/instance is unreachable, so feature-gated UI has
+ * something to render for Playwright/local demo browsing without a live
+ * backend. `ai: true` drives the AI suite; `billing: true` makes the demo
+ * shell run through BillingGate so the Playwright suite covers the paywall
+ * (lib/settings-mock.ts seeds the subscription from localStorage). Push
+ * stays off: there is no VAPID key to register against.
  */
 const DEMO_INSTANCE: InstanceInfo = {
   name: 'Calendium (demo)',
@@ -20,8 +22,9 @@ const DEMO_INSTANCE: InstanceInfo = {
   version: 'demo',
   authBaseUrl: `${API_BASE_URL}/api/auth`,
   authProviders: ['email', 'google', 'microsoft'],
+  webUrl: typeof window === 'undefined' ? 'http://localhost:3000' : window.location.origin,
   undoSendSeconds: 15,
-  features: { billing: false, google: true, microsoft: true, ai: true, push: false },
+  features: { billing: true, google: true, microsoft: true, ai: true, push: false },
 };
 
 /**

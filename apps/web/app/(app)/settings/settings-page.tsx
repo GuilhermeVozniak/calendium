@@ -49,11 +49,7 @@ import { IntegrationsSection } from '@/components/app/integrations-section';
 import { SetSwitcher } from '@/components/app/calendar/set-switcher';
 import { TemplateManager } from '@/components/app/calendar/template-manager';
 import { MeetingPolls } from '@/components/app/meeting-polls';
-import {
-  PaywallBanner,
-  useBillingPortalMutation,
-  useCheckoutMutation,
-} from '@/components/app/paywall';
+import { useBillingPortalMutation, useCheckoutMutation } from '@/components/app/paywall';
 import { useTheme } from '@/components/theme-provider';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -222,10 +218,6 @@ export default function SettingsPage() {
           {pushEnabled ? ', notifications' : ''}
           {billingEnabled ? ', and billing' : ''}.
         </p>
-
-        {billingEnabled && (
-          <PaywallBanner subscription={subscriptionQuery.data} className="mt-4" />
-        )}
 
         <Tabs value={activeTab} onValueChange={changeTab} className="mt-6">
           <TabsList>
@@ -1464,8 +1456,7 @@ function BillingSection({
     }
   })();
 
-  const showSubscribe =
-    !sub || ['trialing', 'none', 'expired', 'canceled'].includes(sub.status);
+  const showSubscribe = !sub || ['trialing', 'none', 'canceled'].includes(sub.status);
   const showPortal = !!sub && ['active', 'past_due', 'canceled'].includes(sub.status);
 
   return (
@@ -1511,7 +1502,7 @@ function BillingSection({
               any time.
             </p>
           )}
-          {(!sub || sub.status === 'none' || sub.status === 'expired') && (
+          {(!sub || sub.status === 'none') && (
             <p>
               You do not have an active subscription. Subscribe to unlock the split inbox,
               calendar sync, AI compose, and more on every platform.
