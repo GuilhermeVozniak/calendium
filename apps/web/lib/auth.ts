@@ -1,24 +1,29 @@
 import { betterAuth } from 'better-auth';
+import { APIError, createAuthMiddleware, getSessionFromCtx } from 'better-auth/api';
 import { bearer, jwt, oneTimeToken } from 'better-auth/plugins';
 import { nextCookies } from 'better-auth/next-js';
 import { expo } from '@better-auth/expo';
 import { Pool } from 'pg';
 
+import { CLIENT_IP_HEADER, buildTrustedOrigins, passwordPolicyError, rateLimitRules } from '@/lib/auth-env';
+import { readMailConfig } from '@/lib/email/config';
+import { resetPasswordEmail } from '@/lib/email/templates/reset-password';
+import { verifyEmail } from '@/lib/email/templates/verify-email';
+import { sendMail } from '@/lib/email/transport';
+
 /**
  * Better Auth server — the identity provider for web, desktop, and mobile.
  * Hosted by the Next.js web app at `${BETTER_AUTH_URL}/api/auth/*` and backed
  * by the SAME Postgres as the Go API (its own tables: user, session, account,
- * verification, jwks — see backend/migrations/0002_better_auth.sql).
+ * verification, jwks, rateLimit — see backend/migrations/0002 and 0028).
  *
  * The Go backend is a pure resource server: it verifies the EdDSA JWTs minted
- * here (GET /api/auth/token) by fetching JWKS from /api/auth/jwks. No Supabase,
- * no shared HS256 secret.
+ * here (GET /api/auth/token) by fetching JWKS from /api/auth/jwks.
  */
 
 /**
  * Lazily-created pg Pool. Constructing a Pool does NOT open a connection, so
- * this is safe at module load and keeps `next build` fully offline — the pool
- * only dials Postgres on the first query at runtime.
+ * this is safe at module load and keeps `next build` fully offline.
  */
 let pool: Pool | undefined;
 function db(): Pool {
@@ -45,85 +50,75 @@ function socialProviders() {
 }
 
 /**
- * Wails desktop WebView page origins. macOS/Linux serve the app from
- * `wails://wails`; Windows uses `http://wails.localhost`. These are a DIFFERENT
- * origin from the server they call, so they need explicit CORS + CSRF trust.
+ * SMTP is read once at module load. readMailConfig returns {configured:false}
+ * when no SMTP_* is set (self-host without email, `next build`) and throws on
+ * a half-set block so a typo surfaces at boot. The cloud-mode requirement is
+ * enforced by instrumentation.ts before any request is served.
  */
-const WAILS_ORIGINS = [
-  'wails://wails',
-  'wails://wails.localhost',
-  'http://wails.localhost',
-  'https://wails.localhost',
-];
-
-/** Extra browser origins an operator allows (comma-separated exact origins). */
-function envAllowedOrigins(): string[] {
-  return (process.env.CORS_ALLOWED_ORIGINS ?? '')
-    .split(',')
-    .map((o) => o.trim())
-    .filter(Boolean);
-}
-
-/** http(s)://localhost | 127.0.0.1 | ::1 on any port — the dev servers. */
-function isLocalhostDevOrigin(url: URL): boolean {
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
-  return (
-    url.hostname === 'localhost' ||
-    url.hostname === '127.0.0.1' ||
-    url.hostname === '::1' ||
-    url.hostname === '[::1]'
-  );
-}
+const mail = readMailConfig(process.env);
 
 /**
- * Whether an `Origin` header should be reflected into
- * `Access-Control-Allow-Origin` (see app/api/auth/[...all]/route.ts). Mirrors
- * the Go API's CORS allowlist (wails origins + localhost dev + the
- * CORS_ALLOWED_ORIGINS env) so the whole stack admits the same clients.
- * Credentialed CORS forbids `*`, so the caller reflects the exact origin only
- * when this returns true.
+ * Password policy, enforced server-side on every password-setting route (the
+ * pages mirror it for instant feedback). The email the policy checks against
+ * comes from the request body (sign-up), the session (change-password) or the
+ * reset token's verification row (reset-password).
  */
-export function isAllowedOrigin(origin: string | null | undefined): boolean {
-  if (!origin) return false;
-  if (WAILS_ORIGINS.includes(origin)) return true;
-  if (envAllowedOrigins().includes(origin)) return true;
-  try {
-    const url = new URL(origin);
-    if (
-      url.hostname === 'wails.localhost' &&
-      (url.protocol === 'http:' || url.protocol === 'https:')
-    ) {
-      return true;
-    }
-    return isLocalhostDevOrigin(url);
-  } catch {
-    return false;
+const passwordPolicyHook = createAuthMiddleware(async (ctx) => {
+  if (ctx.path !== '/sign-up/email' && ctx.path !== '/change-password' && ctx.path !== '/reset-password') return;
+  const body = (ctx.body ?? {}) as { password?: unknown; newPassword?: unknown; email?: unknown; token?: unknown };
+  const password =
+    typeof body.password === 'string' ? body.password : typeof body.newPassword === 'string' ? body.newPassword : '';
+  let email: string | null = null;
+  if (ctx.path === '/sign-up/email') {
+    email = typeof body.email === 'string' ? body.email : null;
+  } else if (ctx.path === '/change-password') {
+    email = (await getSessionFromCtx(ctx))?.user.email ?? null;
+  } else if (typeof body.token === 'string') {
+    const verification = await ctx.context.internalAdapter.findVerificationValue(`reset-password:${body.token}`);
+    if (verification) email = (await ctx.context.internalAdapter.findUserById(verification.value))?.email ?? null;
   }
-}
-
-/**
- * Origins Better Auth trusts for its own CSRF/callback checks — the native
- * deep-link scheme, the Wails WebView origins, localhost dev servers, and any
- * operator-provided CORS_ALLOWED_ORIGINS. Same clients the CORS layer reflects.
- */
-function trustedOrigins() {
-  const origins = [
-    'calendium://',
-    ...WAILS_ORIGINS,
-    'http://localhost:*',
-    'http://127.0.0.1:*',
-    ...envAllowedOrigins(),
-  ];
-  if (process.env.BETTER_AUTH_URL) origins.push(process.env.BETTER_AUTH_URL);
-  return origins;
-}
+  const violation = passwordPolicyError(password, email);
+  if (violation) throw new APIError('BAD_REQUEST', { message: violation.message, code: violation.code });
+});
 
 export const auth = betterAuth({
   database: db(),
   secret: process.env.BETTER_AUTH_SECRET,
   baseURL: process.env.BETTER_AUTH_URL,
-  trustedOrigins: trustedOrigins(),
-  emailAndPassword: { enabled: true },
+  trustedOrigins: buildTrustedOrigins(process.env),
+  emailAndPassword: {
+    enabled: true,
+    minPasswordLength: 10,
+    maxPasswordLength: 128,
+    // With SMTP, new accounts must verify before signing in (and sign-up
+    // answers generically for duplicates); without it, self-host keeps the
+    // auto-sign-in behaviour and surfaces the duplicate error.
+    requireEmailVerification: mail.configured,
+    resetPasswordTokenExpiresIn: 3600,
+    revokeSessionsOnPasswordReset: true,
+    sendResetPassword: mail.configured
+      ? async ({ user, url }) => {
+          await sendMail(resetPasswordEmail({ to: user.email, url }));
+        }
+      : undefined,
+  },
+  emailVerification: mail.configured
+    ? {
+        sendOnSignUp: true,
+        sendOnSignIn: true,
+        autoSignInAfterVerification: true,
+        expiresIn: 86_400,
+        sendVerificationEmail: async ({ user, url }) => {
+          await sendMail(verifyEmail({ to: user.email, url }));
+        },
+      }
+    : undefined,
+  // Per-IP limits in Postgres (replica-safe, restart-safe); keys are ip+path.
+  rateLimit: { enabled: true, storage: 'database', window: 60, max: 100, customRules: rateLimitRules() },
+  // The ONLY header Better Auth reads the client IP from; route.ts overwrites
+  // it on every request from X-Forwarded-For per TRUST_PROXY.
+  advanced: { ipAddress: { ipAddressHeaders: [CLIENT_IP_HEADER] } },
+  hooks: { before: passwordPolicyHook },
   socialProviders: socialProviders(),
   plugins: [
     // Asymmetric EdDSA (Ed25519) JWTs + JWKS at /api/auth/jwks. The token
@@ -142,10 +137,8 @@ export const auth = betterAuth({
     bearer(),
     // Mobile (Expo) deep-link + secure-store session support.
     expo(),
-    // Short-lived one-time tokens for the desktop browser → app handoff: the
-    // web mints one at /desktop-callback and the desktop app verifies it (via
-    // {authBaseUrl}/one-time-token/verify) to obtain a session. See
-    // apps/web/app/desktop-callback/page.tsx.
+    // Short-lived one-time tokens for the desktop browser → app handoff (see
+    // apps/web/app/desktop-callback/page.tsx).
     oneTimeToken(),
     // MUST be last: makes Set-Cookie from server actions/route handlers work.
     nextCookies(),
