@@ -39,6 +39,9 @@ export default function TabsLayout() {
     enabled: !!user && billingEnabled,
     retry: 1,
     staleTime: 60_000,
+    // Re-check on every foreground (lib/app-focus) even within staleTime, so a
+    // user who just subscribed elsewhere is not left paywalled.
+    refetchOnWindowFocus: 'always',
   });
 
   usePushRegistration();
