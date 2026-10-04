@@ -596,5 +596,178 @@ func TestHandleWebhookWithoutSubscriptionIDPreservesTrial(t *testing.T) {
 	}
 }
 
+// --- Reconciliation ----------------------------------------------------------
+
+func TestReconcileSubscriptionsAppliesProviderStateAsNow(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	for _, id := range []string{"a", "b"} {
+		h.seedSub(t, domain.Subscription{UserID: id, Status: domain.SubscriptionActive, BillingCustomerID: "ctm_" + id, BillingSubscriptionID: "sub_" + id,
+			CurrentPeriodEnd: tptr(now.Add(-2 * time.Hour)), LastEventAt: tptr(now.Add(-time.Hour))})
+	}
+	// not stale: must be left alone
+	h.seedSub(t, domain.Subscription{UserID: "c", Status: domain.SubscriptionActive, BillingCustomerID: "ctm_c", BillingSubscriptionID: "sub_c",
+		CurrentPeriodEnd: tptr(now.Add(24 * time.Hour)), LastEventAt: tptr(now.Add(-time.Hour))})
+	h.payments.getSubEvent = port.SubscriptionEvent{Type: "subscription.reconciled", Status: domain.SubscriptionCanceled, CustomerID: "ctm_x"}
+
+	if err := h.svc.ReconcileSubscriptions(ctx); err != nil {
+		t.Fatalf("ReconcileSubscriptions: %v", err)
+	}
+	if h.payments.getSubCalls != 2 {
+		t.Fatalf("GetSubscription calls = %d, want 2 (a and b only)", h.payments.getSubCalls)
+	}
+	for _, id := range []string{"a", "b"} {
+		got, _ := h.subs.GetByUserID(ctx, id)
+		if got.Status != domain.SubscriptionCanceled {
+			t.Fatalf("%s: status = %q, want canceled", id, got.Status)
+		}
+		if got.LastEventAt == nil || !got.LastEventAt.Equal(now) {
+			t.Fatalf("%s: LastEventAt = %v, want now (synthetic event)", id, got.LastEventAt)
+		}
+		if got.BillingSubscriptionID != "sub_"+id || got.BillingCustomerID != "ctm_x" {
+			t.Fatalf("%s: ids = %q/%q (user must be taken from the row, ids from the provider)", id, got.BillingSubscriptionID, got.BillingCustomerID)
+		}
+	}
+	if got, _ := h.subs.GetByUserID(ctx, "c"); got.Status != domain.SubscriptionActive {
+		t.Fatalf("c must be untouched: %+v", got)
+	}
+}
+
+func TestReconcileSubscriptionsSkipsProviderErrors(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	h.seedSub(t, domain.Subscription{UserID: "a", Status: domain.SubscriptionActive, BillingCustomerID: "ctm_a", BillingSubscriptionID: "sub_a",
+		CurrentPeriodEnd: tptr(now.Add(-2 * time.Hour)), LastEventAt: tptr(now.Add(-time.Hour))})
+	h.payments.getSubErr = errors.New("paddle: http 503")
+	if err := h.svc.ReconcileSubscriptions(ctx); err != nil {
+		t.Fatalf("provider errors must be logged and skipped, got %v", err)
+	}
+	got, _ := h.subs.GetByUserID(ctx, "a")
+	if got.Status != domain.SubscriptionActive || h.subs.upsertCalls != 0 {
+		t.Fatalf("row must be unchanged on provider error: %+v", got)
+	}
+}
+
+func TestReconcileOverridesTheOrderingGuard(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	// LastEventAt in the future (skewed provider clock) would make a plain
+	// webhook at `now` drop; reconciliation must still win.
+	h.seedSub(t, domain.Subscription{UserID: "a", Status: domain.SubscriptionActive, BillingCustomerID: "ctm_a", BillingSubscriptionID: "sub_a",
+		CurrentPeriodEnd: tptr(now.Add(-2 * time.Hour)), LastEventAt: tptr(now.Add(time.Hour))})
+	h.payments.getSubEvent = port.SubscriptionEvent{Status: domain.SubscriptionPaused}
+	if err := h.svc.ReconcileSubscriptions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.subs.GetByUserID(ctx, "a"); got.Status != domain.SubscriptionPaused {
+		t.Fatalf("status = %q, want paused (reconcile always wins)", got.Status)
+	}
+}
+
+// --- Inline reconcile in GetSubscription -----------------------------------
+
+func lapsedActive(now time.Time) domain.Subscription {
+	return domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive, BillingCustomerID: "ctm_1", BillingSubscriptionID: "sub_1",
+		CurrentPeriodEnd: tptr(now.Add(-time.Minute)), LastEventAt: tptr(now.Add(-24 * time.Hour))}
+}
+
+func TestGetSubscriptionInlineReconcileWhenActivePastPeriodEnd(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	h.seedSub(t, lapsedActive(now))
+	renewed := now.Add(365 * 24 * time.Hour)
+	h.payments.getSubEvent = port.SubscriptionEvent{Status: domain.SubscriptionActive, CurrentPeriodEnd: &renewed, CustomerID: "ctm_1", SubscriptionID: "sub_1"}
+
+	sub, err := h.svc.GetSubscription(ctx, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.payments.getSubCalls != 1 || h.payments.lastGetSubID != "sub_1" {
+		t.Fatalf("GetSubscription calls = %d (%q), want 1 for sub_1", h.payments.getSubCalls, h.payments.lastGetSubID)
+	}
+	if sub.CurrentPeriodEnd == nil || !sub.CurrentPeriodEnd.Equal(renewed) {
+		t.Fatalf("returned row must be the reconciled one: %+v", sub)
+	}
+	if !sub.HasAccess(now) {
+		t.Fatal("reconciled renewal must grant access")
+	}
+}
+
+func TestGetSubscriptionInlineReconcileThrottlesPerUser(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	h.seedSub(t, lapsedActive(now))
+	// Provider still reports the lapsed state, so the row stays lapsed and
+	// every call would re-trigger without the throttle.
+	h.payments.getSubEvent = port.SubscriptionEvent{Status: domain.SubscriptionActive, CurrentPeriodEnd: tptr(now.Add(-time.Minute))}
+
+	for i := 0; i < 3; i++ {
+		if _, err := h.svc.GetSubscription(ctx, "u1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if h.payments.getSubCalls != 1 {
+		t.Fatalf("calls within 10m = %d, want 1", h.payments.getSubCalls)
+	}
+	h.clock.Advance(inlineReconcileEvery)
+	if _, err := h.svc.GetSubscription(ctx, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	if h.payments.getSubCalls != 2 {
+		t.Fatalf("calls after 10m = %d, want 2", h.payments.getSubCalls)
+	}
+}
+
+// Review Focus: the throttle slot is claimed BEFORE the provider call, so a
+// failing provider cannot be hammered by a lapsed user's refreshes.
+func TestGetSubscriptionInlineReconcileThrottlesFailuresToo(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	h.seedSub(t, lapsedActive(now))
+	h.payments.getSubErr = errors.New("paddle: http 503")
+
+	for i := 0; i < 3; i++ {
+		sub, err := h.svc.GetSubscription(ctx, "u1")
+		if err != nil {
+			t.Fatalf("inline reconcile failure must not fail the read: %v", err)
+		}
+		if sub.Status != domain.SubscriptionActive {
+			t.Fatalf("stored row must be returned on failure: %+v", sub)
+		}
+	}
+	if h.payments.getSubCalls != 1 {
+		t.Fatalf("calls = %d, want 1 (slot claimed before the call)", h.payments.getSubCalls)
+	}
+}
+
+func TestGetSubscriptionNoInlineReconcileWhenNotLapsed(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	cases := map[string]domain.Subscription{
+		"active inside period":         {UserID: "u1", Status: domain.SubscriptionActive, BillingSubscriptionID: "sub_1", CurrentPeriodEnd: tptr(now.Add(time.Hour))},
+		"active lapsed without sub id": {UserID: "u1", Status: domain.SubscriptionActive, CurrentPeriodEnd: tptr(now.Add(-time.Hour))},
+		"past_due lapsed":              {UserID: "u1", Status: domain.SubscriptionPastDue, BillingSubscriptionID: "sub_1", CurrentPeriodEnd: tptr(now.Add(-time.Hour))},
+		"trialing":                     {UserID: "u1", Status: domain.SubscriptionTrialing, TrialEndsAt: tptr(now.Add(-time.Hour))},
+	}
+	for name, seed := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := newBillingHarness(now)
+			h.seedSub(t, seed)
+			if _, err := h.svc.GetSubscription(ctx, "u1"); err != nil {
+				t.Fatal(err)
+			}
+			if h.payments.getSubCalls != 0 {
+				t.Fatalf("inline reconcile must not run: calls = %d", h.payments.getSubCalls)
+			}
+		})
+	}
+}
+
 // Keep the port import used by later tasks' tests in this file.
 var _ port.SubscriptionEvent

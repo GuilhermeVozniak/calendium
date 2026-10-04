@@ -73,7 +73,8 @@ func selfHostedSubscription(userID string) domain.Subscription {
 }
 
 // GetSubscription returns the user's row, granting the signup trial when
-// none exists yet. (Task 11 adds the inline reconcile.)
+// none exists yet, and best-effort reconciling an active row that is past
+// its period end (throttled per user).
 func (s *BillingService) GetSubscription(ctx context.Context, userID string) (domain.Subscription, error) {
 	if s.selfHosted {
 		return selfHostedSubscription(userID), nil
@@ -84,6 +85,19 @@ func (s *BillingService) GetSubscription(ctx context.Context, userID string) (do
 	}
 	if err != nil {
 		return domain.Subscription{}, err
+	}
+	// Best-effort inline reconcile: an active row past its period end with a
+	// provider subscription is re-read at most once per 10 minutes per user.
+	now := s.clock.Now()
+	if sub.Status == domain.SubscriptionActive && sub.BillingSubscriptionID != "" &&
+		sub.CurrentPeriodEnd != nil && !now.Before(*sub.CurrentPeriodEnd) &&
+		s.claimInlineReconcile(userID, now) {
+		fresh, err := s.reconcileOne(ctx, sub, now)
+		if err != nil {
+			s.logger.Warn("billing: inline reconcile failed", "user_id", userID, "error", err)
+		} else {
+			sub = fresh
+		}
 	}
 	return sub, nil
 }
@@ -278,12 +292,59 @@ func (s *BillingService) applyEvent(ctx context.Context, ev port.SubscriptionEve
 	return s.subs.Upsert(ctx, sub)
 }
 
-// Implemented in Task 11.
+// ReconcileSubscriptions re-reads every stale row from Paddle and applies
+// it as a synthetic event at now (so it always wins). Provider errors are
+// logged and skipped; the loop never fails as a whole.
 func (s *BillingService) ReconcileSubscriptions(ctx context.Context) error {
 	if s.selfHosted {
 		return nil
 	}
-	return domain.ErrNotImplemented
+	now := s.clock.Now()
+	rows, err := s.subs.ListForReconciliation(ctx, now)
+	if err != nil {
+		return err
+	}
+	for _, sub := range rows {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if _, err := s.reconcileOne(ctx, sub, now); err != nil {
+			s.logger.Warn("billing: reconcile failed", "user_id", sub.UserID, "subscription_id", sub.BillingSubscriptionID, "error", err)
+		}
+	}
+	return nil
+}
+
+// reconcileOne fetches the live subscription and applies it through the
+// webhook upsert path with OccurredAt = now and force = true (the adapter's
+// GetSubscription returns a zero OccurredAt by design, and the read must
+// never be dropped as stale).
+func (s *BillingService) reconcileOne(ctx context.Context, sub domain.Subscription, now time.Time) (domain.Subscription, error) {
+	ev, err := s.payments.GetSubscription(ctx, sub.BillingSubscriptionID)
+	if err != nil {
+		return sub, err
+	}
+	ev.UserID = sub.UserID
+	ev.OccurredAt = now
+	if ev.SubscriptionID == "" {
+		ev.SubscriptionID = sub.BillingSubscriptionID
+	}
+	if err := s.applyEvent(ctx, ev, true); err != nil {
+		return sub, err
+	}
+	return s.subs.GetByUserID(ctx, sub.UserID)
+}
+
+// claimInlineReconcile reserves the per-user inline slot. It is claimed
+// before the provider call so a failing provider is not hammered.
+func (s *BillingService) claimInlineReconcile(userID string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if last, ok := s.lastInline[userID]; ok && now.Sub(last) < inlineReconcileEvery {
+		return false
+	}
+	s.lastInline[userID] = now
+	return true
 }
 
 func (s *BillingService) RequireActive(ctx context.Context, userID string) error {
