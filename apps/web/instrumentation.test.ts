@@ -8,8 +8,18 @@ describe('instrumentation.register', () => {
   let warn: MockInstance<typeof console.warn>;
 
   beforeEach(() => {
-    for (const k of [...SMTP_KEYS, 'SELF_HOSTED', 'TRUST_PROXY', 'TRUSTED_PROXY_CIDRS', 'ALLOW_DEV_ORIGINS']) vi.stubEnv(k, '');
+    for (const k of [
+      ...SMTP_KEYS,
+      'SELF_HOSTED',
+      'TRUST_PROXY',
+      'TRUSTED_PROXY_CIDRS',
+      'ALLOW_DEV_ORIGINS',
+      'CSP_REPORT_ONLY',
+      'NEXT_PHASE',
+    ])
+      vi.stubEnv(k, '');
     vi.stubEnv('NEXT_RUNTIME', 'nodejs');
+    vi.stubEnv('BETTER_AUTH_SECRET', 'x'.repeat(32));
     warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
@@ -62,6 +72,38 @@ describe('instrumentation.register', () => {
     vi.stubEnv('TRUST_PROXY', 'true');
     vi.stubEnv('TRUSTED_PROXY_CIDRS', '10.0.0.0/8,bogus');
     await expect(register()).rejects.toThrow(/TRUSTED_PROXY_CIDRS/);
+  });
+
+  it('rejects a short BETTER_AUTH_SECRET on the node runtime, in every mode', async () => {
+    vi.stubEnv('SELF_HOSTED', 'true');
+    vi.stubEnv('BETTER_AUTH_SECRET', 'x'.repeat(31));
+    await expect(register()).rejects.toThrow(
+      'BETTER_AUTH_SECRET must be at least 32 bytes; generate one with: openssl rand -base64 32'
+    );
+    vi.stubEnv('SELF_HOSTED', '');
+    await expect(register()).rejects.toThrow('BETTER_AUTH_SECRET must be at least 32 bytes');
+  });
+
+  it('passes with a 32-byte secret', async () => {
+    vi.stubEnv('SELF_HOSTED', 'true');
+    await expect(register()).resolves.toBeUndefined();
+  });
+
+  it('skips the edge runtime and the build phase even with no secret', async () => {
+    vi.stubEnv('BETTER_AUTH_SECRET', '');
+    vi.stubEnv('NEXT_RUNTIME', 'edge');
+    await expect(register()).resolves.toBeUndefined();
+    vi.stubEnv('NEXT_RUNTIME', 'nodejs');
+    vi.stubEnv('NEXT_PHASE', 'phase-production-build');
+    await expect(register()).resolves.toBeUndefined();
+  });
+
+  it('aborts on an invalid CSP_REPORT_ONLY and accepts the boolean grammar', async () => {
+    vi.stubEnv('SELF_HOSTED', 'true');
+    vi.stubEnv('CSP_REPORT_ONLY', 'enforce');
+    await expect(register()).rejects.toThrow('CSP_REPORT_ONLY must be true or false (also 1/0, yes/no), got "enforce"');
+    vi.stubEnv('CSP_REPORT_ONLY', '0');
+    await expect(register()).resolves.toBeUndefined();
   });
 
   it('does not warn about the preload outside production', async () => {
