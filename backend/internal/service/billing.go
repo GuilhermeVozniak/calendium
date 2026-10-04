@@ -239,11 +239,12 @@ func (s *BillingService) HandleWebhook(ctx context.Context, payload []byte, sigH
 // customer id is authoritative: our checkout persists billing_customer_id
 // before creating the transaction, so every legitimate event resolves by
 // it. custom_data.user_id is client-settable (Paddle.js accepts customData
-// on our public /checkout page), so it is used only for a customer no row
-// owns, and only when that user has no customer of their own (or this
-// one). Every mismatch, and a user with no users row (local DB reset,
-// deleted account), is logged at warn and acknowledged (ok=false, nil
-// error -> 200) so Paddle does not retry it for days.
+// on our public /checkout page), so it never selects a row on its own: an
+// event whose customer no row owns is not ours to attach (it would let a
+// paying attacker bind a subscription to another user's account and then
+// cancel it). Such events, mismatches, and owners with no users row are
+// logged at warn and acknowledged (ok=false, nil error -> 200) so Paddle
+// does not retry them for days.
 func (s *BillingService) resolveEventUser(ctx context.Context, ev port.SubscriptionEvent) (existing domain.Subscription, ok bool, err error) {
 	skip := func(msg string, args ...any) (domain.Subscription, bool, error) {
 		base := []any{"notification_id", ev.NotificationID, "event_id", ev.EventID, "type", ev.Type}
@@ -263,28 +264,8 @@ func (s *BillingService) resolveEventUser(ctx context.Context, ev port.Subscript
 			return domain.Subscription{}, false, err
 		}
 	}
-	if ev.UserID == "" {
-		return skip("billing: event for unknown customer", "customer_id", ev.CustomerID)
-	}
-	existing, err = s.subs.GetByUserID(ctx, ev.UserID)
-	if errors.Is(err, domain.ErrNotFound) {
-		// No subscription row: the users row must exist before writing one
-		// (subscriptions.user_id references users).
-		if _, err := s.users.GetByID(ctx, ev.UserID); errors.Is(err, domain.ErrNotFound) {
-			return skip("billing: event for unknown user", "customer_id", ev.CustomerID, "custom_data_user_id", ev.UserID)
-		} else if err != nil {
-			return domain.Subscription{}, false, err
-		}
-		return domain.Subscription{UserID: ev.UserID}, true, nil
-	}
-	if err != nil {
-		return domain.Subscription{}, false, err
-	}
-	if existing.BillingCustomerID != "" && existing.BillingCustomerID != ev.CustomerID {
-		return skip("billing: event customer differs from the custom data user's customer; not applied",
-			"customer_id", ev.CustomerID, "custom_data_user_id", ev.UserID)
-	}
-	return existing, true, nil
+	return skip("billing: event for a customer no account owns; not applied",
+		"customer_id", ev.CustomerID, "custom_data_user_id", ev.UserID)
 }
 
 // applyEvent upserts the mirror onto existing (the resolved row; its

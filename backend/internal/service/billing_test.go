@@ -697,7 +697,7 @@ func TestHandleWebhookUserResolutionIsAnchoredToTheCustomer(t *testing.T) {
 			t.Fatalf("attacker row changed: %+v", got)
 		}
 	})
-	t.Run("first-time checkout: unknown customer with custom data attaches to that user", func(t *testing.T) {
+	t.Run("unknown customer with custom data and no row is acknowledged, not attached", func(t *testing.T) {
 		h := newBillingHarness(now)
 		h.seedUser(t, "u1", now.Add(-2*24*time.Hour))
 		periodEnd := now.Add(365 * 24 * time.Hour)
@@ -710,12 +710,11 @@ func TestHandleWebhookUserResolutionIsAnchoredToTheCustomer(t *testing.T) {
 		if err := h.svc.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
 			t.Fatal(err)
 		}
-		got, err := h.subs.GetByUserID(ctx, "u1")
-		if err != nil || got.Status != domain.SubscriptionActive || got.BillingCustomerID != "ctm_new" || got.BillingSubscriptionID != "sub_new" {
-			t.Fatalf("row = %+v err=%v", got, err)
+		if got, err := h.subs.GetByUserID(ctx, "u1"); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("row written for an unowned customer: %+v err=%v", got, err)
 		}
 	})
-	t.Run("custom data for a user whose row has no customer yet attaches the customer", func(t *testing.T) {
+	t.Run("custom data cannot bind a foreign customer to a trial user (trial preserved)", func(t *testing.T) {
 		h := newBillingHarness(now)
 		h.seedUser(t, "u1", now.Add(-2*24*time.Hour))
 		h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionTrialing, TrialEndsAt: tptr(now.Add(12 * 24 * time.Hour))})
@@ -727,8 +726,8 @@ func TestHandleWebhookUserResolutionIsAnchoredToTheCustomer(t *testing.T) {
 			t.Fatal(err)
 		}
 		got, _ := h.subs.GetByUserID(ctx, "u1")
-		if got.Status != domain.SubscriptionActive || got.BillingCustomerID != "ctm_new" || got.TrialEndsAt != nil {
-			t.Fatalf("row = %+v", got)
+		if got.Status != domain.SubscriptionTrialing || got.BillingCustomerID != "" || got.TrialEndsAt == nil {
+			t.Fatalf("trial row changed: %+v", got)
 		}
 	})
 	t.Run("same customer with matching custom data is applied", func(t *testing.T) {
