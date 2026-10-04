@@ -53,7 +53,7 @@ jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
-import { act, fireEvent, render, screen } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, within } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import SettingsScreen from './settings';
 
@@ -108,6 +108,34 @@ beforeEach(() => {
   mockUseServerConfig.mockReturnValue({ config: AI_ENABLED_CONFIG, clear: jest.fn() });
   mockListAccounts.mockResolvedValue([]);
   mockGetSubscription.mockResolvedValue({ status: 'none', priceUsd: 50 });
+});
+
+/** App Store 3.1.1/3.1.3: no price, purchase CTA or purchase/billing link. */
+const STORE_FORBIDDEN = /\$|price|subscribe|pricing|checkout/i;
+const DAY_MS = 86_400_000;
+
+describe('SettingsScreen — subscription card (store-compliant)', () => {
+  it.each([
+    [
+      'trialing',
+      { status: 'trialing', trialEndsAt: new Date(Date.now() + 9 * DAY_MS - 60_000).toISOString() },
+      'Trial — 9 days left',
+    ],
+    ['active', { status: 'active', currentPeriodEnd: null, cancelAtPeriodEnd: false }, 'Active'],
+    ['none', { status: 'none' }, 'Inactive'],
+  ])('shows %s as status text only, with no link or price', async (_s, sub, text) => {
+    mockGetSubscription.mockResolvedValue({ plan: 'annual', priceUsd: 50, trialEndsAt: null, ...sub });
+    await renderScreen();
+    await flush();
+
+    const card = within(screen.getByTestId('subscription-card'));
+    expect(card.getByText(text)).toBeTruthy();
+    expect(card.queryAllByText(STORE_FORBIDDEN)).toHaveLength(0);
+    expect(card.queryAllByLabelText(STORE_FORBIDDEN)).toHaveLength(0);
+    expect(card.queryAllByRole('button')).toHaveLength(0);
+    expect(card.queryAllByRole('link')).toHaveLength(0);
+    expect(screen.queryByText('Manage on the web')).toBeNull();
+  });
 });
 
 describe('SettingsScreen — named theme picker', () => {

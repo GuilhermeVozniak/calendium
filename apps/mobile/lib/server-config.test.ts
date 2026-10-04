@@ -24,6 +24,7 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  DEMO_CONFIG,
   clearStoredServerConfig,
   discoverServer,
   getStoredServerConfig,
@@ -35,6 +36,12 @@ import {
 beforeEach(() => {
   mockFetchInstance.mockReset();
   jest.clearAllMocks();
+});
+
+describe('DEMO_CONFIG', () => {
+  it('advertises no web origin, so the demo builds no billing link', () => {
+    expect(DEMO_CONFIG.webUrl).toBe('');
+  });
 });
 
 describe('normalizeServerUrl', () => {

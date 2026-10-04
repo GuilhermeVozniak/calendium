@@ -1,5 +1,6 @@
 import useAuth, { AuthProvider } from '@/context/auth';
 import { api } from '@/lib/api';
+import { startAppStateFocus } from '@/lib/app-focus';
 import { startOutboxReplay } from '@/lib/offline';
 import { persistOptions, queryClient } from '@/lib/query-client';
 import { ServerConfigProvider, useServerConfig } from '@/lib/server-config';
@@ -47,6 +48,9 @@ export default function Providers({ children }: { children: React.ReactNode }) {
   // Offline outbox: replay queued triage when reachability returns or the app
   // foregrounds. Started here so it spans the app's whole lifetime.
   React.useEffect(() => startOutboxReplay(queryClient), []);
+
+  // Foregrounding the app counts as react-query "focus" (refetches stale queries).
+  React.useEffect(() => startAppStateFocus(), []);
 
   // Restore the persisted named theme before the server preference lands.
   React.useEffect(() => {

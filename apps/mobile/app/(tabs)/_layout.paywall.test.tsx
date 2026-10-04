@@ -46,8 +46,8 @@ jest.mock('expo-router', () => {
   return { Tabs, Redirect: () => null, useRouter: () => ({ push: jest.fn() }) };
 });
 
-import { act, render, screen } from '@testing-library/react-native';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, fireEvent, render, screen } from '@testing-library/react-native';
+import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TabsLayout from './_layout';
 
 const CLOUD = { mode: 'cloud', webUrl: 'https://web.example', features: { billing: true, google: false, microsoft: false, ai: false, push: false } };
@@ -67,6 +67,8 @@ function renderLayout() {
     </QueryClientProvider>
   );
 }
+
+afterEach(() => focusManager.setFocused(undefined));
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -95,8 +97,41 @@ describe('TabsLayout billing gate', () => {
     mockGetSubscription.mockResolvedValue({ status: 'canceled', plan: 'annual', priceUsd: 50, currentPeriodEnd: null, cancelAtPeriodEnd: false, trialEndsAt: null });
     await renderLayout();
     await flush();
-    expect(screen.getByText('Your subscription has ended')).toBeTruthy();
+    expect(screen.getByText("This account doesn't have an active subscription.")).toBeTruthy();
     expect(screen.queryByText('inbox')).toBeNull();
+  });
+
+  it('denies a paused subscription and lets Refresh re-check it', async () => {
+    mockUseServerConfig.mockReturnValue({ config: CLOUD });
+    mockGetSubscription.mockResolvedValue({ status: 'paused', plan: 'annual', priceUsd: 50, currentPeriodEnd: null, cancelAtPeriodEnd: false, trialEndsAt: null });
+    await renderLayout();
+    await flush();
+    expect(screen.getByText("This account doesn't have an active subscription.")).toBeTruthy();
+
+    mockGetSubscription.mockResolvedValue({ status: 'active', plan: 'annual', priceUsd: 50, currentPeriodEnd: null, cancelAtPeriodEnd: false, trialEndsAt: null });
+    await fireEvent.press(screen.getByText('Refresh'));
+    await flush();
+    expect(mockGetSubscription).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('inbox')).toBeTruthy();
+  });
+
+  it('refetches the subscription when the app returns to the foreground', async () => {
+    mockUseServerConfig.mockReturnValue({ config: CLOUD });
+    mockGetSubscription.mockResolvedValue({ status: 'canceled', plan: 'annual', priceUsd: 50, currentPeriodEnd: null, cancelAtPeriodEnd: false, trialEndsAt: null });
+    await renderLayout();
+    await flush();
+    expect(mockGetSubscription).toHaveBeenCalledTimes(1);
+
+    // Subscribed elsewhere, then foregrounded within the 60s staleTime: the
+    // gate must still re-check rather than keep a paying user paywalled.
+    mockGetSubscription.mockResolvedValue({ status: 'active', plan: 'annual', priceUsd: 50, currentPeriodEnd: null, cancelAtPeriodEnd: false, trialEndsAt: null });
+    await act(async () => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    await flush();
+    expect(mockGetSubscription).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('inbox')).toBeTruthy();
   });
 
   it('fails open when the subscription cannot be fetched', async () => {

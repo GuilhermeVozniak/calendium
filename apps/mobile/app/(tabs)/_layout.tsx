@@ -39,6 +39,9 @@ export default function TabsLayout() {
     enabled: !!user && billingEnabled,
     retry: 1,
     staleTime: 60_000,
+    // Re-check on every foreground (lib/app-focus) even within staleTime, so a
+    // user who just subscribed elsewhere is not left paywalled.
+    refetchOnWindowFocus: 'always',
   });
 
   usePushRegistration();
@@ -61,7 +64,12 @@ export default function TabsLayout() {
       ? subscriptionDenialReason(subscriptionQuery.data)
       : null;
   if (paywallReason) {
-    return <PaywallScreen reason={paywallReason} webUrl={config?.webUrl || null} />;
+    return (
+      <PaywallScreen
+        onRefresh={() => void subscriptionQuery.refetch()}
+        refreshing={subscriptionQuery.isFetching}
+      />
+    );
   }
 
   return (
