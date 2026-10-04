@@ -1,12 +1,14 @@
 import { addDays, subDays, subMinutes } from 'date-fns';
 
 import type {
+  BillingPortalUrls,
   CalendarSubscription,
   CalendarSubscriptionInput,
   CalendarSubscriptionPatch,
   ConnectedAccount,
   Snippet,
   Subscription,
+  SubscriptionStatus,
 } from '@calendium/shared';
 
 /**
@@ -23,6 +25,34 @@ interface SettingsStore {
 
 let store: SettingsStore | null = null;
 let nextId = 1;
+
+/** Demo/e2e hook: `localStorage.calendium.demo.subscriptionStatus` picks the seeded state. */
+export const DEMO_SUBSCRIPTION_STATUS_KEY = 'calendium.demo.subscriptionStatus';
+
+function demoSubscription(now: Date): Subscription {
+  let status: SubscriptionStatus = 'trialing';
+  try {
+    const stored = window.localStorage.getItem(DEMO_SUBSCRIPTION_STATUS_KEY);
+    if (stored) status = stored as SubscriptionStatus;
+  } catch {
+    // Private mode / SSR: keep the default.
+  }
+  const base = { plan: 'annual' as const, priceUsd: 50 as const, cancelAtPeriodEnd: false, trialEndsAt: null };
+  switch (status) {
+    case 'active':
+      return { ...base, status, currentPeriodEnd: addDays(now, 300).toISOString() };
+    case 'past_due':
+      return { ...base, status, currentPeriodEnd: subDays(now, 10).toISOString() };
+    case 'paused':
+      return { ...base, status, currentPeriodEnd: subDays(now, 1).toISOString() };
+    case 'canceled':
+      return { ...base, status, currentPeriodEnd: subDays(now, 2).toISOString() };
+    case 'none':
+      return { ...base, status, currentPeriodEnd: null };
+    default:
+      return { ...base, status: 'trialing', currentPeriodEnd: null, trialEndsAt: addDays(now, 9).toISOString() };
+  }
+}
 
 function seed(): SettingsStore {
   const now = new Date();
@@ -84,14 +114,7 @@ function seed(): SettingsStore {
         usageCount: 9,
       },
     ],
-    subscription: {
-      status: 'trialing',
-      plan: 'annual',
-      priceUsd: 50,
-      currentPeriodEnd: addDays(now, 9).toISOString(),
-      cancelAtPeriodEnd: false,
-      trialEndsAt: addDays(now, 9).toISOString(),
-    },
+    subscription: demoSubscription(now),
     calendarSubscriptions: [
       {
         id: 'sub-mock-holidays',
@@ -165,6 +188,16 @@ export const settingsMock = {
 
   getSubscription(): Subscription {
     return { ...getStore().subscription };
+  },
+
+  /** Demo checkout: the overlay page shows "nothing to pay" (no _ptxn) and the mock stays as-is. */
+  createCheckout(): { url: string } {
+    return { url: `${window.location.origin}/checkout` };
+  },
+
+  portalUrls(): BillingPortalUrls {
+    const origin = window.location.origin;
+    return { overviewUrl: `${origin}/settings?tab=billing`, cancelUrl: '', updatePaymentUrl: '' };
   },
 
   // --- Interesting-calendar ICS feeds (M2.8 Task 15) ---

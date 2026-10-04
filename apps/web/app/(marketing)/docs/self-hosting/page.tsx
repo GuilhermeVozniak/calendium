@@ -48,7 +48,7 @@ TOKEN_ENCRYPTION_KEY=<the 64-hex-char key>`,
   },
   {
     title: 'Set your instance identity and mode',
-    body: 'Self-host mode unlocks every feature and turns Stripe off. Point DATABASE_URL at the bundled db service.',
+    body: 'Self-host mode unlocks every feature and turns Paddle billing off. Point DATABASE_URL at the bundled db service.',
     code: `SELF_HOSTED=true
 INSTANCE_NAME=Acme Mail
 DOMAIN=mail.example.com

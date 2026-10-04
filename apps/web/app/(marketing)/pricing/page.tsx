@@ -3,13 +3,9 @@ import Link from 'next/link';
 import { ArrowRight, ArrowUpRight, Check } from 'lucide-react';
 
 import { Faq, type FaqItem } from '@/components/marketing/faq';
-import {
-  GITHUB_URL,
-  SELF_HOSTING_DOCS_HREF,
-  START_TRIAL_HREF,
-  SUPPORT_EMAIL,
-} from '@/components/marketing/links';
+import { GITHUB_URL, SELF_HOSTING_DOCS_HREF, SUPPORT_EMAIL } from '@/components/marketing/links';
 import { SectionHeading } from '@/components/marketing/section-heading';
+import { StartTrialCta } from '@/components/marketing/start-trial-cta';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 
@@ -64,12 +60,12 @@ const billingFaq: FaqItem[] = [
   {
     question: 'How does billing work?',
     answer:
-      'On Cloud, checkout runs on Stripe. You start with a 14-day free trial; when it ends, your card is charged $50 and the plan renews yearly. Receipts come straight from Stripe. Self-hosting has no billing at all.',
+      'On Cloud, checkout runs on Paddle, our merchant of record. You start with a 14-day free trial; when it ends, subscribe for $50 a year and the plan renews yearly. Paddle handles invoices, receipts, and sales tax or VAT for your country. Self-hosting has no billing at all.',
   },
   {
     question: 'Can I cancel?',
     answer:
-      'Anytime, in about three clicks: Settings → Billing → Manage subscription opens the Stripe billing portal, where you can cancel, update your card, or download invoices. Your access continues to the end of the period you paid for.',
+      'Anytime, in about three clicks: Settings → Billing → Cancel subscription opens the Paddle customer portal, where you can cancel, update your card, or download invoices. Your access continues until the end of the period you paid for.',
   },
   {
     question: 'Is there a monthly plan?',
@@ -84,7 +80,7 @@ const billingFaq: FaqItem[] = [
   {
     question: 'What payment methods do you accept?',
     answer:
-      'Everything Stripe Checkout supports: major credit and debit cards, plus Apple Pay, Google Pay, and Link where available.',
+      'Everything Paddle Checkout supports: major credit and debit cards, plus Apple Pay, Google Pay, and PayPal where available.',
   },
   {
     question: 'Need invoices or team billing?',
@@ -176,14 +172,9 @@ export default function PricingPage() {
               ))}
             </ul>
             <div className="mt-8">
-              <Button asChild size="lg" className="w-full">
-                <Link href={START_TRIAL_HREF}>
-                  Start free trial
-                  <ArrowRight />
-                </Link>
-              </Button>
+              <StartTrialCta className="w-full" />
               <p className="mt-3 text-center text-xs text-muted-foreground">
-                Checkout and billing by Stripe. No in-app purchases, ever.
+                Checkout and billing by Paddle, our merchant of record. No in-app purchases, ever.
               </p>
             </div>
           </div>
@@ -232,7 +223,7 @@ export default function PricingPage() {
               ))}
             </ul>
             <p className="mt-4 font-mono text-xs text-muted-foreground">
-              Cloud prices in USD. Taxes may apply depending on your location.
+              Cloud prices in USD before tax. Paddle shows the exact total, including any sales tax or VAT, at checkout.
             </p>
           </div>
         </div>
@@ -243,7 +234,7 @@ export default function PricingPage() {
           <SectionHeading
             eyebrow="Billing"
             title="Billing, plainly."
-            lede="Stripe handles every Cloud charge; you stay in control from the billing portal. Self-hosting has no billing at all."
+            lede="Paddle handles every Cloud charge as merchant of record; you stay in control from the customer portal. Self-hosting has no billing at all."
           />
           <Faq items={billingFaq} className="self-start" />
         </div>

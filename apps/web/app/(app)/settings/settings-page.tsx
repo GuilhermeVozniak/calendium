@@ -40,7 +40,7 @@ import type {
   Subscription,
   UserSettings,
 } from '@calendium/shared';
-import { ApiRequestError } from '@calendium/shared';
+import { ApiRequestError, hasBillingSubscription, trialDaysLeft } from '@calendium/shared';
 
 import { BookingLinks, localTimeZone, WindowsEditor } from '@/components/app/booking-links';
 import { ChipsRow } from '@/components/app/chips-row';
@@ -49,11 +49,7 @@ import { IntegrationsSection } from '@/components/app/integrations-section';
 import { SetSwitcher } from '@/components/app/calendar/set-switcher';
 import { TemplateManager } from '@/components/app/calendar/template-manager';
 import { MeetingPolls } from '@/components/app/meeting-polls';
-import {
-  PaywallBanner,
-  useBillingPortalMutation,
-  useCheckoutMutation,
-} from '@/components/app/paywall';
+import { useBillingPortalMutation, useCheckoutMutation } from '@/components/app/paywall';
 import { useTheme } from '@/components/theme-provider';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -187,22 +183,13 @@ export default function SettingsPage() {
     enabled: billingEnabled,
   });
 
-  // Deep-link section via ?tab= (primary) or #hash, and surface Stripe Checkout
-  // redirect results. Validation against availability happens at render, so a
-  // ?tab=billing that arrives before /v1/instance loads still lands correctly.
+  // Deep-link section via ?tab= (primary) or #hash. Validation against
+  // availability happens at render, so a ?tab=billing that arrives before
+  // /v1/instance loads still lands correctly.
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const requested = params.get('tab') || window.location.hash.replace('#', '');
     if ((KNOWN_TABS as string[]).includes(requested)) setTab(requested as SettingsTab);
-    const checkout = params.get('checkout');
-    if (checkout === 'success') {
-      toast.success('Subscription active - welcome to Calendium!');
-      setTab('billing');
-    } else if (checkout === 'canceled') {
-      toast.info('Checkout canceled - you can subscribe any time.');
-      setTab('billing');
-    }
-    if (checkout) window.history.replaceState(null, '', window.location.pathname);
   }, []);
 
   const changeTab = (value: string) => {
@@ -222,10 +209,6 @@ export default function SettingsPage() {
           {pushEnabled ? ', notifications' : ''}
           {billingEnabled ? ', and billing' : ''}.
         </p>
-
-        {billingEnabled && (
-          <PaywallBanner subscription={subscriptionQuery.data} className="mt-4" />
-        )}
 
         <Tabs value={activeTab} onValueChange={changeTab} className="mt-6">
           <TabsList>
@@ -1420,10 +1403,10 @@ function NotificationsSection({ vapidPublicKey }: { vapidPublicKey?: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Billing (docs/payments.md - $50/yr, Stripe only, Spotify model)
+// Billing (docs/payments.md — $50/yr on Paddle, Spotify model)
 // ---------------------------------------------------------------------------
 
-function BillingSection({
+export function BillingSection({
   subscription,
   loading,
 }: {
@@ -1431,20 +1414,18 @@ function BillingSection({
   loading: boolean;
 }) {
   const checkout = useCheckoutMutation();
-  const portal = useBillingPortalMutation();
+  const manage = useBillingPortalMutation('overview');
+  const cancel = useBillingPortalMutation('cancel');
+  const updatePayment = useBillingPortalMutation('updatePayment');
 
   if (loading) return <Skeleton className="h-56 w-full" />;
 
   const sub = subscription;
-  const periodEnd = sub?.currentPeriodEnd
-    ? format(new Date(sub.currentPeriodEnd), 'MMMM d, yyyy')
-    : null;
-  const trialDaysLeft =
-    sub?.status === 'trialing' && sub.trialEndsAt
-      ? Math.max(0, Math.ceil((new Date(sub.trialEndsAt).getTime() - Date.now()) / 86_400_000))
-      : null;
+  const fmt = (iso: string) => format(new Date(iso), 'MMMM d, yyyy');
+  const live = !!sub && hasBillingSubscription(sub);
+  const daysLeft = sub ? trialDaysLeft(sub) : null;
 
-  const statusBadge = (() => {
+  const badge = (() => {
     switch (sub?.status) {
       case 'trialing':
         return <Badge variant="secondary">Free trial</Badge>;
@@ -1456,7 +1437,9 @@ function BillingSection({
           </Badge>
         );
       case 'past_due':
-        return <Badge variant="destructive">Past due</Badge>;
+        return <Badge variant="destructive">Payment failed</Badge>;
+      case 'paused':
+        return <Badge variant="outline">Paused</Badge>;
       case 'canceled':
         return <Badge variant="outline">Canceled</Badge>;
       default:
@@ -1464,9 +1447,28 @@ function BillingSection({
     }
   })();
 
-  const showSubscribe =
-    !sub || ['trialing', 'none', 'expired', 'canceled'].includes(sub.status);
-  const showPortal = !!sub && ['active', 'past_due', 'canceled'].includes(sub.status);
+  const statusLine = (() => {
+    if (!sub) return 'No subscription yet.';
+    switch (sub.status) {
+      case 'trialing':
+        return sub.trialEndsAt
+          ? `Free trial — ends ${fmt(sub.trialEndsAt)}${daysLeft !== null ? ` (${daysLeft} day${daysLeft === 1 ? '' : 's'} left)` : ''}. Subscribe any time; billing starts only when you do.`
+          : 'Free trial.';
+      case 'active':
+        if (!sub.currentPeriodEnd) return 'Active.';
+        return sub.cancelAtPeriodEnd
+          ? `Cancels on ${fmt(sub.currentPeriodEnd)} — access continues until then.`
+          : `Renews on ${fmt(sub.currentPeriodEnd)} for $50.`;
+      case 'past_due':
+        return 'We could not charge your card. Update your payment method to keep access.';
+      case 'paused':
+        return 'Your plan is paused. Update your payment method or resume it from billing.';
+      case 'canceled':
+        return 'Your subscription has ended. Resubscribe any time.';
+      default:
+        return 'You do not have an active subscription.';
+    }
+  })();
 
   return (
     <div className="flex flex-col gap-4">
@@ -1479,66 +1481,38 @@ function BillingSection({
           <CardDescription>
             One plan - $50/year after a 14-day free trial. Unlocks web, desktop, and mobile.
           </CardDescription>
-          <CardAction>{statusBadge}</CardAction>
+          <CardAction>{badge}</CardAction>
         </CardHeader>
         <CardContent className="text-sm">
-          {sub?.status === 'trialing' && (
-            <p>
-              Your free trial ends{' '}
-              {sub.trialEndsAt ? format(new Date(sub.trialEndsAt), 'MMMM d, yyyy') : 'soon'}
-              {trialDaysLeft !== null && (
-                <span className="text-muted-foreground"> ({trialDaysLeft} days left)</span>
-              )}
-              . Subscribe now - billing only starts when the trial ends.
-            </p>
-          )}
-          {sub?.status === 'active' && (
-            <p>
-              {sub.cancelAtPeriodEnd
-                ? `Your plan is set to cancel - access ends ${periodEnd ?? 'at the end of the period'}.`
-                : `Renews ${periodEnd ?? 'at the end of the period'} for $50.`}
-            </p>
-          )}
-          {sub?.status === 'past_due' && (
-            <p>
-              Your last payment failed. Access continues during the 7-day grace period while
-              Stripe retries - update your payment method to keep your account active.
-            </p>
-          )}
-          {sub?.status === 'canceled' && (
-            <p>
-              Subscription canceled{periodEnd ? ` - access until ${periodEnd}` : ''}. Resubscribe
-              any time.
-            </p>
-          )}
-          {(!sub || sub.status === 'none' || sub.status === 'expired') && (
-            <p>
-              You do not have an active subscription. Subscribe to unlock the split inbox,
-              calendar sync, AI compose, and more on every platform.
-            </p>
-          )}
+          <p>{statusLine}</p>
         </CardContent>
         <CardFooter className="gap-2 border-t pt-6">
-          {showSubscribe && (
+          {live ? (
+            <>
+              {(sub?.status === 'past_due' || sub?.status === 'paused') && (
+                <Button onClick={() => updatePayment.mutate()} disabled={updatePayment.isPending}>
+                  Update payment method
+                </Button>
+              )}
+              <Button variant="outline" onClick={() => manage.mutate()} disabled={manage.isPending}>
+                Manage billing
+                <ExternalLink />
+              </Button>
+              <Button variant="ghost" onClick={() => cancel.mutate()} disabled={cancel.isPending}>
+                Cancel subscription
+              </Button>
+            </>
+          ) : (
             <Button onClick={() => checkout.mutate()} disabled={checkout.isPending}>
-              Subscribe - $50/year
-            </Button>
-          )}
-          {showPortal && (
-            <Button
-              variant={sub?.status === 'past_due' ? 'default' : 'outline'}
-              onClick={() => portal.mutate()}
-              disabled={portal.isPending}
-            >
-              {sub?.status === 'past_due' ? 'Update payment method' : 'Manage billing'}
-              <ExternalLink />
+              Subscribe · $50/year
             </Button>
           )}
         </CardFooter>
       </Card>
       <p className="text-xs text-muted-foreground">
-        Billing runs through Stripe on the web for every platform (the Spotify model) - the
-        mobile and desktop apps never charge you directly.
+        Billing runs through Paddle, our merchant of record: invoices, receipts, and sales tax or VAT
+        are handled by Paddle. Checkout always happens on the web - the mobile and desktop apps never
+        charge you directly.
       </p>
     </div>
   );

@@ -33,7 +33,7 @@ export function FinalCta() {
           </Button>
         </div>
         <p className="mt-6 font-mono text-xs text-muted-foreground">
-          $50/year after the trial · cancel anytime · checkout by Stripe
+          $50/year after the trial · cancel anytime · checkout by Paddle
         </p>
       </div>
     </section>

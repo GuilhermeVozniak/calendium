@@ -39,7 +39,7 @@ const threads = [
     starred: true,
   },
   {
-    sender: 'Stripe',
+    sender: 'Mercury',
     subject: 'Invoice paid: $12,400',
     snippet: 'Meridian Labs paid invoice #1042.',
     time: '8:56',

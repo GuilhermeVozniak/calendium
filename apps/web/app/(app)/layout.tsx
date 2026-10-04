@@ -37,6 +37,7 @@ import { CommandPalette } from '@/components/app/command-palette';
 import { ComposeProvider, useCompose } from '@/components/app/compose';
 import { OnboardingTour } from '@/components/app/onboarding-tour';
 import { OutboxIndicator } from '@/components/app/outbox-indicator';
+import { BillingGate } from '@/components/app/paywall';
 import { useTheme } from '@/components/theme-provider';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -106,7 +107,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                   <ActingBanner />
                   <OfflineBanner />
                   <OutboxIndicator />
-                  <main className="min-h-0 flex-1">{children}</main>
+                  <main className="flex min-h-0 flex-1 flex-col">
+                    <BillingGate>{children}</BillingGate>
+                  </main>
                 </div>
                 <AskSidebarPanel />
               </div>

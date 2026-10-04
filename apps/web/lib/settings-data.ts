@@ -1,4 +1,5 @@
 import type {
+  BillingPortalUrls,
   CalendarSubscription,
   CalendarSubscriptionInput,
   CalendarSubscriptionPatch,
@@ -7,6 +8,7 @@ import type {
   Snippet,
   Subscription,
 } from '@calendium/shared';
+import { ApiRequestError } from '@calendium/shared';
 
 import { getApiClient } from '@/lib/api';
 import { DEMO_MODE } from '@/lib/demo';
@@ -128,6 +130,30 @@ export async function fetchSubscription(): Promise<Subscription> {
     return await getApiClient().getSubscription();
   } catch (err) {
     if (DEMO_MODE) return settingsMock.getSubscription();
+    throw err;
+  }
+}
+
+// API-level billing errors (409 already_subscribed, 400 no_billing_profile,
+// 502 billing_unavailable) must propagate even in demo mode; only an
+// unreachable API falls back to the mock.
+
+/** POST /v1/billing/checkout — no arguments; the browser navigates to the returned URL. */
+export async function startCheckout(): Promise<{ url: string }> {
+  try {
+    return await getApiClient().createCheckoutSession();
+  } catch (err) {
+    if (DEMO_MODE && !(err instanceof ApiRequestError)) return settingsMock.createCheckout();
+    throw err;
+  }
+}
+
+/** POST /v1/billing/portal — temporary Paddle portal links. */
+export async function openBillingPortal(): Promise<BillingPortalUrls> {
+  try {
+    return await getApiClient().createBillingPortalSession();
+  } catch (err) {
+    if (DEMO_MODE && !(err instanceof ApiRequestError)) return settingsMock.portalUrls();
     throw err;
   }
 }

@@ -43,8 +43,9 @@ export default function PrivacyPage() {
               mail and calendar so the app can serve them quickly.
             </>,
             <>
-              <strong>Billing information.</strong> Subscriptions run through Stripe. We store your
-              subscription status and customer ID; your card details are held by Stripe, not us.
+              <strong>Billing information.</strong> Subscriptions run through Paddle, our merchant of
+              record. We store your subscription status and Paddle customer ID; your card details are
+              held by Paddle, not us.
             </>,
             <>
               <strong>Device tokens.</strong> If you enable notifications, we store the push token
@@ -80,7 +81,8 @@ export default function PrivacyPage() {
               connect, under the scopes you approve.
             </>,
             <>
-              <strong>Stripe</strong> — payment processing and billing for Cloud subscriptions.
+              <strong>Paddle</strong> — merchant of record: payment processing, invoicing and tax for
+              Cloud subscriptions.
             </>,
             <>
               <strong>OpenRouter</strong> — the AI model provider for the AI features above.

@@ -160,6 +160,10 @@ test.describe('Calendar', () => {
 
     await page.goto('/mail');
     await expect(page.getByRole('button', { name: /Compose/i })).toBeVisible();
+    // The shortcut handler lives in the mail page, which the (app) layout's
+    // BillingGate mounts only once the subscription is known - wait for page
+    // content (not just the rail) before pressing it.
+    await expect(page.getByRole('button', { name: /Postmortem: checkout latency spike/ })).toBeVisible();
 
     const isMac = await page.evaluate(() => /Mac|iPhone|iPad|iPod/.test(navigator.platform));
     const shortcut = isMac ? 'Meta+Shift+k' : 'Control+Shift+k';
