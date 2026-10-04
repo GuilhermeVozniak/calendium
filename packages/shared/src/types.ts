@@ -795,6 +795,9 @@ export interface TeamMember {
 /** Lifecycle of an email invitation. */
 export type TeamInvitationStatus = 'pending' | 'accepted' | 'revoked' | 'expired';
 
+/** How a team invitation went out (response-only, mirrors domain.InvitationDelivery). */
+export type TeamInvitationDelivery = 'mailbox' | 'smtp' | 'link';
+
 /**
  * An email invitation to join a team. The raw token appears once, inside the
  * emailed invite link; the API never returns it.
@@ -808,6 +811,13 @@ export interface TeamInvitation {
   status: TeamInvitationStatus;
   expiresAt: string;
   createdAt: string;
+  /**
+   * Response-only: the inviter's connected mailbox, the instance SMTP sender,
+   * or a link to share by hand (self-host without either).
+   */
+  delivery?: TeamInvitationDelivery;
+  /** Present only when delivery === 'link': the accept URL the inviter must share. */
+  inviteUrl?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -872,6 +882,13 @@ export interface InstanceFeatures {
   microsoft: boolean;
   ai: boolean;
   push: boolean;
+  /**
+   * An SMTP sender is configured (piece 2). Current servers always send it;
+   * typed optional (like `maps`) so pre-piece-2 servers and fixtures stay
+   * valid. Only an explicit `false` switches the web forgot-password page
+   * to the administrator instructions.
+   */
+  email?: boolean;
 }
 
 /**
