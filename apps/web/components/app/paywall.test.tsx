@@ -35,6 +35,12 @@ vi.mock('@/lib/api', () => ({
 const toastError = vi.fn();
 vi.mock('sonner', () => ({ toast: { error: (...a: unknown[]) => toastError(...a), success: vi.fn(), info: vi.fn() } }));
 
+// Settings → Account (export + delete) has its own suite; the paywall only
+// has to offer it (account lifecycle: a paywalled user keeps those rights).
+vi.mock('@/components/app/account-section', () => ({
+  AccountSection: () => <div data-testid="account-section">export + delete</div>,
+}));
+
 import { BillingGate, BillingTrialBanner, PaywallScreen, TrialBanner } from './paywall';
 
 const assignMock = vi.fn();
@@ -87,6 +93,18 @@ describe('PaywallScreen', () => {
     renderWithQuery(<PaywallScreen reason="canceled" />);
     expect(screen.getByRole('heading', { name: 'Your subscription has ended' })).toHaveFocus();
     expect(screen.getByText(/Resubscribe any time/).closest('[aria-live="polite"]')).not.toBeNull();
+  });
+
+  it('offers Account & data (export + delete) and returns to the paywall', async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<PaywallScreen reason="trial_ended" />);
+    expect(screen.queryByTestId('account-section')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Account & data' }));
+    expect(screen.getByTestId('account-section')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Subscribe · $50/year' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Back to subscription/ }));
+    expect(screen.queryByTestId('account-section')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Subscribe · $50/year' })).toBeInTheDocument();
   });
 
   it('past_due shows a secondary Manage billing action', () => {
@@ -217,6 +235,15 @@ describe('BillingGate', () => {
     fetchSubscriptionMock.mockResolvedValue(sub('canceled'));
     renderWithQuery(<BillingGate>{child}</BillingGate>);
     expect(await screen.findByRole('heading', { name: 'Your subscription has ended' })).toBeInTheDocument();
+    expect(screen.queryByTestId('app')).not.toBeInTheDocument();
+  });
+
+  it('keeps Settings → Account reachable for a denied subscription (export + delete stay available)', async () => {
+    fetchSubscriptionMock.mockResolvedValue(sub('canceled'));
+    const user = userEvent.setup();
+    renderWithQuery(<BillingGate>{child}</BillingGate>);
+    await user.click(await screen.findByRole('button', { name: 'Account & data' }));
+    expect(screen.getByTestId('account-section')).toBeInTheDocument();
     expect(screen.queryByTestId('app')).not.toBeInTheDocument();
   });
 

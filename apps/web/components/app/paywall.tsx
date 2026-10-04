@@ -4,12 +4,13 @@ import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
-import { Lock, LogOut, X } from 'lucide-react';
+import { ArrowLeft, Lock, LogOut, UserCog, X } from 'lucide-react';
 import { toast } from 'sonner';
 
 import type { PaymentRequiredReason, Subscription } from '@calendium/shared';
 import { ApiRequestError, subscriptionDenialReason, TRIAL_BANNER_DAYS, trialDaysLeft } from '@calendium/shared';
 
+import { AccountSection } from '@/components/app/account-section';
 import { Button } from '@/components/ui/button';
 import { onPaymentRequired } from '@/lib/api';
 import { fetchSubscription, openBillingPortal, startCheckout } from '@/lib/settings-data';
@@ -83,8 +84,41 @@ const COPY: Record<PaymentRequiredReason, { title: string; body: string }> = {
   },
 };
 
-/** Full-pane paywall rendered by the (app) layout in place of the page. */
+/**
+ * Full-pane paywall rendered by the (app) layout in place of the page. It
+ * keeps one escape hatch into the app: "Account & data" renders Settings →
+ * Account (download my data, delete account) — neither is entitlement-gated,
+ * so a lapsed user can always take their data or leave.
+ */
 export function PaywallScreen({ reason, className }: { reason: PaymentRequiredReason; className?: string }) {
+  const [showAccount, setShowAccount] = React.useState(false);
+  if (showAccount) {
+    return (
+      <section aria-label="Account and data" className={cn('overflow-y-auto', className)}>
+        <div className="mx-auto flex max-w-3xl flex-col gap-4 px-6 py-8">
+          <div>
+            <Button variant="ghost" size="sm" onClick={() => setShowAccount(false)}>
+              <ArrowLeft /> Back to subscription
+            </Button>
+          </div>
+          <h1 className="text-xl font-semibold tracking-tight">Account &amp; data</h1>
+          <AccountSection />
+        </div>
+      </section>
+    );
+  }
+  return <PaywallPanel reason={reason} className={className} onShowAccount={() => setShowAccount(true)} />;
+}
+
+function PaywallPanel({
+  reason,
+  className,
+  onShowAccount,
+}: {
+  reason: PaymentRequiredReason;
+  className?: string;
+  onShowAccount: () => void;
+}) {
   const router = useRouter();
   const checkout = useCheckoutMutation();
   const updatePayment = useBillingPortalMutation('updatePayment');
@@ -124,16 +158,21 @@ export function PaywallScreen({ reason, className }: { reason: PaymentRequiredRe
             Subscribe · $50/year
           </Button>
         )}
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={async () => {
-            await performSignOut();
-            router.replace('/signin');
-          }}
-        >
-          <LogOut /> Sign out
-        </Button>
+        <div className="flex flex-wrap justify-center gap-1">
+          <Button variant="ghost" size="sm" onClick={onShowAccount}>
+            <UserCog /> Account &amp; data
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={async () => {
+              await performSignOut();
+              router.replace('/signin');
+            }}
+          >
+            <LogOut /> Sign out
+          </Button>
+        </div>
       </div>
     </section>
   );
