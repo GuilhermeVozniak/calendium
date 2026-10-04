@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -112,9 +113,11 @@ func TestPostOneClickBlocksPrivateAndLoopbackAddresses(t *testing.T) {
 }
 
 func TestPostOneClickBlocksCGNATAndNAT64(t *testing.T) {
-	for _, target := range []string{"https://100.64.0.1:1/x", "https://[64:ff9b::7f00:1]:1/x"} {
-		if err := New().PostOneClick(context.Background(), target); err == nil {
-			t.Fatalf("%s accepted, want rejection by the dial guard", target)
+	// The error must come from the guard itself: an unroutable target would
+	// fail anyway (eventually), so a bare err != nil proves nothing.
+	for _, target := range []string{"https://100.64.0.1:1/x", "https://[64:ff9b::7f00:1]:1/x", "https://[64:ff9b:1::a00:5]:1/x"} {
+		if err := New().PostOneClick(context.Background(), target); err == nil || !strings.Contains(err.Error(), "netguard") {
+			t.Fatalf("%s: err = %v, want a netguard refusal", target, err)
 		}
 	}
 }

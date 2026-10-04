@@ -41,7 +41,11 @@ func TestIsPublic(t *testing.T) {
 		// NAT64 64:ff9b::/96 (RFC 6052): the whole prefix is blocked.
 		{"64:ff9b::7f00:1", false},
 		{"64:ff9b::5db8:d822", false},
-		{"64:ff9b:1::1", true},
+		// Local-use NAT64 64:ff9b:1::/48 (RFC 8215): a deployment with a
+		// local NAT64 gateway would reach internal IPv4 through it.
+		{"64:ff9b:1::1", false},
+		{"64:ff9b:1:ffff:ffff:ffff:ffff:ffff", false},
+		{"64:ff9b:2::1", true},
 	}
 	for _, tc := range cases {
 		if got := IsPublic(netip.MustParseAddr(tc.addr)); got != tc.want {
@@ -60,7 +64,7 @@ func TestControl(t *testing.T) {
 		}
 	}
 	for _, addr := range []string{
-		"100.64.0.1:443", "[64:ff9b::7f00:1]:443", "127.0.0.1:1", "[::ffff:127.0.0.1]:443",
+		"100.64.0.1:443", "[64:ff9b::7f00:1]:443", "[64:ff9b:1::a00:5]:443", "127.0.0.1:1", "[::ffff:127.0.0.1]:443",
 		"[fe80::1%25eth0]:443", "[fe80::1%eth0]:443", "not-an-address", "host.example:443",
 	} {
 		if err := Control("tcp", addr, nil); err == nil {

@@ -189,15 +189,36 @@ func TestDialGuardBlocksPrivateResolution(t *testing.T) {
 	}
 }
 
+// TestGuardDialerRefusesAtSyscallLayer: the dialer behind the guard carries
+// netguard.Control, so even a dial that skipped the pre-check (a vetted
+// literal) is refused for a private address before connect.
+func TestGuardDialerRefusesAtSyscallLayer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	d := guardDialer()
+	if d.Control == nil {
+		t.Fatal("guard dialer has no Control hook")
+	}
+	conn, err := d.DialContext(context.Background(), "tcp", srv.Listener.Addr().String())
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("loopback dial succeeded through the guard dialer")
+	}
+	if !strings.Contains(err.Error(), "netguard") {
+		t.Fatalf("err = %v, want a netguard refusal", err)
+	}
+}
+
 // TestIsPublicAddr: the guard predicate delegates to netguard (whose test
 // pins every refused range), so CGNAT and NAT64 are refused here too.
 func TestIsPublicAddr(t *testing.T) {
 	cases := map[string]bool{
-		"93.184.216.34":   true,
-		"10.0.0.5":        false,
-		"::ffff:10.0.0.5": false,
-		"100.64.0.1":      false, // CGNAT
-		"64:ff9b::7f00:1": false, // NAT64
+		"93.184.216.34":    true,
+		"10.0.0.5":         false,
+		"::ffff:10.0.0.5":  false,
+		"100.64.0.1":       false, // CGNAT
+		"64:ff9b::7f00:1":  false, // NAT64
+		"64:ff9b:1::a00:5": false, // local-use NAT64
 	}
 	for addr, want := range cases {
 		if got := isPublicAddr(netip.MustParseAddr(addr)); got != want {

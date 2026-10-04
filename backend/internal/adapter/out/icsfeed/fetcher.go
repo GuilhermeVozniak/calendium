@@ -98,7 +98,7 @@ func newFetcher(hc *http.Client, lookup lookupFunc) *Fetcher {
 // made to the vetted literal itself — a rebinding DNS server never gets a
 // second query to answer differently.
 func guardedDialContext(lookup lookupFunc) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	dialer := guardDialer()
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -129,6 +129,13 @@ func guardedDialContext(lookup lookupFunc) func(ctx context.Context, network, ad
 		}
 		return nil, dialErr
 	}
+}
+
+// guardDialer is the dialer under guardedDialContext: netguard.Control
+// re-checks the literal at the syscall layer, the same guarantee the
+// unsubscribe client has.
+func guardDialer() *net.Dialer {
+	return &net.Dialer{Timeout: 10 * time.Second, Control: netguard.Control}
 }
 
 // isPublicAddr delegates to the shared SSRF predicate (netguard.IsPublic:
