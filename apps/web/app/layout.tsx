@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
+import { headers } from 'next/headers';
 
 import { Providers } from '@/components/providers';
 
@@ -41,13 +42,17 @@ export const viewport: Viewport = {
  */
 const themeInitScript = `(function(){try{var t=localStorage.getItem("calendium-theme");var d=t==="dark"||(t!=="light"&&window.matchMedia("(prefers-color-scheme: dark)").matches);var r=document.documentElement;r.classList.toggle("dark",d);r.style.colorScheme=d?"dark":"light";var n=localStorage.getItem("calendium-named-theme");if(n==="ocean"||n==="forest"||n==="sunset"){r.dataset.theme=n}}catch(e){}})();`;
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Set by middleware.ts; empty on /offline (force-static, no middleware),
+  // where the static CSP allows inline scripts instead. Reading headers()
+  // here makes every matched route dynamic (accepted by the spec).
+  const nonce = (await headers()).get('x-nonce') ?? undefined;
   return (
     <html lang="en" className={inter.variable} suppressHydrationWarning>
       <head>
         {/* biome-ignore lint/security/noDangerouslySetInnerHtml: hardcoded, static
             script (themeInitScript above) — not user-controlled input. */}
-        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        <script id="theme-init" nonce={nonce} dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
       <body className="font-sans antialiased">
         <Providers>{children}</Providers>

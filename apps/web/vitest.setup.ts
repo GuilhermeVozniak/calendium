@@ -3,6 +3,10 @@ import { afterEach } from 'vitest';
 
 import '@testing-library/jest-dom/vitest';
 
+// lib/auth.ts asserts BETTER_AUTH_SECRET at module load; give the unit
+// suites a syntactically valid (never used) value.
+process.env.BETTER_AUTH_SECRET ??= 'vitest-better-auth-secret-0123456789abcdef';
+
 // Unmount every renderHook()/render() tree between tests so effects (event
 // listeners, timers) from one test never leak into the next. @testing-library
 // only auto-registers this when `afterEach` is a true global, which our

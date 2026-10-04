@@ -5,6 +5,7 @@ import { expo } from '@better-auth/expo';
 import { Pool } from 'pg';
 
 import { CLIENT_IP_HEADER, buildTrustedOrigins } from '@/lib/auth-env';
+import { assertBetterAuthSecret } from '@/lib/auth-secret';
 import { readMailConfig } from '@/lib/email/config';
 import { verificationLink } from '@/lib/email/verification-link';
 import { resetPasswordEmail } from '@/lib/email/templates/reset-password';
@@ -12,6 +13,10 @@ import { verifyEmail } from '@/lib/email/templates/verify-email';
 import { sendMail } from '@/lib/email/transport';
 import { passwordPolicyHook } from '@/lib/password-policy-hook';
 import { rateLimitConfig } from '@/lib/rate-limit-storage';
+
+// Same rule as instrumentation.ts, enforced again at module load so a
+// route handler can never construct Better Auth around a weak secret.
+assertBetterAuthSecret();
 
 /**
  * Better Auth server — the identity provider for web, desktop, and mobile.
