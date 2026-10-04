@@ -17,8 +17,13 @@ COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 
 COPY backend/ ./
-RUN go build -ldflags="-s -w" -o /out/api ./cmd/api \
- && go build -ldflags="-s -w" -o /out/worker ./cmd/worker
+# Version stamped into httpapi.Version (GET /v1/instance "version");
+# docker-compose passes VERSION=${VERSION:-dev}, release pipelines pass the
+# tag. The worker does not link httpapi, so -X is a no-op there (kept so both
+# builds share one flag set).
+ARG VERSION=dev
+RUN go build -ldflags="-s -w -X calendium/backend/internal/adapter/in/httpapi.Version=${VERSION}" -o /out/api ./cmd/api \
+ && go build -ldflags="-s -w -X calendium/backend/internal/adapter/in/httpapi.Version=${VERSION}" -o /out/worker ./cmd/worker
 
 # ── runtime: minimal, non-root image running either binary ──────────────────
 # alpine:3.22 resolved 2026-10-04 (docker buildx imagetools inspect)

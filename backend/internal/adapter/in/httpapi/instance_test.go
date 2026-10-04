@@ -94,3 +94,33 @@ func TestHandleInstanceFeaturesEmailFalseIsExplicit(t *testing.T) {
 		t.Fatalf("features.email = %s, want false", features["email"])
 	}
 }
+
+// Version is a linker-stamped variable (backend/Dockerfile ARG VERSION):
+// the discovery document must echo whatever the build set.
+func TestHandleInstance_EchoesTheStampedVersion(t *testing.T) {
+	prev := Version
+	Version = "9.9.9"
+	t.Cleanup(func() { Version = prev })
+
+	h := New(Deps{
+		Instance: InstanceInfo{Name: "Calendium", Mode: ModeCloud, Version: Version, AuthProviders: []string{"email"}},
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/instance", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var got InstanceInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Version != "9.9.9" {
+		t.Fatalf("version = %q, want 9.9.9", got.Version)
+	}
+}
+
+func TestVersion_DefaultsToDevForSourceBuilds(t *testing.T) {
+	if Version != "dev" {
+		t.Fatalf("Version = %q, want \"dev\" (release images set it via -ldflags -X)", Version)
+	}
+}
