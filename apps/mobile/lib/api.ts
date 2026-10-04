@@ -29,8 +29,28 @@ export function onPaymentRequired(listener: () => void): () => void {
   };
 }
 
+let suspended = false;
+
+/**
+ * Pauses every Go API request (and JWT mint) until resumeApi(). Account
+ * deletion suspends the client before calling Better Auth's deleteUser: a
+ * background request carrying a JWT minted for the user being deleted would
+ * pass requireAuth → EnsureUser and re-create the purged `users` row.
+ * Suspending also drops the cached JWT.
+ */
+export function suspendApi(): void {
+  suspended = true;
+  api.invalidateAccessToken();
+}
+
+/** Lifts suspendApi() (a failed delete, or the next sign-in). */
+export function resumeApi(): void {
+  suspended = false;
+}
+
 /** fetch that reports 402s to the listeners above; resolves the global at call time. */
 const notifyingFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  if (suspended) throw new Error('Calendium API requests are paused.');
   const res = await fetch(input, init);
   if (res.status === 402) {
     for (const listener of [...paymentRequiredListeners]) listener();
@@ -42,7 +62,8 @@ const notifyingFetch = (async (input: RequestInfo | URL, init?: RequestInit) => 
 // request, so updating it here re-points the shared client at runtime.
 const options = {
   baseUrl: DEFAULT_BASE,
-  getAccessToken: (): Promise<string | null> => getBetterAuthToken(),
+  getAccessToken: (): Promise<string | null> =>
+    suspended ? Promise.resolve(null) : getBetterAuthToken(),
   fetch: notifyingFetch,
 };
 

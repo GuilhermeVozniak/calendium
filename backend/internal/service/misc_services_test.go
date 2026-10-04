@@ -795,7 +795,7 @@ func TestSettingsServiceUpdate_RoundTrip(t *testing.T) {
 			{Weekday: 1, Start: "09:00", End: "17:00"},
 		},
 	}
-	updated, err := svc.Update(ctx, "u1", in)
+	updated, err := svc.Update(ctx, "u1", in, nil)
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -826,7 +826,7 @@ func TestSettingsServiceUpdate_InvalidTimeZone(t *testing.T) {
 			repo := newUserSettingsRepo()
 			svc := NewSettingsService(repo)
 
-			_, err := svc.Update(context.Background(), "u1", domain.UserSettings{TimeZone: tz})
+			_, err := svc.Update(context.Background(), "u1", domain.UserSettings{TimeZone: tz}, nil)
 			if !errors.Is(err, domain.ErrValidation) {
 				t.Fatalf("err = %v, want ErrValidation for TimeZone %q", err, tz)
 			}
@@ -836,7 +836,7 @@ func TestSettingsServiceUpdate_InvalidTimeZone(t *testing.T) {
 	t.Run("valid zone is accepted", func(t *testing.T) {
 		repo := newUserSettingsRepo()
 		svc := NewSettingsService(repo)
-		if _, err := svc.Update(context.Background(), "u1", domain.UserSettings{TimeZone: "America/New_York"}); err != nil {
+		if _, err := svc.Update(context.Background(), "u1", domain.UserSettings{TimeZone: "America/New_York"}, nil); err != nil {
 			t.Fatalf("Update: %v", err)
 		}
 	})
@@ -853,7 +853,7 @@ func TestSettingsServiceUpdate_InvalidWorkingHours(t *testing.T) {
 		WorkingHours: []domain.AvailabilityWindow{
 			{Weekday: 1, Start: "17:00", End: "09:00"},
 		},
-	})
+	}, nil)
 	if !errors.Is(err, domain.ErrValidation) {
 		t.Fatalf("err = %v, want ErrValidation", err)
 	}

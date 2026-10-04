@@ -1,7 +1,7 @@
 import { ApiClient } from '@calendium/shared';
 
 import { getActiveServerConfig, isDemoMode } from './server-config';
-import { accessTokens, getAccessToken } from './auth';
+import { accessTokens, getAccessToken, isApiSuspended } from './auth';
 
 /** True when a server is configured; otherwise mock data drives the UI. */
 export function apiConfigured(): boolean {
@@ -24,6 +24,8 @@ export function onPaymentRequired(listener: () => void): () => void {
 
 /** fetch that reports 402s to the listeners above; resolves the global at call time. */
 const notifyingFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  // Account deletion pauses the API (lib/auth.ts suspendApi).
+  if (isApiSuspended()) throw new Error('Calendium API requests are paused.');
   const res = await fetch(input, init);
   if (res.status === 402) {
     for (const listener of [...paymentRequiredListeners]) listener();
@@ -63,6 +65,7 @@ export async function orMock<T>(real: () => Promise<T>, mock: () => T | Promise<
  * endpoint (see ApiClient#attachmentContentPath).
  */
 export async function fetchAttachmentBlob(attachmentId: string): Promise<Blob> {
+  if (isApiSuspended()) throw new Error('Calendium API requests are paused.');
   const token = await getAccessToken();
   const baseUrl = getActiveServerConfig()?.serverUrl ?? '';
   const res = await fetch(`${baseUrl}${api.attachmentContentPath(attachmentId)}`, {

@@ -86,7 +86,10 @@ docker compose -f docker-compose.yml -f docker-compose.external-db.yml \
 curl https://<your-domain>/v1/instance      # mode: self_host
 ```
 
-Set the rest of `.env` (`SELF_HOSTED=true`, `TOKEN_ENCRYPTION_KEY`, `DOMAIN`,
+Set the rest of `.env` (`SELF_HOSTED=true`, `TOKEN_ENCRYPTION_KEY`,
+`INTERNAL_API_SECRET` on api, worker and web, `INTERNAL_API_URL` on web pointing
+at the api's internal address (on Cloud Run, the api service URL with the secret
+stored in Secret Manager), `DOMAIN`,
 `ACME_EMAIL`, Better Auth (`BETTER_AUTH_SECRET`/`BETTER_AUTH_URL`), provider OAuth,
 loopback `API_BIND`/`WEB_BIND` defaults) exactly as in the
 [VPS guide](./vps.md#step-6--clone-and-configure). Everything else
@@ -130,7 +133,8 @@ docker buildx build --platform linux/amd64 -f apps/web/Dockerfile \
 
 ```bash
 printf '%s' "$TOKEN_KEY" | gcloud secrets create TOKEN_ENCRYPTION_KEY --data-file=-
-# ...repeat for BETTER_AUTH_SECRET, GOOGLE_CLIENT_SECRET, MS_CLIENT_SECRET, etc.
+# ...repeat for INTERNAL_API_SECRET (api, worker and web), BETTER_AUTH_SECRET,
+#    GOOGLE_CLIENT_SECRET, MS_CLIENT_SECRET, etc.
 ```
 
 ### B4. Deploy the API

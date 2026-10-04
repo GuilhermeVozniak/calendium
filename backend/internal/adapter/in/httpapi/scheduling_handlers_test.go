@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -605,5 +606,55 @@ func TestSchedulingRoutesRequireAuth(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s %s anon status = %d, want 401", req.method, req.path, rec.Code)
 		}
+	}
+}
+
+func TestUpdateSettingsAIBackgroundTriState(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		wantCall bool
+		wantOn   bool
+	}{
+		{"absent keeps stored value", `{"timeZone":"UTC","workingHours":[],"workingLocation":""}`, false, false},
+		{"explicit null keeps stored value", `{"timeZone":"UTC","workingHours":[],"workingLocation":"","aiBackground":null}`, false, false},
+		{"true", `{"timeZone":"UTC","workingHours":[],"workingLocation":"","aiBackground":true}`, true, true},
+		{"false", `{"timeZone":"UTC","workingHours":[],"workingLocation":"","aiBackground":false}`, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			on := true
+			if tc.wantCall {
+				on = tc.wantOn
+			}
+			h.settings.updateRet = domain.UserSettings{TimeZone: "UTC", WorkingHours: []domain.AvailabilityWindow{}, AIBackground: on}
+			rec := h.authed(http.MethodPut, "/v1/settings", strings.NewReader(tc.body))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			// One service call carries the whole document plus the optional
+			// switch, so the write is atomic (no half-applied PUT).
+			if h.settings.updateCalls != 1 || h.settings.gotUpdateUserID != defaultUserID {
+				t.Fatalf("Update calls = %d (user %q), want exactly 1", h.settings.updateCalls, h.settings.gotUpdateUserID)
+			}
+			if (h.settings.gotUpdateAI != nil) != tc.wantCall {
+				t.Fatalf("Update aiBackground = %v, wantCall=%v", h.settings.gotUpdateAI, tc.wantCall)
+			}
+			if tc.wantCall && *h.settings.gotUpdateAI != tc.wantOn {
+				t.Fatalf("Update aiBackground = %v, want %v", *h.settings.gotUpdateAI, tc.wantOn)
+			}
+			if tc.wantCall && !strings.Contains(rec.Body.String(), fmt.Sprintf(`"aiBackground":%v`, tc.wantOn)) {
+				t.Fatalf("response must carry the switch: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestUpdateSettingsInvalidAIBackgroundIs400(t *testing.T) {
+	h := newHarness(t)
+	rec := h.authed(http.MethodPut, "/v1/settings", strings.NewReader(`{"timeZone":"UTC","aiBackground":"yes"}`))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", rec.Code)
 	}
 }

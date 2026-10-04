@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+// internalSecretHex is a distinct INTERNAL_API_SECRET so a leak is
+// attributable (validKeyHex already backs TOKEN_ENCRYPTION_KEY).
+const internalSecretHex = "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100"
+
 func setBaseEnv(t *testing.T, extra map[string]string) {
 	t.Helper()
 	clearEnv(t)
@@ -418,7 +422,8 @@ func TestSummaryNeverContainsSecrets(t *testing.T) {
 		"SMTP_HOST": "smtp.example.test", "SMTP_FROM": "noreply@example.test", "SMTP_USER": "u", "SMTP_PASS": "SECRET-smtp",
 		"APNS_KEY_P8": "SECRET-apns", "FCM_SERVICE_ACCOUNT_JSON": "SECRET-fcm", "VAPID_PRIVATE_KEY": "SECRET-vapid",
 		"OPENROUTER_API_KEY": "SECRET-openrouter", "SELF_HOSTED": "true",
-		"GOOGLE_CLIENT_ID": "gid", "APPLE_CLIENT_ID": "aid", "MS_CLIENT_ID": "mid", "TODOIST_CLIENT_ID": "tid", "HUBSPOT_CLIENT_ID": "hid",
+		"INTERNAL_API_SECRET": internalSecretHex,
+		"GOOGLE_CLIENT_ID":    "gid", "APPLE_CLIENT_ID": "aid", "MS_CLIENT_ID": "mid", "TODOIST_CLIENT_ID": "tid", "HUBSPOT_CLIENT_ID": "hid",
 	}
 	setBaseEnv(t, secrets)
 	c, _, err := FromEnv()
@@ -435,6 +440,9 @@ func TestSummaryNeverContainsSecrets(t *testing.T) {
 	}
 	if strings.Contains(line, validKeyHex) {
 		t.Errorf("summary leaks TOKEN_ENCRYPTION_KEY: %s", line)
+	}
+	if strings.Contains(line, internalSecretHex) {
+		t.Errorf("summary leaks INTERNAL_API_SECRET: %s", line)
 	}
 	if !strings.Contains(line, "calendium:***@db") {
 		t.Errorf("summary should carry the redacted DSN: %s", line)

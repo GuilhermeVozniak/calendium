@@ -47,8 +47,16 @@ type TxRunner interface {
 // UserRepo persists users keyed by the Better Auth subject id.
 type UserRepo interface {
 	// Upsert inserts the user or refreshes email/name/avatar on conflict.
+	// A tombstoned id (see Tombstone) is refused with domain.ErrUserDeleted
+	// in the same statement: a purged account is never re-created.
 	Upsert(ctx context.Context, u domain.User) (domain.User, error)
 	GetByID(ctx context.Context, id string) (domain.User, error)
+	// Delete removes the users row; every owned table cascades (migration
+	// 0029 audit). domain.ErrNotFound when absent.
+	Delete(ctx context.Context, id string) error
+	// Tombstone records id in deleted_users (idempotent, not FK'd to
+	// users). Purge calls it in the same transaction as Delete.
+	Tombstone(ctx context.Context, id string) error
 }
 
 // SubscriptionRepo persists the one-row-per-user billing mirror
@@ -150,6 +158,9 @@ type ThreadRepo interface {
 	// SetReminderIfUnset arms remind_at only when currently null, so an AI
 	// auto-reminder never overwrites a user-chosen reminder.
 	SetReminderIfUnset(ctx context.Context, threadID string, remindAt time.Time) error
+	// ListByAccountPage pages one account's threads by id (keyset: id >
+	// afterID, ascending, at most limit) for the data export.
+	ListByAccountPage(ctx context.Context, accountID, afterID string, limit int) ([]domain.Thread, error)
 }
 
 // OpensQuery pages the Recent Opens feed (keyset on opened_at DESC, id DESC).
@@ -235,6 +246,9 @@ type SnippetRepo interface {
 	ListByUser(ctx context.Context, userID string) ([]domain.Snippet, error)
 	// ListByTeams returns every snippet scoped to any of teamIDs.
 	ListByTeams(ctx context.Context, teamIDs []string) ([]domain.Snippet, error)
+	// ListTeamByAuthor returns the team snippets userID authored (team_id
+	// set), ordered by name (data export; purge cascades them via user_id).
+	ListTeamByAuthor(ctx context.Context, userID string) ([]domain.Snippet, error)
 	Update(ctx context.Context, s domain.Snippet) error
 	Delete(ctx context.Context, id string) error
 }
@@ -275,6 +289,9 @@ type EventRepo interface {
 	// provider syncs cannot wipe them — a deliberate clear (location edited
 	// without a fresh autocomplete pick) therefore needs this targeted write.
 	ClearGeo(ctx context.Context, id string) error
+	// ListByUserPage pages every event on the user's calendars by id
+	// (keyset: id > afterID, ascending, at most limit) for the data export.
+	ListByUserPage(ctx context.Context, userID, afterID string, limit int) ([]domain.Event, error)
 }
 
 // --- Tasks (M2.8) ---
@@ -316,6 +333,8 @@ type EventNoteRepo interface {
 	// Upsert replaces the note for (eventID); empty BodyMD+Links deletes it.
 	Upsert(ctx context.Context, n domain.EventNote) (domain.EventNote, error)
 	GetByEventID(ctx context.Context, eventID string) (domain.EventNote, error)
+	// ListByUser returns every note the user wrote, ordered by event id.
+	ListByUser(ctx context.Context, userID string) ([]domain.EventNote, error)
 }
 
 // EventTemplateRepo persists per-user saved event defaults.
@@ -490,6 +509,9 @@ type BookingRepo interface {
 	// ListActiveInRange returns hold+confirmed bookings overlapping [from,to).
 	ListActiveInRange(ctx context.Context, linkID string, from, to time.Time) ([]domain.Booking, error)
 	ListByUser(ctx context.Context, userID string, limit int) ([]domain.Booking, error)
+	// ListByUserPage keyset-pages every booking on the user's links by id
+	// (ids > afterID, ascending, at most limit) — the uncapped export read.
+	ListByUserPage(ctx context.Context, userID, afterID string, limit int) ([]domain.Booking, error)
 	// Confirm promotes a hold: status="confirmed", event_id set, hold_expires_at cleared.
 	Confirm(ctx context.Context, id, eventID string) error
 	Cancel(ctx context.Context, id string) error
@@ -519,10 +541,29 @@ type TimeProposalRepo interface {
 }
 
 // UserSettingsRepo persists per-user scheduling settings; Get returns a
-// zero-value UserSettings (TimeZone "UTC") when no row exists.
+// zero-value UserSettings (TimeZone "UTC", AIBackground true) when no row
+// exists.
 type UserSettingsRepo interface {
 	Get(ctx context.Context, userID string) (domain.UserSettings, error)
+	// Upsert writes time zone, working hours and location. It NEVER writes
+	// ai_background (new rows take the column default true; existing rows
+	// keep their value) so a client that omits the field cannot flip it.
 	Upsert(ctx context.Context, s domain.UserSettings) error
+	// Save is Upsert plus, when aiBackground is non-nil, ai_background — in
+	// a single statement, so the document and the switch commit together.
+	Save(ctx context.Context, s domain.UserSettings, aiBackground *bool) error
+	// SetAIBackground writes only ai_background, creating the row with
+	// defaults when absent.
+	SetAIBackground(ctx context.Context, userID string, on bool) error
+}
+
+// UserExportRepo enforces the one-export-per-hour throttle (table
+// user_exports).
+type UserExportRepo interface {
+	// Claim is one atomic upsert: ok=true (re)stamps the slot with now;
+	// ok=false reports the earliest retry time when the user exported less
+	// than window ago.
+	Claim(ctx context.Context, userID string, now time.Time, window time.Duration) (ok bool, retryAt time.Time, err error)
 }
 
 // --- Collaboration (M2.7) ---
@@ -544,6 +585,15 @@ type TeamRepo interface {
 	RemoveMember(ctx context.Context, teamID, userID string) error
 	// CountByRole supports the last-owner invariant.
 	CountByRole(ctx context.Context, teamID string, role domain.TeamRole) (int, error)
+	// ListMemberships returns every team_members row for userID (the
+	// account-deletion team-ownership check).
+	ListMemberships(ctx context.Context, userID string) ([]domain.TeamMember, error)
+	// LockMembershipsForUpdate row-locks (SELECT … FOR UPDATE) every team
+	// userID belongs to and all of those teams' member rows until the
+	// surrounding transaction ends, so the purge's team re-check cannot race
+	// an invitation acceptance, a role change or a co-owner leaving. Only
+	// meaningful inside TxRunner.RunInTx.
+	LockMembershipsForUpdate(ctx context.Context, userID string) error
 }
 
 // TeamInvitationRepo persists email invitations (token stored hashed).
@@ -581,6 +631,9 @@ type CommentRepo interface {
 	// ListByThreadTeam returns the live comments one team sees on one
 	// thread, oldest first.
 	ListByThreadTeam(ctx context.Context, threadID, teamID string) ([]domain.Comment, error)
+	// ListByAuthor returns every live comment authorID wrote, across all
+	// threads and teams, oldest first (data export).
+	ListByAuthor(ctx context.Context, authorID string) ([]domain.Comment, error)
 	Update(ctx context.Context, c domain.Comment) error
 	SoftDelete(ctx context.Context, id string, at time.Time) error
 }

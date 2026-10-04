@@ -44,8 +44,11 @@ func (r TeamRole) AtLeast(min TeamRole) bool { return r.rank() >= min.rank() }
 // collaborative surface (shares, comments, read statuses, calendars,
 // availability) requires its own explicit opt-in (privacy default).
 type Team struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// CreatedBy is the creator's user id; empty when the creator's account
+	// was deleted (teams.created_by is SET NULL on user deletion, scanned
+	// back as COALESCE(created_by, '')).
 	CreatedBy string    `json:"createdBy"`
 	CreatedAt time.Time `json:"createdAt"`
 }

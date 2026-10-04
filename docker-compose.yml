@@ -134,6 +134,10 @@ services:
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+      # Server-to-server base URL of the Go API for account deletion
+      # (/v1/internal/*). Like AUTH_JWKS_URL above, the public origin is not
+      # reachable from inside the network, so default to the api service.
+      INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:8080}
       NEXT_PUBLIC_PADDLE_CLIENT_TOKEN: ${NEXT_PUBLIC_PADDLE_CLIENT_TOKEN:-}
       NEXT_PUBLIC_PADDLE_ENV: ${NEXT_PUBLIC_PADDLE_ENV:-sandbox}
       # Auth rate limits key on the right-most X-Forwarded-For hop outside

@@ -521,3 +521,22 @@ func TestAuthedRoutesRequireToken(t *testing.T) {
 		})
 	}
 }
+
+func TestCORSSkipsInternalRoutes(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	h := corsMiddleware(next, nil, true)
+	req := httptest.NewRequest(http.MethodDelete, "/v1/internal/users/u1", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatal("/v1/internal/* must never reflect an Origin")
+	}
+	req = httptest.NewRequest(http.MethodGet, "/v1/me", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Header().Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
+		t.Fatal("ordinary routes keep reflecting allowed origins")
+	}
+}

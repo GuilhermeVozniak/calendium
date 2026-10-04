@@ -23,6 +23,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -2000,5 +2001,158 @@ func TestDeliverDraftNoReminderDetectForStandalone(t *testing.T) {
 		if job.Kind == domain.AiJobReminderDetect {
 			t.Fatal("reminder_detect should not be enqueued for standalone drafts")
 		}
+	}
+}
+
+// TestBackgroundAIOffSkipsEnqueue: Settings → AI → "Background AI
+// processing" off skips every ingest enqueue (summary, instant replies,
+// auto draft, classify) and the first-sync voice profile; on (default) and
+// a settings repo error both enqueue as before.
+func TestBackgroundAIOffSkipsEnqueue(t *testing.T) {
+	cases := []struct {
+		name        string
+		settings    *fakeUserSettingsRepo // nil = dep not wired
+		aiOff       bool
+		repoErr     bool
+		wantEnqueue bool
+	}{
+		{name: "default on", settings: newUserSettingsRepo(), wantEnqueue: true},
+		{name: "switched off", settings: newUserSettingsRepo(), aiOff: true, wantEnqueue: false},
+		{name: "repo error reads as on", settings: newUserSettingsRepo(), repoErr: true, wantEnqueue: true},
+		{name: "dep not wired", settings: nil, wantEnqueue: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+			accounts := newAccountRepo()
+			if _, err := accounts.Create(ctx, domain.ConnectedAccount{
+				ID: "a1", UserID: "u1", Provider: domain.ProviderGoogle, Email: "me@acme.com", LastSyncedAt: nil, // first sync
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := accounts.SaveTokens(ctx, "a1", port.TokenSet{AccessToken: "valid", ExpiresAt: now.Add(time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.settings != nil {
+				if tc.aiOff {
+					if err := tc.settings.SetAIBackground(ctx, "u1", false); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tc.repoErr {
+					tc.settings.getErr = errors.New("db down")
+				}
+			}
+			classifiers := newClassifierRepo()
+			if _, err := classifiers.Create(ctx, domain.AiClassifier{UserID: "u1", Name: "rule", Prompt: "p", LabelName: "L", Enabled: true}); err != nil {
+				t.Fatal(err)
+			}
+			mail := newMailProvider()
+			mail.syncPage = port.MailSyncPage{
+				Threads: []domain.Thread{{ProviderThreadID: "pt1", InInbox: true, LastMessageAt: now}},
+				Messages: []port.IncomingMessage{{Message: domain.Message{
+					ProviderMessageID: "pm1", ThreadID: "pt1",
+					From: domain.EmailAddress{Email: "sender@example.org"},
+					To:   []domain.EmailAddress{{Email: "me@acme.com"}}, SentAt: now,
+				}}},
+				NextCursor: "c1",
+			}
+			aiJobs := newAiJobRepo()
+			deps := SyncServiceDeps{
+				Accounts: accounts, Labels: newLabelRepo(), Threads: newThreadRepo(), Messages: newMessageRepo(),
+				SyncState: newSyncStateRepo(), AiJobs: aiJobs, Classifiers: classifiers,
+				MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
+				OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+				Clock:         newClock(now),
+			}
+			if tc.settings != nil {
+				deps.UserSettings = tc.settings
+			}
+			svc := NewSyncService(deps)
+			if err := svc.SyncAccount(ctx, "a1"); err != nil {
+				t.Fatalf("SyncAccount: %v", err)
+			}
+			kinds := map[domain.AiJobKind]bool{}
+			for _, j := range aiJobs.queue {
+				kinds[j.Kind] = true
+			}
+			wantKinds := []domain.AiJobKind{domain.AiJobVoiceProfile, domain.AiJobThreadSummary, domain.AiJobInstantReplies, domain.AiJobAutoDraft, domain.AiJobClassify}
+			if tc.wantEnqueue {
+				for _, k := range wantKinds {
+					if !kinds[k] {
+						t.Fatalf("kind %q not enqueued; queue=%v", k, kinds)
+					}
+				}
+			} else if len(aiJobs.queue) != 0 {
+				t.Fatalf("background AI off must enqueue nothing, got %v", kinds)
+			}
+		})
+	}
+}
+
+// reminder_detect rides the delivery path (ProcessDueWork), so it reads the
+// switch per delivered draft.
+func TestBackgroundAIOffSkipsReminderDetect(t *testing.T) {
+	for _, aiOff := range []bool{false, true} {
+		t.Run(fmt.Sprintf("off=%v", aiOff), func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+			accounts := newAccountRepo()
+			if _, err := accounts.Create(ctx, domain.ConnectedAccount{ID: "a1", UserID: "u1", Provider: domain.ProviderGoogle, Email: "me@acme.com"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := accounts.SaveTokens(ctx, "a1", port.TokenSet{AccessToken: "at", ExpiresAt: now.Add(time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+			threads := newThreadRepo()
+			if _, err := threads.Upsert(ctx, domain.Thread{ID: "t1", AccountID: "a1", ProviderThreadID: "pt1"}); err != nil {
+				t.Fatal(err)
+			}
+			drafts := newDraftRepo(accounts)
+			past := now.Add(-time.Minute)
+			tid := "t1"
+			draft := domain.Draft{ID: "d1", AccountID: "a1", ThreadID: &tid, To: []domain.EmailAddress{{Email: "friend@example.org"}}, Subject: "Lunch?", BodyHTML: "<p>hi</p>", ScheduledAt: &past}
+			if _, err := drafts.Create(ctx, draft); err != nil {
+				t.Fatal(err)
+			}
+			drafts.claimOutcome["d1"] = true
+			drafts.scheduledDue = []domain.Draft{draft}
+			mail := newMailProvider()
+			mail.sentResult = port.SentMessage{ProviderMessageID: "pm1", ProviderThreadID: "pt1", SentAt: now}
+			settings := newUserSettingsRepo()
+			if aiOff {
+				if err := settings.SetAIBackground(ctx, "u1", false); err != nil {
+					t.Fatal(err)
+				}
+			}
+			aiJobs := newAiJobRepo()
+			svc := NewSyncService(SyncServiceDeps{
+				Accounts: accounts, Threads: threads, Messages: newMessageRepo(), Drafts: drafts,
+				AiJobs: aiJobs, UserSettings: settings,
+				MailProviders: map[domain.Provider]port.MailProvider{domain.ProviderGoogle: mail},
+				OAuth:         map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+				Clock:         newClock(now),
+			})
+			if err := svc.ProcessDueWork(ctx); err != nil {
+				t.Fatalf("ProcessDueWork: %v", err)
+			}
+			got := 0
+			for _, j := range aiJobs.queue {
+				if j.Kind == domain.AiJobReminderDetect {
+					got++
+				}
+			}
+			want := 1
+			if aiOff {
+				want = 0
+			}
+			if got != want {
+				t.Fatalf("reminder_detect jobs = %d, want %d (aiOff=%v)", got, want, aiOff)
+			}
+			if len(mail.sent) != 1 {
+				t.Fatalf("the switch must never block delivery: sent=%d", len(mail.sent))
+			}
+		})
 	}
 }

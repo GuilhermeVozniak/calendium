@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"calendium/backend/internal/domain"
 )
@@ -29,6 +32,9 @@ func TestStatusFor(t *testing.T) {
 		{"ai output invalid", fmt.Errorf("x: %w", domain.ErrAIOutput), http.StatusBadGateway, "ai_output_invalid"},
 		{"ai unavailable", fmt.Errorf("x: %w", domain.ErrAIUnavailable), http.StatusServiceUnavailable, "ai_unavailable"},
 		{"rate limited", fmt.Errorf("x: %w", domain.ErrRateLimited), http.StatusTooManyRequests, "rate_limited"},
+		{"owns teams", &domain.OwnsTeamsError{Teams: []domain.TeamRef{{ID: "t1", Name: "Design"}}}, http.StatusConflict, "owns_teams"},
+		{"export throttled", &domain.ExportThrottledError{RetryAfter: time.Minute}, http.StatusConflict, "export_throttled"},
+		{"billing unavailable", fmt.Errorf("x: %w", domain.ErrBillingUnavailable), http.StatusBadGateway, "billing_unavailable"},
 		{"unmapped error", errors.New("anything else"), http.StatusInternalServerError, "internal"},
 	}
 	for _, tt := range tests {
@@ -59,6 +65,8 @@ func TestSafeMessage(t *testing.T) {
 		{"ai_output_invalid", "The AI returned an unexpected response."},
 		{"ai_unavailable", "AI features are not available on this deployment."},
 		{"rate_limited", "You have exceeded the usage limit. Please try again later."},
+		{"owns_teams", "Transfer ownership of your teams before deleting your account."},
+		{"export_throttled", "You exported your data recently. Try again later."},
 		{"internal", "Internal server error."},
 		{"something_unrecognized", "Internal server error."},
 	}
@@ -126,5 +134,37 @@ func TestWriteErrorNoLeak(t *testing.T) {
 	body := rec.Body.String()
 	if strings.Contains(body, "hunter2") || strings.Contains(body, "10.0.0.5") {
 		t.Fatalf("response leaked internal error detail: %s", body)
+	}
+}
+
+func TestWriteErrorCarriesDetailsAndRetryAfter(t *testing.T) {
+	h := newHarness(t)
+	srv := h.server()
+
+	rec := httptest.NewRecorder()
+	srv.writeError(rec, httptest.NewRequest(http.MethodDelete, "/x", nil),
+		&domain.OwnsTeamsError{Teams: []domain.TeamRef{{ID: "t1", Name: "Design"}}})
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Details struct {
+				Teams []domain.TeamRef `json:"teams"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusConflict || body.Error.Code != "owns_teams" || len(body.Error.Details.Teams) != 1 || body.Error.Details.Teams[0].Name != "Design" {
+		t.Fatalf("owns_teams envelope = %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.writeError(rec, httptest.NewRequest(http.MethodGet, "/x", nil), &domain.ExportThrottledError{RetryAfter: 59200 * time.Millisecond})
+	if rec.Code != http.StatusConflict || rec.Header().Get("Retry-After") != "60" {
+		t.Fatalf("throttle: status=%d Retry-After=%q, want 409 and ceil(59.2s)=60", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	if strings.Contains(rec.Body.String(), `"details"`) {
+		t.Fatalf("a plain error must omit details: %s", rec.Body.String())
 	}
 }

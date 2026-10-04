@@ -112,6 +112,15 @@ export function usePushRegistration() {
 }
 
 /**
+ * Forgets this install's push device id locally, with no request. Used after
+ * account deletion: the server already purged the device rows, and the API
+ * must not be called for a deleted user.
+ */
+export async function forgetPushDevice(): Promise<void> {
+  await AsyncStorage.removeItem(DEVICE_ID_KEY).catch(() => undefined);
+}
+
+/**
  * Removes this device's push token server-side (DELETE /v1/devices/{id}) and
  * clears the locally persisted id. Call on sign-out so revoked sessions stop
  * receiving notifications. Best-effort: never throws, so it can't block sign-out.

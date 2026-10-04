@@ -130,3 +130,29 @@ describe('onPaymentRequired', () => {
     expect(listener).not.toHaveBeenCalled();
   });
 });
+
+// Account deletion pauses the API so no request can carry a JWT minted for the
+// user being deleted (requireAuth → EnsureUser would re-create the users row).
+describe('suspended API (account deletion)', () => {
+  beforeEach(() => {
+    getActiveServerConfigMock.mockReturnValue(configWithUrl('https://api.example'));
+  });
+  afterEach(async () => {
+    (await import('./auth')).resumeApi();
+    vi.unstubAllGlobals();
+  });
+
+  it('refuses every request, including attachment blobs, until resumed', async () => {
+    const fetchFn = vi.fn(async () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchFn);
+    const { suspendApi, resumeApi } = await import('./auth');
+    const { fetchAttachmentBlob } = await import('./api');
+    suspendApi();
+    await expect(api.getMe()).rejects.toThrow(/paused/i);
+    await expect(fetchAttachmentBlob('att_1')).rejects.toThrow(/paused/i);
+    expect(fetchFn).not.toHaveBeenCalled();
+    resumeApi();
+    await api.getMe();
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+});

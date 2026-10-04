@@ -38,24 +38,45 @@ type fakeTxRunner struct{ calls int }
 
 func newTxRunner() *fakeTxRunner { return &fakeTxRunner{} }
 
+type fakeTxKey struct{}
+
 func (r *fakeTxRunner) RunInTx(ctx context.Context, fn func(context.Context) error) error {
 	r.calls++
-	return fn(ctx)
+	return fn(context.WithValue(ctx, fakeTxKey{}, true))
+}
+
+// inFakeTx reports whether ctx was handed out by fakeTxRunner.RunInTx.
+func inFakeTx(ctx context.Context) bool {
+	in, _ := ctx.Value(fakeTxKey{}).(bool)
+	return in
 }
 
 var _ port.TxRunner = (*fakeTxRunner)(nil)
 
 // --- user repo ---------------------------------------------------------------
 
+// fakeUserRepo mirrors the SQL: Upsert refuses a tombstoned id with
+// domain.ErrUserDeleted (deleted_users is consulted in the same statement).
 type fakeUserRepo struct {
-	byID map[string]domain.User
+	byID       map[string]domain.User
+	tombstones map[string]bool
 }
 
-func newUserRepo() *fakeUserRepo { return &fakeUserRepo{byID: map[string]domain.User{}} }
+func newUserRepo() *fakeUserRepo {
+	return &fakeUserRepo{byID: map[string]domain.User{}, tombstones: map[string]bool{}}
+}
 
 func (r *fakeUserRepo) Upsert(_ context.Context, u domain.User) (domain.User, error) {
+	if r.tombstones[u.ID] {
+		return domain.User{}, domain.ErrUserDeleted
+	}
 	r.byID[u.ID] = u
 	return u, nil
+}
+
+func (r *fakeUserRepo) Tombstone(_ context.Context, id string) error {
+	r.tombstones[id] = true
+	return nil
 }
 
 func (r *fakeUserRepo) GetByID(_ context.Context, id string) (domain.User, error) {
@@ -64,6 +85,14 @@ func (r *fakeUserRepo) GetByID(_ context.Context, id string) (domain.User, error
 		return domain.User{}, domain.ErrNotFound
 	}
 	return u, nil
+}
+
+func (r *fakeUserRepo) Delete(_ context.Context, id string) error {
+	if _, ok := r.byID[id]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(r.byID, id)
+	return nil
 }
 
 var _ port.UserRepo = (*fakeUserRepo)(nil)
@@ -200,6 +229,8 @@ type fakeAccountRepo struct {
 	created *domain.ConnectedAccount
 	updated *domain.ConnectedAccount
 	deleted []string
+	// getTokensCalls counts GetTokens (the export must never read tokens).
+	getTokensCalls int
 }
 
 func newAccountRepo() *fakeAccountRepo {
@@ -264,6 +295,7 @@ func (r *fakeAccountRepo) SaveTokens(_ context.Context, accountID string, t port
 }
 
 func (r *fakeAccountRepo) GetTokens(_ context.Context, accountID string) (port.TokenSet, error) {
+	r.getTokensCalls++
 	t, ok := r.tokens[accountID]
 	if !ok {
 		return port.TokenSet{}, domain.ErrNotFound
@@ -317,6 +349,22 @@ func newThreadRepo() *fakeThreadRepo { return &fakeThreadRepo{byID: map[string]d
 func (r *fakeThreadRepo) Upsert(_ context.Context, t domain.Thread) (domain.Thread, error) {
 	r.byID[t.ID] = t
 	return t, nil
+}
+
+// ListByAccountPage mirrors the SQL keyset pager: id > afterID, ascending,
+// capped at limit.
+func (r *fakeThreadRepo) ListByAccountPage(_ context.Context, accountID, afterID string, limit int) ([]domain.Thread, error) {
+	out := []domain.Thread{}
+	for _, t := range r.byID {
+		if t.AccountID == accountID && t.ID > afterID {
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (r *fakeThreadRepo) GetByID(_ context.Context, id string) (domain.Thread, error) {
@@ -750,6 +798,16 @@ func (r *fakeSnippetRepo) ListByUser(_ context.Context, userID string) ([]domain
 	return out, nil
 }
 
+func (r *fakeSnippetRepo) ListTeamByAuthor(_ context.Context, userID string) ([]domain.Snippet, error) {
+	out := []domain.Snippet{}
+	for _, id := range r.order {
+		if s, ok := r.byID[id]; ok && s.UserID == userID && s.TeamID != nil {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
 func (r *fakeSnippetRepo) ListByTeams(_ context.Context, teamIDs []string) ([]domain.Snippet, error) {
 	out := []domain.Snippet{}
 	for _, id := range r.order {
@@ -978,6 +1036,35 @@ func (r *fakeEventRepo) GetByProviderID(_ context.Context, calendarID, providerE
 		}
 	}
 	return domain.Event{}, domain.ErrNotFound
+}
+
+// ListByUserPage mirrors the SQL keyset pager. Ownership is resolved event
+// → calendar → account → user when both calendars and accounts are wired
+// (same convention as ListInRange); otherwise every event is the user's.
+func (r *fakeEventRepo) ListByUserPage(_ context.Context, userID, afterID string, limit int) ([]domain.Event, error) {
+	out := []domain.Event{}
+	for _, id := range r.order {
+		e, ok := r.byID[id]
+		if !ok || e.ID <= afterID {
+			continue
+		}
+		if r.calendars != nil && r.accounts != nil {
+			cal, ok := r.calendars.byID[e.CalendarID]
+			if !ok {
+				continue
+			}
+			acct, ok := r.accounts.byID[cal.AccountID]
+			if !ok || acct.UserID != userID {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (r *fakeEventRepo) ListInRange(_ context.Context, userID string, from, to time.Time, calendarIDs []string) ([]domain.Event, error) {
@@ -2286,6 +2373,26 @@ func (r *fakeBookingRepo) ListByUser(_ context.Context, userID string, limit int
 	return out, nil
 }
 
+func (r *fakeBookingRepo) ListByUserPage(_ context.Context, userID, afterID string, limit int) ([]domain.Booking, error) {
+	out := []domain.Booking{}
+	for _, b := range r.byID {
+		if r.links != nil {
+			link, ok := r.links.byID[b.LinkID]
+			if !ok || link.UserID != userID {
+				continue
+			}
+		}
+		if b.ID > afterID {
+			out = append(out, b)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (r *fakeBookingRepo) Confirm(_ context.Context, id, eventID string) error {
 	b, ok := r.byID[id]
 	if !ok {
@@ -2477,10 +2584,15 @@ var _ port.TimeProposalRepo = (*fakeProposalRepo)(nil)
 
 // --- user settings repo ---------------------------------------------------------
 
-// fakeUserSettingsRepo mirrors the real adapter's absent-row default: Get
-// returns a zero-value UserSettings with TimeZone "UTC" when no row exists.
+// fakeUserSettingsRepo mirrors the real adapter: Get returns a zero-value
+// UserSettings with TimeZone "UTC" and AIBackground true when no row exists;
+// Upsert never writes AIBackground (new rows default true, existing rows keep
+// theirs); SetAIBackground writes only the switch.
 type fakeUserSettingsRepo struct {
-	byUser map[string]domain.UserSettings
+	byUser    map[string]domain.UserSettings
+	getErr    error
+	saveCalls int
+	saveErr   error
 }
 
 func newUserSettingsRepo() *fakeUserSettingsRepo {
@@ -2488,19 +2600,80 @@ func newUserSettingsRepo() *fakeUserSettingsRepo {
 }
 
 func (r *fakeUserSettingsRepo) Get(_ context.Context, userID string) (domain.UserSettings, error) {
+	if r.getErr != nil {
+		return domain.UserSettings{}, r.getErr
+	}
 	s, ok := r.byUser[userID]
 	if !ok {
-		return domain.UserSettings{UserID: userID, TimeZone: "UTC"}, nil
+		return domain.UserSettings{UserID: userID, TimeZone: "UTC", AIBackground: true}, nil
 	}
 	return s, nil
 }
 
 func (r *fakeUserSettingsRepo) Upsert(_ context.Context, s domain.UserSettings) error {
+	if prev, ok := r.byUser[s.UserID]; ok {
+		s.AIBackground = prev.AIBackground
+	} else {
+		s.AIBackground = true
+	}
 	r.byUser[s.UserID] = s
 	return nil
 }
 
+func (r *fakeUserSettingsRepo) Save(_ context.Context, s domain.UserSettings, aiBackground *bool) error {
+	r.saveCalls++
+	if r.saveErr != nil {
+		return r.saveErr // nothing applied: one statement
+	}
+	if prev, ok := r.byUser[s.UserID]; ok {
+		s.AIBackground = prev.AIBackground
+	} else {
+		s.AIBackground = true
+	}
+	if aiBackground != nil {
+		s.AIBackground = *aiBackground
+	}
+	r.byUser[s.UserID] = s
+	return nil
+}
+
+func (r *fakeUserSettingsRepo) SetAIBackground(_ context.Context, userID string, on bool) error {
+	s, ok := r.byUser[userID]
+	if !ok {
+		s = domain.UserSettings{UserID: userID, TimeZone: "UTC", WorkingHours: []domain.AvailabilityWindow{}}
+	}
+	s.AIBackground = on
+	r.byUser[userID] = s
+	return nil
+}
+
 var _ port.UserSettingsRepo = (*fakeUserSettingsRepo)(nil)
+
+// --- user export repo --------------------------------------------------------
+
+// fakeUserExportRepo mirrors the SQL claim: refused inside window with the
+// earliest retry time, otherwise stamped with now.
+type fakeUserExportRepo struct {
+	startedAt map[string]time.Time
+	err       error
+}
+
+func newUserExportRepo() *fakeUserExportRepo {
+	return &fakeUserExportRepo{startedAt: map[string]time.Time{}}
+}
+
+func (r *fakeUserExportRepo) Claim(_ context.Context, userID string, now time.Time, window time.Duration) (bool, time.Time, error) {
+	if r.err != nil {
+		return false, time.Time{}, r.err
+	}
+	if prev, ok := r.startedAt[userID]; ok && now.Before(prev.Add(window)) {
+		return false, prev.Add(window), nil
+	}
+	r.startedAt[userID] = now
+	return true, time.Time{}, nil
+}
+
+var _ port.UserExportRepo = (*fakeUserExportRepo)(nil)
 
 // --- reaction repo -----------------------------------------------------------
 
@@ -2679,6 +2852,20 @@ func (r *fakeTeamRepo) CountByRole(_ context.Context, teamID string, role domain
 		}
 	}
 	return n, nil
+}
+
+// LockMembershipsForUpdate is a no-op: the fake has no concurrency.
+func (r *fakeTeamRepo) LockMembershipsForUpdate(context.Context, string) error { return nil }
+
+func (r *fakeTeamRepo) ListMemberships(_ context.Context, userID string) ([]domain.TeamMember, error) {
+	out := []domain.TeamMember{}
+	for _, members := range r.members {
+		if m, ok := members[userID]; ok {
+			out = append(out, m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TeamID < out[j].TeamID })
+	return out, nil
 }
 
 var _ port.TeamRepo = (*fakeTeamRepo)(nil)

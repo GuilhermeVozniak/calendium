@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"time"
 
 	"calendium/backend/internal/domain"
@@ -107,6 +109,10 @@ func statusFor(err error) (int, string) {
 		return http.StatusPaymentRequired, "payment_required"
 	case errors.Is(err, domain.ErrNotFound):
 		return http.StatusNotFound, "not_found"
+	case errors.Is(err, domain.ErrOwnsTeams):
+		return http.StatusConflict, "owns_teams"
+	case errors.Is(err, domain.ErrExportThrottled):
+		return http.StatusConflict, "export_throttled"
 	case errors.Is(err, domain.ErrAlreadySubscribed):
 		return http.StatusConflict, "already_subscribed"
 	case errors.Is(err, domain.ErrNoBillingProfile):
@@ -179,6 +185,10 @@ func safeMessage(code string) string {
 		return "No billing profile yet. Start a checkout first."
 	case "billing_unavailable":
 		return "The billing service is temporarily unavailable. Please try again."
+	case "owns_teams":
+		return "Transfer ownership of your teams before deleting your account."
+	case "export_throttled":
+		return "You exported your data recently. Try again later."
 	default:
 		return "Internal server error."
 	}
@@ -187,7 +197,9 @@ func safeMessage(code string) string {
 // writeError renders the `{ "error": { code, message, details? } }`
 // envelope with a stable per-code message. Every failure is logged
 // server-side with full detail; the wrapped error text is never echoed to
-// clients. A *domain.PaymentRequiredError adds the typed 402 details.
+// clients. A *domain.PaymentRequiredError adds the typed 402 details;
+// *domain.OwnsTeamsError adds details.teams; *domain.ExportThrottledError
+// sets Retry-After (whole seconds, rounded up).
 func (s *server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	status, code := statusFor(err)
 	reqID := requestIDFrom(r.Context())
@@ -203,11 +215,17 @@ func (s *server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	detail := errorDetail{Code: code, Message: safeMessage(code), RequestID: reqID}
 	var pr *domain.PaymentRequiredError
 	var le *limitError
+	var ot *domain.OwnsTeamsError
+	var et *domain.ExportThrottledError
 	switch {
 	case errors.As(err, &pr):
 		detail.Details = paymentRequiredDetails{Reason: string(pr.Reason), TrialEndsAt: pr.TrialEndsAt, CurrentPeriodEnd: pr.CurrentPeriodEnd}
 	case errors.As(err, &le):
 		detail.Details = map[string]any{"field": le.field, "limit": le.limit}
+	case errors.As(err, &ot):
+		detail.Details = map[string]any{"teams": ot.Teams}
+	case errors.As(err, &et):
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(et.RetryAfter.Seconds()))))
 	}
 	writeJSON(w, status, errorBody{Error: detail})
 }

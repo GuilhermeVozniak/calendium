@@ -1,11 +1,13 @@
 import type { PaymentRequiredReason } from '@calendium/shared';
-import { ExternalLink, Lock, LogOut } from 'lucide-react';
+import { ExternalLink, Lock, LogOut, UserCog } from 'lucide-react';
+import { useState } from 'react';
 
 import { signOut } from '@/lib/auth';
 import { clearOfflineState } from '@/lib/offline';
 import { billingWebOrigin, useServerConfig } from '@/lib/server-config';
 import { desktop } from '@/lib/wails';
 import { Button } from '@/ui/button';
+import { AccountControls } from '@/views/AccountControls';
 
 const COPY: Record<PaymentRequiredReason, { title: string; body: string }> = {
   trial_ended: { title: 'Your free trial has ended', body: 'Subscribe in your browser to keep using Calendium on every device.' },
@@ -15,9 +17,14 @@ const COPY: Record<PaymentRequiredReason, { title: string; body: string }> = {
   paused: { title: 'Your subscription is paused', body: 'Resume the plan or update your payment method in your browser.' },
 };
 
-/** Read-only paywall (docs/payments.md): billing always happens on the web. */
+/**
+ * Read-only paywall (docs/payments.md): billing always happens on the web.
+ * "Account & data" keeps export and account deletion reachable without an
+ * active subscription.
+ */
 export function PaywallView({ reason }: { reason: PaymentRequiredReason }) {
   const { config, demoMode, exitDemo } = useServerConfig();
+  const [showAccount, setShowAccount] = useState(false);
   const copy = COPY[reason];
   const origin = billingWebOrigin(config);
 
@@ -40,6 +47,18 @@ export function PaywallView({ reason }: { reason: PaymentRequiredReason }) {
         >
           <LogOut /> Sign out
         </Button>
+        {showAccount ? (
+          <div className="w-full rounded-lg border text-left">
+            <div className="p-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Account &amp; data
+            </div>
+            <AccountControls />
+          </div>
+        ) : (
+          <Button variant="ghost" size="sm" onClick={() => setShowAccount(true)}>
+            <UserCog /> Account &amp; data
+          </Button>
+        )}
       </div>
     </section>
   );

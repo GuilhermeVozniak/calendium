@@ -36,8 +36,11 @@ func (s *SettingsService) Get(ctx context.Context, userID string) (domain.UserSe
 }
 
 // Update validates TimeZone (must be a loadable IANA zone) and every
-// WorkingHours window, then upserts.
-func (s *SettingsService) Update(ctx context.Context, userID string, in domain.UserSettings) (domain.UserSettings, error) {
+// WorkingHours window, then writes the document and (when aiBackground is
+// non-nil) the background-AI switch in one repo statement. The returned
+// document is re-read to carry the stored switch (older clients PUT the
+// document without the field). No paywall — the switch only turns work off.
+func (s *SettingsService) Update(ctx context.Context, userID string, in domain.UserSettings, aiBackground *bool) (domain.UserSettings, error) {
 	if !validIANATimeZone(in.TimeZone) {
 		return domain.UserSettings{}, fmt.Errorf("%w: invalid time zone %q", domain.ErrValidation, in.TimeZone)
 	}
@@ -50,8 +53,8 @@ func (s *SettingsService) Update(ctx context.Context, userID string, in domain.U
 	if in.WorkingHours == nil {
 		in.WorkingHours = []domain.AvailabilityWindow{}
 	}
-	if err := s.settings.Upsert(ctx, in); err != nil {
+	if err := s.settings.Save(ctx, in, aiBackground); err != nil {
 		return domain.UserSettings{}, err
 	}
-	return in, nil
+	return s.Get(ctx, userID)
 }

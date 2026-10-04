@@ -10,7 +10,7 @@ export const metadata: Metadata = {
     'How Calendium handles your mail, calendar, and account data — on Calendium Cloud and when you self-host.',
 };
 
-const UPDATED = 'July 2026';
+const UPDATED = 'October 2026';
 
 export default function PrivacyPage() {
   return (
@@ -43,9 +43,13 @@ export default function PrivacyPage() {
               mail and calendar so the app can serve them quickly.
             </>,
             <>
-              <strong>Billing information.</strong> Subscriptions run through Paddle, our merchant of
-              record. We store your subscription status and Paddle customer ID; your card details are
-              held by Paddle, not us.
+              <strong>Integrations.</strong> If you connect Todoist or HubSpot, we store their
+              OAuth tokens the same way and mirror the tasks or contact context you use in the app.
+            </>,
+            <>
+              <strong>Billing information.</strong> Subscriptions are sold by Paddle, our merchant
+              of record. We store your subscription status and Paddle customer and subscription
+              ids; your payment details are held by Paddle, not us.
             </>,
             <>
               <strong>Device tokens.</strong> If you enable notifications, we store the push token
@@ -66,10 +70,12 @@ export default function PrivacyPage() {
 
       <LegalSection title="AI features">
         <p>
-          AI actions (compose, reply, summarize, ask) run only when you invoke them. At that moment
-          the specific thread you point them at is sent to our model provider, OpenRouter, to
-          generate a response — nothing more, and nothing runs in the background. Your mail is never
-          used to train models.
+          When new mail arrives we may summarise it, draft a reply, suggest quick replies, run your
+          classifiers, detect reminders and build your writing-style profile in the background.
+          Turn this off in Settings → AI → <strong>Background AI processing</strong>; on-demand
+          actions (compose, reply, summarise, ask) still send only the thread you point them at.
+          Requests go to OpenRouter, which routes them to model providers that vary by model. Your
+          mail is never used to train models.
         </p>
       </LegalSection>
 
@@ -81,11 +87,32 @@ export default function PrivacyPage() {
               connect, under the scopes you approve.
             </>,
             <>
-              <strong>Paddle</strong> — merchant of record: payment processing, invoicing and tax for
-              Cloud subscriptions.
+              <strong>Paddle</strong> — merchant of record for Cloud subscriptions: payment,
+              invoices, receipts, taxes and refunds.
             </>,
             <>
-              <strong>OpenRouter</strong> — the AI model provider for the AI features above.
+              <strong>OpenRouter</strong> — the AI gateway for the AI features above; it routes
+              requests to model providers that vary by model.
+            </>,
+            <>
+              <strong>Todoist and HubSpot</strong> — only if you connect them, for the tasks and
+              CRM context you choose to sync.
+            </>,
+            <>
+              <strong>Open-Meteo</strong> — weather on calendar days; receives coordinates only.
+            </>,
+            <>
+              <strong>Nominatim and OSRM</strong> — place search and routing for event locations;
+              receive your query text and coordinates.
+            </>,
+            <>
+              <strong>Apple APNs and Google FCM</strong> — deliver push notifications to the mobile
+              apps; receive your device token and the notification preview. Browser notifications
+              go through your browser vendor&apos;s push service in the same way.
+            </>,
+            <>
+              <strong>Our email delivery provider</strong> — sends account emails such as address
+              verification and password resets; receives your email address and the message.
             </>,
           ]}
         />
@@ -94,9 +121,18 @@ export default function PrivacyPage() {
       <LegalSection title="Retention and deletion">
         <p>
           We keep your data for as long as your account is active. You can disconnect a mailbox at
-          any time, which removes its stored tokens and mirrored content, and you can delete your
-          account entirely — doing so erases your personal data from Cloud, subject to any records we
-          must retain for legal or accounting reasons.
+          any time, which removes its stored tokens and mirrored content. You can download the data
+          you created and stored in Calendium from Settings → Account →{' '}
+          <strong>Download my data</strong>.{' '}
+          <span>
+            The export contains your mail mirror metadata and messages, calendar events, notes,
+            tasks, snippets, settings, booking pages and bookings, thread comments, calendar
+            subscriptions, classifier prompts and your voice profile.
+          </span>{' '}
+          You can delete your account from Settings → Account → <strong>Delete account</strong> — on the web, in
+          the mobile app or on desktop. Deletion removes your personal data from Cloud immediately,
+          subject to any records we must retain for legal or accounting reasons (Paddle keeps its
+          own transaction records as merchant of record).
         </p>
       </LegalSection>
 

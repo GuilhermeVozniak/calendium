@@ -72,6 +72,8 @@ curl https://<your-domain>/v1/instance      # mode: self_host
 ```
 
 Set the remaining `.env` values (`SELF_HOSTED=true`, `TOKEN_ENCRYPTION_KEY`,
+`INTERNAL_API_SECRET` on api, worker and web, `INTERNAL_API_URL` on web pointing
+at the api's internal address (Container Apps internal FQDN),
 `DOMAIN`, `ACME_EMAIL`, Better Auth (`BETTER_AUTH_SECRET`/`BETTER_AUTH_URL`),
 provider OAuth, loopback `API_BIND`/`WEB_BIND` defaults) exactly as in the
 [VPS guide](./vps.md#step-6--clone-and-configure). Updating,

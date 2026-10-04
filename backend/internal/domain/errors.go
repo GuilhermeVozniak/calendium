@@ -4,7 +4,10 @@
 // import the Go standard library.
 package domain
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // Sentinel errors. Services wrap these with fmt.Errorf("%w: ...") and the
 // HTTP adapter maps them to status codes:
@@ -20,6 +23,8 @@ import "errors"
 //	ErrAIUnavailable   → 503
 //	ErrAIOutput        → 502
 //	ErrRateLimited     → 429
+//	ErrOwnsTeams       → 409 (code owns_teams, details.teams)
+//	ErrExportThrottled → 409 (code export_throttled + Retry-After)
 //	ErrAlreadySubscribed  → 409
 //	ErrNoBillingProfile   → 400
 //	ErrBillingUnavailable → 502
@@ -77,4 +82,18 @@ var (
 	// ErrBillingUnavailable wraps any failure talking to the payments
 	// provider. Mapped to 502 "billing_unavailable".
 	ErrBillingUnavailable = errors.New("billing unavailable")
+	// ErrOwnsTeams marks an account deletion refused because the user is the
+	// sole owner of a team that still has other members (transfer ownership
+	// first). Carried by *OwnsTeamsError; the HTTP adapter maps it to 409
+	// "owns_teams" with the team list in details.
+	ErrOwnsTeams = errors.New("owns teams")
+	// ErrExportThrottled marks a data export requested within the hourly
+	// window. Carried by *ExportThrottledError; mapped to 409
+	// "export_throttled" plus a Retry-After header.
+	ErrExportThrottled = errors.New("export throttled")
 )
+
+// ErrUserDeleted marks an authenticated subject whose account was purged
+// (deleted_users tombstone): UserRepo.Upsert refuses to re-create the row.
+// It wraps ErrUnauthorized, so the HTTP adapter answers 401.
+var ErrUserDeleted = fmt.Errorf("%w: account deleted", ErrUnauthorized)

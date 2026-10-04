@@ -10,7 +10,7 @@ export const metadata: Metadata = {
     'The terms for using Calendium Cloud and the open-source Calendium software.',
 };
 
-const UPDATED = 'July 2026';
+const UPDATED = 'October 2026';
 
 export default function TermsPage() {
   return (
@@ -48,12 +48,14 @@ export default function TermsPage() {
 
       <LegalSection title="Subscriptions and billing">
         <p>
-          Calendium Cloud costs <strong>$50 per year</strong> after a 14-day free trial. Billing runs
-          through Paddle, our merchant of record; once you subscribe, the plan renews annually until
-          you cancel. You can cancel anytime from Settings → Billing, and your access
+          Calendium Cloud costs <strong>$50 per year</strong> after a 14-day free trial. Purchases
+          are made through Paddle, our merchant of record, which handles payment, invoices, receipts
+          and applicable taxes; when your trial ends you subscribe on the web and the plan renews
+          annually until you cancel. You can cancel anytime from Settings → Billing, and your access
           continues through the end of the period you paid for. There are no in-app purchases — the
-          mobile and desktop apps unlock automatically once you subscribe on the web. Fees are
-          non-refundable except where required by law.
+          mobile and desktop apps unlock automatically once you subscribe on the web. Refund requests
+          are handled by Paddle under its refund policy. Deleting your account cancels an active
+          subscription immediately.
         </p>
       </LegalSection>
 
@@ -91,8 +93,9 @@ export default function TermsPage() {
 
       <LegalSection title="Termination">
         <p>
-          You may stop using Calendium and delete your account at any time. We may suspend or
-          terminate an account that violates these terms. On termination, your right to use the Cloud
+          You may stop using Calendium and delete your account at any time. You can download a copy
+          of your data from Settings → Account at any time before deleting your account. We may
+          suspend or terminate an account that violates these terms. On termination, your right to use the Cloud
           service ends; the deletion of your data is described in our{' '}
           <Link href="/privacy">Privacy Policy</Link>.
         </p>

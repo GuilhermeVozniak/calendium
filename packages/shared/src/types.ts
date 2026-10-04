@@ -702,7 +702,21 @@ export interface UserSettings {
   timeZone: string;
   workingHours: AvailabilityWindow[];
   workingLocation: string;
+  /**
+   * Settings → AI → "Background AI processing". Off skips every automatic
+   * AI job at sync (summaries, quick replies, auto drafts, classifiers,
+   * writing-style profile, reminder detection); on-demand actions are
+   * unaffected. Default true. Omitting it on PUT keeps the stored value.
+   */
+  aiBackground: boolean;
 }
+
+/**
+ * PUT /v1/settings body: the scheduling fields are replaced; aiBackground is
+ * written only when present. A form that edits one part sends only that
+ * part, so a stale cached switch is never written back.
+ */
+export type UserSettingsUpdate = Omit<UserSettings, 'aiBackground'> & { aiBackground?: boolean };
 
 // ---------------------------------------------------------------------------
 // M2.5 — Recent Opens, Smart Send, attachment quick-access, contact summary

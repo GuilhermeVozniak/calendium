@@ -274,6 +274,53 @@ func TestCancelSubscription(t *testing.T) {
 	}
 }
 
+// A retried account purge re-cancels a subscription the first attempt
+// already canceled: Paddle's "already canceled / not cancellable" answer
+// counts as success, confirmed either by the error code or by reading the
+// subscription back as canceled. Anything else still fails.
+func TestCancelSubscriptionAlreadyCanceledIsSuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		cancelCode int
+		cancelBody string
+		getStatus  string // "" → GET must not be called
+		wantErr    bool
+		wantGet    bool
+	}{
+		{"known code: canceled action invalid", 400, `{"error":{"type":"request_error","code":"subscription_is_canceled_action_invalid","detail":"canceled"}}`, "", false, false},
+		{"known code: update when canceled", 400, `{"error":{"type":"request_error","code":"subscription_update_when_canceled","detail":"canceled"}}`, "", false, false},
+		{"unknown 4xx, read back canceled", 400, `{"error":{"type":"request_error","code":"something_new","detail":"x"}}`, "canceled", false, true},
+		{"unknown 409, read back canceled", 409, `{"error":{"type":"request_error","code":"conflict","detail":"x"}}`, "canceled", false, true},
+		{"unknown 4xx, read back active", 400, `{"error":{"type":"request_error","code":"something_new","detail":"x"}}`, "active", true, true},
+		{"server error is not success", 500, `{"error":{"type":"api_error","code":"internal_error","detail":"x"}}`, "", true, false},
+		{"rate limited is not success", 429, `{"error":{"type":"request_error","code":"too_many_requests","detail":"x"}}`, "", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gets := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPost && r.URL.Path == "/subscriptions/sub_1/cancel":
+					w.WriteHeader(tc.cancelCode)
+					_, _ = w.Write([]byte(tc.cancelBody))
+				case r.Method == http.MethodGet && r.URL.Path == "/subscriptions/sub_1":
+					gets++
+					_, _ = w.Write([]byte(`{"data":{"id":"sub_1","status":"` + tc.getStatus + `"}}`))
+				default:
+					t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+				}
+			}))
+			defer srv.Close()
+			err := newTestClient(t, srv).CancelSubscription(context.Background(), "sub_1", true)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr=%v", err, tc.wantErr)
+			}
+			if (gets > 0) != tc.wantGet {
+				t.Fatalf("GET calls = %d, wantGet=%v", gets, tc.wantGet)
+			}
+		})
+	}
+}
+
 // TestMapStatus is the full Paddle → domain table, including the defensive
 // trialing→active mapping and fail-closed default.
 func TestMapStatus(t *testing.T) {

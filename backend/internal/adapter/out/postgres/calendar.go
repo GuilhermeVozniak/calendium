@@ -282,6 +282,26 @@ func (r eventRepo) ListInRange(ctx context.Context, userID string, from, to time
 	return collectEvents(rows)
 }
 
+// ListByUserPage is the export pager: every event on the user's calendars
+// (visible or not) in id order, keyset on id.
+func (r eventRepo) ListByUserPage(ctx context.Context, userID, afterID string, limit int) ([]domain.Event, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := r.q(ctx).QueryContext(ctx, `
+		SELECT `+eventCols+`
+		FROM events e
+		JOIN calendars c ON c.id = e.calendar_id
+		JOIN connected_accounts ca ON ca.id = c.account_id
+		WHERE ca.user_id = $1 AND e.id > $2
+		ORDER BY e.id LIMIT $3`, userID, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return collectEvents(rows)
+}
+
 func (r eventRepo) Delete(ctx context.Context, id string) error {
 	return mustAffect(r.q(ctx).ExecContext(ctx, `DELETE FROM events WHERE id = $1`, id))
 }

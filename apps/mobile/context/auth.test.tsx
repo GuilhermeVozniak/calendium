@@ -7,10 +7,23 @@ jest.mock('@/lib/server-config', () => ({
 }));
 
 const mockInvalidate = jest.fn();
-jest.mock('@/lib/api', () => ({ api: { invalidateAccessToken: () => mockInvalidate() } }));
-jest.mock('@/hooks/use-push-registration', () => ({ unregisterPushDevice: jest.fn(async () => {}) }));
-jest.mock('@/lib/offline', () => ({ clearOfflineState: jest.fn(async () => {}) }));
-jest.mock('@/lib/query-client', () => ({ queryClient: { clear: jest.fn() } }));
+const mockResumeApi = jest.fn();
+jest.mock('@/lib/api', () => ({
+  api: { invalidateAccessToken: () => mockInvalidate() },
+  resumeApi: () => mockResumeApi(),
+}));
+const mockUnregisterPush = jest.fn(async () => {});
+const mockForgetPush = jest.fn(async () => {});
+jest.mock('@/hooks/use-push-registration', () => ({
+  unregisterPushDevice: () => mockUnregisterPush(),
+  forgetPushDevice: () => mockForgetPush(),
+}));
+const mockClearOffline = jest.fn(async () => {});
+jest.mock('@/lib/offline', () => ({ clearOfflineState: () => mockClearOffline() }));
+const mockQueryClear = jest.fn();
+jest.mock('@/lib/query-client', () => ({ queryClient: { clear: () => mockQueryClear() } }));
+const mockClearLocalAuth = jest.fn(async () => {});
+jest.mock('@/lib/auth-client', () => ({ clearLocalAuthSession: () => mockClearLocalAuth() }));
 
 import { act, renderHook } from '@testing-library/react-native';
 import { Alert } from 'react-native';
@@ -169,5 +182,36 @@ describe('AuthProvider (piece 2)', () => {
       await result.current.signOut();
     });
     expect(mockInvalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it('every successful sign-in resumes an API suspended by account deletion', async () => {
+    signIn.email.mockResolvedValue({ data: { token: 'sess' }, error: null });
+    signIn.social.mockResolvedValue({ data: {}, error: null });
+    const { result } = await mountAuth();
+    await act(async () => {
+      await result.current.signInWithEmail('ada@example.test', 'correct-horse-battery');
+      await result.current.signInWithOAuth('google');
+    });
+    expect(mockResumeApi).toHaveBeenCalledTimes(2);
+  });
+
+  it('signOutLocally (after account deletion) clears every local cache with no request', async () => {
+    getSession.mockResolvedValue({ data: { user: { id: 'u1', email: 'ada@example.test', name: 'Ada' } } });
+    const { result } = await mountAuth();
+    expect(result.current.user?.id).toBe('u1');
+    getSession.mockClear();
+    await act(async () => {
+      await result.current.signOutLocally();
+    });
+    expect(result.current.user).toBeNull();
+    expect(mockInvalidate).toHaveBeenCalled();
+    expect(mockQueryClear).toHaveBeenCalled();
+    expect(mockClearOffline).toHaveBeenCalled();
+    expect(mockClearLocalAuth).toHaveBeenCalled();
+    expect(mockForgetPush).toHaveBeenCalled();
+    // No Better Auth or Go API call: the account no longer exists.
+    expect(signOutMock).not.toHaveBeenCalled();
+    expect(getSession).not.toHaveBeenCalled();
+    expect(mockUnregisterPush).not.toHaveBeenCalled();
   });
 });

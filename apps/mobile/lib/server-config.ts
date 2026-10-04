@@ -82,6 +82,16 @@ function webBase(config: ServerConfig | null): string | null {
   return fromAuth || null;
 }
 
+/**
+ * The server's public web origin (advertised webUrl, else the Better Auth
+ * origin), or null until a server is configured. Used for account-page
+ * link-outs (Settings → Account → "Download my data"); never for purchase or
+ * billing links (App Store 3.1.1/3.1.3).
+ */
+export function webOrigin(config: ServerConfig | null): string | null {
+  return webBase(config);
+}
+
 /** "Forgot password?" opens the web app's reset page in the system browser; null until a server is configured. */
 export function forgotPasswordUrl(config: ServerConfig | null): string | null {
   const base = webBase(config);

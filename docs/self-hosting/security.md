@@ -10,6 +10,7 @@ worked top to bottom.
 
 - [ ] Real secrets in `.env`, never committed to git
 - [ ] `TOKEN_ENCRYPTION_KEY` generated fresh, backed up, and kept stable
+- [ ] `INTERNAL_API_SECRET` generated fresh, identical on `api`, `worker` and `web`, and `/v1/internal/*` blocked at the proxy
 - [ ] `BETTER_AUTH_SECRET` treated as secret; the JWKS endpoint is public by design
 - [ ] Only ports 80/443 exposed to the internet; Postgres never published
 - [ ] TLS everywhere (Caddy auto-HTTPS or your own proxy)
@@ -28,12 +29,13 @@ worked top to bottom.
 ## 1. Secrets management
 
 **Never commit `.env`.** It holds your `BETTER_AUTH_SECRET`, provider client
-secrets, Paddle keys (cloud only), and the token-encryption key. The repo's
+secrets, Paddle keys (cloud only), the token-encryption key and the internal API secret. The repo's
 `.gitignore` excludes `.env`; keep it that way and distribute secrets out of
 band (a secrets manager, `scp`, your provider's secret store).
 
-- Generate strong values: `make gen-secret` prints a fresh
-  `TOKEN_ENCRYPTION_KEY`; use `openssl rand -base64 24` for `POSTGRES_PASSWORD`.
+- Generate strong values: `make gen-secrets` prints fresh
+  `TOKEN_ENCRYPTION_KEY`, `INTERNAL_API_SECRET` and `BETTER_AUTH_SECRET` lines;
+  use `openssl rand -base64 24` for `POSTGRES_PASSWORD`.
 - **Change every default.** The shipped `.env.example` uses placeholders like
   `POSTGRES_PASSWORD=change-me-please` and an empty `TOKEN_ENCRYPTION_KEY`
   precisely so a copy-paste deploy *fails to boot* rather than running on known
@@ -73,6 +75,7 @@ be public and some is a signing secret — don't mix them up:
 | `BETTER_AUTH_URL` | **Public** | Public web origin; also the JWT issuer (`iss`) the backend pins. |
 | `${BETTER_AUTH_URL}/api/auth/jwks` (JWKS) | **Public** | Public Ed25519 verification keys the backend fetches. Meant to be reachable — expected to be public, fine to expose. |
 | `BETTER_AUTH_SECRET` | **SECRET** | Better Auth's root secret. Anyone with it can forge sessions and mint valid tokens. Never serve it, never log it, never put it in `NEXT_PUBLIC_*`. |
+| `INTERNAL_API_SECRET` | **SECRET** | Shared by the `api`, `worker` and `web` services and nothing else (server-to-server account deletion; `api` and `worker` refuse to boot without it). Never served, never logged, never `NEXT_PUBLIC_*`. |
 | `GOOGLE_CLIENT_SECRET`, `APPLE_CLIENT_SECRET`, `MS_CLIENT_SECRET`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `SMTP_PASS` | **SECRET** | Backend / server-only. |
 
 The Go backend is a pure resource server: it fetches the public JWKS from
@@ -365,6 +368,30 @@ The script hashes a fresh temporary password with Better Auth's own
 their `session` rows and prints `Temporary password for <email>: <password>`
 once. Hand it over on a channel you trust; the user signs in and changes it in
 **Settings → Account**.
+
+---
+
+## 11. Internal API surface
+
+The Go API exposes `/v1/internal/*` for the web app's server-to-server calls
+— today exactly one route, `DELETE /v1/internal/users/{id}`, which account
+deletion uses (Better Auth's `beforeDelete` hook calls it before removing
+the auth rows). It is authenticated **only** by the `X-Internal-Secret`
+header carrying `INTERNAL_API_SECRET` (constant-time compared), never by a
+user token, and it is excluded from CORS. The API refuses to boot without the
+secret, so the route is always protected by it. A missing or wrong header
+gets exactly the response of an unknown route (plain 404), so probing cannot
+tell whether the route exists.
+
+The secret is the real control; blocking the path at the edge is defence in
+depth, and you should still do it. The bundled Caddyfile answers
+`/v1/internal/*` with 404 before anything reaches the API, and a custom proxy
+must do the same (nginx: `location /v1/internal/ { return 404; }` ahead of
+the API `location /v1/`; see
+[Reverse proxy & TLS](./reverse-proxy-tls.md#nginx--certbot-alternate)). The
+web container reaches the API over the compose network via
+`INTERNAL_API_URL=http://api:8080`, never through the public proxy, so
+blocking the path at the edge breaks nothing.
 
 ---
 

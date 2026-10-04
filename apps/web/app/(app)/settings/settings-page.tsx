@@ -42,6 +42,8 @@ import type {
 } from '@calendium/shared';
 import { ApiRequestError, hasBillingSubscription, trialDaysLeft } from '@calendium/shared';
 
+import { AccountSection } from '@/components/app/account-section';
+import { BackgroundAiCard } from '@/components/app/background-ai-card';
 import { BookingLinks, localTimeZone, WindowsEditor } from '@/components/app/booking-links';
 import { ChipsRow } from '@/components/app/chips-row';
 import { DelegationSection } from '@/components/app/delegation';
@@ -103,7 +105,7 @@ import { subscriptionStatus } from '@/lib/subscription-utils';
 import { Switch } from '@/components/ui/switch';
 import { fetchSettings, updateSettingsApi } from '@/lib/scheduling-data';
 import { CalendarAutomationSection } from './calendar-automation';
-import { AccountSection } from './settings-account';
+import { AccountSection as SignInSection } from './settings-account';
 import { getApiClient } from '@/lib/api';
 import { DEFAULT_SPLITS, orderSplits } from '@/lib/mail-utils';
 import { usePrefs, useUpdatePrefs } from '@/lib/prefs-data';
@@ -209,7 +211,7 @@ export default function SettingsPage() {
       <div className="mx-auto max-w-3xl px-6 py-8">
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Accounts, account security, snippets, templates, sets, scheduling, delegation, appearance, mailbox
+          Accounts, account &amp; data, snippets, templates, sets, scheduling, delegation, appearance, mailbox
           {pushEnabled ? ', notifications' : ''}
           {billingEnabled ? ', and billing' : ''}.
         </p>
@@ -237,7 +239,11 @@ export default function SettingsPage() {
             <AccountsSection />
           </TabsContent>
           <TabsContent value="account" className="mt-4">
-            <AccountSection />
+            {/* Piece 2's identity + change-password card fills the slot above
+                Download my data and the Danger zone. */}
+            <AccountSection>
+              <SignInSection />
+            </AccountSection>
           </TabsContent>
           {integrationsEnabled && (
             <TabsContent value="integrations" className="mt-4">
@@ -1029,7 +1035,7 @@ function tzOptions(): string[] {
   }
 }
 
-function SchedulingSection() {
+export function SchedulingSection() {
   const queryClient = useQueryClient();
   const settingsQuery = useQuery({ queryKey: ['scheduling-settings'], queryFn: fetchSettings });
   const zones = React.useMemo(tzOptions, []);
@@ -1050,10 +1056,10 @@ function SchedulingSection() {
   }, [settingsQuery.data]);
 
   const save = useMutation({
-    mutationFn: () => {
-      const next: UserSettings = { timeZone, workingHours, workingLocation };
-      return updateSettingsApi(next);
-    },
+    // Only the fields this form edits: aiBackground is omitted, so the server
+    // keeps the stored switch (a cached copy may be stale, e.g. turned off on
+    // another device since this tab loaded).
+    mutationFn: () => updateSettingsApi({ timeZone, workingHours, workingLocation }),
     onSuccess: (s) => {
       queryClient.setQueryData<UserSettings>(['scheduling-settings'], s);
       toast.success('Scheduling settings saved');
@@ -1196,22 +1202,25 @@ function AppearanceSection() {
 
 function AiSection() {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>AI classifiers</CardTitle>
-        <CardDescription>
-          Natural-language rules that route matching mail to a split and/or tag it with a label.
-        </CardDescription>
-        <CardAction>
-          <Button size="sm" asChild>
-            <Link href="/settings/classifiers">
-              <Sparkles />
-              Manage classifiers
-            </Link>
-          </Button>
-        </CardAction>
-      </CardHeader>
-    </Card>
+    <div className="flex flex-col gap-4">
+      <BackgroundAiCard />
+      <Card>
+        <CardHeader>
+          <CardTitle>AI classifiers</CardTitle>
+          <CardDescription>
+            Natural-language rules that route matching mail to a split and/or tag it with a label.
+          </CardDescription>
+          <CardAction>
+            <Button size="sm" asChild>
+              <Link href="/settings/classifiers">
+                <Sparkles />
+                Manage classifiers
+              </Link>
+            </Button>
+          </CardAction>
+        </CardHeader>
+      </Card>
+    </div>
   );
 }
 

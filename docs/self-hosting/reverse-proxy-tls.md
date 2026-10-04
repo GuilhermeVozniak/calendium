@@ -167,13 +167,27 @@ The sample already sets the headers that matter (`X-Forwarded-For`,
 `X-Forwarded-Proto`, `X-Forwarded-Host`). nginx runs on the host and reaches
 the containers through the published loopback ports, so the address `api` and
 `web` see as their peer (the Docker bridge gateway, or `127.0.0.1`) is inside
-the default `TRUSTED_PROXY_CIDRS`. The same path routing applies:
+the default `TRUSTED_PROXY_CIDRS`. The same path routing applies, plus a block
+for the server-to-server account-deletion route:
 
 ```nginx
+location /v1/internal/ { return 404; }   # server-to-server only, never public
 location /v1/      { proxy_pass http://calendium_api; ... }
 location = /healthz { proxy_pass http://calendium_api; ... }
 location /         { proxy_pass http://calendium_web; ... }
 ```
+
+> **Block `/v1/internal/*` at the proxy.** The API serves
+> `DELETE /v1/internal/users/{id}` for the web app's account deletion. It is
+> authenticated by `INTERNAL_API_SECRET` alone, so it should not be reachable
+> from the internet: put `location /v1/internal/ { return 404; }` ahead of the
+> `location /v1/` block (add it to `deploy/nginx/calendium.conf` too, in both
+> the HTTP and HTTPS server blocks). The bundled Caddyfile already does this.
+> The web container never goes through nginx for this call. It reaches the API
+> in-network at `INTERNAL_API_URL` (Compose default `http://api:8080`; set it
+> to `http://127.0.0.1:8080` or wherever the API listens if you run `web`
+> outside Compose), with the same `INTERNAL_API_SECRET` as `api` and `worker`.
+> See [Security → Internal API surface](./security.md#11-internal-api-surface).
 
 > **You MUST forward `X-Forwarded-Proto` (plus `X-Real-IP` /
 > `X-Forwarded-For`)** — the sample does. Omit it and OAuth callbacks build

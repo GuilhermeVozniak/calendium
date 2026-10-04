@@ -335,6 +335,27 @@ func (r bookingRepo) ListByUser(ctx context.Context, userID string, limit int) (
 	return collectBookings(rows)
 }
 
+// ListByUserPage keyset-pages every booking on the user's links by id
+// (the uncapped export read).
+func (r bookingRepo) ListByUserPage(ctx context.Context, userID, afterID string, limit int) ([]domain.Booking, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := r.q(ctx).QueryContext(ctx, `
+		SELECT b.id, b.link_id, b.status, b.start_at, b.end_at, b.invitee_name, b.invitee_email,
+			b.invitee_tz, b.note, b.event_id, b.hold_expires_at, b.created_at
+		FROM bookings b
+		JOIN booking_links bl ON bl.id = b.link_id
+		WHERE bl.user_id = $1 AND b.id > $2
+		ORDER BY b.id
+		LIMIT $3`, userID, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return collectBookings(rows)
+}
+
 func collectBookings(rows *sql.Rows) ([]domain.Booking, error) {
 	bookings := []domain.Booking{}
 	for rows.Next() {
@@ -630,22 +651,23 @@ func (r timeProposalRepo) Update(ctx context.Context, p domain.TimeProposal) err
 
 // --- port.UserSettingsRepo ---------------------------------------------------
 
-// Get returns a zero-value UserSettings (TimeZone "UTC") when no row exists,
-// mirroring prefsRepo.Get's absent-row default rather than surfacing
-// domain.ErrNotFound — scheduling settings always have sane defaults.
+// Get returns a zero-value UserSettings (TimeZone "UTC", AIBackground true)
+// when no row exists, mirroring prefsRepo.Get's absent-row default rather
+// than surfacing domain.ErrNotFound — scheduling settings always have sane
+// defaults.
 //
 // user_settings.updated_at is write-only from this repo's perspective: it is
-// stamped via SQL now() on Upsert but never scanned back, since
+// stamped via SQL now() on every write but never scanned back, since
 // domain.UserSettings carries no UpdatedAt field (Task 1 review note).
 func (r userSettingsRepo) Get(ctx context.Context, userID string) (domain.UserSettings, error) {
 	var s domain.UserSettings
 	var workingHours []byte
 	err := r.q(ctx).QueryRowContext(ctx, `
-		SELECT user_id, time_zone, working_hours, working_location
+		SELECT user_id, time_zone, working_hours, working_location, ai_background
 		FROM user_settings WHERE user_id = $1`, userID).Scan(
-		&s.UserID, &s.TimeZone, &workingHours, &s.WorkingLocation)
+		&s.UserID, &s.TimeZone, &workingHours, &s.WorkingLocation, &s.AIBackground)
 	if errors.Is(err, sql.ErrNoRows) {
-		return domain.UserSettings{UserID: userID, TimeZone: "UTC"}, nil
+		return domain.UserSettings{UserID: userID, TimeZone: "UTC", AIBackground: true}, nil
 	}
 	if err != nil {
 		return domain.UserSettings{}, err
@@ -659,19 +681,46 @@ func (r userSettingsRepo) Get(ctx context.Context, userID string) (domain.UserSe
 	return s, nil
 }
 
+// Upsert deliberately leaves ai_background out of both the INSERT column
+// list (the column default applies) and the DO UPDATE SET list, so a client
+// that PUTs the document without the field can never flip the switch.
 func (r userSettingsRepo) Upsert(ctx context.Context, s domain.UserSettings) error {
+	return r.Save(ctx, s, nil)
+}
+
+// Save writes the document and, when aiBackground is non-nil, the switch in
+// ONE statement (PUT /v1/settings is atomic). A NULL $5 inserts the column
+// default (true) and keeps an existing row's value.
+func (r userSettingsRepo) Save(ctx context.Context, s domain.UserSettings, aiBackground *bool) error {
 	workingHours, err := jsonArray(s.WorkingHours)
 	if err != nil {
 		return err
 	}
+	var ai sql.NullBool
+	if aiBackground != nil {
+		ai = sql.NullBool{Bool: *aiBackground, Valid: true}
+	}
 	_, err = r.q(ctx).ExecContext(ctx, `
-		INSERT INTO user_settings (user_id, time_zone, working_hours, working_location, updated_at)
-		VALUES ($1, $2, $3::jsonb, $4, now())
+		INSERT INTO user_settings (user_id, time_zone, working_hours, working_location, ai_background, updated_at)
+		VALUES ($1, $2, $3::jsonb, $4, COALESCE($5::boolean, true), now())
 		ON CONFLICT (user_id) DO UPDATE SET
 			time_zone        = EXCLUDED.time_zone,
 			working_hours    = EXCLUDED.working_hours,
 			working_location = EXCLUDED.working_location,
+			ai_background    = COALESCE($5::boolean, user_settings.ai_background),
 			updated_at       = now()`,
-		s.UserID, s.TimeZone, workingHours, s.WorkingLocation)
+		s.UserID, s.TimeZone, workingHours, s.WorkingLocation, ai)
+	return err
+}
+
+// SetAIBackground writes only the switch; a missing row is created with the
+// other columns' defaults (UTC, no windows, no location).
+func (r userSettingsRepo) SetAIBackground(ctx context.Context, userID string, on bool) error {
+	_, err := r.q(ctx).ExecContext(ctx, `
+		INSERT INTO user_settings (user_id, ai_background, updated_at)
+		VALUES ($1, $2, now())
+		ON CONFLICT (user_id) DO UPDATE SET
+			ai_background = EXCLUDED.ai_background,
+			updated_at    = now()`, userID, on)
 	return err
 }

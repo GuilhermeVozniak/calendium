@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -131,6 +132,17 @@ func (r *fakeEventNoteRepo) GetByEventID(_ context.Context, eventID string) (dom
 		return domain.EventNote{}, domain.ErrNotFound
 	}
 	return n, nil
+}
+
+func (r *fakeEventNoteRepo) ListByUser(_ context.Context, userID string) ([]domain.EventNote, error) {
+	out := []domain.EventNote{}
+	for _, n := range r.byEvent {
+		if n.UserID == userID {
+			out = append(out, n)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].EventID < out[j].EventID })
+	return out, nil
 }
 
 // noteSvc rewires the fixture's repos into a CalendarService that also has

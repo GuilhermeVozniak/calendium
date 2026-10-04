@@ -1066,15 +1066,18 @@ type fakeSettingsService struct {
 
 	updateRet       domain.UserSettings
 	updateErr       error
+	updateCalls     int
 	gotUpdateUserID string
 	gotUpdateIn     domain.UserSettings
+	gotUpdateAI     *bool
 }
 
 func (f *fakeSettingsService) Get(ctx context.Context, userID string) (domain.UserSettings, error) {
 	return f.getRet, f.getErr
 }
-func (f *fakeSettingsService) Update(ctx context.Context, userID string, s domain.UserSettings) (domain.UserSettings, error) {
-	f.gotUpdateUserID, f.gotUpdateIn = userID, s
+func (f *fakeSettingsService) Update(ctx context.Context, userID string, s domain.UserSettings, aiBackground *bool) (domain.UserSettings, error) {
+	f.updateCalls++
+	f.gotUpdateUserID, f.gotUpdateIn, f.gotUpdateAI = userID, s, aiBackground
 	return f.updateRet, f.updateErr
 }
 
@@ -1309,6 +1312,8 @@ type harness struct {
 	events     *fakeEventBus
 	teams      *fakeTeamService
 	tasks      *fakeTaskService
+	lifecycle  *fakeLifecycleService
+	export     *fakeExportService
 }
 
 // newHarness wires every double into Deps with a discard logger and one
@@ -1336,6 +1341,8 @@ func newHarness(t *testing.T) *harness {
 		events:    newFakeEventBus(),
 		teams:     &fakeTeamService{},
 		tasks:     &fakeTaskService{},
+		lifecycle: &fakeLifecycleService{},
+		export:    &fakeExportService{},
 	}
 	h.scheduling = h.sched
 	h.deps = Deps{
@@ -1356,6 +1363,8 @@ func newHarness(t *testing.T) *harness {
 		Events:     h.events,
 		Teams:      h.teams,
 		Tasks:      h.tasks,
+		Lifecycle:  h.lifecycle,
+		Export:     h.export,
 	}
 	return h
 }

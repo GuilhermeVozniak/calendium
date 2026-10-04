@@ -57,6 +57,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Kbd } from '@/components/ui/kbd';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { isAccountDeletionInProgress } from '@/lib/account-deletion';
 import { authClient, syncAccessTokenOwner } from '@/lib/auth-client';
 import { dispatchCalendarCommand, queueCalendarCommand } from '@/lib/calendar-commands';
 import { DEMO_MODE } from '@/lib/demo';
@@ -74,8 +75,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { data: session, isPending } = authClient.useSession();
   const user = session?.user ?? null;
 
+  // A deleted account's session also ends here, but DeleteAccountDialog owns
+  // that exit (hard navigation to /goodbye); a soft /signin would race it.
   React.useEffect(() => {
-    if (!isPending && !session) router.replace('/signin');
+    if (!isPending && !session && !isAccountDeletionInProgress()) router.replace('/signin');
   }, [isPending, session, router]);
 
   // The cached API JWT belongs to exactly one user: a session that ends or

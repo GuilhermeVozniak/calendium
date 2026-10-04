@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"testing"
 	"time"
 
@@ -227,6 +228,23 @@ func (r *scopedEventRepo) ClearGeo(_ context.Context, id string) error {
 	e.LocationLat, e.LocationLon = nil, nil
 	r.byID[id] = e
 	return nil
+}
+
+// ListByUserPage satisfies the export pager (unused by the sharing tests):
+// the user's events by id, keyset id > afterID, capped at limit.
+func (r *scopedEventRepo) ListByUserPage(_ context.Context, userID, afterID string, limit int) ([]domain.Event, error) {
+	out := []domain.Event{}
+	for _, id := range r.order {
+		e := r.byID[id]
+		if e.ID > afterID && r.ownerOf(e.CalendarID) == userID {
+			out = append(out, e)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 var _ port.EventRepo = (*scopedEventRepo)(nil)

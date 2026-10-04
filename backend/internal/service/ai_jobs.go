@@ -44,11 +44,17 @@ type AIJobServiceDeps struct {
 	Labels        port.LabelRepo
 	Classifiers   port.ClassifierRepo
 	VoiceProfiles port.VoiceProfileRepo
-	Calendar      port.CalendarService // availability for scheduling drafts / event proposals
-	AI            port.AI              // nil disables the whole service
-	Clock         port.Clock
-	DailyLimit    int // AI_DAILY_LIMIT, default 300
-	Logger        *slog.Logger
+	// UserSettings is optional: when set, every background job kind (see
+	// isBackgroundAiJob) for a user whose Settings → AI → "Background AI
+	// processing" switch is off is completed without calling the model (a
+	// voice_profile job also without re-queueing itself). Fail-open on a
+	// missing repo or a read error (same as SyncService).
+	UserSettings port.UserSettingsRepo
+	Calendar     port.CalendarService // availability for scheduling drafts / event proposals
+	AI           port.AI              // nil disables the whole service
+	Clock        port.Clock
+	DailyLimit   int // AI_DAILY_LIMIT, default 300
+	Logger       *slog.Logger
 }
 
 // AIJobService is the worker-side consumer of the ai_jobs queue.
@@ -98,6 +104,14 @@ func (s *AIJobService) ProcessDueAiJobs(ctx context.Context) error {
 // charged once a handler actually reaches completeJSONBudgeted for a real
 // LLM attempt.
 func (s *AIJobService) runJob(ctx context.Context, j domain.AiJob) error {
+	if isBackgroundAiJob(j.Kind) && !s.backgroundAIAllowed(ctx, j.UserID) {
+		// Settings → AI → "Background AI processing" is off: a job queued
+		// before the switch flipped (reminder_detect runs up to 24 h later,
+		// a first-sync backlog for hours) completes as skipped without
+		// reaching its handler, so no thread is sent to the model and the
+		// voice-profile chain does not re-queue itself.
+		return s.d.Jobs.Complete(ctx, j.ID)
+	}
 	err := s.dispatch(ctx, j)
 	if err == nil {
 		return s.d.Jobs.Complete(ctx, j.ID)
@@ -201,6 +215,34 @@ func (s *AIJobService) dispatch(ctx context.Context, j domain.AiJob) error {
 	default:
 		return fmt.Errorf("unknown ai job kind %q", j.Kind)
 	}
+}
+
+// isBackgroundAiJob reports whether a queued kind runs without a direct
+// user action and so obeys the background-AI switch at run time. Every
+// current kind is enqueued by sync (or re-queued by itself); on-demand AI
+// goes through AIService, not this queue. A future user-initiated kind
+// returns false here.
+func isBackgroundAiJob(kind domain.AiJobKind) bool {
+	switch kind {
+	case domain.AiJobThreadSummary, domain.AiJobInstantReplies, domain.AiJobAutoDraft,
+		domain.AiJobClassify, domain.AiJobReminderDetect, domain.AiJobVoiceProfile:
+		return true
+	}
+	return false
+}
+
+// backgroundAIAllowed reports the user's background-AI switch, fail-open on
+// a missing repo or a read error (a transient settings read must not change
+// behaviour for everyone).
+func (s *AIJobService) backgroundAIAllowed(ctx context.Context, userID string) bool {
+	if s.d.UserSettings == nil {
+		return true
+	}
+	settings, err := s.d.UserSettings.Get(ctx, userID)
+	if err != nil {
+		return true
+	}
+	return settings.AIBackground
 }
 
 // aiJobBackoff: 1m, 4m, 16m, capped at 30m.
@@ -703,6 +745,12 @@ func reminderHasInboundReplyAfter(msgs []domain.Message, ownerEmail string, sent
 // re-enqueued or duplicated job) just refreshes it cleanly — no error, no
 // duplicate rows.
 func (s *AIJobService) runVoiceProfile(ctx context.Context, j domain.AiJob) error {
+	if !s.backgroundAIAllowed(ctx, j.UserID) {
+		// The switch is off: complete the job without the model and without
+		// the 30-day re-enqueue, which ends the self-perpetuating chain. A
+		// sync after the switch is turned back on queues a fresh one.
+		return nil
+	}
 	acct, err := s.d.Accounts.GetByID(ctx, j.AccountID)
 	if err != nil {
 		return err // domain.ErrNotFound (account deleted) drops the job

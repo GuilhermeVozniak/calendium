@@ -247,6 +247,11 @@ func corsMiddleware(next http.Handler, allowedOrigins []string, allowDevOrigins 
 		}
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, internalPathPrefix) {
+			// Server-to-server only: never advertise or reflect browser origins.
+			next.ServeHTTP(w, r)
+			return
+		}
 		origin := r.Header.Get("Origin")
 		if origin != "" && originAllowed(origin, allow, allowDevOrigins) {
 			h := w.Header()

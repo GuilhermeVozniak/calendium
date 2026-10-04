@@ -23,10 +23,14 @@ const sessionState = vi.hoisted(() => ({
 vi.mock('@/lib/auth-client', () => ({
   authClient: { useSession: () => sessionState.value },
   syncAccessTokenOwner: (id: string | null) => syncAccessTokenOwner(id),
+  suspendApi: () => {},
+  resumeApi: () => {},
+  isApiSuspended: () => false,
 }));
 
+const routerReplace = vi.fn();
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+  useRouter: () => ({ replace: routerReplace, push: vi.fn() }),
   usePathname: () => '/mail',
   useSearchParams: () => new URLSearchParams(),
 }));
@@ -65,6 +69,8 @@ vi.mock('@/lib/shortcuts', () => ({
   accountSwitchShortcuts: () => [],
 }));
 
+import { beginAccountDeletion, endAccountDeletion } from '@/lib/account-deletion';
+
 import AppLayout from './layout';
 
 function renderLayout() {
@@ -80,6 +86,7 @@ function renderLayout() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  endAccountDeletion();
   gate.denied = false;
   sessionState.value = { data: { user: { id: 'u1', email: 'ada@example.com', name: 'Ada' } }, isPending: false };
 });
@@ -103,6 +110,23 @@ describe('(app) layout access-token owner', () => {
     sessionState.value = { data: null, isPending: true };
     renderLayout();
     expect(syncAccessTokenOwner).not.toHaveBeenCalled();
+  });
+});
+
+describe('(app) layout signed-out redirect', () => {
+  it('sends a signed-out visitor to /signin', () => {
+    sessionState.value = { data: null, isPending: false };
+    renderLayout();
+    expect(routerReplace).toHaveBeenCalledWith('/signin');
+  });
+
+  // Track C I-1: deleteUser flips the session to null before the dialog's
+  // hard navigation to /goodbye; the soft /signin redirect must not race it.
+  it('does not redirect to /signin while an account deletion is in progress', () => {
+    void beginAccountDeletion();
+    sessionState.value = { data: null, isPending: false };
+    renderLayout();
+    expect(routerReplace).not.toHaveBeenCalled();
   });
 });
 

@@ -172,6 +172,7 @@ export async function signInEmail(email: string, password: string): Promise<Auth
   const { error } = await c.signIn.email({ email, password }, retry.fetchOptions);
   if (error) return { ok: false, error: describeAuthError(error, 'Could not sign in.', retry.value) };
   accessTokens.invalidate();
+  resumeApi();
   await refreshSession();
   return { ok: true };
 }
@@ -188,6 +189,7 @@ export async function signUpEmail(name: string, email: string, password: string)
   // the same for an existing address): token === null means "check your inbox".
   if (data && data.token === null) return { ok: true, verificationRequired: true };
   accessTokens.invalidate();
+  resumeApi();
   await refreshSession();
   return { ok: true };
 }
@@ -222,6 +224,7 @@ export async function verifyOtt(token: string): Promise<AuthResult> {
     if (!sessionToken) return { ok: false, error: 'Sign-in did not return a session token.' };
     setStoredToken(sessionToken);
     accessTokens.invalidate();
+    resumeApi();
     await refreshSession();
     return { ok: true };
   } catch {
@@ -239,6 +242,41 @@ export async function signOut(): Promise<void> {
   clearStoredToken();
   accessTokens.invalidate();
   await refreshSession();
+}
+
+/**
+ * Post-deletion sign-out: forgets the stored session token and the cached JWT
+ * and flips the session store, with no Better Auth or API request (the
+ * account and its sessions are already gone server-side).
+ */
+export function signOutLocally(): void {
+  clearStoredToken();
+  accessTokens.invalidate();
+  cachedSession = null;
+  emit();
+}
+
+let apiSuspended = false;
+
+/**
+ * Pauses every Go API request (lib/api.ts refuses to fetch) and JWT mint
+ * until resumeApi() or the next successful sign-in, dropping the cached JWT.
+ * Account deletion suspends before calling deleteUser: a background request
+ * carrying a JWT minted for the user being deleted would pass
+ * requireAuth → EnsureUser and re-create the purged `users` row.
+ */
+export function suspendApi(): void {
+  apiSuspended = true;
+  accessTokens.invalidate();
+}
+
+/** Lifts suspendApi() (a failed delete, or a successful sign-in). */
+export function resumeApi(): void {
+  apiSuspended = false;
+}
+
+export function isApiSuspended(): boolean {
+  return apiSuspended;
 }
 
 /**
@@ -284,6 +322,7 @@ let jwtServerKey = activeServerKey();
  */
 export const accessTokens: AccessTokenCache = {
   get() {
+    if (apiSuspended) return Promise.resolve(null);
     const key = activeServerKey();
     if (key !== jwtServerKey) {
       jwtServerKey = key;
