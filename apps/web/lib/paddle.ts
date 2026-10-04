@@ -19,6 +19,8 @@ export interface PaddleInitializeOptions {
 export interface PaddleJs {
   Environment: { set(env: 'sandbox' | 'production'): void };
   Initialize(options: PaddleInitializeOptions): void;
+  /** Reopens the overlay; settings default to those passed to Initialize. */
+  Checkout: { open(options: { transactionId: string }): void };
 }
 
 declare global {
