@@ -19,10 +19,13 @@ When you enter a server URL, the app calls it and reads back:
 - the **Better Auth base URL** (`authBaseUrl`, e.g. `https://mail.example.com/api/auth`)
   for that instance — the app builds its Better Auth client against it (it differs
   per deployment and can't be hardcoded) — plus `authProviders` listing the enabled
-  sign-in methods, and
+  sign-in methods,
 - the **feature flags** (`billing`, `google`, `microsoft`, `ai`, `push`) so the
   UI adapts — e.g. on a self-host server `features.billing` is `false` and the
-  billing/subscribe UI is hidden.
+  billing/subscribe UI is hidden, and
+- the **public web URL** (`webUrl`, when the server advertises it) — where
+  billing (desktop only) and the browser sign-in / password-reset pages live.
+  Older servers omit it and the apps fall back to the origin of `authBaseUrl`.
 
 The shared layer exposes this as `fetchInstance(baseUrl)` and
 `ApiClient.getInstance()`; the desktop and mobile connect screens use it to
@@ -53,7 +56,8 @@ there's no "enter a server" step on web; the deployment *is* the server.
 The desktop app opens on a **Connect** screen before login. Two choices:
 
 - **Calendium Cloud** — one button; uses the built-in preset
-  `https://api.calendium.app`.
+  `https://api.calendium.app` (a build-time default: set `VITE_CLOUD_API_URL`
+  when building a white-label desktop app).
 - **Use a custom server** — type your server URL (e.g.
   `https://mail.example.com`). The app runs discovery
   (`fetchInstance` → `GET /v1/instance`), shows the instance name + mode, stores
@@ -106,14 +110,17 @@ Users can still switch to another server from Settings after install.
 ## Mobile (Expo)
 
 The mobile app has the same **Connect** screen: a **Calendium Cloud** button
-(preset `https://api.calendium.app`) and a **custom server** field. Entering a
+(preset `https://api.calendium.app`, overridable at build time with
+`EXPO_PUBLIC_CLOUD_API_URL`) and a **custom server** field. Entering a
 URL runs `discoverServer()` → `fetchInstance()` → `GET /v1/instance`, points the
 shared client at it (`configureApi(serverUrl)`), and rebuilds the Better Auth
 client from the discovered `authBaseUrl`. The active server URL is shown in
 **Settings**.
 
-Defaults can be seeded for development via `EXPO_PUBLIC_API_URL` (the only
-`EXPO_PUBLIC_*` var the app reads) so a client exists before discovery finishes;
+Defaults can be seeded for development via `EXPO_PUBLIC_API_URL` so a client
+exists before discovery finishes (the other `EXPO_PUBLIC_*` vars the app reads
+are `EXPO_PUBLIC_CLOUD_API_URL` and `EXPO_PUBLIC_DEMO_SERVER_URL`, both
+white-label overrides with Calendium Cloud defaults);
 it's overridable on the Connect screen. The deep-link scheme is fixed to
 `calendium://` (hardcoded in `app.json`), and the Better Auth base URL comes from
 `GET /v1/instance`.
@@ -136,7 +143,7 @@ export EXPO_PUBLIC_API_URL=https://mail.example.com
 bun install
 npx expo run:ios        # or: npx expo run:android
 # or a distributable build via EAS:
-# eas build --platform ios --profile internal
+# eas build --platform ios --profile preview
 ```
 
 Users can override the server on the Connect screen; the seeded values are just
