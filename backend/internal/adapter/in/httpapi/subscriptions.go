@@ -25,6 +25,14 @@ func (s *server) handleCreateCalendarSubscription(w http.ResponseWriter, r *http
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.url("url", in.URL)
+	fc.title("name", in.Name)
+	fc.title("color", in.Color)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	sub, err := s.deps.Calendars.CreateCalendarSubscription(r.Context(), userFrom(r).ID, in)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -36,6 +44,13 @@ func (s *server) handleCreateCalendarSubscription(w http.ResponseWriter, r *http
 func (s *server) handleUpdateCalendarSubscription(w http.ResponseWriter, r *http.Request) {
 	var patch port.CalendarSubscriptionPatch
 	if err := decodeJSON(w, r, &patch); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.optTitle("name", patch.Name)
+	fc.optTitle("color", patch.Color)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}

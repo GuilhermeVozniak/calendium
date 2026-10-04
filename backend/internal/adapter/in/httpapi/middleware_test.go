@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -67,6 +68,17 @@ func TestRequireAuth(t *testing.T) {
 			wantStatus:  http.StatusUnauthorized,
 			wantCode:    "unauthorized",
 			wantMessage: msgReject,
+			wantNext:    false,
+			wantVerify:  true,
+		},
+		{
+			name:        "verifier upstream failure is 502, never 401",
+			setAuth:     true,
+			authHeader:  "Bearer some-token",
+			verifierErr: fmt.Errorf("%w: authjwt: fetch JWKS: dial tcp 10.0.0.5:3000: connection refused", domain.ErrUpstream),
+			wantStatus:  http.StatusBadGateway,
+			wantCode:    "upstream_unavailable",
+			wantMessage: "A service Calendium depends on is unavailable. Please try again later.",
 			wantNext:    false,
 			wantVerify:  true,
 		},
@@ -143,6 +155,9 @@ func TestRequireAuth(t *testing.T) {
 				}
 				if got.Message != tt.wantMessage {
 					t.Fatalf("message = %q, want %q", got.Message, tt.wantMessage)
+				}
+				if strings.Contains(rec.Body.String(), "authjwt") || strings.Contains(rec.Body.String(), "10.0.0.5") {
+					t.Fatalf("provider detail leaked: %s", rec.Body.String())
 				}
 			}
 			if tt.wantNext {
@@ -413,11 +428,11 @@ func TestDecodeJSONLimits(t *testing.T) {
 		h := newHarness(t)
 		body := `{"subject":"` + strings.Repeat("a", 11<<20) + `"}`
 		rec := h.authed(http.MethodPost, "/v1/mail/drafts", strings.NewReader(body))
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413 (body=%s)", rec.Code, rec.Body.String())
 		}
-		if got := decodeErr(t, rec); got.Code != "validation_failed" {
-			t.Fatalf("code = %q, want validation_failed", got.Code)
+		if got := decodeErr(t, rec); got.Code != "payload_too_large" {
+			t.Fatalf("code = %q, want payload_too_large", got.Code)
 		}
 		if h.mail.gotCreateDraft.AccountID != "" {
 			t.Fatalf("CreateDraft called unexpectedly: %+v", h.mail.gotCreateDraft)

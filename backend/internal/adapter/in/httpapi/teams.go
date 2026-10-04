@@ -19,6 +19,12 @@ func (s *server) handleCreateTeam(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.title("name", in.Name)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	team, err := s.deps.Teams.Create(r.Context(), userFrom(r).ID, in)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -51,6 +57,12 @@ func (s *server) handleRenameTeam(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.title("name", in.Name)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	team, err := s.deps.Teams.Rename(r.Context(), userFrom(r).ID, r.PathValue("id"), in.Name)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -72,6 +84,12 @@ func (s *server) handleSetMemberRole(w http.ResponseWriter, r *http.Request) {
 		Role string `json:"role"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.title("role", in.Role)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -117,6 +135,13 @@ func (s *server) handleInvite(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.email("email", in.Email)
+	fc.title("role", in.Role)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	inv, err := s.deps.Teams.Invite(r.Context(), userFrom(r).ID, r.PathValue("id"), in.Email, domain.TeamRole(in.Role))
 	if err != nil {
 		s.writeError(w, r, err)
@@ -151,6 +176,12 @@ func (s *server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		Token string `json:"token"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.title("token", in.Token)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}

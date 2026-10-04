@@ -131,8 +131,8 @@ func TestComplete(t *testing.T) {
 			{"bad gateway", http.StatusBadGateway, `{"error":{"message":"upstream down"}}`, domain.ErrAIUnavailable},
 			{"service unavailable", http.StatusServiceUnavailable, `{"error":{"message":"down for maintenance"}}`, domain.ErrAIUnavailable},
 			{"too many requests", http.StatusTooManyRequests, `{"error":{"message":"slow down"}}`, domain.ErrRateLimited},
-			{"unauthorized", http.StatusUnauthorized, `{"error":{"message":"bad key"}}`, domain.ErrUnauthorized},
-			{"forbidden", http.StatusForbidden, `{"error":{"message":"forbidden"}}`, domain.ErrUnauthorized},
+			{"unauthorized", http.StatusUnauthorized, `{"error":{"message":"bad key"}}`, domain.ErrUpstream},
+			{"forbidden", http.StatusForbidden, `{"error":{"message":"forbidden"}}`, domain.ErrUpstream},
 			{"no choices", http.StatusOK, `{"model":"m","choices":[]}`, nil},
 		}
 		for _, tc := range tests {
@@ -241,7 +241,7 @@ func TestCompleteJSON(t *testing.T) {
 		}
 	})
 
-	t.Run("401 maps to domain.ErrUnauthorized (parity with Complete)", func(t *testing.T) {
+	t.Run("401 maps to domain.ErrUpstream (parity with Complete)", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte(`{"error":{"message":"bad key"}}`))
@@ -254,8 +254,11 @@ func TestCompleteJSON(t *testing.T) {
 		if err == nil {
 			t.Fatal("want error")
 		}
-		if !errors.Is(err, domain.ErrUnauthorized) {
-			t.Fatalf("err = %v, want wrap of domain.ErrUnauthorized", err)
+		if !errors.Is(err, domain.ErrUpstream) {
+			t.Fatalf("err = %v, want wrap of domain.ErrUpstream", err)
+		}
+		if errors.Is(err, domain.ErrUnauthorized) {
+			t.Fatalf("err = %v must not read as the caller's 401", err)
 		}
 	})
 

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,8 +11,17 @@ import (
 	"calendium/backend/internal/domain"
 )
 
-// maxBodyBytes bounds request bodies (drafts with inline images included).
-const maxBodyBytes = 10 << 20
+// Body caps. The default covers every JSON route; drafts (inline images)
+// get decodeJSONLimit with maxDraftBodyBytes; the public scheduling POSTs
+// use publicBodyLimit (scheduling.go) and the webhook its own 1 MiB.
+const (
+	maxBodyBytes      = 1 << 20
+	maxDraftBodyBytes = 10 << 20
+)
+
+// errPayloadTooLarge marks a body over its route cap; statusFor maps it to
+// 413 payload_too_large everywhere (JSON, public, webhook).
+var errPayloadTooLarge = errors.New("payload too large")
 
 type errorBody struct {
 	Error errorDetail `json:"error"`
@@ -20,8 +30,12 @@ type errorBody struct {
 type errorDetail struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// RequestID is the X-Request-Id of the failed request so users can quote
+	// it to support; absent when the middleware is not in the chain.
+	RequestID string `json:"requestId,omitempty"`
 	// Details carries structured, client-safe context for specific codes
-	// (402 payment_required); omitted otherwise.
+	// (402 payment_required; field limits fill {"field","limit"}); omitted
+	// otherwise.
 	Details any `json:"details,omitempty"`
 }
 
@@ -39,10 +53,19 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // decodeJSON reads a bounded JSON body into dst; malformed input becomes a
-// domain validation error (HTTP 400).
+// domain validation error (HTTP 400), an oversized body errPayloadTooLarge.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	return decodeJSONLimit(w, r, dst, maxBodyBytes)
+}
+
+// decodeJSONLimit is decodeJSON with an explicit cap.
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, n int64) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, n))
 	if err := dec.Decode(dst); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return fmt.Errorf("%w: body exceeds %d bytes", errPayloadTooLarge, n)
+		}
 		return fmt.Errorf("%w: invalid JSON body: %v", domain.ErrValidation, err)
 	}
 	return nil
@@ -69,6 +92,8 @@ func optionalField[T any](raw map[string]json.RawMessage, key string) (**T, erro
 // machine-readable error codes.
 func statusFor(err error) (int, string) {
 	switch {
+	case errors.Is(err, errPayloadTooLarge):
+		return http.StatusRequestEntityTooLarge, "payload_too_large"
 	case errors.Is(err, domain.ErrValidation):
 		return http.StatusBadRequest, "validation_failed"
 	case errors.Is(err, domain.ErrUnauthorized):
@@ -93,12 +118,18 @@ func statusFor(err error) (int, string) {
 		return http.StatusNotImplemented, "self_hosted"
 	case errors.Is(err, domain.ErrNotImplemented):
 		return http.StatusNotImplemented, "not_implemented"
+	case errors.Is(err, domain.ErrUpstream):
+		return http.StatusBadGateway, "upstream_unavailable"
 	case errors.Is(err, domain.ErrAIOutput):
 		return http.StatusBadGateway, "ai_output_invalid"
 	case errors.Is(err, domain.ErrAIUnavailable):
 		return http.StatusServiceUnavailable, "ai_unavailable"
 	case errors.Is(err, domain.ErrRateLimited):
 		return http.StatusTooManyRequests, "rate_limited"
+	case errors.Is(err, context.DeadlineExceeded):
+		// The per-handler deadline (deadline.go) expired inside a service
+		// call that surfaced it as an error.
+		return http.StatusGatewayTimeout, "timeout"
 	default:
 		return http.StatusInternalServerError, "internal"
 	}
@@ -133,6 +164,12 @@ func safeMessage(code string) string {
 		return "AI features are not available on this deployment."
 	case "rate_limited":
 		return "You have exceeded the usage limit. Please try again later."
+	case "timeout":
+		return "The request took too long to complete. Please try again."
+	case "payload_too_large":
+		return "The request body is too large."
+	case "upstream_unavailable":
+		return "A service Calendium depends on is unavailable. Please try again later."
 	case "already_subscribed":
 		return "You already have an active subscription. Manage it from billing."
 	case "no_billing_profile":
@@ -150,17 +187,24 @@ func safeMessage(code string) string {
 // clients. A *domain.PaymentRequiredError adds the typed 402 details.
 func (s *server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	status, code := statusFor(err)
+	reqID := requestIDFrom(r.Context())
 	if status >= http.StatusInternalServerError {
 		s.deps.Logger.Error("request failed",
-			"method", r.Method, "path", r.URL.Path, "status", status, "error", err)
+			"method", r.Method, "route", routeOf(r), "request_id", reqID,
+			"status", status, "error", err)
 	} else {
 		s.deps.Logger.Info("request rejected",
-			"method", r.Method, "path", r.URL.Path, "status", status, "code", code, "error", err)
+			"method", r.Method, "route", routeOf(r), "request_id", reqID,
+			"status", status, "code", code, "error", err)
 	}
-	detail := errorDetail{Code: code, Message: safeMessage(code)}
+	detail := errorDetail{Code: code, Message: safeMessage(code), RequestID: reqID}
 	var pr *domain.PaymentRequiredError
-	if errors.As(err, &pr) {
+	var le *limitError
+	switch {
+	case errors.As(err, &pr):
 		detail.Details = paymentRequiredDetails{Reason: string(pr.Reason), TrialEndsAt: pr.TrialEndsAt, CurrentPeriodEnd: pr.CurrentPeriodEnd}
+	case errors.As(err, &le):
+		detail.Details = map[string]any{"field": le.field, "limit": le.limit}
 	}
 	writeJSON(w, status, errorBody{Error: detail})
 }

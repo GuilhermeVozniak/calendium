@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"calendium/backend/internal/domain"
 	"calendium/backend/internal/port"
 )
 
@@ -271,9 +272,17 @@ func (v *Verifier) lookupKey(ctx context.Context, kid string) (crypto.PublicKey,
 		// JWKS outage rather than locking everyone out.
 		v.mu.Lock()
 		k, have := v.keys[kid]
+		cold := len(v.keys) == 0
 		v.mu.Unlock()
 		if have {
 			return k, nil
+		}
+		if cold {
+			// Nothing cached to judge the token by: the auth server is
+			// unreachable, not the token invalid (502, not 401). With a warm
+			// cache an unknown kid stays a plain rejection — no 502 oracle
+			// for forged kids during an outage.
+			return nil, fmt.Errorf("%w: %w", domain.ErrUpstream, err)
 		}
 		return nil, err
 	}

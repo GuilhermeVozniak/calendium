@@ -23,6 +23,14 @@ func (s *server) handleCreateClassifier(w http.ResponseWriter, r *http.Request) 
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.title("name", in.Name)
+	fc.text("prompt", in.Prompt)
+	fc.title("labelName", in.LabelName)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	c, err := s.deps.AI.CreateClassifier(r.Context(), userFrom(r).ID, in)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -36,6 +44,14 @@ func (s *server) handleCreateClassifier(w http.ResponseWriter, r *http.Request) 
 func (s *server) handleUpdateClassifier(w http.ResponseWriter, r *http.Request) {
 	var in port.ClassifierInput
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.title("name", in.Name)
+	fc.text("prompt", in.Prompt)
+	fc.title("labelName", in.LabelName)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
