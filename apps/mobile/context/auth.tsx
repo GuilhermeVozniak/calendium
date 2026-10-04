@@ -1,8 +1,8 @@
 import type React from 'react';
 import { createContext, useCallback, useEffect, useState } from 'react';
-import { unregisterPushDevice } from '@/hooks/use-push-registration';
-import { api } from '@/lib/api';
-import type { AuthUser } from '@/lib/auth-client';
+import { forgetPushDevice, unregisterPushDevice } from '@/hooks/use-push-registration';
+import { api, resumeApi } from '@/lib/api';
+import { type AuthUser, clearLocalAuthSession } from '@/lib/auth-client';
 import { clearOfflineState } from '@/lib/offline';
 import { queryClient } from '@/lib/query-client';
 import { useServerConfig, verifyEmailCallbackUrl } from '@/lib/server-config';
@@ -58,6 +58,11 @@ interface AuthContextType {
   signInWithEmail: (email: string, password: string) => Promise<void>;
   signUpWithEmail: (name: string, email: string, password: string) => Promise<{ verificationRequired: boolean }>;
   signOut: () => Promise<void>;
+  /**
+   * Post-deletion sign-out: clears the session, token and data caches on this
+   * device without any Better Auth or API request (the account is gone).
+   */
+  signOutLocally: () => Promise<void>;
 }
 
 /**
@@ -131,6 +136,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         throw new Error(error.message ?? 'Sign in failed.');
       }
       api.invalidateAccessToken();
+      resumeApi();
       await refresh();
     } catch (error) {
       console.error('OAuth sign in error:', error);
@@ -153,6 +159,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error(message);
     }
     api.invalidateAccessToken();
+    resumeApi();
     await refresh();
   };
 
@@ -176,6 +183,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // user must open the emailed link before signing in.
     if (data && data.token === null) return { verificationRequired: true };
     api.invalidateAccessToken();
+    resumeApi();
     await refresh();
     return { verificationRequired: false };
   };
@@ -205,6 +213,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const signOutLocally = async () => {
+    setUser(null);
+    api.invalidateAccessToken();
+    queryClient.clear();
+    await Promise.all([clearOfflineState(), clearLocalAuthSession(), forgetPushDevice()]);
+  };
+
   const value = {
     user,
     loading,
@@ -213,6 +228,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     signInWithEmail,
     signUpWithEmail,
     signOut,
+    signOutLocally,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
