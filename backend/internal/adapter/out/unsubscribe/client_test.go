@@ -110,3 +110,22 @@ func TestPostOneClickBlocksPrivateAndLoopbackAddresses(t *testing.T) {
 		t.Fatal("loopback address accepted, want rejection")
 	}
 }
+
+func TestPostOneClickBlocksCGNATAndNAT64(t *testing.T) {
+	for _, target := range []string{"https://100.64.0.1:1/x", "https://[64:ff9b::7f00:1]:1/x"} {
+		if err := New().PostOneClick(context.Background(), target); err == nil {
+			t.Fatalf("%s accepted, want rejection by the dial guard", target)
+		}
+	}
+}
+
+func TestBlockPrivateNetworksDelegatesToNetguard(t *testing.T) {
+	for _, addr := range []string{"100.64.0.1:443", "[64:ff9b::7f00:1]:443", "224.0.0.1:443"} {
+		if err := blockPrivateNetworks("tcp", addr, nil); err == nil {
+			t.Errorf("blockPrivateNetworks(%q) = nil, want refusal", addr)
+		}
+	}
+	if err := blockPrivateNetworks("tcp", "93.184.216.34:443", nil); err != nil {
+		t.Errorf("public address refused: %v", err)
+	}
+}

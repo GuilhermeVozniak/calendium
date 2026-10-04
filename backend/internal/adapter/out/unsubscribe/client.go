@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"calendium/backend/internal/adapter/out/netguard"
 	"calendium/backend/internal/port"
 )
 
@@ -29,17 +30,12 @@ type Client struct {
 // listen on loopback addresses production traffic must never reach.
 var dialGuard = blockPrivateNetworks
 
-func blockPrivateNetworks(_, address string, _ syscall.RawConn) error {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
+// blockPrivateNetworks delegates to the shared SSRF predicate (netguard); it
+// stays a named function so dialGuard (and allowLoopbackDialsForTest) are
+// unchanged.
+func blockPrivateNetworks(network, address string, c syscall.RawConn) error {
+	if err := netguard.Control(network, address, c); err != nil {
 		return fmt.Errorf("one-click unsubscribe: %w", err)
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return fmt.Errorf("one-click unsubscribe: could not parse resolved address %q", host)
-	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-		return fmt.Errorf("one-click unsubscribe: refusing to dial disallowed address %s", ip)
 	}
 	return nil
 }

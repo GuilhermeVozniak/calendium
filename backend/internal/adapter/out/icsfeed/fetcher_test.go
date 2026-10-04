@@ -189,35 +189,19 @@ func TestDialGuardBlocksPrivateResolution(t *testing.T) {
 	}
 }
 
-// TestIsPublicAddr pins the guard predicate across every refused range and
-// their IPv4-mapped IPv6 forms.
+// TestIsPublicAddr: the guard predicate delegates to netguard (whose test
+// pins every refused range), so CGNAT and NAT64 are refused here too.
 func TestIsPublicAddr(t *testing.T) {
-	cases := []struct {
-		addr string
-		want bool
-	}{
-		{"93.184.216.34", true},      // ordinary public v4
-		{"2606:2800:220:1::1", true}, // ordinary public v6
-		{"127.0.0.1", false},
-		{"127.8.8.8", false},
-		{"::1", false},
-		{"10.0.0.5", false},
-		{"172.16.0.1", false},
-		{"192.168.1.1", false},
-		{"169.254.169.254", false},
-		{"fe80::1", false},
-		{"fc00::1", false},
-		{"fdab::12", false},
-		{"0.0.0.0", false},
-		{"::", false},
-		{"224.0.0.1", false},
-		{"::ffff:10.0.0.5", false},  // IPv4-mapped private
-		{"::ffff:127.0.0.1", false}, // IPv4-mapped loopback
-		{"::ffff:93.184.216.34", true},
+	cases := map[string]bool{
+		"93.184.216.34":   true,
+		"10.0.0.5":        false,
+		"::ffff:10.0.0.5": false,
+		"100.64.0.1":      false, // CGNAT
+		"64:ff9b::7f00:1": false, // NAT64
 	}
-	for _, tc := range cases {
-		if got := isPublicAddr(netip.MustParseAddr(tc.addr)); got != tc.want {
-			t.Errorf("isPublicAddr(%s) = %v, want %v", tc.addr, got, tc.want)
+	for addr, want := range cases {
+		if got := isPublicAddr(netip.MustParseAddr(addr)); got != want {
+			t.Errorf("isPublicAddr(%s) = %v, want %v", addr, got, want)
 		}
 	}
 }
