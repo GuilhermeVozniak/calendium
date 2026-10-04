@@ -199,6 +199,13 @@ func (s *server) handleCreateDelegation(w http.ResponseWriter, r *http.Request) 
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.email("assistantEmail", in.AssistantEmail)
+	fc.list("scopes", len(in.Scopes))
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	scopes := make([]domain.DelegationScope, 0, len(in.Scopes))
 	for _, raw := range in.Scopes {
 		scope, err := domain.ParseDelegationScope(raw)

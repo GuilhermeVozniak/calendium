@@ -21,6 +21,12 @@ func (s *server) handleUpdatePrefs(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.list("splitOrder", len(in.SplitOrder))
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	prefs, err := s.deps.Prefs.UpdatePrefs(r.Context(), userFrom(r).ID, in)
 	if err != nil {
 		s.writeError(w, r, err)

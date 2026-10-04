@@ -195,8 +195,12 @@ func (s *server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	detail := errorDetail{Code: code, Message: safeMessage(code), RequestID: reqID}
 	var pr *domain.PaymentRequiredError
-	if errors.As(err, &pr) {
+	var le *limitError
+	switch {
+	case errors.As(err, &pr):
 		detail.Details = paymentRequiredDetails{Reason: string(pr.Reason), TrialEndsAt: pr.TrialEndsAt, CurrentPeriodEnd: pr.CurrentPeriodEnd}
+	case errors.As(err, &le):
+		detail.Details = map[string]any{"field": le.field, "limit": le.limit}
 	}
 	writeJSON(w, status, errorBody{Error: detail})
 }

@@ -93,6 +93,13 @@ func (s *server) handleBulkThreadActions(w http.ResponseWriter, r *http.Request)
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.list("threadIds", len(in.ThreadIDs))
+	fc.title("labelId", in.LabelID)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	if in.Action == "label" || in.Action == "unlabel" {
 		if in.LabelID == "" {
 			s.writeError(w, r, fmt.Errorf("%w: labelId is required for label actions", domain.ErrValidation))
@@ -136,6 +143,12 @@ func (s *server) handleSetThreadLabel(w http.ResponseWriter, r *http.Request) {
 		Add     bool   `json:"add"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.title("labelId", in.LabelID)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -244,9 +257,31 @@ func (s *server) handleListDrafts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, drafts)
 }
 
+// checkDraftInput applies the field limits to a draft payload. bodyHtml is
+// deliberately exempt: it carries inline images and is bounded by the
+// 10 MiB route cap instead of the 64 KiB text limit.
+func checkDraftInput(in port.DraftInput) error {
+	var fc fieldCheck
+	fc.title("subject", in.Subject)
+	for _, f := range []struct {
+		name string
+		list []domain.EmailAddress
+	}{{"to", in.To}, {"cc", in.Cc}, {"bcc", in.Bcc}} {
+		fc.list(f.name, len(f.list))
+		for _, a := range f.list {
+			fc.email(f.name, a.Email)
+		}
+	}
+	return fc.err()
+}
+
 func (s *server) handleCreateDraft(w http.ResponseWriter, r *http.Request) {
 	var in port.DraftInput
 	if err := decodeJSONLimit(w, r, &in, maxDraftBodyBytes); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if err := checkDraftInput(in); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -270,6 +305,10 @@ func (s *server) handleGetDraft(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleUpdateDraft(w http.ResponseWriter, r *http.Request) {
 	var in port.DraftInput
 	if err := decodeJSONLimit(w, r, &in, maxDraftBodyBytes); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if err := checkDraftInput(in); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -324,6 +363,14 @@ func (s *server) handleCreateSnippet(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.title("name", in.Name)
+	fc.optTitle("shortcut", in.Shortcut)
+	fc.text("bodyHtml", in.BodyHTML)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	// Snippet bodies are stored HTML rendered in composers — for TEAM
 	// snippets (M2.7) in OTHER members' composers — so they are scrubbed at
 	// the HTTP boundary like signatures (sanitize.go precedent).
@@ -339,6 +386,14 @@ func (s *server) handleCreateSnippet(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleUpdateSnippet(w http.ResponseWriter, r *http.Request) {
 	var in port.SnippetInput
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.title("name", in.Name)
+	fc.optTitle("shortcut", in.Shortcut)
+	fc.text("bodyHtml", in.BodyHTML)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -469,6 +524,12 @@ func (s *server) handleReactToMessage(w http.ResponseWriter, r *http.Request) {
 		SendReply bool   `json:"sendReply"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.title("emoji", in.Emoji)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}

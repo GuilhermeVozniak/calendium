@@ -31,6 +31,12 @@ func (s *server) handleConnectAccount(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.url("redirectUrl", in.RedirectURL)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	authURL, err := s.deps.Accounts.BeginConnect(
 		r.Context(), userFrom(r).ID, provider, in.RedirectURL, s.requestBaseURL(r))
 	if err != nil {
@@ -46,6 +52,12 @@ func (s *server) handleSetVipSenders(w http.ResponseWriter, r *http.Request) {
 		VipSenders []string `json:"vipSenders"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.emails("vipSenders", in.VipSenders)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -69,6 +81,12 @@ func (s *server) handleSetSignature(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.text("signatureHtml", in.SignatureHTML)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	account, err := s.deps.Accounts.SetSignature(r.Context(), userFrom(r).ID, r.PathValue("id"), sanitizeSignatureHTML(in.SignatureHTML))
 	if err != nil {
 		s.writeError(w, r, err)
@@ -83,6 +101,12 @@ func (s *server) handleSetAutoBcc(w http.ResponseWriter, r *http.Request) {
 		AutoBcc []string `json:"autoBcc"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.emails("autoBcc", in.AutoBcc)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}

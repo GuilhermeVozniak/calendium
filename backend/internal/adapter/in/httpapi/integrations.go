@@ -46,6 +46,12 @@ func (s *server) handleConnectIntegration(w http.ResponseWriter, r *http.Request
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.url("redirectUrl", in.RedirectURL)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	authURL, err := s.deps.Integrations.BeginConnect(
 		r.Context(), userFrom(r).ID, vendor, in.RedirectURL, s.requestBaseURL(r))
 	if err != nil {

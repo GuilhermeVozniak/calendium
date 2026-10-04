@@ -62,6 +62,13 @@ func (s *server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.title("title", in.Title)
+	fc.text("notes", in.Notes)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	task, err := s.deps.Tasks.CreateTask(r.Context(), userFrom(r).ID, in)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -118,6 +125,15 @@ func decodeTaskPatch(w http.ResponseWriter, r *http.Request) (domain.TaskPatch, 
 func (s *server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 	patch, err := decodeTaskPatch(w, r)
 	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.optTitle("title", patch.Title)
+	if patch.Notes != nil {
+		fc.optText("notes", *patch.Notes)
+	}
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}

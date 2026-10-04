@@ -55,6 +55,13 @@ func (s *server) handleAddComment(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.title("teamId", in.TeamID)
+	fc.text("body", in.Body)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	comment, err := svc.AddComment(r.Context(), userFrom(r).ID, r.PathValue("id"), in)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -74,6 +81,12 @@ func (s *server) handleUpdateComment(w http.ResponseWriter, r *http.Request) {
 		Body string `json:"body"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.text("body", in.Body)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
