@@ -122,6 +122,64 @@ func TestGetSubscriptionUnknownUserPropagatesNotFound(t *testing.T) {
 	}
 }
 
+// --- RequireActive: lazy trial grant for brand-new users -------------------
+
+// A brand-new user whose first call is a gated one (before any client has
+// fetched GET /v1/billing/subscription) gets the signup trial from the gate
+// itself, anchored to users.created_at exactly like GetSubscription.
+func TestRequireActiveGrantsTrialToBrandNewUser(t *testing.T) {
+	ctx := context.Background()
+	signup := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	h := newBillingHarness(signup.Add(time.Minute))
+	h.seedUser(t, "u1", signup)
+
+	if err := h.svc.RequireActive(ctx, "u1"); err != nil {
+		t.Fatalf("first gated call of a new user = %v, want allowed (trial)", err)
+	}
+	sub, err := h.subs.GetByUserID(ctx, "u1")
+	if err != nil {
+		t.Fatalf("trial row not created: %v", err)
+	}
+	if want := signup.Add(domain.TrialLength); sub.Status != domain.SubscriptionTrialing || sub.TrialEndsAt == nil || !sub.TrialEndsAt.Equal(want) {
+		t.Fatalf("row = %+v, want trialing until created_at+14d = %v", sub, want)
+	}
+	if h.subs.ensureTrialCalls != 1 {
+		t.Fatalf("ensureTrialCalls = %d, want 1", h.subs.ensureTrialCalls)
+	}
+}
+
+// The lazy grant is anchored to signup, so an old account without a row is
+// not handed a fresh trial by the gate.
+func TestRequireActiveLazyTrialIsAnchoredToSignup(t *testing.T) {
+	now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	h.seedUser(t, "u1", now.Add(-20*24*time.Hour))
+
+	var pr *domain.PaymentRequiredError
+	if err := h.svc.RequireActive(context.Background(), "u1"); !errors.As(err, &pr) || pr.Reason != domain.DenialTrialEnded {
+		t.Fatalf("err = %v, want 402 trial_ended for a 20-day-old account", err)
+	}
+}
+
+// Every gated service shares entitlement; the grant works through it
+// directly, and an unknown user (no users row to anchor) stays 402 none.
+func TestEntitlementLazyTrialGrant(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	users, subs := newUserRepo(), newSubscriptionRepo()
+	if _, err := users.Upsert(ctx, domain.User{ID: "u1", Email: "u1@example.com", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	ent := entitlement{subs: subs, users: users, clock: newClock(now)}
+	if err := ent.require(ctx, "u1"); err != nil {
+		t.Fatalf("new user = %v, want allowed", err)
+	}
+	var pr *domain.PaymentRequiredError
+	if err := ent.require(ctx, "ghost"); !errors.As(err, &pr) || pr.Reason != domain.DenialNone {
+		t.Fatalf("unknown user = %v, want 402 none", err)
+	}
+}
+
 // --- RequireActive: entitlement matrix with typed 402 -----------------------
 
 func TestRequireActiveMatrix(t *testing.T) {
@@ -511,6 +569,35 @@ func TestHandleWebhookOlderEventIsDroppedButRecorded(t *testing.T) {
 	}
 }
 
+// The ordering guard lives in the repo write, not in a read-then-compare:
+// a newer event committed between applyEvent's read and its upsert (two
+// notifications in flight at once) must not be overwritten by the older one.
+func TestHandleWebhookStaleEventLosesToConcurrentNewerWrite(t *testing.T) {
+	ctx := context.Background()
+	t1 := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	t2, t3 := t1.Add(time.Hour), t1.Add(2*time.Hour)
+	h := newBillingHarness(t3)
+	h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive, BillingCustomerID: "ctm_1", BillingSubscriptionID: "sub_1", LastEventAt: tptr(t1)})
+	h.payments.webhookEvent = subEvent("ntf_t2", "evt_t2", t2, domain.SubscriptionCanceled)
+	h.subs.beforeWrite = func() {
+		h.subs.beforeWrite = nil
+		newer := h.subs.byUser["u1"]
+		newer.Status, newer.LastEventAt = domain.SubscriptionPaused, tptr(t3)
+		h.subs.byUser["u1"] = newer
+	}
+
+	if err := h.svc.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := h.subs.GetByUserID(ctx, "u1")
+	if got.Status != domain.SubscriptionPaused || !got.LastEventAt.Equal(t3) {
+		t.Fatalf("stale event overwrote the concurrent newer write: %+v", got)
+	}
+	if _, ok := h.events.seen["ntf_t2"]; !ok {
+		t.Fatal("the not-applied notification must still be recorded")
+	}
+}
+
 func TestHandleWebhookResolvesUserByCustomerID(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
@@ -667,7 +754,113 @@ func TestReconcileOverridesTheOrderingGuard(t *testing.T) {
 	}
 }
 
+// Each row is stamped with the clock at its own apply time, not the pass
+// start: a webhook applied mid-pass must not be followed by a forced write
+// that moves last_event_at backwards.
+func TestReconcileStampsEachRowAtApplyTime(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	for _, id := range []string{"a", "b"} {
+		h.seedSub(t, domain.Subscription{UserID: id, Status: domain.SubscriptionActive, BillingCustomerID: "ctm_" + id, BillingSubscriptionID: "sub_" + id,
+			CurrentPeriodEnd: tptr(now.Add(-2 * time.Hour)), LastEventAt: tptr(now.Add(-time.Hour))})
+	}
+	stamp := map[string]time.Time{}
+	h.payments.getSubEvent = port.SubscriptionEvent{Status: domain.SubscriptionCanceled}
+	h.payments.onGetSub = func(_ context.Context, id string) {
+		h.clock.Advance(time.Minute) // the provider read takes time
+		stamp[id] = h.clock.Now()
+	}
+	if err := h.svc.ReconcileSubscriptions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"a", "b"} {
+		got, _ := h.subs.GetByUserID(ctx, id)
+		if want := stamp["sub_"+id]; got.LastEventAt == nil || !got.LastEventAt.Equal(want) {
+			t.Fatalf("%s: LastEventAt = %v, want its own apply time %v (pass started %v)", id, got.LastEventAt, want, now)
+		}
+	}
+}
+
+func TestReconcileSubscriptionsPropagatesListError(t *testing.T) {
+	h := newBillingHarness(time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC))
+	h.subs.listErr = errors.New("db down")
+	if err := h.svc.ReconcileSubscriptions(context.Background()); !errors.Is(err, h.subs.listErr) {
+		t.Fatalf("err = %v, want the list error", err)
+	}
+	if h.payments.getSubCalls != 0 {
+		t.Fatal("no provider call without a row list")
+	}
+}
+
+// Shutdown mid-pass: the pass stops between rows and reports ctx.Err().
+func TestReconcileSubscriptionsStopsWhenContextCanceledMidPass(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	for _, id := range []string{"a", "b", "c"} {
+		h.seedSub(t, domain.Subscription{UserID: id, Status: domain.SubscriptionActive, BillingCustomerID: "ctm_" + id, BillingSubscriptionID: "sub_" + id,
+			CurrentPeriodEnd: tptr(now.Add(-2 * time.Hour)), LastEventAt: tptr(now.Add(-time.Hour))})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.payments.getSubEvent = port.SubscriptionEvent{Status: domain.SubscriptionCanceled}
+	h.payments.onGetSub = func(context.Context, string) { cancel() }
+	if err := h.svc.ReconcileSubscriptions(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if h.payments.getSubCalls != 1 {
+		t.Fatalf("provider calls = %d, want 1 (stop between rows)", h.payments.getSubCalls)
+	}
+}
+
 // --- Inline reconcile in GetSubscription -----------------------------------
+
+// A hung provider must not stall GET /v1/billing/subscription: the inline
+// read runs under its own short deadline.
+func TestGetSubscriptionInlineReconcileHasShortDeadline(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	h.seedSub(t, lapsedActive(now))
+	var remaining time.Duration
+	var hasDeadline bool
+	h.payments.onGetSub = func(ctx context.Context, _ string) {
+		var dl time.Time
+		dl, hasDeadline = ctx.Deadline()
+		remaining = time.Until(dl)
+	}
+	if _, err := h.svc.GetSubscription(context.Background(), "u1"); err != nil {
+		t.Fatal(err)
+	}
+	if !hasDeadline || remaining <= 0 || remaining > inlineReconcileTimeout || inlineReconcileTimeout != 5*time.Second {
+		t.Fatalf("inline reconcile deadline: has=%v remaining=%v, want <= 5s", hasDeadline, remaining)
+	}
+}
+
+// The per-user throttle map is pruned of entries older than the window, so
+// it is bounded by the users seen in the last 10 minutes.
+func TestInlineReconcileThrottleMapIsPruned(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	for i := 0; i < 50; i++ {
+		if !h.svc.claimInlineReconcile(fmt.Sprintf("old-%d", i), now) {
+			t.Fatal("first claim must succeed")
+		}
+	}
+	later := now.Add(inlineReconcileEvery)
+	if !h.svc.claimInlineReconcile("fresh", later) {
+		t.Fatal("claim must succeed")
+	}
+	h.svc.mu.Lock()
+	size := len(h.svc.lastInline)
+	h.svc.mu.Unlock()
+	if size != 1 {
+		t.Fatalf("throttle map size = %d, want 1 (entries older than the window pruned)", size)
+	}
+	// Pruning must not reopen a slot still inside the window.
+	if h.svc.claimInlineReconcile("fresh", later.Add(time.Minute)) {
+		t.Fatal("a slot inside the window must stay claimed")
+	}
+}
 
 func lapsedActive(now time.Time) domain.Subscription {
 	return domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive, BillingCustomerID: "ctm_1", BillingSubscriptionID: "sub_1",

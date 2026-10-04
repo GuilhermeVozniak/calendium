@@ -17,6 +17,10 @@ import (
 // memory, per process).
 const inlineReconcileEvery = 10 * time.Minute
 
+// inlineReconcileTimeout bounds the provider read done inline by
+// GetSubscription, so a hung provider cannot stall the request.
+const inlineReconcileTimeout = 5 * time.Second
+
 // BillingServiceDeps wires BillingService (docs/payments.md).
 type BillingServiceDeps struct {
 	Users    port.UserRepo
@@ -81,7 +85,7 @@ func (s *BillingService) GetSubscription(ctx context.Context, userID string) (do
 	}
 	sub, err := s.subs.GetByUserID(ctx, userID)
 	if errors.Is(err, domain.ErrNotFound) {
-		sub, err = s.grantTrial(ctx, userID)
+		sub, err = grantTrial(ctx, s.users, s.subs, userID)
 	}
 	if err != nil {
 		return domain.Subscription{}, err
@@ -92,7 +96,9 @@ func (s *BillingService) GetSubscription(ctx context.Context, userID string) (do
 	if sub.Status == domain.SubscriptionActive && sub.BillingSubscriptionID != "" &&
 		sub.CurrentPeriodEnd != nil && !now.Before(*sub.CurrentPeriodEnd) &&
 		s.claimInlineReconcile(userID, now) {
-		fresh, err := s.reconcileOne(ctx, sub, now)
+		ictx, cancel := context.WithTimeout(ctx, inlineReconcileTimeout)
+		fresh, err := s.reconcileOne(ictx, sub)
+		cancel()
 		if err != nil {
 			s.logger.Warn("billing: inline reconcile failed", "user_id", userID, "error", err)
 		} else {
@@ -105,16 +111,17 @@ func (s *BillingService) GetSubscription(ctx context.Context, userID string) (do
 // grantTrial anchors the 14-day trial to users.created_at (signup, since
 // the users row is provisioned on the first authenticated call). EnsureTrial
 // is ON CONFLICT DO NOTHING, so concurrent first calls both read back the
-// same row.
-func (s *BillingService) grantTrial(ctx context.Context, userID string) (domain.Subscription, error) {
-	user, err := s.users.GetByID(ctx, userID)
+// same row. Shared by GetSubscription and the entitlement gate; an unknown
+// user propagates ErrNotFound.
+func grantTrial(ctx context.Context, users port.UserRepo, subs port.SubscriptionRepo, userID string) (domain.Subscription, error) {
+	user, err := users.GetByID(ctx, userID)
 	if err != nil {
 		return domain.Subscription{}, err
 	}
-	if err := s.subs.EnsureTrial(ctx, userID, user.CreatedAt.Add(domain.TrialLength)); err != nil {
+	if err := subs.EnsureTrial(ctx, userID, user.CreatedAt.Add(domain.TrialLength)); err != nil {
 		return domain.Subscription{}, err
 	}
-	return s.subs.GetByUserID(ctx, userID)
+	return subs.GetByUserID(ctx, userID)
 }
 
 // CreateCheckout starts the hosted checkout: grants the trial row if
@@ -152,7 +159,9 @@ func (s *BillingService) CreateCheckout(ctx context.Context, userID string) (str
 			now := s.clock.Now()
 			sub.LastEventAt = &now
 		}
-		if err := s.subs.Upsert(ctx, sub); err != nil {
+		// Guarded write: if a webhook landed since the read, its newer row
+		// (which carries the customer id) wins and this write is skipped.
+		if _, err := s.subs.UpsertIfNewer(ctx, sub); err != nil {
 			return "", err
 		}
 	}
@@ -223,8 +232,10 @@ func (s *BillingService) HandleWebhook(ctx context.Context, payload []byte, sigH
 }
 
 // applyEvent resolves the user (custom_data.user_id, else the stored
-// customer id), drops events older than the mirrored LastEventAt unless
-// force (reconciliation), and upserts the mirror. A provider subscription
+// customer id) and upserts the mirror. Unless force (reconciliation), the
+// write goes through UpsertIfNewer, whose SQL guard drops an event older
+// than the stored last_event_at atomically; the read here only resolves
+// the user and passes the stored trial / ids through. A provider subscription
 // existing clears trial_ends_at; otherwise the stored trial end is passed
 // through, because the Postgres Upsert writes trial_ends_at verbatim. An
 // event without occurred_at is stamped with now so last_event_at is never
@@ -262,12 +273,6 @@ func (s *BillingService) applyEvent(ctx context.Context, ev port.SubscriptionEve
 		occurred = s.clock.Now()
 	}
 
-	// Paddle does not guarantee delivery order: an event older than the
-	// newest applied one is dropped (strict <, so same-instant replays apply).
-	if !force && existing.LastEventAt != nil && occurred.Before(*existing.LastEventAt) {
-		return nil
-	}
-
 	sub := domain.Subscription{
 		UserID:                userID,
 		Status:                ev.Status,
@@ -289,18 +294,30 @@ func (s *BillingService) applyEvent(ctx context.Context, ev port.SubscriptionEve
 	if sub.Status == "" {
 		sub.Status = domain.SubscriptionNone
 	}
-	return s.subs.Upsert(ctx, sub)
+	if force {
+		return s.subs.Upsert(ctx, sub)
+	}
+	// Paddle does not guarantee delivery order: an event older than the
+	// newest stored one is skipped by the repo (same-instant replays apply).
+	applied, err := s.subs.UpsertIfNewer(ctx, sub)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		s.logger.Info("billing: stale event not applied", "event_id", ev.EventID, "type", ev.Type, "user_id", userID)
+	}
+	return nil
 }
 
 // ReconcileSubscriptions re-reads every stale row from Paddle and applies
-// it as a synthetic event at now (so it always wins). Provider errors are
-// logged and skipped; the loop never fails as a whole.
+// it as a synthetic event stamped at its own apply time (so it always
+// wins). Provider errors are logged and skipped; only a list failure or
+// ctx ending (shutdown) is returned.
 func (s *BillingService) ReconcileSubscriptions(ctx context.Context) error {
 	if s.selfHosted {
 		return nil
 	}
-	now := s.clock.Now()
-	rows, err := s.subs.ListForReconciliation(ctx, now)
+	rows, err := s.subs.ListForReconciliation(ctx, s.clock.Now())
 	if err != nil {
 		return err
 	}
@@ -308,7 +325,7 @@ func (s *BillingService) ReconcileSubscriptions(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if _, err := s.reconcileOne(ctx, sub, now); err != nil {
+		if _, err := s.reconcileOne(ctx, sub); err != nil {
 			s.logger.Warn("billing: reconcile failed", "user_id", sub.UserID, "subscription_id", sub.BillingSubscriptionID, "error", err)
 		}
 	}
@@ -316,16 +333,19 @@ func (s *BillingService) ReconcileSubscriptions(ctx context.Context) error {
 }
 
 // reconcileOne fetches the live subscription and applies it through the
-// webhook upsert path with OccurredAt = now and force = true (the adapter's
+// webhook upsert path with OccurredAt = the clock at apply time (after the
+// provider read, not the pass start) and force = true (the adapter's
 // GetSubscription returns a zero OccurredAt by design, and the read must
-// never be dropped as stale).
-func (s *BillingService) reconcileOne(ctx context.Context, sub domain.Subscription, now time.Time) (domain.Subscription, error) {
+// never be dropped as stale). Known narrow race, accepted: a webhook
+// committed between the provider read and the forced write is overwritten
+// by this slightly older snapshot; the next webhook or pass corrects it.
+func (s *BillingService) reconcileOne(ctx context.Context, sub domain.Subscription) (domain.Subscription, error) {
 	ev, err := s.payments.GetSubscription(ctx, sub.BillingSubscriptionID)
 	if err != nil {
 		return sub, err
 	}
 	ev.UserID = sub.UserID
-	ev.OccurredAt = now
+	ev.OccurredAt = s.clock.Now()
 	if ev.SubscriptionID == "" {
 		ev.SubscriptionID = sub.BillingSubscriptionID
 	}
@@ -336,11 +356,18 @@ func (s *BillingService) reconcileOne(ctx context.Context, sub domain.Subscripti
 }
 
 // claimInlineReconcile reserves the per-user inline slot. It is claimed
-// before the provider call so a failing provider is not hammered.
+// before the provider call so a failing provider is not hammered. Entries
+// older than the window are pruned on every claim, which bounds the map by
+// the users that claimed within the last inlineReconcileEvery.
 func (s *BillingService) claimInlineReconcile(userID string, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if last, ok := s.lastInline[userID]; ok && now.Sub(last) < inlineReconcileEvery {
+	for id, last := range s.lastInline {
+		if now.Sub(last) >= inlineReconcileEvery {
+			delete(s.lastInline, id)
+		}
+	}
+	if _, ok := s.lastInline[userID]; ok {
 		return false
 	}
 	s.lastInline[userID] = now
@@ -348,5 +375,5 @@ func (s *BillingService) claimInlineReconcile(userID string, now time.Time) bool
 }
 
 func (s *BillingService) RequireActive(ctx context.Context, userID string) error {
-	return entitlement{subs: s.subs, clock: s.clock, selfHost: s.selfHosted}.require(ctx, userID)
+	return entitlement{subs: s.subs, users: s.users, clock: s.clock, selfHost: s.selfHosted}.require(ctx, userID)
 }

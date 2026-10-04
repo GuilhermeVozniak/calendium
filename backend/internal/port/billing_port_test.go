@@ -35,7 +35,10 @@ func (stubSubs) GetByUserID(context.Context, string) (domain.Subscription, error
 func (stubSubs) GetByBillingCustomerID(context.Context, string) (domain.Subscription, error) {
 	return domain.Subscription{}, nil
 }
-func (stubSubs) Upsert(context.Context, domain.Subscription) error    { return nil }
+func (stubSubs) Upsert(context.Context, domain.Subscription) error { return nil }
+func (stubSubs) UpsertIfNewer(context.Context, domain.Subscription) (bool, error) {
+	return true, nil
+}
 func (stubSubs) EnsureTrial(context.Context, string, time.Time) error { return nil }
 func (stubSubs) ListForReconciliation(context.Context, time.Time) ([]domain.Subscription, error) {
 	return nil, nil
@@ -45,15 +48,16 @@ type stubEvents struct{}
 
 func (stubEvents) Record(context.Context, SubscriptionEvent) (bool, error) { return true, nil }
 
-func TestBillingPortShapes(t *testing.T) {
-	var _ Payments = stubPayments{}
-	var _ SubscriptionRepo = stubSubs{}
-	var _ BillingEventRepo = stubEvents{}
-	ev := SubscriptionEvent{NotificationID: "ntf_1", EventID: "evt_1", Type: "subscription.updated", Status: domain.SubscriptionPaused}
-	if ev.Ignored {
-		t.Fatal("zero SubscriptionEvent must not be ignored by default")
-	}
-	if (CheckoutParams{UserID: "u", CustomerID: "c"}).CustomerID != "c" {
-		t.Fatal("CheckoutParams must carry only UserID and CustomerID")
-	}
-}
+// The value of this file is compile-time: the stubs above pin the method
+// sets, and the positional literal below pins CheckoutParams to exactly
+// {UserID, CustomerID} (no client URLs) — any drift fails to build.
+var (
+	_ Payments         = stubPayments{}
+	_ SubscriptionRepo = stubSubs{}
+	_ BillingEventRepo = stubEvents{}
+	_                  = CheckoutParams{"user-id", "customer-id"}
+)
+
+// TestBillingPortShapes exists so `go test` compiles (and so checks) the
+// assertions above; it has no runtime behaviour to verify.
+func TestBillingPortShapes(*testing.T) {}

@@ -19,6 +19,7 @@ import (
 // TeamActivityServiceDeps wires a TeamActivityService.
 type TeamActivityServiceDeps struct {
 	Subscriptions port.SubscriptionRepo
+	Users         port.UserRepo // anchors the entitlement gate's lazy trial grant
 	Accounts      port.AccountRepo
 	Threads       port.ThreadRepo
 	Teams         port.TeamRepo
@@ -41,7 +42,7 @@ var _ port.TeamActivityService = (*TeamActivityService)(nil)
 
 func NewTeamActivityService(d TeamActivityServiceDeps) *TeamActivityService {
 	return &TeamActivityService{
-		ent:      entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
+		ent:      entitlement{subs: d.Subscriptions, users: d.Users, clock: d.Clock, selfHost: d.SelfHosted},
 		accounts: d.Accounts,
 		threads:  d.Threads,
 		teams:    d.Teams,

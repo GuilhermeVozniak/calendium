@@ -469,7 +469,7 @@ func TestSearchServiceDelegatesToRepos(t *testing.T) {
 	events := newEventRepo()
 	events.searchResult = []domain.Event{{ID: "e1", Title: "budget sync"}}
 
-	svc := NewSearchService(newSubscriptionRepo(), threads, events, newClock(time.Now()), true)
+	svc := NewSearchService(newSubscriptionRepo(), nil, threads, events, newClock(time.Now()), true)
 
 	res, err := svc.Search(context.Background(), "u1", "  budget  ")
 	if err != nil {
@@ -493,7 +493,7 @@ func TestSearchServiceSearch(t *testing.T) {
 		threads := newThreadRepo()
 		threads.searchResult = []domain.Thread{{ID: "t1"}} // would prove delegation happened if returned
 		events := newEventRepo()
-		svc := NewSearchService(newSubscriptionRepo(), threads, events, newClock(now), true)
+		svc := NewSearchService(newSubscriptionRepo(), nil, threads, events, newClock(now), true)
 
 		_, err := svc.Search(context.Background(), "u1", "")
 		if !errors.Is(err, domain.ErrValidation) {
@@ -504,7 +504,7 @@ func TestSearchServiceSearch(t *testing.T) {
 	t.Run("whitespace-only query is rejected", func(t *testing.T) {
 		threads := newThreadRepo()
 		events := newEventRepo()
-		svc := NewSearchService(newSubscriptionRepo(), threads, events, newClock(now), true)
+		svc := NewSearchService(newSubscriptionRepo(), nil, threads, events, newClock(now), true)
 
 		_, err := svc.Search(context.Background(), "u1", "   \t ")
 		if !errors.Is(err, domain.ErrValidation) {
@@ -515,7 +515,7 @@ func TestSearchServiceSearch(t *testing.T) {
 	t.Run("nil repo results normalize to empty slices", func(t *testing.T) {
 		threads := newThreadRepo() // searchResult left nil
 		events := newEventRepo()   // searchResult left nil
-		svc := NewSearchService(newSubscriptionRepo(), threads, events, newClock(now), true)
+		svc := NewSearchService(newSubscriptionRepo(), nil, threads, events, newClock(now), true)
 
 		res, err := svc.Search(context.Background(), "u1", "x")
 		if err != nil {
@@ -536,7 +536,7 @@ func TestSearchServiceSearch(t *testing.T) {
 		threads.searchErr = errThread
 		events := newEventRepo()
 		events.searchErr = errEvent // must NOT surface: events.Search should never run
-		svc := NewSearchService(newSubscriptionRepo(), threads, events, newClock(now), true)
+		svc := NewSearchService(newSubscriptionRepo(), nil, threads, events, newClock(now), true)
 
 		_, err := svc.Search(context.Background(), "u1", "x")
 		if !errors.Is(err, errThread) {
@@ -553,7 +553,7 @@ func TestSearchServiceSearch(t *testing.T) {
 		threads.searchResult = []domain.Thread{{ID: "t1"}}
 		events := newEventRepo()
 		events.searchErr = errBoom
-		svc := NewSearchService(newSubscriptionRepo(), threads, events, newClock(now), true)
+		svc := NewSearchService(newSubscriptionRepo(), nil, threads, events, newClock(now), true)
 
 		_, err := svc.Search(context.Background(), "u1", "x")
 		if !errors.Is(err, errBoom) {
@@ -564,7 +564,7 @@ func TestSearchServiceSearch(t *testing.T) {
 	t.Run("paywall short-circuits before empty-query validation", func(t *testing.T) {
 		threads := newThreadRepo()
 		events := newEventRepo()
-		svc := NewSearchService(newSubscriptionRepo(), threads, events, newClock(now), false) // no sub seeded for "u1"
+		svc := NewSearchService(newSubscriptionRepo(), nil, threads, events, newClock(now), false) // no sub seeded for "u1"
 
 		_, err := svc.Search(context.Background(), "u1", "")
 		if !errors.Is(err, domain.ErrPaymentRequired) {
@@ -584,7 +584,7 @@ func TestSearchServiceSearch(t *testing.T) {
 		if err := subs.Upsert(context.Background(), domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive}); err != nil {
 			t.Fatal(err)
 		}
-		svc := NewSearchService(subs, threads, events, newClock(now), false)
+		svc := NewSearchService(subs, nil, threads, events, newClock(now), false)
 
 		res, err := svc.Search(context.Background(), "u1", "team")
 		if err != nil {

@@ -59,7 +59,7 @@ func newCalendarPrefsService(repo *fakeCalendarPrefsRepo, entitled bool) *PrefsS
 			panic(err)
 		}
 	}
-	return NewPrefsService(newPrefsRepo(), repo, subs, newClock(time.Now()), false)
+	return NewPrefsService(newPrefsRepo(), repo, subs, nil, newClock(time.Now()), false)
 }
 
 // TestCalendarPrefsServiceGetDefaults: never-saved users get the defaults

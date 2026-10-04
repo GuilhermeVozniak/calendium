@@ -92,7 +92,7 @@ func NewSchedulingService(d SchedulingServiceDeps) *SchedulingService {
 		logger = slog.Default()
 	}
 	return &SchedulingService{
-		ent:       entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
+		ent:       entitlement{subs: d.Subscriptions, users: d.Users, clock: d.Clock, selfHost: d.SelfHosted},
 		users:     d.Users,
 		accounts:  d.Accounts,
 		calendars: d.Calendars,

@@ -79,6 +79,10 @@ type fakeSubscriptionRepo struct {
 	byCustomer       map[string]domain.Subscription
 	ensureTrialCalls int
 	upsertCalls      int
+	// beforeWrite, when set, runs at the start of every Upsert /
+	// UpsertIfNewer (simulates a concurrent writer committing first).
+	beforeWrite func()
+	listErr     error // returned by ListForReconciliation when set
 }
 
 func newSubscriptionRepo() *fakeSubscriptionRepo {
@@ -104,7 +108,27 @@ func (r *fakeSubscriptionRepo) GetByBillingCustomerID(_ context.Context, custome
 	return s, nil
 }
 
+// UpsertIfNewer mirrors the Postgres guard: an existing row is replaced
+// only when its LastEventAt is nil or not after s.LastEventAt.
+func (r *fakeSubscriptionRepo) UpsertIfNewer(_ context.Context, s domain.Subscription) (bool, error) {
+	if r.beforeWrite != nil {
+		r.beforeWrite()
+	}
+	if prev, ok := r.byUser[s.UserID]; ok && prev.LastEventAt != nil &&
+		(s.LastEventAt == nil || s.LastEventAt.Before(*prev.LastEventAt)) {
+		return false, nil
+	}
+	return true, r.write(s)
+}
+
 func (r *fakeSubscriptionRepo) Upsert(_ context.Context, s domain.Subscription) error {
+	if r.beforeWrite != nil {
+		r.beforeWrite()
+	}
+	return r.write(s)
+}
+
+func (r *fakeSubscriptionRepo) write(s domain.Subscription) error {
 	r.upsertCalls++
 	if prev, ok := r.byUser[s.UserID]; ok {
 		if s.BillingCustomerID == "" {
@@ -113,6 +137,9 @@ func (r *fakeSubscriptionRepo) Upsert(_ context.Context, s domain.Subscription) 
 		if s.BillingSubscriptionID == "" {
 			s.BillingSubscriptionID = prev.BillingSubscriptionID
 		}
+	}
+	if prev, ok := r.byUser[s.UserID]; ok && prev.BillingCustomerID != s.BillingCustomerID {
+		delete(r.byCustomer, prev.BillingCustomerID) // no stale customer index
 	}
 	r.byUser[s.UserID] = s
 	if s.BillingCustomerID != "" {
@@ -138,6 +165,9 @@ func (r *fakeSubscriptionRepo) EnsureTrial(_ context.Context, userID string, tri
 }
 
 func (r *fakeSubscriptionRepo) ListForReconciliation(_ context.Context, now time.Time) ([]domain.Subscription, error) {
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
 	var out []domain.Subscription
 	for _, s := range r.byUser {
 		if s.BillingSubscriptionID == "" {
@@ -1499,6 +1529,7 @@ type fakePayments struct {
 	getSubEvent     port.SubscriptionEvent
 	getSubErr       error
 	cancelErr       error
+	onGetSub        func(ctx context.Context, subscriptionID string) // runs inside GetSubscription
 
 	// recording
 	ensureCustomerCalls      int
@@ -1538,9 +1569,12 @@ func (p *fakePayments) ParseWebhook(_ []byte, _ string, now time.Time) (port.Sub
 	return p.webhookEvent, p.parseWebhookErr
 }
 
-func (p *fakePayments) GetSubscription(_ context.Context, subscriptionID string) (port.SubscriptionEvent, error) {
+func (p *fakePayments) GetSubscription(ctx context.Context, subscriptionID string) (port.SubscriptionEvent, error) {
 	p.getSubCalls++
 	p.lastGetSubID = subscriptionID
+	if p.onGetSub != nil {
+		p.onGetSub(ctx, subscriptionID)
+	}
 	return p.getSubEvent, p.getSubErr
 }
 

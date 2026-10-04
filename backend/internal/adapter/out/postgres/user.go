@@ -76,6 +76,19 @@ func (r subscriptionRepo) GetByBillingCustomerID(ctx context.Context, customerID
 }
 
 func (r subscriptionRepo) Upsert(ctx context.Context, s domain.Subscription) error {
+	_, err := r.upsert(ctx, s, true)
+	return err
+}
+
+func (r subscriptionRepo) UpsertIfNewer(ctx context.Context, s domain.Subscription) (bool, error) {
+	return r.upsert(ctx, s, false)
+}
+
+// upsert writes the mirror row. Unless force, the DO UPDATE only applies
+// when the stored last_event_at is NULL or <= the incoming one; the check
+// runs under the row lock taken by ON CONFLICT, so concurrent webhooks for
+// one user cannot commit out of order. RowsAffected is 0 when skipped.
+func (r subscriptionRepo) upsert(ctx context.Context, s domain.Subscription, force bool) (bool, error) {
 	if s.Status == "" {
 		s.Status = domain.SubscriptionNone
 	}
@@ -85,7 +98,7 @@ func (r subscriptionRepo) Upsert(ctx context.Context, s domain.Subscription) err
 	if s.PriceUSD == 0 {
 		s.PriceUSD = domain.PriceUSDAnnual
 	}
-	_, err := r.q(ctx).ExecContext(ctx, `
+	res, err := r.q(ctx).ExecContext(ctx, `
 		INSERT INTO subscriptions (user_id, status, plan, price_usd, billing_customer_id,
 			billing_subscription_id, current_period_end, cancel_at_period_end, trial_ends_at, last_event_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
@@ -99,11 +112,21 @@ func (r subscriptionRepo) Upsert(ctx context.Context, s domain.Subscription) err
 			cancel_at_period_end    = EXCLUDED.cancel_at_period_end,
 			trial_ends_at           = EXCLUDED.trial_ends_at,
 			last_event_at           = EXCLUDED.last_event_at,
-			updated_at              = now()`,
+			updated_at              = now()
+		WHERE $11::boolean
+		   OR subscriptions.last_event_at IS NULL
+		   OR subscriptions.last_event_at <= EXCLUDED.last_event_at`,
 		s.UserID, string(s.Status), s.Plan, s.PriceUSD, nullStr(s.BillingCustomerID),
 		nullStr(s.BillingSubscriptionID), nullTimePtr(s.CurrentPeriodEnd), s.CancelAtPeriodEnd,
-		nullTimePtr(s.TrialEndsAt), nullTimePtr(s.LastEventAt))
-	return err
+		nullTimePtr(s.TrialEndsAt), nullTimePtr(s.LastEventAt), force)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 // EnsureTrial grants the signup trial exactly once per user: ON CONFLICT DO

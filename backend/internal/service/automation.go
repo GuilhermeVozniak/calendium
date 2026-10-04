@@ -25,6 +25,7 @@ type AutomationServiceDeps struct {
 	// subscription pauses that user's automation silently (debug log at
 	// most) instead of error-spamming every pass through provider writes.
 	Subscriptions port.SubscriptionRepo
+	Users         port.UserRepo // anchors the entitlement gate's lazy trial grant
 	SelfHosted    bool
 	// Maps + Alerts power the travel pass (M2.8 Task 12). Maps nil (maps
 	// unconfigured) disables travel entirely — no vendor calls, no blocks,
@@ -60,7 +61,7 @@ func NewAutomationService(d AutomationServiceDeps) *AutomationService {
 		logger = slog.Default()
 	}
 	return &AutomationService{
-		ent:         entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
+		ent:         entitlement{subs: d.Subscriptions, users: d.Users, clock: d.Clock, selfHost: d.SelfHosted},
 		prefs:       d.Prefs,
 		accounts:    d.Accounts,
 		calendars:   d.Calendars,

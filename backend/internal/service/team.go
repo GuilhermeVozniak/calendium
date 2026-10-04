@@ -57,7 +57,7 @@ var _ port.TeamService = (*TeamService)(nil)
 
 func NewTeamService(d TeamServiceDeps) *TeamService {
 	return &TeamService{
-		ent:         entitlement{subs: d.Subs, clock: d.Clock, selfHost: d.SelfHost},
+		ent:         entitlement{subs: d.Subs, users: d.Users, clock: d.Clock, selfHost: d.SelfHost},
 		teams:       d.Teams,
 		invitations: d.Invitations,
 		users:       d.Users,

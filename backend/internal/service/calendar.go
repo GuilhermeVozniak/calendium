@@ -76,7 +76,7 @@ var _ port.CalendarService = (*CalendarService)(nil)
 
 func NewCalendarService(d CalendarServiceDeps) *CalendarService {
 	return &CalendarService{
-		ent:       entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
+		ent:       entitlement{subs: d.Subscriptions, users: d.Users, clock: d.Clock, selfHost: d.SelfHosted},
 		accounts:  d.Accounts,
 		calendars: d.Calendars,
 		events:    d.Events,

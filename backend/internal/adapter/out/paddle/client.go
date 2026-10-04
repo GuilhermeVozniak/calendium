@@ -8,10 +8,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"calendium/backend/internal/domain"
 	"calendium/backend/internal/port"
@@ -74,6 +77,20 @@ type APIError struct {
 	Detail string
 }
 
+// maxErrorBodySnippet bounds the raw body kept from a non-envelope error.
+const maxErrorBodySnippet = 512
+
+// truncate cuts s to at most n bytes without splitting a UTF-8 rune.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
 func (e *APIError) Error() string {
 	return fmt.Sprintf("paddle: http %d (%s/%s): %s", e.Status, e.Type, e.Code, e.Detail)
 }
@@ -102,7 +119,14 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	}
 	res, err := c.hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("paddle: %s %s: %w", method, path, err)
+		// The query can carry the customer email (EnsureCustomer lookup):
+		// name only the path, and unwrap *url.Error, whose text repeats the
+		// full URL.
+		var uerr *url.Error
+		if errors.As(err, &uerr) {
+			err = uerr.Err
+		}
+		return fmt.Errorf("paddle: %s %s: %w", method, req.URL.Path, err)
 	}
 	defer func() { _ = res.Body.Close() }()
 
@@ -118,8 +142,14 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 				Detail string `json:"detail"`
 			} `json:"error"`
 		}
-		_ = json.Unmarshal(raw, &env)
-		apiErr := &APIError{Status: res.StatusCode, Type: env.Error.Type, Code: env.Error.Code, Detail: env.Error.Detail}
+		apiErr := &APIError{Status: res.StatusCode}
+		if json.Unmarshal(raw, &env) == nil && (env.Error.Type != "" || env.Error.Code != "" || env.Error.Detail != "") {
+			apiErr.Type, apiErr.Code, apiErr.Detail = env.Error.Type, env.Error.Code, env.Error.Detail
+		} else {
+			// Not Paddle's {error} envelope (proxy HTML, empty 502/504):
+			// keep a bounded raw snippet for diagnostics.
+			apiErr.Detail = truncate(strings.TrimSpace(string(raw)), maxErrorBodySnippet)
+		}
 		switch res.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden:
 			return fmt.Errorf("%w: %w", domain.ErrUnauthorized, apiErr)

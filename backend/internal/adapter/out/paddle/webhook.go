@@ -55,6 +55,10 @@ func (c *Client) ParseWebhook(payload []byte, sigHeader string, now time.Time) (
 	if err := json.Unmarshal(env.Data, &sub); err != nil {
 		return port.SubscriptionEvent{}, fmt.Errorf("%w: paddle: decode subscription data: %v", domain.ErrValidation, err)
 	}
+	if sub.ID == "" {
+		// data:null or {} decodes cleanly; never hand the service an empty event.
+		return port.SubscriptionEvent{}, fmt.Errorf("%w: paddle: %s webhook without subscription data", domain.ErrValidation, env.EventType)
+	}
 	return normalizeSubscription(sub, out), nil
 }
 

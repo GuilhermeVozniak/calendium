@@ -42,6 +42,42 @@ func TestBillingEventRepoRecordDedupByNotificationID(t *testing.T) {
 	}
 }
 
+// The webhook pipeline records the notification and applies it in one tx:
+// when the apply fails, the marker must roll back so Paddle's retry is
+// processed (first = true) instead of being swallowed as a duplicate.
+func TestBillingEventRepoRecordRollsBackWithFailedApply(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	at := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	ev := port.SubscriptionEvent{NotificationID: "ntf_rb", EventID: "evt_rb", Type: "subscription.updated", OccurredAt: at}
+	applyErr := errors.New("apply failed")
+
+	err := st.RunInTx(ctx, func(ctx context.Context) error {
+		first, err := st.BillingEvents().Record(ctx, ev)
+		if err != nil || !first {
+			t.Fatalf("Record in tx: first=%v err=%v", first, err)
+		}
+		if _, err := st.Subscriptions().UpsertIfNewer(ctx, domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive, LastEventAt: &at}); err != nil {
+			t.Fatalf("UpsertIfNewer in tx: %v", err)
+		}
+		return applyErr
+	})
+	if !errors.Is(err, applyErr) {
+		t.Fatalf("RunInTx = %v, want the apply error", err)
+	}
+	if _, err := st.Subscriptions().GetByUserID(ctx, "u1"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("apply must roll back, GetByUserID err = %v", err)
+	}
+	retry, err := st.BillingEvents().Record(ctx, ev)
+	if err != nil {
+		t.Fatalf("Record retry: %v", err)
+	}
+	if !retry {
+		t.Fatal("the marker must roll back with the failed apply so the retry is first = true")
+	}
+}
+
 // --- OAuthStateRepo --------------------------------------------------------------
 
 func TestOAuthStateRepoCreateAndConsume(t *testing.T) {

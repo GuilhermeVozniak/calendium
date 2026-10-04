@@ -177,6 +177,7 @@ func run(logger *slog.Logger) error {
 		clock)
 	mail := service.NewMailService(service.MailServiceDeps{
 		Subscriptions: store.Subscriptions(),
+		Users:         store.Users(),
 		Accounts:      store.Accounts(),
 		Threads:       store.Threads(),
 		Messages:      store.Messages(),
@@ -222,9 +223,10 @@ func run(logger *slog.Logger) error {
 		CalendarSubs: store.CalendarSubscriptions(),
 		IcsFetcher:   icsfeed.New(nil),
 	})
-	search := service.NewSearchService(store.Subscriptions(), store.Threads(), store.Events(), clock, cfg.Instance.SelfHosted)
+	search := service.NewSearchService(store.Subscriptions(), store.Users(), store.Threads(), store.Events(), clock, cfg.Instance.SelfHosted)
 	aiSvc := service.NewAIService(service.AIServiceDeps{
 		Subscriptions: store.Subscriptions(),
+		Users:         store.Users(),
 		Accounts:      store.Accounts(),
 		Threads:       store.Threads(),
 		Messages:      store.Messages(),
@@ -239,7 +241,7 @@ func run(logger *slog.Logger) error {
 		SelfHosted:    cfg.Instance.SelfHosted,
 	})
 	devices := service.NewDeviceService(store.Devices(), clock)
-	prefs := service.NewPrefsService(store.Prefs(), store.CalendarPrefs(), store.Subscriptions(), clock, cfg.Instance.SelfHosted)
+	prefs := service.NewPrefsService(store.Prefs(), store.CalendarPrefs(), store.Subscriptions(), store.Users(), clock, cfg.Instance.SelfHosted)
 	scheduling := service.NewSchedulingService(service.SchedulingServiceDeps{
 		Subscriptions:     store.Subscriptions(),
 		Users:             store.Users(),
@@ -317,6 +319,7 @@ func run(logger *slog.Logger) error {
 	// M2.8: first-class tasks (local todos + mirrored provider todos).
 	tasksSvc := service.NewTaskService(service.TaskServiceDeps{
 		Subscriptions: store.Subscriptions(),
+		Users:         store.Users(),
 		Tasks:         store.Tasks(),
 		Clock:         clock,
 		TodoProviders: todoProviders,
@@ -327,6 +330,7 @@ func run(logger *slog.Logger) error {
 	// M2.7 Task 10: teammate read/reply indicators.
 	teamActivitySvc := service.NewTeamActivityService(service.TeamActivityServiceDeps{
 		Subscriptions: store.Subscriptions(),
+		Users:         store.Users(),
 		Accounts:      store.Accounts(),
 		Threads:       store.Threads(),
 		Teams:         postgres.NewTeamRepo(store),
@@ -343,6 +347,7 @@ func run(logger *slog.Logger) error {
 		weatherSvc = service.NewWeatherService(service.WeatherServiceDeps{
 			Provider:      openmeteo.New(cfg.Weather.BaseURL),
 			Subscriptions: store.Subscriptions(),
+			Users:         store.Users(),
 			Clock:         clock,
 			SelfHosted:    cfg.Instance.SelfHosted,
 		})
@@ -357,6 +362,7 @@ func run(logger *slog.Logger) error {
 	if mapsConfigured {
 		placesSvc = service.NewPlacesService(service.PlacesServiceDeps{
 			Subscriptions: store.Subscriptions(),
+			Users:         store.Users(),
 			Maps:          nominatim.New(cfg.Maps.NominatimBaseURL, cfg.Maps.OSRMBaseURL, hc),
 			Clock:         clock,
 			SelfHosted:    cfg.Instance.SelfHosted,
@@ -371,6 +377,7 @@ func run(logger *slog.Logger) error {
 	if cfg.HubSpot.ClientID != "" {
 		crmSvc = service.NewCrmService(service.CrmServiceDeps{
 			Subscriptions: store.Subscriptions(),
+			Users:         store.Users(),
 			Connections:   crmConnectionStore{repo: postgres.NewIntegrationRepo(store)},
 			Providers: map[domain.IntegrationVendor]port.CrmProvider{
 				domain.IntegrationHubSpot: hubspot.NewClient(hc),
@@ -454,7 +461,7 @@ func run(logger *slog.Logger) error {
 	// nil entry means that surface answers 501 / is omitted from discovery,
 	// so a misconfigured deploy is diagnosable at a glance. Log only; no
 	// behavior change.
-	logger.Info("api: optional deps",
+	logger.Info("api: optional deps", append([]any{
 		"teams", teams != nil,
 		"collab", collab != nil,
 		"delegations", delegations != nil,
@@ -466,8 +473,7 @@ func run(logger *slog.Logger) error {
 		"crm", crmSvc != nil,
 		"insights", insightsSvc != nil,
 		"push", pushSender != nil,
-		"billing_env", cfg.Paddle.Env,
-	)
+	}, billingEnvLogAttrs(cfg.Instance.SelfHosted, cfg.Paddle.Env)...)...)
 
 	// --- HTTP server ---
 	handler := httpapi.New(httpapi.Deps{
@@ -559,4 +565,13 @@ func (s crmConnectionStore) ListByUser(ctx context.Context, userID string) ([]po
 
 func (s crmConnectionStore) UpdateTokens(ctx context.Context, connectionID string, t port.TokenSet) error {
 	return s.repo.SaveTokens(ctx, connectionID, t)
+}
+
+// billingEnvLogAttrs names the Paddle environment in the startup log only
+// when billing is enabled; a self-hosted instance has no biller.
+func billingEnvLogAttrs(selfHosted bool, env string) []any {
+	if selfHosted {
+		return nil
+	}
+	return []any{"billing_env", env}
 }

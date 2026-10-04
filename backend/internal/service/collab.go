@@ -58,7 +58,7 @@ var _ port.CollabService = (*CollabService)(nil)
 
 func NewCollabService(d CollabServiceDeps) *CollabService {
 	return &CollabService{
-		ent:      entitlement{subs: d.Subs, clock: d.Clock, selfHost: d.SelfHost},
+		ent:      entitlement{subs: d.Subs, users: d.Users, clock: d.Clock, selfHost: d.SelfHost},
 		shares:   d.Shares,
 		comments: d.Comments,
 		teams:    d.Teams,

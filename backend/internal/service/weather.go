@@ -24,6 +24,7 @@ const weatherMaxDays = 14
 type WeatherServiceDeps struct {
 	Provider      port.WeatherProvider
 	Subscriptions port.SubscriptionRepo
+	Users         port.UserRepo // anchors the entitlement gate's lazy trial grant
 	Clock         port.Clock
 	// SelfHosted unlocks the paywall (open-core self-hosted mode).
 	SelfHosted bool
@@ -54,7 +55,7 @@ type weatherEntry struct {
 func NewWeatherService(d WeatherServiceDeps) *WeatherSvc {
 	return &WeatherSvc{
 		provider: d.Provider,
-		ent:      entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
+		ent:      entitlement{subs: d.Subscriptions, users: d.Users, clock: d.Clock, selfHost: d.SelfHosted},
 		clock:    d.Clock,
 		cache:    map[weatherKey]weatherEntry{},
 	}

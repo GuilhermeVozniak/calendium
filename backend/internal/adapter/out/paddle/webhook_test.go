@@ -192,4 +192,21 @@ func TestParseWebhook(t *testing.T) {
 			t.Fatalf("err = %v, want ErrValidation", err)
 		}
 	})
+
+	const envelope = `"event_id":"evt_1","event_type":"subscription.updated","occurred_at":"2026-10-04T11:59:00Z","notification_id":"ntf_1"`
+	for name, body := range map[string]string{
+		"validly signed non-JSON body":            `not json at all`,
+		"subscription data that is not an object": `{` + envelope + `,"data":"str"}`,
+		"subscription data null":                  `{` + envelope + `,"data":null}`,
+		"subscription data missing":               `{` + envelope + `}`,
+		"subscription data without an id":         `{` + envelope + `,"data":{"status":"active","customer_id":"ctm_1"}}`,
+	} {
+		t.Run(name+" is ErrValidation", func(t *testing.T) {
+			payload, h := signed(body)
+			ev, err := c.ParseWebhook(payload, h, now)
+			if !errors.Is(err, domain.ErrValidation) {
+				t.Fatalf("err = %v (ev %+v), want ErrValidation, never an empty event", err, ev)
+			}
+		})
+	}
 }
