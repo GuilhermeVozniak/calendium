@@ -12,13 +12,15 @@ import * as SecureStore from 'expo-secure-store';
  * via the @better-auth/expo storage adapter.
  */
 
+const STORAGE_PREFIX = 'calendium';
+
 function build(baseURL: string) {
   return createAuthClient({
     baseURL,
     plugins: [
       expoClient({
         scheme: 'calendium', // matches app.json "scheme" + server trustedOrigins ("calendium://")
-        storagePrefix: 'calendium',
+        storagePrefix: STORAGE_PREFIX,
         storage: SecureStore,
       }),
     ],
@@ -54,6 +56,21 @@ export function configureAuthClient(authBaseUrl: string): AuthClient | null {
   currentBaseUrl = next;
   client = next ? build(next) : null;
   return client;
+}
+
+/**
+ * Forgets this device's Better Auth session without any network request: drops
+ * the cookie jar and session cache the @better-auth/expo adapter persists in
+ * SecureStore (`${storagePrefix}_cookie` / `${storagePrefix}_session_data`).
+ * Used after account deletion, when the server-side session is already gone
+ * and calling sign-out would be a pointless request for a deleted user.
+ */
+export async function clearLocalAuthSession(): Promise<void> {
+  await Promise.all(
+    [`${STORAGE_PREFIX}_cookie`, `${STORAGE_PREFIX}_session_data`].map((key) =>
+      SecureStore.deleteItemAsync(key).catch(() => undefined)
+    )
+  );
 }
 
 /**

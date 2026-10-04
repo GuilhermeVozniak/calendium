@@ -25,7 +25,14 @@ const authClient = vi.hoisted(() => ({
   listAccounts: async () => ({ data: [{ id: 'acc1', providerId: 'credential' }] }),
   deleteUser,
 }));
-vi.mock('@/lib/auth', () => ({ signOut, clearStoredToken: vi.fn(), getAuthClient: () => authClient }));
+const signOutLocally = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/auth', () => ({
+  signOut,
+  signOutLocally,
+  suspendApi: vi.fn(),
+  resumeApi: vi.fn(),
+  getAuthClient: () => authClient,
+}));
 // Account & data reads the signed-in user's email from GET /v1/me (not
 // entitlement-gated, so it answers while paywalled).
 vi.mock('@/lib/api', () => ({
@@ -107,6 +114,7 @@ describe('PaywallView', () => {
     await userEvent.type(await screen.findByLabelText('Your password'), 'hunter2');
     await userEvent.click(screen.getByRole('button', { name: /Delete my account/ }));
     await waitFor(() => expect(deleteUser).toHaveBeenCalledWith({ password: 'hunter2' }));
-    await waitFor(() => expect(signOut).toHaveBeenCalled());
+    await waitFor(() => expect(signOutLocally).toHaveBeenCalled());
+    expect(signOut).not.toHaveBeenCalled();
   });
 });

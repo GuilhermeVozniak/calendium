@@ -9,9 +9,15 @@ jest.mock('@better-auth/expo/client', () => ({
   expoClient: (...args: unknown[]) => mockExpoClient(...args),
 }));
 
-jest.mock('expo-secure-store', () => ({ __esModule: true, default: { SECURE_STORE_MOCK: true } }));
+const mockDeleteItem = jest.fn(async (_key: string) => undefined);
+jest.mock('expo-secure-store', () => ({
+  __esModule: true,
+  default: { SECURE_STORE_MOCK: true },
+  deleteItemAsync: (key: string) => mockDeleteItem(key),
+}));
 
 import {
+  clearLocalAuthSession,
   configureAuthClient,
   getAuthClient,
   getBetterAuthToken,
@@ -51,6 +57,15 @@ describe('configureAuthClient', () => {
     expect(mockCreateAuthClient).toHaveBeenCalledWith(
       expect.objectContaining({ baseURL: 'https://example.com/api/auth' })
     );
+  });
+
+  it('clearLocalAuthSession wipes the persisted cookie and session cache without any request', async () => {
+    mockCreateAuthClient.mockReturnValue(fakeClient(() => 'calendium.session_token=abc'));
+    configureAuthClient('https://example.com/api/auth');
+    await clearLocalAuthSession();
+    expect(mockDeleteItem).toHaveBeenCalledWith('calendium_cookie');
+    expect(mockDeleteItem).toHaveBeenCalledWith('calendium_session_data');
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('configures the expo client plugin with the app scheme, storage prefix, and SecureStore', () => {

@@ -687,3 +687,38 @@ describe('accessTokens.invalidate(failedToken) — only the failing token is dro
     expect(await accessTokens.get()).toBe(t2);
   });
 });
+
+describe('account deletion support (fix wave, clients)', () => {
+  it('suspendApi stops JWT minting and drops the cached JWT until the next sign-in', async () => {
+    configureServer();
+    localStorage.setItem('calendium.bearerToken', 'old-session');
+    const exp = Math.floor(Date.now() / 1000) + 900;
+    const { calls } = installFetch({
+      '/token': { status: 200, body: { token: fakeJwt(exp) } },
+      '/sign-in/email': { status: 200, body: {}, headers: { 'set-auth-token': 'new-session' } },
+      '/get-session': { status: 200, body: { user: { id: 'u1', email: 'ada@test.dev' }, session: {} } },
+    });
+    const { getAccessToken, isApiSuspended, signInEmail, suspendApi } = await import('./auth');
+    expect(await getAccessToken()).not.toBeNull();
+    suspendApi();
+    expect(isApiSuspended()).toBe(true);
+    expect(await getAccessToken()).toBeNull();
+    expect(calls.filter((c) => c.url.endsWith('/token'))).toHaveLength(1);
+
+    expect(await signInEmail('ada@test.dev', 'hunter2')).toEqual({ ok: true });
+    expect(isApiSuspended()).toBe(false);
+    expect(await getAccessToken()).not.toBeNull();
+    expect(calls.filter((c) => c.url.endsWith('/token'))).toHaveLength(2);
+  });
+
+  it('signOutLocally forgets the session with no request at all', async () => {
+    configureServer();
+    localStorage.setItem('calendium.bearerToken', 'stored-token');
+    const { fn } = installFetch({});
+    const { getAccessToken, getStoredToken, signOutLocally } = await import('./auth');
+    signOutLocally();
+    expect(getStoredToken()).toBeNull();
+    expect(await getAccessToken()).toBeNull();
+    expect(fn).not.toHaveBeenCalled();
+  });
+});

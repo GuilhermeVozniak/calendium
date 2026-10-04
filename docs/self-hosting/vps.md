@@ -159,10 +159,12 @@ cd calendium
 cp .env.example .env
 ```
 
-Generate the required encryption key and put it in `.env`:
+Generate the two required secrets and put them in `.env`
+(`TOKEN_ENCRYPTION_KEY` and `INTERNAL_API_SECRET`; use a different value for each):
 
 ```bash
 make gen-secret        # prints a 32-byte hex key (or: openssl rand -hex 32)
+make gen-secret        # run it again for INTERNAL_API_SECRET
 ```
 
 Edit `.env`. At minimum, set these (full reference in
@@ -185,8 +187,10 @@ POSTGRES_PASSWORD=<openssl rand -base64 24>
 POSTGRES_DB=calendium
 DATABASE_URL=postgres://calendium:<same-password>@db:5432/calendium?sslmode=disable
 
-# ── Secrets at rest (REQUIRED) ───────────────────────
+# ── Secrets (REQUIRED) ──────────────────────────────
 TOKEN_ENCRYPTION_KEY=<paste the make gen-secret output — exactly 64 hex chars>
+INTERNAL_API_SECRET=<a second make gen-secret output — exactly 64 hex chars>
+# INTERNAL_API_URL stays unset: compose points web at http://api:8080.
 
 # ── Authentication (Better Auth — built into the web app; see ./providers.md) ─
 BETTER_AUTH_SECRET=<openssl rand -base64 32>   # signing secret — keep it stable
@@ -218,6 +222,15 @@ Notes that trip people up:
 - `TOKEN_ENCRYPTION_KEY` must be **exactly 64 hex characters** (32 bytes) or the
   API refuses to boot. **Back it up separately** — if you lose it, every stored
   provider refresh token becomes undecryptable and all users must reconnect.
+- `INTERNAL_API_SECRET` (also exactly 64 hex characters) authenticates the web
+  app's server-to-server account-deletion call to `/v1/internal/*`. `api`,
+  `worker` and `web` all read it from this one `.env`, and `api` and `worker`
+  refuse to boot without it. Leave `INTERNAL_API_URL` unset: Compose points
+  `web` at `http://api:8080` inside the Docker network. The bundled Caddyfile
+  answers `/v1/internal/*` with 404 at the edge; if you front the stack with
+  nginx instead, add `location /v1/internal/ { return 404; }` ahead of the
+  API location (see
+  [Reverse proxy & TLS](./reverse-proxy-tls.md#nginx--certbot-alternate)).
 - `NEXT_PUBLIC_API_URL` is **baked into the browser bundle at build time** (passed
   as a Docker build arg by compose); change it later and you must rebuild the web
   image (`docker compose build web`). Better Auth's own secrets are read at

@@ -3,7 +3,7 @@ jest.mock('@/lib/auth-client', () => ({
   getBetterAuthToken: (...args: unknown[]) => mockGetBetterAuthToken(...args),
 }));
 
-import { api, configureApi, onPaymentRequired } from './api';
+import { api, configureApi, onPaymentRequired, resumeApi, suspendApi } from './api';
 
 const mockFetch = jest.fn();
 (global as unknown as { fetch: typeof fetch }).fetch = mockFetch as unknown as typeof fetch;
@@ -117,6 +117,35 @@ describe('onPaymentRequired', () => {
     mockFetch.mockResolvedValue(paymentRequired);
     await expect(api.getMe()).rejects.toMatchObject({ status: 402 });
     expect(listener).not.toHaveBeenCalled();
+  });
+});
+
+// Account deletion: no request may reach requireAuth/EnsureUser with a JWT
+// minted for the user being deleted (it would re-create the purged users row).
+describe('suspendApi / resumeApi', () => {
+  afterEach(() => resumeApi());
+
+  it('blocks every request (no fetch, no JWT mint) until resumed', async () => {
+    suspendApi();
+    await expect(api.getMe()).rejects.toThrow(/paused/i);
+    await expect(api.downloadExport()).rejects.toThrow(/paused/i);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockGetBetterAuthToken).not.toHaveBeenCalled();
+
+    resumeApi();
+    await api.getMe();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops the cached JWT so a resumed client never reuses it', async () => {
+    const exp = Math.floor(Date.now() / 1000) + 900;
+    const payload = btoa(JSON.stringify({ sub: 'u1', exp })).replace(/=+$/, '');
+    mockGetBetterAuthToken.mockResolvedValue(`h.${payload}.s`);
+    await api.getMe();
+    suspendApi();
+    resumeApi();
+    await api.getMe();
+    expect(mockGetBetterAuthToken).toHaveBeenCalledTimes(2);
   });
 });
 

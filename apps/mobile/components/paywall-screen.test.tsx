@@ -1,7 +1,18 @@
 const mockSignOut = jest.fn();
+const mockSignOutLocally = jest.fn();
 jest.mock('@/context/auth', () => ({
   __esModule: true,
-  default: () => ({ signOut: mockSignOut, signInWithOAuth: jest.fn() }),
+  default: () => ({ signOut: mockSignOut, signOutLocally: mockSignOutLocally, signInWithOAuth: jest.fn() }),
+}));
+
+const mockSuspendApi = jest.fn();
+jest.mock('@/lib/api', () => ({ suspendApi: () => mockSuspendApi(), resumeApi: jest.fn() }));
+jest.mock('@/hooks/use-push-registration', () => ({ unregisterPushDevice: jest.fn(async () => {}) }));
+jest.mock('@/lib/query-client', () => ({ queryClient: { cancelQueries: jest.fn(async () => {}) } }));
+const mockShareDataExport = jest.fn();
+jest.mock('@/lib/data-export', () => ({
+  shareDataExport: (...args: unknown[]) => mockShareDataExport(...args),
+  describeExportError: () => 'Try again.',
 }));
 
 // Account & data (account lifecycle): export link-out + in-app deletion must
@@ -51,6 +62,8 @@ beforeEach(() => {
   mockListAuthAccounts.mockResolvedValue({ data: [{ id: 'acc1', providerId: 'credential' }], error: null });
   mockDeleteUser.mockResolvedValue({ data: { success: true }, error: null });
   mockSignOut.mockResolvedValue(undefined);
+  mockSignOutLocally.mockResolvedValue(undefined);
+  mockShareDataExport.mockResolvedValue(undefined);
 });
 
 async function flush() {
@@ -112,7 +125,11 @@ describe('PaywallScreen (mobile, store-compliant)', () => {
     await render(<PaywallScreen onRefresh={jest.fn()} />);
     await fireEvent.press(screen.getByText('Account & data'));
     await fireEvent.press(screen.getByText('Download my data'));
-    expect(mockOpenURL).toHaveBeenCalledWith('https://web.example/settings?tab=account');
+    await flush();
+    // App Store ruling: the export arrives via the API and the share sheet,
+    // never by linking out to the web app.
+    expect(mockShareDataExport).toHaveBeenCalledTimes(1);
+    expect(mockOpenURL).not.toHaveBeenCalled();
 
     await fireEvent.press(screen.getByText('Delete account'));
     await flush();
@@ -124,8 +141,10 @@ describe('PaywallScreen (mobile, store-compliant)', () => {
       await buttons.find((b) => b.style === 'destructive')?.onPress?.();
     });
     await flush();
+    expect(mockSuspendApi).toHaveBeenCalled();
     expect(mockDeleteUser).toHaveBeenCalledWith({ password: 'hunter2' });
-    expect(mockSignOut).toHaveBeenCalled();
+    expect(mockSignOutLocally).toHaveBeenCalled();
+    expect(mockSignOut).not.toHaveBeenCalled();
     expect(mockReplace).toHaveBeenCalledWith('/');
   });
 });
