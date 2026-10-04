@@ -28,6 +28,11 @@ func (s *DeviceService) Register(ctx context.Context, userID string, platform do
 	if token == "" {
 		return domain.NotificationDevice{}, fmt.Errorf("%w: token is required", domain.ErrValidation)
 	}
+	if platform.UsesWebPush() {
+		if err := domain.ValidateWebPushToken(token); err != nil {
+			return domain.NotificationDevice{}, err
+		}
+	}
 	return s.devices.Upsert(ctx, domain.NotificationDevice{
 		ID:        newID(),
 		UserID:    userID,

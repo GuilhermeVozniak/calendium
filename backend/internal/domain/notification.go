@@ -1,7 +1,9 @@
 package domain
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"time"
 )
 
@@ -24,6 +26,30 @@ func ParseDevicePlatform(s string) (DevicePlatform, error) {
 		return DevicePlatform(s), nil
 	}
 	return "", fmt.Errorf("%w: unknown device platform %q", ErrValidation, s)
+}
+
+// UsesWebPush reports whether the platform's token is a Web Push
+// subscription: the browser, and the desktop shells that register one.
+func (p DevicePlatform) UsesWebPush() bool {
+	return p == PlatformWeb || p == PlatformWindows || p == PlatformLinux
+}
+
+// ValidateWebPushToken checks a Web Push device token: the browser's
+// PushSubscription JSON with an absolute https endpoint. Push services are
+// public https origins; anything else (http, file:, a relative URL) is
+// refused at registration so it is never stored as a delivery target.
+func ValidateWebPushToken(token string) error {
+	var sub struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if err := json.Unmarshal([]byte(token), &sub); err != nil {
+		return fmt.Errorf("%w: web push token must be a PushSubscription JSON", ErrValidation)
+	}
+	u, err := url.Parse(sub.Endpoint)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+		return fmt.Errorf("%w: web push endpoint must be an https URL", ErrValidation)
+	}
+	return nil
 }
 
 // NotificationDevice is a registered push target. Token is an APNs device
