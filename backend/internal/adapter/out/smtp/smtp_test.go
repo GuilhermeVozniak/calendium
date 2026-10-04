@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,7 @@ type fakeServer struct {
 	authMechs string      // "" = no AUTH extension; e.g. "PLAIN LOGIN"
 	silent    bool        // never send the 220 greeting (deadline tests)
 	quitFail  bool        // answer QUIT with a 4xx instead of 221 (post-DATA failure)
+	rcptFail  bool        // answer RCPT with a 550 that echoes the address, like real providers
 
 	mu       sync.Mutex
 	commands []string
@@ -133,7 +135,14 @@ func (s *fakeServer) serve(conn net.Conn) {
 			w = bufio.NewWriter(conn)
 		case "AUTH":
 			s.handleAuth(line, r, reply)
-		case "MAIL", "RCPT":
+		case "RCPT":
+			if s.rcptFail {
+				addr := strings.TrimSuffix(strings.TrimPrefix(strings.SplitN(line, ":", 2)[1], "<"), ">")
+				reply("550 5.1.1 <" + addr + ">: Recipient address rejected")
+				continue
+			}
+			reply("250 OK")
+		case "MAIL":
 			reply("250 OK")
 		case "DATA":
 			reply("354 go")
@@ -487,6 +496,28 @@ func TestSendQuitFailureAfterDataAcceptedCountsAsDelivered(t *testing.T) {
 	}
 	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "QUIT") {
 		t.Fatalf("want a WARN log mentioning QUIT, got %q", out)
+	}
+}
+
+// A rejected recipient must not put the invitee's address into the error,
+// which the HTTP layer logs at error level (writeError): only its domain.
+func TestSendRcptRejectionRedactsTheAddress(t *testing.T) {
+	srv := startFakeServer(t, &fakeServer{rcptFail: true})
+	c := newTestClient(t, srv, config.SMTP{}, nil)
+
+	err := c.Send(context.Background(), sampleMail)
+	if err == nil {
+		t.Fatal("Send = nil, want the RCPT rejection")
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "ada@example.test") {
+		t.Fatalf("error leaks the recipient address: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "RCPT TO ***@example.test") || !strings.Contains(err.Error(), "550") {
+		t.Fatalf("want the redacted recipient and the provider reply, got %q", err.Error())
+	}
+	var tpErr *textproto.Error
+	if !errors.As(err, &tpErr) || tpErr.Code != 550 {
+		t.Fatalf("redaction must keep the error chain; errors.As textproto = %v", err)
 	}
 }
 

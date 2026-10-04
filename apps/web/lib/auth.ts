@@ -6,6 +6,7 @@ import { Pool } from 'pg';
 
 import { CLIENT_IP_HEADER, buildTrustedOrigins } from '@/lib/auth-env';
 import { readMailConfig } from '@/lib/email/config';
+import { verificationLink } from '@/lib/email/verification-link';
 import { resetPasswordEmail } from '@/lib/email/templates/reset-password';
 import { verifyEmail } from '@/lib/email/templates/verify-email';
 import { sendMail } from '@/lib/email/transport';
@@ -88,8 +89,11 @@ export const auth = betterAuth({
         sendOnSignIn: true,
         autoSignInAfterVerification: true,
         expiresIn: 86_400,
-        sendVerificationEmail: async ({ user, url }) => {
-          await sendMail(verifyEmail({ to: user.email, url }));
+        // A link sent by sign-in (sendOnSignIn) carries the post-sign-in
+        // destination as its callback; verificationLink sends it to
+        // /verify-email like every other verification link.
+        sendVerificationEmail: async ({ user, url }, request) => {
+          await sendMail(verifyEmail({ to: user.email, url: verificationLink(url, request) }));
         },
       }
     : undefined,

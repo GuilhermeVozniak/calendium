@@ -13,6 +13,13 @@ adapter when set and is otherwise ignored.
 > backend binary *directly* (defaults to `SELF_HOSTED=false`, `DATABASE_URL`
 > host `localhost`, and adds `HTTP_ADDR`/`PORT`). Self-hosters use the root one.
 
+> **Booleans.** `SELF_HOSTED`, `SMTP_SECURE`, `ALLOW_DEV_ORIGINS` and
+> `TRUST_PROXY` accept `true`/`1`/`yes` and `false`/`0`/`no`
+> (case-insensitive); blank means `false` (except `TRUST_PROXY` under
+> Compose, which defaults to `true`). Every service that reads one parses it
+> the same way, and any other value stops that service at boot with the
+> variable named.
+
 See also: [Quickstart](./quickstart.md) · [Clients](./clients.md) ·
 [Overview](./README.md).
 
@@ -70,7 +77,7 @@ is `NEXT_PUBLIC_API_URL`.
 | `NEXT_PUBLIC_API_URL` | No | `http://localhost:8080` | Where the browser reaches the Go API. **Inlined at build time** (Docker build arg) — rebuild the `web` image to change it. Behind the bundled proxy set it to your domain, or **leave blank** to use same-origin relative `/v1/…` requests. |
 | `CORS_ALLOWED_ORIGINS` | No | — | Comma-separated extra browser origins trusted by **both** the Go API (CORS) and Better Auth (trusted origins). Always trusted without listing them: `BETTER_AUTH_URL`, `PUBLIC_WEB_URL`, the desktop app's WebView origins (`wails://wails`, `wails://wails.localhost`, `http(s)://wails.localhost`), `calendium://` and `https://appleid.apple.com` (Apple's sign-in `form_post`; trusted, never reflected in CORS). |
 | `ALLOW_DEV_ORIGINS` | No | `false` | Also allow `http://localhost:*` / `http://127.0.0.1:*` (and `[::1]` in CORS). The Go API allows these origins **only** when this is `true`, in every environment. Better Auth (`web`) also trusts them under `next dev`. The desktop WebView origins, `CORS_ALLOWED_ORIGINS`, `PUBLIC_WEB_URL` and `BETTER_AUTH_URL` are always allowed, whatever this is set to. In production keep it blank: `true` makes `web` log a startup warning. Read by `web` and `api`. |
-| `TRUST_PROXY` | No | `false` | How the web app finds the client IP for its sign-in rate limits: the right-most `X-Forwarded-For` entry that is not a trusted proxy. `false`: no proxy is trusted, so only the immediate peer counts and a client-supplied `X-Forwarded-For` is never used. Behind a proxy every client then shares the proxy's bucket, and production logs a warning. `true`: entries in `TRUSTED_PROXY_CIDRS` are skipped from the right. Read by `web` only. The Go API keys its own limits on the TCP peer. See [Security → Client IP](./security.md#client-ip-trust_proxy-and-trusted_proxy_cidrs). |
+| `TRUST_PROXY` | No | `true` under Compose (`false` when `web` runs outside it) | How the web app finds the client IP for its auth rate limits (every `/api/auth/*` endpoint, including session reads and JWT minting): the right-most `X-Forwarded-For` entry that is not a trusted proxy, or the left-most entry when every hop is trusted (a LAN/VPN client behind the proxy). `true`: entries in `TRUSTED_PROXY_CIDRS` are skipped from the right, so behind the bundled Caddy each client gets its own bucket. `false`: no proxy is trusted, so only the immediate peer counts and a client-supplied `X-Forwarded-For` is never used. Behind a proxy every client then shares the proxy's bucket on all auth endpoints, and production logs a warning. Set `false` only when `web:3000` is exposed directly to a LAN with no proxy in front. Accepts `true`/`1`/`yes` and `false`/`0`/`no` (case-insensitive); anything else stops `web` at boot. Read by `web` only. The Go API keys its own limits on the TCP peer. See [Security → Client IP](./security.md#client-ip-trust_proxy-and-trusted_proxy_cidrs). |
 | `TRUSTED_PROXY_CIDRS` | No | `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7` | Comma-separated proxy ranges skipped from the right of `X-Forwarded-For` when `TRUST_PROXY=true`; ignored when it is `false`. The default covers loopback and private networks, including the bundled Caddy on the Compose network. Add your CDN or load balancer ranges if they are public. Narrow it to your proxy's own address if untrusted clients can reach `web` from a private range. Read by `web`. |
 
 ## Transactional email (SMTP)

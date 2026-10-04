@@ -35,11 +35,18 @@ describe('clientIpFor — TRUST_PROXY unset/false: the immediate peer only', () 
     expect(clientIpFor(xff(header), UNTRUSTED)).toBe('');
   });
 
-  it('TRUST_PROXY values other than "true" do not trust anything', () => {
+  it('TRUST_PROXY parses like the Go config: false/0/no/blank trust nothing, true/1/yes trust the proxy', () => {
     const header = xff('198.51.100.7, 172.18.0.5');
-    for (const value of ['false', '1', 'TRUE', 'yes', '']) {
+    for (const value of ['false', 'FALSE', '0', 'no', '']) {
       expect(clientIpFor(header, proxyTrustFromEnv({ TRUST_PROXY: value }))).toBe('172.18.0.5');
     }
+    for (const value of ['true', 'TRUE', '1', 'yes', 'Yes']) {
+      expect(clientIpFor(header, proxyTrustFromEnv({ TRUST_PROXY: value }))).toBe('198.51.100.7');
+    }
+  });
+
+  it('an invalid TRUST_PROXY is a configuration error naming the variable', () => {
+    expect(() => proxyTrustFromEnv({ TRUST_PROXY: 'on' })).toThrow('TRUST_PROXY must be true or false (also 1/0, yes/no), got "on"');
   });
 });
 
@@ -50,11 +57,24 @@ describe('clientIpFor — TRUST_PROXY=true: right-most hop outside TRUSTED_PROXY
     ['a proxy chain of trusted hops', '6.6.6.6, 198.51.100.7, 10.1.2.3, 172.18.0.5', '198.51.100.7'],
     ['a direct hit from an untrusted peer: the peer, never the left entry', '6.6.6.6, 203.0.113.9', '203.0.113.9'],
     ['a direct untrusted peer without other hops', '203.0.113.9', '203.0.113.9'],
-    ['every hop trusted (LAN client): the peer itself', '192.168.1.20, 10.0.0.2', '10.0.0.2'],
     ['unparseable hops are skipped', '198.51.100.7, garbage, 198.51.100.8:80, 127.0.0.1', '198.51.100.7'],
     ['IPv6 behind a loopback proxy', '2001:db8::7, ::1', '2001:db8::7'],
     ['IPv4-mapped hops are unmapped before matching', '::ffff:198.51.100.7, ::ffff:10.0.0.2', '198.51.100.7'],
   ])('%s', (_label, header, expected) => {
+    expect(clientIpFor(xff(header), TRUSTED)).toBe(expected);
+  });
+
+  it.each([
+    ['a LAN client behind Caddy gets its own bucket, not the proxy\'s', '192.168.1.20, 172.18.0.5', '192.168.1.20'],
+    ['two LAN clients behind Caddy get different buckets', '192.168.1.21, 172.18.0.5', '192.168.1.21'],
+    ['an all-trusted chain (VPN → proxy → Caddy): the left-most entry', '10.8.0.4, 10.0.0.2, 172.18.0.5', '10.8.0.4'],
+    ['an all-trusted chain skips an unparseable left-most entry', 'garbage, 192.168.1.20, 172.18.0.5', '192.168.1.20'],
+    ['an IPv4-mapped LAN client is unmapped', '::ffff:192.168.1.20, ::1', '192.168.1.20'],
+    ['a lone trusted peer with no other hops: the peer', '172.18.0.5', '172.18.0.5'],
+    ['a trusted peer whose other hops are all unparseable: the peer', 'garbage, 1.2.3.4:80, 172.18.0.5', '172.18.0.5'],
+    ['spoofed private left entries never win over an untrusted hop', '192.168.1.99, 10.0.0.1, 198.51.100.7, 172.18.0.5', '198.51.100.7'],
+    ['spoofed public and private left entries: still the right-most untrusted hop', '6.6.6.6, 10.0.0.1, 198.51.100.7, 10.1.2.3, 172.18.0.5', '198.51.100.7'],
+  ])('every other hop trusted → left-most valid entry: %s', (_label, header, expected) => {
     expect(clientIpFor(xff(header), TRUSTED)).toBe(expected);
   });
 

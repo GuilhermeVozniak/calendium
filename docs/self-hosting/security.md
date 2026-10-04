@@ -17,7 +17,7 @@ worked top to bottom.
 - [ ] Base images updated on a schedule
 - [ ] Backups encrypted and stored off-box
 - [ ] Managed Postgres reached with `sslmode=require` (or stricter)
-- [ ] `web` behind your proxy with `TRUST_PROXY=true`, and the proxy's address inside `TRUSTED_PROXY_CIDRS`
+- [ ] `web` behind your proxy with `TRUST_PROXY=true` (the Compose default), and the proxy's address inside `TRUSTED_PROXY_CIDRS`
 - [ ] `ALLOW_DEV_ORIGINS` blank (false) in production
 - [ ] SMTP configured over TLS (verification + password reset), or users know to ask you for a reset
 
@@ -225,13 +225,13 @@ on a host), start it the same way, `node -r ./scripts/forwarded-for-peer.cjs`,
 or a client could forge the right-most entry; production logs a warning when
 the preload is missing.
 
-- `TRUST_PROXY=false` (default): no proxy is trusted, so only the immediate peer
-  is used. A client-supplied `X-Forwarded-For` is never trusted. Behind a reverse
-  proxy the immediate peer is the proxy, so every client shares the proxy's
-  bucket. That is why production logs a warning.
-- `TRUST_PROXY=true`: entries inside `TRUSTED_PROXY_CIDRS` are skipped from the
-  right, and the first entry outside them is the client. The default is
-  `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7`
+- `TRUST_PROXY=true` (the default under Docker Compose): entries inside
+  `TRUSTED_PROXY_CIDRS` are skipped from the right, and the first entry outside
+  them is the client. When every entry is inside them (a LAN or VPN client
+  behind the proxy), the left-most entry is the client: a forged left entry
+  cannot win, because every hop to its right is a trusted proxy. Behind the
+  bundled Caddy each client therefore gets its own bucket. The default
+  `TRUSTED_PROXY_CIDRS` is `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7`
   (loopback and private ranges). It covers the bundled Caddy on the Compose
   network and nginx on the host in front of the published port. A client can
   prepend whatever it likes, but it cannot get past the entry its proxy added.
@@ -240,6 +240,18 @@ the preload is missing.
   every proxy hop is inside `TRUSTED_PROXY_CIDRS`. Add a CDN's public ranges
   if one sits in front. If untrusted clients can reach `web:3000` from a
   private range, narrow the list to your proxy's own address.
+- `TRUST_PROXY=false` (the default when `web` runs outside Compose): no proxy
+  is trusted, so only the immediate peer is used. A client-supplied
+  `X-Forwarded-For` is never trusted. Use it when `web:3000` is exposed
+  directly to a LAN with no proxy in front; with `true` a client on a private
+  range could choose its own bucket. Behind a reverse proxy the immediate peer
+  is the proxy, so every client shares the proxy's bucket on **all** auth
+  endpoints: one client's typos, or an attacker's requests, block sign-in,
+  session reads and JWT minting for everyone. That is why production logs a
+  warning.
+
+`TRUST_PROXY` accepts `true`/`1`/`yes` and `false`/`0`/`no`
+(case-insensitive); any other value stops `web` at boot.
 
 The supported production shape is Caddy (or nginx) + `TRUST_PROXY=true`.
 

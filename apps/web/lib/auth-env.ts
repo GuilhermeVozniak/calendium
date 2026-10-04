@@ -40,9 +40,42 @@ export const CLIENT_IP_HEADER = 'x-calendium-client-ip';
 
 const stripSlash = (s: string) => s.trim().replace(/\/+$/, '');
 
+/** Boolean variables the web tier reads; SELF_HOSTED, SMTP_SECURE and ALLOW_DEV_ORIGINS are shared with the Go api/worker. */
+export const BOOLEAN_ENV_VARS = ['SELF_HOSTED', 'SMTP_SECURE', 'ALLOW_DEV_ORIGINS', 'TRUST_PROXY'] as const;
+
+/**
+ * The boolean grammar shared with the Go config (config.parseBool):
+ * true/1/yes are true and false/0/no, blank or unset are false,
+ * case-insensitively and ignoring surrounding spaces. Anything else throws,
+ * naming the variable, so SELF_HOSTED=1 means the same thing on every tier.
+ * instrumentation.ts runs assertBooleanEnv at boot, so a request-time call
+ * never meets an invalid value.
+ */
+export function envBool(env: EnvLike, name: string): boolean {
+  const raw = env[name] ?? '';
+  switch (raw.trim().toLowerCase()) {
+    case 'true':
+    case '1':
+    case 'yes':
+      return true;
+    case 'false':
+    case '0':
+    case 'no':
+    case '':
+      return false;
+    default:
+      throw new Error(`${name} must be true or false (also 1/0, yes/no), got "${raw}"`);
+  }
+}
+
+/** Boot-time check of every BOOLEAN_ENV_VARS entry (mirrors config.FromEnv rejecting a bad bool). */
+export function assertBooleanEnv(env: EnvLike): void {
+  for (const name of BOOLEAN_ENV_VARS) envBool(env, name);
+}
+
 /** localhost / 127.0.0.1 origins are trusted outside production, or when explicitly re-enabled. */
 export function devOriginsAllowed(env: EnvLike): boolean {
-  return env.NODE_ENV !== 'production' || env.ALLOW_DEV_ORIGINS === 'true';
+  return env.NODE_ENV !== 'production' || envBool(env, 'ALLOW_DEV_ORIGINS');
 }
 
 /** CORS_ALLOWED_ORIGINS: comma-separated exact origins (trimmed, trailing slashes dropped). */
@@ -159,12 +192,12 @@ export function passwordPolicyError(password: string, email: string | null | und
 export function startupWarnings(env: EnvLike): string[] {
   const out: string[] = [];
   if (env.NODE_ENV !== 'production') return out;
-  if (env.TRUST_PROXY !== 'true') {
+  if (!envBool(env, 'TRUST_PROXY')) {
     out.push(
-      'TRUST_PROXY is not true in production: auth rate limits key on the immediate peer, so behind a reverse proxy every client shares the proxy\'s bucket. Behind the bundled Caddy profile (or any proxy in TRUSTED_PROXY_CIDRS) set TRUST_PROXY=true — see docs/self-hosting/security.md.'
+      'TRUST_PROXY is not true in production: auth rate limits key on the immediate peer, so behind a reverse proxy every client shares the proxy\'s bucket on every /api/auth endpoint (sign-in, session reads, JWT minting). Behind the bundled Caddy profile (or any proxy in TRUSTED_PROXY_CIDRS) set TRUST_PROXY=true (the docker compose default) — see docs/self-hosting/security.md.'
     );
   }
-  if (env.ALLOW_DEV_ORIGINS === 'true') {
+  if (envBool(env, 'ALLOW_DEV_ORIGINS')) {
     out.push(
       'ALLOW_DEV_ORIGINS=true in production: http://localhost and http://127.0.0.1 origins are trusted for auth and reflected in CORS. Unset it unless you are debugging.'
     );

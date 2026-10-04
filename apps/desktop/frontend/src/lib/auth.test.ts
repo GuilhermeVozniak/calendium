@@ -646,3 +646,44 @@ describe('getAccessToken cache — invalidation on sign-in and server switch (fi
     expect(calls.at(-1)?.url).toBe(`${next.authBaseUrl}/token`);
   });
 });
+
+describe('accessTokens.invalidate(failedToken) — only the failing token is dropped (final fix)', () => {
+  it('a late 401 on an already-replaced token keeps the fresher one', async () => {
+    configureServer();
+    localStorage.setItem('calendium.bearerToken', 'stored-token');
+    const exp = Math.floor(Date.now() / 1000) + 900;
+    const t1 = fakeJwt(exp);
+    const t2 = `${fakeJwt(exp)}2`;
+    const { calls } = installFetch({
+      '/token': [
+        { status: 200, body: { token: t1 } },
+        { status: 200, body: { token: t2 } },
+      ],
+    });
+    const { accessTokens } = await import('./auth');
+    expect(await accessTokens.get()).toBe(t1);
+    accessTokens.invalidate(t1); // request A's 401
+    expect(await accessTokens.get()).toBe(t2);
+    accessTokens.invalidate(t1); // request B's 401 on the same stale token
+    expect(await accessTokens.get()).toBe(t2);
+    expect(calls.filter((c) => c.url.endsWith('/token'))).toHaveLength(2);
+  });
+
+  it('invalidate() without a token still drops the cached JWT', async () => {
+    configureServer();
+    localStorage.setItem('calendium.bearerToken', 'stored-token');
+    const exp = Math.floor(Date.now() / 1000) + 900;
+    const t1 = fakeJwt(exp);
+    const t2 = `${fakeJwt(exp)}2`;
+    installFetch({
+      '/token': [
+        { status: 200, body: { token: t1 } },
+        { status: 200, body: { token: t2 } },
+      ],
+    });
+    const { accessTokens } = await import('./auth');
+    expect(await accessTokens.get()).toBe(t1);
+    accessTokens.invalidate();
+    expect(await accessTokens.get()).toBe(t2);
+  });
+});

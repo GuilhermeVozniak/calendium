@@ -336,15 +336,19 @@ configured (`curl -s https://your-domain/v1/instance | jq .features.email` is
 `X-Retry-After` header.
 
 **Cause:** the per-IP sign-in limits ([Security → Rate limits](./security.md#rate-limits-postgres-backed)).
-If *everyone* hits them at once, the web app cannot tell clients apart and they
-share one bucket. With `TRUST_PROXY=false` it uses only the immediate peer,
-which behind a proxy is the proxy itself, and the `web` log shows
-`TRUST_PROXY is not true in production: …` at startup. With `TRUST_PROXY=true`
-the same happens when a proxy hop is outside `TRUSTED_PROXY_CIDRS`, for example
-a CDN with public addresses.
+If *everyone* hits them at once (including `/api/auth/get-session` and
+`/api/auth/token`, so pages bounce to sign-in and API calls fail with 401), the
+web app cannot tell clients apart and they share one bucket. Compose defaults
+`TRUST_PROXY` to `true`, so behind the bundled Caddy each client normally gets
+its own bucket. With `TRUST_PROXY=false` (set explicitly in `.env`, or `web`
+run outside Compose) it uses only the immediate peer, which behind a proxy is
+the proxy itself, and the `web` log shows `TRUST_PROXY is not true in
+production: …` at startup. With `TRUST_PROXY=true` the same happens when a
+proxy hop is outside `TRUSTED_PROXY_CIDRS`, for example a CDN with public
+addresses.
 
-**Fix:** behind a proxy, set `TRUST_PROXY=true`, add any public proxy ranges to
-`TRUSTED_PROXY_CIDRS`, and restart `web`. To clear the counters (for example after a
+**Fix:** behind a proxy, remove `TRUST_PROXY=false` from `.env` (or set it to
+`true`), add any public proxy ranges to `TRUSTED_PROXY_CIDRS`, and restart `web`. To clear the counters (for example after a
 load test): `docker compose exec db psql -U calendium -d calendium -c 'DELETE FROM "rateLimit";'`.
 
 ---

@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -191,7 +192,7 @@ func TestFromEnv(t *testing.T) {
 		},
 		{
 			name:    "SELF_HOSTED invalid errors",
-			env:     withBase(map[string]string{"SELF_HOSTED": "yes"}),
+			env:     withBase(map[string]string{"SELF_HOSTED": "maybe"}),
 			wantErr: true,
 		},
 		// ---- OpenRouter model ----
@@ -649,7 +650,7 @@ func TestSMTPFromEnv(t *testing.T) {
 		{name: "SMTP_PORT zero errors", env: withFull(map[string]string{"SMTP_PORT": "0"}), wantErr: `SMTP_PORT must be an integer between 1 and 65535, got "0"`},
 		{name: "SMTP_PORT too large errors", env: withFull(map[string]string{"SMTP_PORT": "65536"}), wantErr: "SMTP_PORT must be an integer"},
 		{name: "SMTP_PORT non-int errors", env: withFull(map[string]string{"SMTP_PORT": "abc"}), wantErr: `SMTP_PORT must be an integer between 1 and 65535, got "abc"`},
-		{name: "SMTP_SECURE invalid errors", env: withFull(map[string]string{"SMTP_SECURE": "yes"}), wantErr: `SMTP_SECURE must be true or false, got "yes"`},
+		{name: "SMTP_SECURE invalid errors", env: withFull(map[string]string{"SMTP_SECURE": "maybe"}), wantErr: `SMTP_SECURE must be true or false (also 1/0, yes/no), got "maybe"`},
 		{name: "SMTP_FROM malformed errors", env: withFull(map[string]string{"SMTP_FROM": "not-an-address"}), wantErr: `SMTP_FROM must be an email address or "Name <addr>", got "not-an-address"`},
 		{name: "host without from is partial", env: withBase(map[string]string{"SMTP_HOST": "h"}), wantErr: "SMTP_* is partially configured: SMTP_FROM"},
 		{name: "from without host is partial", env: withBase(map[string]string{"SMTP_FROM": "a@b.test"}), wantErr: "SMTP_* is partially configured: SMTP_HOST"},
@@ -658,7 +659,7 @@ func TestSMTPFromEnv(t *testing.T) {
 		{name: "only user set names host, from and pass", env: withBase(map[string]string{"SMTP_USER": "u"}), wantErr: "SMTP_* is partially configured: SMTP_HOST, SMTP_FROM, SMTP_PASS"},
 		{name: "ALLOW_DEV_ORIGINS default false", env: withBase(nil), check: func(t *testing.T, c Config) { assertBool(t, "AllowDevOrigins", c.HTTP.AllowDevOrigins, false) }},
 		{name: "ALLOW_DEV_ORIGINS true", env: withBase(map[string]string{"ALLOW_DEV_ORIGINS": "true"}), check: func(t *testing.T, c Config) { assertBool(t, "AllowDevOrigins", c.HTTP.AllowDevOrigins, true) }},
-		{name: "ALLOW_DEV_ORIGINS invalid errors", env: withBase(map[string]string{"ALLOW_DEV_ORIGINS": "yes"}), wantErr: `ALLOW_DEV_ORIGINS must be true or false, got "yes"`},
+		{name: "ALLOW_DEV_ORIGINS invalid errors", env: withBase(map[string]string{"ALLOW_DEV_ORIGINS": "maybe"}), wantErr: `ALLOW_DEV_ORIGINS must be true or false (also 1/0, yes/no), got "maybe"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -713,5 +714,57 @@ func TestValidateCloudEmail(t *testing.T) {
 				t.Fatalf("ValidateCloudEmail() = %v, want %q", err, want)
 			}
 		})
+	}
+}
+
+// TestBooleanEnvParsing pins the boolean grammar shared with the web tier
+// (apps/web/lib/auth-env.ts envBool, same table in auth-env.test.ts):
+// true/1/yes are true and false/0/no/blank are false, case-insensitively and
+// ignoring surrounding spaces; anything else is a boot error naming the
+// variable. Before, Go accepted strconv.ParseBool's set (t, F, ...) while the
+// web accepted only the literal "true", so SELF_HOSTED=1 booted api+worker as
+// self-host and web as cloud.
+func TestBooleanEnvParsing(t *testing.T) {
+	truthy := []string{"true", "TRUE", "True", "1", "yes", "YES", "Yes", " true "}
+	falsy := []string{"false", "FALSE", "False", "0", "no", "NO", "", "  "}
+	invalid := []string{"t", "f", "T", "F", "on", "off", "y", "n", "2", "maybe", "truee"}
+	vars := map[string]func(Config) bool{
+		"SELF_HOSTED":       func(c Config) bool { return c.Instance.SelfHosted },
+		"SMTP_SECURE":       func(c Config) bool { return c.SMTP.Secure },
+		"ALLOW_DEV_ORIGINS": func(c Config) bool { return c.HTTP.AllowDevOrigins },
+	}
+	for name, get := range vars {
+		for _, want := range []bool{true, false} {
+			values := falsy
+			if want {
+				values = truthy
+			}
+			for _, v := range values {
+				t.Run(fmt.Sprintf("%s=%q is %v", name, v, want), func(t *testing.T) {
+					clearEnv(t)
+					for k, val := range withBase(map[string]string{name: v}) {
+						t.Setenv(k, val)
+					}
+					c, err := FromEnv()
+					if err != nil {
+						t.Fatalf("FromEnv() unexpected error: %v", err)
+					}
+					assertBool(t, name, get(c), want)
+				})
+			}
+		}
+		for _, v := range invalid {
+			t.Run(fmt.Sprintf("%s=%q errors", name, v), func(t *testing.T) {
+				clearEnv(t)
+				for k, val := range withBase(map[string]string{name: v}) {
+					t.Setenv(k, val)
+				}
+				_, err := FromEnv()
+				want := fmt.Sprintf("%s must be true or false (also 1/0, yes/no), got %q", name, v)
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("FromEnv() error = %v, want containing %q", err, want)
+				}
+			})
+		}
 	}
 }

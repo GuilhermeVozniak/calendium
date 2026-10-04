@@ -438,7 +438,9 @@ func (s *TeamService) Invite(ctx context.Context, userID, teamID, email string, 
 		inv.Status = domain.InviteRevoked
 		_ = s.invitations.Update(rbCtx, inv)
 		cancel()
-		return domain.TeamInvitation{}, fmt.Errorf("sending invitation email: %w", err)
+		// writeError logs this at error level: keep the invitee's domain,
+		// never the address (mailbox and SMTP replies may echo it).
+		return domain.TeamInvitation{}, fmt.Errorf("sending invitation email: %w", domain.RedactEmailsInError(err, canonical))
 	}
 	inv.Delivery = delivery
 	return inv, nil

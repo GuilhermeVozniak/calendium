@@ -430,14 +430,7 @@ func FromEnv() (Config, error) {
 	if cfg.Instance.AppBaseURL == "" {
 		cfg.Instance.AppBaseURL = cfg.Instance.PublicWebURL
 	}
-	if v := os.Getenv("SELF_HOSTED"); v != "" {
-		b, err := strconv.ParseBool(v)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("SELF_HOSTED must be true or false, got %q", v))
-		} else {
-			cfg.Instance.SelfHosted = b
-		}
-	}
+	cfg.Instance.SelfHosted = envBool("SELF_HOSTED", &errs)
 
 	// Transactional email (piece 2). Port/secure/from are validated even when
 	// SMTP_HOST is blank so a typo surfaces at boot; the cloud-mode
@@ -457,14 +450,7 @@ func FromEnv() (Config, error) {
 			cfg.SMTP.Port = n
 		}
 	}
-	if v := os.Getenv("SMTP_SECURE"); v != "" {
-		b, err := strconv.ParseBool(v)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("SMTP_SECURE must be true or false, got %q", v))
-		} else {
-			cfg.SMTP.Secure = b
-		}
-	}
+	cfg.SMTP.Secure = envBool("SMTP_SECURE", &errs)
 	if cfg.SMTP.From != "" {
 		if _, err := netmail.ParseAddress(cfg.SMTP.From); err != nil {
 			errs = append(errs, fmt.Errorf("SMTP_FROM must be an email address or \"Name <addr>\", got %q", cfg.SMTP.From))
@@ -473,14 +459,7 @@ func FromEnv() (Config, error) {
 	if err := cfg.SMTP.partialError(); err != nil {
 		errs = append(errs, err)
 	}
-	if v := os.Getenv("ALLOW_DEV_ORIGINS"); v != "" {
-		b, err := strconv.ParseBool(v)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("ALLOW_DEV_ORIGINS must be true or false, got %q", v))
-		} else {
-			cfg.HTTP.AllowDevOrigins = b
-		}
-	}
+	cfg.HTTP.AllowDevOrigins = envBool("ALLOW_DEV_ORIGINS", &errs)
 
 	// Weather (M2.8 Task 13): keyless vendor, so the default is on. LookupEnv
 	// (not Getenv) so an explicitly empty OPEN_METEO_URL means "disable",
@@ -517,6 +496,31 @@ func FromEnv() (Config, error) {
 		return Config{}, errors.Join(errs...)
 	}
 	return cfg, nil
+}
+
+// parseBool is the boolean grammar every tier shares (the web mirrors it in
+// apps/web/lib/auth-env.ts envBool): true/1/yes are true and false/0/no or
+// blank are false, case-insensitively and ignoring surrounding spaces.
+// Anything else is an error, so SELF_HOSTED=1 means the same thing to the
+// api, the worker and the web app.
+func parseBool(name, raw string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "true", "1", "yes":
+		return true, nil
+	case "false", "0", "no", "":
+		return false, nil
+	}
+	return false, fmt.Errorf("%s must be true or false (also 1/0, yes/no), got %q", name, raw)
+}
+
+// envBool reads a boolean variable with parseBool, appending a parse error
+// to errs (FromEnv reports every bad variable at once) and returning false.
+func envBool(name string, errs *[]error) bool {
+	b, err := parseBool(name, os.Getenv(name))
+	if err != nil {
+		*errs = append(*errs, err)
+	}
+	return b
 }
 
 // ValidateCloudEmail enforces the cloud startup rule for transactional

@@ -172,6 +172,10 @@ export default function SignInPage() {
           return;
         }
       } else {
+        // callbackURL is the post-sign-in destination (Better Auth's client
+        // redirects there on success). The verification link this call emails
+        // to an unverified account lands on /verify-email instead: the server
+        // rewrites it (lib/email/verification-link.ts).
         const { error } = await signIn.email({ email, password, callbackURL: nextDestination() }, retry.fetchOptions);
         if (error) {
           if (error.code === 'EMAIL_NOT_VERIFIED') {

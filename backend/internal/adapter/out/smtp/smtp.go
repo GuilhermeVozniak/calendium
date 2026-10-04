@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"calendium/backend/internal/config"
+	"calendium/backend/internal/domain"
 	"calendium/backend/internal/port"
 )
 
@@ -71,7 +72,14 @@ func (c *Client) Send(ctx context.Context, msg port.Email) error {
 	if err != nil {
 		return err
 	}
+	// The error reaches error-level logs (httpapi writeError), and provider
+	// replies often echo the recipient ("550 <bob@x>: rejected"): keep only
+	// the recipients' domains in its text. errors.Is/As still see the chain.
+	return domain.RedactEmailsInError(c.deliver(ctx, m), m.rcpts...)
+}
 
+// deliver runs the SMTP dialogue for an already-built message.
+func (c *Client) deliver(ctx context.Context, m message) error {
 	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 	addr := net.JoinHostPort(c.cfg.Host, strconv.Itoa(c.cfg.Port))
@@ -123,7 +131,7 @@ func (c *Client) Send(ctx context.Context, msg port.Email) error {
 	}
 	for _, r := range m.rcpts {
 		if err := cl.Rcpt(r); err != nil {
-			return fmt.Errorf("smtp: RCPT TO %s: %w", r, err)
+			return fmt.Errorf("smtp: RCPT TO %s: %w", domain.RedactEmail(r), err)
 		}
 	}
 	w, err := cl.Data()

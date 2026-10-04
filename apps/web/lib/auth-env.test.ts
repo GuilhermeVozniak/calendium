@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   APPLE_FORM_POST_ORIGIN,
+  BOOLEAN_ENV_VARS,
+  assertBooleanEnv,
   buildTrustedOrigins,
   devOriginsAllowed,
+  envBool,
   isAllowedOrigin,
   passwordPolicyError,
   rateLimitRules,
@@ -14,6 +17,42 @@ const WAILS = ['wails://wails', 'wails://wails.localhost', 'http://wails.localho
 const DEV = { NODE_ENV: 'development' };
 const PROD = { NODE_ENV: 'production' };
 
+/**
+ * The boolean grammar shared with the Go config (config.parseBool, same table
+ * in config_test.go TestBooleanEnvParsing).
+ */
+describe('envBool — identical to the Go config', () => {
+  const TRUTHY = ['true', 'TRUE', 'True', '1', 'yes', 'YES', 'Yes', ' true '];
+  const FALSY = ['false', 'FALSE', 'False', '0', 'no', 'NO', '', '  '];
+  const INVALID = ['t', 'f', 'T', 'F', 'on', 'off', 'y', 'n', '2', 'maybe', 'truee'];
+
+  it('names every variable both tiers read', () => {
+    expect([...BOOLEAN_ENV_VARS].sort()).toEqual(['ALLOW_DEV_ORIGINS', 'SELF_HOSTED', 'SMTP_SECURE', 'TRUST_PROXY']);
+  });
+
+  for (const name of BOOLEAN_ENV_VARS) {
+    it.each(TRUTHY)(`${name}=%j is true`, (value) => {
+      expect(envBool({ [name]: value }, name)).toBe(true);
+    });
+    it.each(FALSY)(`${name}=%j is false`, (value) => {
+      expect(envBool({ [name]: value }, name)).toBe(false);
+    });
+    it.each(INVALID)(`${name}=%j is a configuration error naming the variable`, (value) => {
+      expect(() => envBool({ [name]: value }, name)).toThrow(`${name} must be true or false (also 1/0, yes/no), got "${value}"`);
+    });
+  }
+
+  it('unset is false', () => {
+    expect(envBool({}, 'SELF_HOSTED')).toBe(false);
+  });
+
+  it('assertBooleanEnv rejects the first invalid variable and accepts valid ones', () => {
+    expect(() => assertBooleanEnv({ SELF_HOSTED: '1', SMTP_SECURE: 'YES', ALLOW_DEV_ORIGINS: 'no', TRUST_PROXY: '' })).not.toThrow();
+    expect(() => assertBooleanEnv({ SELF_HOSTED: 'true', ALLOW_DEV_ORIGINS: 'on' })).toThrow('ALLOW_DEV_ORIGINS must be true or false');
+    expect(() => assertBooleanEnv({ TRUST_PROXY: 'maybe' })).toThrow('TRUST_PROXY must be true or false');
+  });
+});
+
 describe('devOriginsAllowed', () => {
   it('is on outside production, off in production, and re-enabled by ALLOW_DEV_ORIGINS=true', () => {
     expect(devOriginsAllowed({})).toBe(true);
@@ -21,7 +60,10 @@ describe('devOriginsAllowed', () => {
     expect(devOriginsAllowed({ NODE_ENV: 'test' })).toBe(true);
     expect(devOriginsAllowed(PROD)).toBe(false);
     expect(devOriginsAllowed({ ...PROD, ALLOW_DEV_ORIGINS: 'true' })).toBe(true);
-    expect(devOriginsAllowed({ ...PROD, ALLOW_DEV_ORIGINS: '1' })).toBe(false);
+    expect(devOriginsAllowed({ ...PROD, ALLOW_DEV_ORIGINS: '1' })).toBe(true);
+    expect(devOriginsAllowed({ ...PROD, ALLOW_DEV_ORIGINS: 'YES' })).toBe(true);
+    expect(devOriginsAllowed({ ...PROD, ALLOW_DEV_ORIGINS: '0' })).toBe(false);
+    expect(devOriginsAllowed({ ...PROD, ALLOW_DEV_ORIGINS: 'no' })).toBe(false);
   });
 });
 
@@ -141,5 +183,7 @@ describe('startupWarnings', () => {
     expect(both[0]).toMatch(/^TRUST_PROXY is not true in production/);
     expect(both[1]).toMatch(/^ALLOW_DEV_ORIGINS=true in production/);
     expect(startupWarnings({ ...PROD, TRUST_PROXY: 'true' })).toEqual([]);
+    expect(startupWarnings({ ...PROD, TRUST_PROXY: '1' })).toEqual([]);
+    expect(startupWarnings({ ...PROD, TRUST_PROXY: 'Yes', ALLOW_DEV_ORIGINS: 'YES' })).toHaveLength(1);
   });
 });

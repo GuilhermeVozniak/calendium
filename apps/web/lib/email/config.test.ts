@@ -41,6 +41,15 @@ describe('readMailConfig', () => {
     expect(readMailConfig({ SMTP_HOST: 'localhost', SMTP_FROM: 'a@b.test' })).toMatchObject({ requireTLS: false });
   });
 
+  it('SMTP_SECURE accepts the Go config grammar (true/1/yes, case-insensitive)', () => {
+    for (const value of ['TRUE', '1', 'yes', 'Yes']) {
+      expect(readMailConfig({ ...FULL, SMTP_SECURE: value })).toMatchObject({ secure: true, requireTLS: false });
+    }
+    for (const value of ['FALSE', '0', 'no']) {
+      expect(readMailConfig({ ...FULL, SMTP_SECURE: value })).toMatchObject({ secure: false, requireTLS: true });
+    }
+  });
+
   it('SMTP_SECURE=true means implicit TLS and no STARTTLS requirement', () => {
     expect(readMailConfig({ ...FULL, SMTP_SECURE: 'true', SMTP_PORT: '465' })).toMatchObject({ secure: true, requireTLS: false, port: 465 });
   });
@@ -59,7 +68,7 @@ describe('readMailConfig', () => {
     [{ ...FULL, SMTP_PORT: '0' }, 'SMTP_PORT must be an integer between 1 and 65535, got "0"'],
     [{ ...FULL, SMTP_PORT: '65536' }, 'SMTP_PORT must be an integer between 1 and 65535, got "65536"'],
     [{ ...FULL, SMTP_PORT: 'abc' }, 'SMTP_PORT must be an integer between 1 and 65535, got "abc"'],
-    [{ ...FULL, SMTP_SECURE: 'yes' }, 'SMTP_SECURE must be true or false, got "yes"'],
+    [{ ...FULL, SMTP_SECURE: 'maybe' }, 'SMTP_SECURE must be true or false (also 1/0, yes/no), got "maybe"'],
     [{ ...FULL, SMTP_FROM: 'not-an-address' }, 'SMTP_FROM must be an email address or "Name <addr>", got "not-an-address"'],
   ])('rejects %j with %s', (env, message) => {
     expect(() => readMailConfig(env)).toThrow(message);
@@ -74,6 +83,16 @@ describe('assertMailConfigForMode', () => {
 
   it('returns the unconfigured shape on self-host without SMTP', () => {
     expect(assertMailConfigForMode({ SELF_HOSTED: 'true' })).toEqual({ configured: false });
+  });
+
+  it('reads SELF_HOSTED like the Go config: 1/YES boot self-host, 0/no stay cloud, anything else errors', () => {
+    for (const value of ['1', 'TRUE', 'yes', 'YES']) {
+      expect(assertMailConfigForMode({ SELF_HOSTED: value })).toEqual({ configured: false });
+    }
+    for (const value of ['0', 'no', 'FALSE']) {
+      expect(() => assertMailConfigForMode({ SELF_HOSTED: value })).toThrow(CLOUD_ERROR);
+    }
+    expect(() => assertMailConfigForMode({ SELF_HOSTED: 'maybe' })).toThrow('SELF_HOSTED must be true or false (also 1/0, yes/no), got "maybe"');
   });
 
   it('returns the parsed config in cloud mode with SMTP', () => {

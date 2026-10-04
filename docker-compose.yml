@@ -99,6 +99,12 @@ services:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
       NEXT_PUBLIC_PADDLE_CLIENT_TOKEN: ${NEXT_PUBLIC_PADDLE_CLIENT_TOKEN:-}
       NEXT_PUBLIC_PADDLE_ENV: ${NEXT_PUBLIC_PADDLE_ENV:-sandbox}
+      # Auth rate limits key on the right-most X-Forwarded-For hop outside
+      # TRUSTED_PROXY_CIDRS. true (the default here) trusts the bundled Caddy
+      # on this network, so each client gets its own bucket. Set
+      # TRUST_PROXY=false in .env only if web:3000 is reachable directly from
+      # a LAN and no proxy sits in front (see .env.example).
+      TRUST_PROXY: ${TRUST_PROXY:-true}
     depends_on:
       db:
         condition: service_healthy
