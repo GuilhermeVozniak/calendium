@@ -348,6 +348,16 @@ func TestTeamsInvite(t *testing.T) {
 			t.Fatalf("status = %d, want 403 (body=%s)", rec.Code, rec.Body.String())
 		}
 	})
+
+	t.Run("429 invitation email budget exhausted", func(t *testing.T) {
+		h := newHarness(t)
+		h.teams.inviteErr = fmt.Errorf("%w: at most 20 invitation emails per hour; try again later", domain.ErrRateLimited)
+		rec := h.authed(http.MethodPost, "/v1/teams/team_1/invitations",
+			jsonBody(t, map[string]string{"email": "new@example.com", "role": "member"}))
+		if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), "rate_limited") {
+			t.Fatalf("status = %d, want 429 rate_limited (body=%s)", rec.Code, rec.Body.String())
+		}
+	})
 }
 
 func TestTeamsListInvitations(t *testing.T) {

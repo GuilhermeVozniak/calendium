@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1035,5 +1036,78 @@ func TestTeamInviteRollbackSurvivesCancelledContext(t *testing.T) {
 	mailer.sendErr = nil
 	if _, err := f.svc.Invite(context.Background(), "owner", "t1", "x@example.com", domain.TeamRoleMember); err != nil {
 		t.Fatalf("retry after rollback: %v", err)
+	}
+}
+
+// --- Invitation email rate limit (cloud) ------------------------------------
+
+func subscribe(t *testing.T, f *teamFixture, users ...string) {
+	t.Helper()
+	for _, u := range users {
+		if err := f.subs.Upsert(context.Background(), domain.Subscription{UserID: u, Status: domain.SubscriptionActive}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func inviteN(t *testing.T, f *teamFixture, inviter string, from, n int) {
+	t.Helper()
+	for i := from; i < from+n; i++ {
+		email := inviter + "-" + strconv.Itoa(i) + "@example.com"
+		if _, err := f.svc.Invite(context.Background(), inviter, "t1", email, domain.TeamRoleMember); err != nil {
+			t.Fatalf("invite #%d: %v", i, err)
+		}
+	}
+}
+
+func TestTeamInviteRateLimitCloud(t *testing.T) {
+	mailer := newMailer()
+	f := newTeamFixtureWithMailer(t, false, mailer)
+	subscribe(t, f, "owner", "admin2")
+	f.seedTeam(t, "t1", "owner")
+	f.addMember(t, "t1", "admin2", domain.TeamRoleAdmin)
+	ctx := context.Background()
+
+	inviteN(t, f, "owner", 0, inviteEmailLimit-1)
+	// A rejected invite (duplicate pending) does not consume the budget.
+	if _, err := f.svc.Invite(ctx, "owner", "t1", "owner-0@example.com", domain.TeamRoleMember); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("duplicate err = %v, want ErrConflict", err)
+	}
+	inviteN(t, f, "owner", inviteEmailLimit-1, 1)
+
+	_, err := f.svc.Invite(ctx, "owner", "t1", "over@example.com", domain.TeamRoleMember)
+	if !errors.Is(err, domain.ErrRateLimited) {
+		t.Fatalf("invite #%d err = %v, want ErrRateLimited", inviteEmailLimit+1, err)
+	}
+	if len(mailer.sent) != inviteEmailLimit {
+		t.Fatalf("mailer sends = %d, want %d", len(mailer.sent), inviteEmailLimit)
+	}
+	invs, _ := f.invites.ListByTeam(ctx, "t1")
+	if len(invs) != inviteEmailLimit {
+		t.Fatalf("stored invitations = %d, want %d (a limited invite persists nothing)", len(invs), inviteEmailLimit)
+	}
+
+	// The budget is per inviter.
+	inviteN(t, f, "admin2", 0, 1)
+
+	// Rolling window: still limited just before the hour, free after it.
+	f.clock.Advance(inviteEmailWindow - time.Second)
+	if _, err := f.svc.Invite(ctx, "owner", "t1", "over@example.com", domain.TeamRoleMember); !errors.Is(err, domain.ErrRateLimited) {
+		t.Fatalf("err inside the window = %v, want ErrRateLimited", err)
+	}
+	f.clock.Advance(time.Second)
+	if _, err := f.svc.Invite(ctx, "owner", "t1", "over@example.com", domain.TeamRoleMember); err != nil {
+		t.Fatalf("invite after the window: %v", err)
+	}
+}
+
+func TestTeamInviteRateLimitSelfHostUnlimited(t *testing.T) {
+	mailer := newMailer()
+	f := newTeamFixtureWithMailer(t, true, mailer)
+	f.seedTeam(t, "t1", "owner")
+
+	inviteN(t, f, "owner", 0, inviteEmailLimit+5)
+	if len(mailer.sent) != inviteEmailLimit+5 {
+		t.Fatalf("mailer sends = %d, want %d", len(mailer.sent), inviteEmailLimit+5)
 	}
 }

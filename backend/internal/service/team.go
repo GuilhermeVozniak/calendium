@@ -25,6 +25,13 @@ const inviteTTL = 14 * 24 * time.Hour
 // the pending-unique index for a retry.
 const inviteRollbackTimeout = 5 * time.Second
 
+// Cloud anti-abuse budget: an inviter may send at most inviteEmailLimit
+// invitation emails per rolling inviteEmailWindow.
+const (
+	inviteEmailLimit  = 20
+	inviteEmailWindow = time.Hour
+)
+
 // TeamServiceDeps wires a TeamService.
 type TeamServiceDeps struct {
 	Teams       port.TeamRepo
@@ -64,6 +71,9 @@ type TeamService struct {
 	tx          port.TxRunner
 	clock       port.Clock
 	appBaseURL  string
+	// inviteLimit caps invitation emails per inviter on cloud; nil on
+	// self-host (unlimited).
+	inviteLimit *rollingLimiter
 }
 
 var _ port.TeamService = (*TeamService)(nil)
@@ -86,6 +96,10 @@ var (
 type inviteEmailData struct{ Inviter, Team, Link string }
 
 func NewTeamService(d TeamServiceDeps) *TeamService {
+	var limit *rollingLimiter
+	if !d.SelfHost {
+		limit = newRollingLimiter(inviteEmailLimit, inviteEmailWindow)
+	}
 	return &TeamService{
 		ent:         entitlement{subs: d.Subs, users: d.Users, clock: d.Clock, selfHost: d.SelfHost},
 		teams:       d.Teams,
@@ -98,6 +112,7 @@ func NewTeamService(d TeamServiceDeps) *TeamService {
 		tx:          d.Tx,
 		clock:       d.Clock,
 		appBaseURL:  strings.TrimRight(d.AppBaseURL, "/"),
+		inviteLimit: limit,
 	}
 }
 
@@ -372,6 +387,12 @@ func (s *TeamService) Invite(ctx context.Context, userID, teamID, email string, 
 	if err != nil {
 		return domain.TeamInvitation{}, err
 	}
+	// Cloud anti-abuse: reserve one of the inviter's invitation emails
+	// before persisting, so a limited request leaves no row behind.
+	limited := s.inviteLimit != nil && delivery != domain.DeliveryLink
+	if limited && !s.inviteLimit.reserve(userID, now) {
+		return domain.TeamInvitation{}, fmt.Errorf("%w: at most %d invitation emails per hour; try again later", domain.ErrRateLimited, inviteEmailLimit)
+	}
 	inv, err := s.invitations.Create(ctx, domain.TeamInvitation{
 		ID:        newID(),
 		TeamID:    teamID,
@@ -384,6 +405,9 @@ func (s *TeamService) Invite(ctx context.Context, userID, teamID, email string, 
 		CreatedAt: now,
 	})
 	if err != nil {
+		if limited {
+			s.inviteLimit.release(userID, now) // nothing was sent
+		}
 		return domain.TeamInvitation{}, err
 	}
 	switch delivery {
