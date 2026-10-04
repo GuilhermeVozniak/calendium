@@ -207,6 +207,11 @@ type Crypto struct {
 	// TokenEncryptionKey is the 32-byte AES-256-GCM key for provider
 	// refresh tokens (TOKEN_ENCRYPTION_KEY, 64 hex chars).
 	TokenEncryptionKey []byte
+	// InternalAPISecret authenticates the web app's server-to-server calls
+	// to /v1/internal/* (INTERNAL_API_SECRET, 64 hex chars; the same value
+	// is configured on the web service). Required in both modes. Never
+	// logged: Summary carries no Crypto field.
+	InternalAPISecret []byte
 }
 
 // Mail holds mail behavior tunables.
@@ -453,6 +458,18 @@ func FromEnv(opts ...Option) (Config, []string, error) {
 			errs = append(errs, errors.New("TOKEN_ENCRYPTION_KEY must be exactly 64 hex chars (32 bytes)"))
 		} else {
 			cfg.Crypto.TokenEncryptionKey = raw
+		}
+	}
+
+	switch key := os.Getenv("INTERNAL_API_SECRET"); key {
+	case "":
+		errs = append(errs, errors.New("INTERNAL_API_SECRET is required (64 hex chars / 32 bytes; shared by api and web — openssl rand -hex 32)"))
+	default:
+		raw, err := hex.DecodeString(key)
+		if err != nil || len(raw) != 32 {
+			errs = append(errs, errors.New("INTERNAL_API_SECRET must be exactly 64 hex chars (32 bytes)"))
+		} else {
+			cfg.Crypto.InternalAPISecret = raw
 		}
 	}
 

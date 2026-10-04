@@ -25,7 +25,7 @@ var configEnvKeys = []string{
 	"APNS_KEY_ID", "APNS_TEAM_ID", "APNS_KEY_P8",
 	"FCM_SERVICE_ACCOUNT_JSON", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY",
 	"OPENROUTER_API_KEY", "OPENROUTER_MODEL", "AI_DAILY_LIMIT",
-	"HTTP_ADDR", "PORT", "TOKEN_ENCRYPTION_KEY", "UNDO_SEND_SECONDS",
+	"HTTP_ADDR", "PORT", "TOKEN_ENCRYPTION_KEY", "INTERNAL_API_SECRET", "UNDO_SEND_SECONDS",
 	"INSTANCE_NAME", "PUBLIC_WEB_URL", "APP_URL", "PUBLIC_API_URL", "APP_BASE_URL",
 	"SELF_HOSTED", "OAUTH_ALLOWED_REDIRECT_URIS", "CORS_ALLOWED_ORIGINS",
 	"OPEN_METEO_URL",
@@ -55,6 +55,7 @@ func withBase(extra map[string]string) map[string]string {
 	m := map[string]string{
 		"DATABASE_URL":         "postgres://localhost:5432/calendium",
 		"TOKEN_ENCRYPTION_KEY": validKeyHex,
+		"INTERNAL_API_SECRET":  validKeyHex,
 		"SELF_HOSTED":          "true",
 	}
 	for k, v := range extra {
@@ -100,6 +101,39 @@ func TestFromEnv(t *testing.T) {
 			// 32 hex chars = 16 bytes, not 32.
 			env:     withBase(map[string]string{"TOKEN_ENCRYPTION_KEY": "00112233445566778899aabbccddeeff"}),
 			wantErr: true,
+		},
+		{
+			name: "missing INTERNAL_API_SECRET errors in cloud mode",
+			env: map[string]string{
+				"DATABASE_URL": "postgres://localhost/db", "TOKEN_ENCRYPTION_KEY": validKeyHex, "SELF_HOSTED": "false",
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing INTERNAL_API_SECRET errors in self-host mode too",
+			env: map[string]string{
+				"DATABASE_URL": "postgres://localhost/db", "TOKEN_ENCRYPTION_KEY": validKeyHex, "SELF_HOSTED": "true",
+			},
+			wantErr: true,
+		},
+		{
+			name:    "INTERNAL_API_SECRET not hex errors",
+			env:     withBase(map[string]string{"INTERNAL_API_SECRET": "zzzz-not-hex-zzzz"}),
+			wantErr: true,
+		},
+		{
+			name:    "INTERNAL_API_SECRET wrong length errors",
+			env:     withBase(map[string]string{"INTERNAL_API_SECRET": "00112233445566778899aabbccddeeff"}),
+			wantErr: true,
+		},
+		{
+			name: "INTERNAL_API_SECRET decodes to 32 bytes",
+			env:  withBase(nil),
+			check: func(t *testing.T, c Config) {
+				if len(c.Crypto.InternalAPISecret) != 32 {
+					t.Fatalf("InternalAPISecret len = %d, want 32", len(c.Crypto.InternalAPISecret))
+				}
+			},
 		},
 		// ---- crypto happy path ----
 		{
@@ -452,6 +486,7 @@ func TestFromEnvIntegrationVendors(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("DATABASE_URL", "postgres://localhost/db")
 	t.Setenv("TOKEN_ENCRYPTION_KEY", validKeyHex)
+	t.Setenv("INTERNAL_API_SECRET", validKeyHex)
 	t.Setenv("TODOIST_CLIENT_ID", "td-id")
 	t.Setenv("TODOIST_CLIENT_SECRET", "td-secret")
 	t.Setenv("HUBSPOT_CLIENT_ID", "hs-id")
@@ -472,6 +507,7 @@ func TestFromEnvIntegrationVendorsDefaultEmpty(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("DATABASE_URL", "postgres://localhost/db")
 	t.Setenv("TOKEN_ENCRYPTION_KEY", validKeyHex)
+	t.Setenv("INTERNAL_API_SECRET", validKeyHex)
 	t.Setenv("SELF_HOSTED", "true")
 
 	c, _, err := FromEnv()
