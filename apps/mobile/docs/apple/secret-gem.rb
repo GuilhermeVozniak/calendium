@@ -1,6 +1,6 @@
 require "jwt"
 
-key_file = "/Users/guilherme/Dev/pessoal/calendium/docs/apple/AuthKey_8MX6Q9WW35.p8"
+key_file = File.expand_path("AuthKey_8MX6Q9WW35.p8", __dir__)
 team_id = "CT22R575UG"
 client_id = "com.calendium.app.service"
 key_id = "8MX6Q9WW35"
