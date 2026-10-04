@@ -621,6 +621,29 @@ func TestTeamInvitePrefersMailboxOverSMTP(t *testing.T) {
 	}
 }
 
+// The send error reaches writeError's error-level log line; the invitee's
+// address must not (a provider reply often echoes it).
+func TestTeamInviteSendFailureRedactsTheInviteeAddress(t *testing.T) {
+	mailer := newMailer()
+	mailer.sendErr = errors.New("smtp: RCPT TO Invitee@Example.com: 550 <invitee@example.com> rejected")
+	f := newTeamFixtureWithMailer(t, true, mailer)
+	f.seedTeam(t, "t1", "owner")
+
+	_, err := f.svc.Invite(context.Background(), "owner", "t1", "invitee@example.com", domain.TeamRoleMember)
+	if err == nil {
+		t.Fatal("Invite = nil, want the send error")
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "invitee@example.com") {
+		t.Fatalf("error leaks the invitee address: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "***@example.com") {
+		t.Fatalf("want the address reduced to its domain, got %q", err.Error())
+	}
+	if !errors.Is(err, mailer.sendErr) {
+		t.Fatalf("err = %v, want wrapped %v", err, mailer.sendErr)
+	}
+}
+
 func TestTeamInviteSMTPFailureRevokesInvitation(t *testing.T) {
 	mailer := newMailer()
 	mailer.sendErr = errors.New("smtp exploded")
