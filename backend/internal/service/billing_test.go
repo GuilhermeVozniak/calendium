@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -211,6 +212,34 @@ func TestCreateCheckoutFirstTimeCreatesCustomerAndTrialRow(t *testing.T) {
 	}
 }
 
+// Controller ruling (Track A review): postgres Upsert writes trial_ends_at
+// and last_event_at verbatim on every call, and ListForReconciliation
+// exempts NULL last_event_at. The checkout upsert that persists the customer
+// id must therefore carry the trial end through and stamp last_event_at.
+func TestCreateCheckoutUpsertKeepsTrialAndStampsLastEventAt(t *testing.T) {
+	ctx := context.Background()
+	signup := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	now := signup.Add(2 * 24 * time.Hour)
+	h := newBillingHarness(now)
+	h.seedUser(t, "u1", signup)
+	h.payments.customerID = "ctm_new"
+	h.payments.checkoutURL = "https://co"
+
+	if _, err := h.svc.CreateCheckout(ctx, "u1"); err != nil {
+		t.Fatalf("CreateCheckout: %v", err)
+	}
+	row, err := h.subs.GetByUserID(ctx, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.TrialEndsAt == nil || !row.TrialEndsAt.Equal(signup.Add(domain.TrialLength)) {
+		t.Fatalf("TrialEndsAt = %v, want the granted trial end preserved through the checkout upsert", row.TrialEndsAt)
+	}
+	if row.LastEventAt == nil || !row.LastEventAt.Equal(now) {
+		t.Fatalf("LastEventAt = %v, want now (every service write stamps a non-zero last_event_at)", row.LastEventAt)
+	}
+}
+
 func TestCreateCheckoutReusesStoredCustomer(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
@@ -341,6 +370,230 @@ func TestCreatePortalSession(t *testing.T) {
 			t.Fatalf("err = %v, want ErrBillingUnavailable", err)
 		}
 	})
+}
+
+// --- HandleWebhook ----------------------------------------------------------
+
+func subEvent(ntf, evt string, at time.Time, status domain.SubscriptionStatus) port.SubscriptionEvent {
+	return port.SubscriptionEvent{
+		NotificationID: ntf, EventID: evt, Type: "subscription.updated", OccurredAt: at,
+		CustomerID: "ctm_1", SubscriptionID: "sub_1", UserID: "u1", Status: status,
+	}
+}
+
+func TestHandleWebhookBadSignatureIsUnauthorizedBeforeAnyTx(t *testing.T) {
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive, BillingCustomerID: "ctm_1"})
+	h.payments.parseWebhookErr = errors.New("paddle: no matching h1 signature")
+
+	err := h.svc.HandleWebhook(context.Background(), []byte("{}"), "ts=1;h1=00")
+	if !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("err = %v, want ErrUnauthorized", err)
+	}
+	if h.tx.calls != 0 || len(h.events.seen) != 0 {
+		t.Fatal("a rejected signature must not open a tx or record anything")
+	}
+	if !h.payments.lastParseNow.Equal(now) {
+		t.Fatalf("ParseWebhook now = %v, want the service clock %v", h.payments.lastParseNow, now)
+	}
+}
+
+func TestHandleWebhookMalformedBodyIsValidation(t *testing.T) {
+	h := newBillingHarness(time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC))
+	h.payments.parseWebhookErr = fmt.Errorf("%w: paddle: decode webhook envelope", domain.ErrValidation)
+	err := h.svc.HandleWebhook(context.Background(), []byte("nope"), "ts=1;h1=00")
+	if !errors.Is(err, domain.ErrValidation) || errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("err = %v, want ErrValidation (not unauthorized)", err)
+	}
+}
+
+func TestHandleWebhookIgnoredTypeIsAcknowledgedWithoutTx(t *testing.T) {
+	h := newBillingHarness(time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC))
+	h.payments.webhookEvent = port.SubscriptionEvent{NotificationID: "ntf_t", EventID: "evt_t", Type: "transaction.completed", Ignored: true}
+	if err := h.svc.HandleWebhook(context.Background(), []byte("{}"), "sig"); err != nil {
+		t.Fatalf("ignored event must be a 200 no-op, got %v", err)
+	}
+	if h.tx.calls != 0 || len(h.events.seen) != 0 || len(h.subs.byUser) != 0 {
+		t.Fatal("ignored events must not touch storage")
+	}
+}
+
+func TestHandleWebhookAppliesAndClearsTrial(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionTrialing, TrialEndsAt: tptr(now.Add(5 * 24 * time.Hour)), BillingCustomerID: "ctm_1"})
+	periodEnd := now.Add(365 * 24 * time.Hour)
+	ev := subEvent("ntf_1", "evt_1", now.Add(-time.Minute), domain.SubscriptionActive)
+	ev.Type = "subscription.activated"
+	ev.CurrentPeriodEnd = &periodEnd
+	h.payments.webhookEvent = ev
+
+	if err := h.svc.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+		t.Fatalf("HandleWebhook: %v", err)
+	}
+	got, err := h.subs.GetByUserID(ctx, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.SubscriptionActive || got.BillingSubscriptionID != "sub_1" || got.BillingCustomerID != "ctm_1" {
+		t.Fatalf("row = %+v", got)
+	}
+	if got.TrialEndsAt != nil {
+		t.Fatalf("TrialEndsAt = %v, want nil once a Paddle subscription exists", got.TrialEndsAt)
+	}
+	if got.CurrentPeriodEnd == nil || !got.CurrentPeriodEnd.Equal(periodEnd) {
+		t.Fatalf("CurrentPeriodEnd = %v", got.CurrentPeriodEnd)
+	}
+	if got.LastEventAt == nil || !got.LastEventAt.Equal(ev.OccurredAt) {
+		t.Fatalf("LastEventAt = %v, want %v", got.LastEventAt, ev.OccurredAt)
+	}
+	if _, ok := h.events.seen["ntf_1"]; !ok || h.tx.calls != 1 {
+		t.Fatalf("event must be recorded inside exactly one tx (seen=%v tx=%d)", h.events.seen, h.tx.calls)
+	}
+}
+
+func TestHandleWebhookDuplicateNotificationIsNoop(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive, BillingCustomerID: "ctm_1", LastEventAt: tptr(now.Add(-time.Hour))})
+	if _, err := h.events.Record(ctx, port.SubscriptionEvent{NotificationID: "ntf_dup"}); err != nil {
+		t.Fatal(err)
+	}
+	h.payments.webhookEvent = subEvent("ntf_dup", "evt_1", now, domain.SubscriptionCanceled)
+
+	if err := h.svc.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := h.subs.GetByUserID(ctx, "u1")
+	if got.Status != domain.SubscriptionActive || h.subs.upsertCalls != 0 {
+		t.Fatalf("duplicate notification must not re-apply: %+v (upserts=%d)", got, h.subs.upsertCalls)
+	}
+}
+
+// Review Focus: a replay (same event id, NEW notification id) whose
+// occurred_at EQUALS last_event_at must be applied (strict < guard).
+func TestHandleWebhookReplayAtSameInstantApplies(t *testing.T) {
+	ctx := context.Background()
+	t1 := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	h := newBillingHarness(t1.Add(time.Minute))
+	h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive, BillingCustomerID: "ctm_1", BillingSubscriptionID: "sub_1", LastEventAt: tptr(t1)})
+	h.payments.webhookEvent = subEvent("ntf_replay", "evt_1", t1, domain.SubscriptionCanceled)
+
+	if err := h.svc.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := h.subs.GetByUserID(ctx, "u1")
+	if got.Status != domain.SubscriptionCanceled {
+		t.Fatalf("status = %q, want canceled (same-instant replay must apply)", got.Status)
+	}
+}
+
+func TestHandleWebhookOlderEventIsDroppedButRecorded(t *testing.T) {
+	ctx := context.Background()
+	t1 := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	t2 := t1.Add(time.Hour)
+	h := newBillingHarness(t2)
+	h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive, BillingCustomerID: "ctm_1", BillingSubscriptionID: "sub_1", LastEventAt: tptr(t2)})
+	h.payments.webhookEvent = subEvent("ntf_old", "evt_old", t1, domain.SubscriptionCanceled)
+
+	if err := h.svc.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := h.subs.GetByUserID(ctx, "u1")
+	if got.Status != domain.SubscriptionActive || !got.LastEventAt.Equal(t2) {
+		t.Fatalf("older event must not revert state: %+v", got)
+	}
+	if _, ok := h.events.seen["ntf_old"]; !ok {
+		t.Fatal("the dropped notification must still be recorded so its retry is a no-op")
+	}
+}
+
+func TestHandleWebhookResolvesUserByCustomerID(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	t.Run("known customer", func(t *testing.T) {
+		h := newBillingHarness(now)
+		h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive, BillingCustomerID: "ctm_1"})
+		ev := subEvent("ntf_c", "evt_c", now, domain.SubscriptionPastDue)
+		ev.UserID = "" // custom_data missing -> resolve via customer id
+		h.payments.webhookEvent = ev
+		if err := h.svc.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := h.subs.GetByUserID(ctx, "u1")
+		if got.Status != domain.SubscriptionPastDue || got.BillingSubscriptionID != "sub_1" {
+			t.Fatalf("row = %+v", got)
+		}
+	})
+	t.Run("unknown customer is logged and acknowledged", func(t *testing.T) {
+		h := newBillingHarness(now)
+		ev := subEvent("ntf_u", "evt_u", now, domain.SubscriptionActive)
+		ev.UserID = ""
+		ev.CustomerID = "ctm_unknown"
+		h.payments.webhookEvent = ev
+		if err := h.svc.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+			t.Fatalf("unknown customer must be a 200 no-op, got %v", err)
+		}
+		if len(h.subs.byUser) != 0 {
+			t.Fatalf("store mutated: %v", h.subs.byUser)
+		}
+	})
+}
+
+// Controller ruling (Track A review): ListForReconciliation exempts rows
+// whose last_event_at is NULL, so every applied event must leave a non-zero
+// LastEventAt — stamped with now when the event carries no occurred_at.
+func TestHandleWebhookEventWithoutOccurredAtStampsNow(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionTrialing, BillingCustomerID: "ctm_1"})
+	h.payments.webhookEvent = subEvent("ntf_z", "evt_z", time.Time{}, domain.SubscriptionActive)
+
+	if err := h.svc.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := h.subs.GetByUserID(ctx, "u1")
+	if got.Status != domain.SubscriptionActive {
+		t.Fatalf("status = %q, want active", got.Status)
+	}
+	if got.LastEventAt == nil || !got.LastEventAt.Equal(now) {
+		t.Fatalf("LastEventAt = %v, want now (never zero/NULL after a service write)", got.LastEventAt)
+	}
+}
+
+// Controller ruling (Track A review): postgres Upsert writes trial_ends_at
+// from the passed value on every call. Only a provider subscription clears
+// the trial; an event that brings no subscription id must pass the stored
+// TrialEndsAt through instead of silently wiping it.
+func TestHandleWebhookWithoutSubscriptionIDPreservesTrial(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	trialEnd := now.Add(5 * 24 * time.Hour)
+	h := newBillingHarness(now)
+	h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionTrialing, TrialEndsAt: &trialEnd, BillingCustomerID: "ctm_1"})
+	ev := port.SubscriptionEvent{NotificationID: "ntf_n", EventID: "evt_n", Type: "subscription.updated", OccurredAt: now, CustomerID: "ctm_1", UserID: "u1"}
+	h.payments.webhookEvent = ev
+
+	if err := h.svc.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := h.subs.GetByUserID(ctx, "u1")
+	if got.BillingSubscriptionID != "" {
+		t.Fatalf("BillingSubscriptionID = %q, want empty (no provider subscription yet)", got.BillingSubscriptionID)
+	}
+	if got.Status != domain.SubscriptionTrialing {
+		t.Fatalf("status = %q, want trialing kept when the event carries none", got.Status)
+	}
+	if got.TrialEndsAt == nil || !got.TrialEndsAt.Equal(trialEnd) {
+		t.Fatalf("TrialEndsAt = %v, want %v preserved", got.TrialEndsAt, trialEnd)
+	}
+	if got.LastEventAt == nil || !got.LastEventAt.Equal(now) {
+		t.Fatalf("LastEventAt = %v, want %v", got.LastEventAt, now)
+	}
 }
 
 // Keep the port import used by later tasks' tests in this file.

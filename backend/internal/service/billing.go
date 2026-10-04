@@ -131,6 +131,13 @@ func (s *BillingService) CreateCheckout(ctx context.Context, userID string) (str
 			return "", billingUnavailable("ensure customer", err)
 		}
 		sub.BillingCustomerID = customerID
+		if sub.LastEventAt == nil {
+			// Every service write leaves a non-zero last_event_at: the trial
+			// row EnsureTrial created has none, and ListForReconciliation
+			// exempts NULL (controller ruling, Track A review).
+			now := s.clock.Now()
+			sub.LastEventAt = &now
+		}
 		if err := s.subs.Upsert(ctx, sub); err != nil {
 			return "", err
 		}
@@ -170,12 +177,105 @@ func billingUnavailable(op string, err error) error {
 	return fmt.Errorf("%w: %s: %v", domain.ErrBillingUnavailable, op, err)
 }
 
-// Implemented in Task 10.
+// HandleWebhook runs the pipeline: verify (401) → ignore non-subscription
+// types (200) → one tx { record notification id (replay → 200) → resolve
+// user → ordering guard → upsert }. The marker commits only if the update
+// commits, so a transient failure rolls both back and Paddle's retry
+// re-drives the event.
 func (s *BillingService) HandleWebhook(ctx context.Context, payload []byte, sigHeader string) error {
 	if s.selfHosted {
 		return fmt.Errorf("%w: billing is disabled on self-hosted instances", domain.ErrSelfHosted)
 	}
-	return domain.ErrNotImplemented
+	ev, err := s.payments.ParseWebhook(payload, sigHeader, s.clock.Now())
+	if err != nil {
+		if errors.Is(err, domain.ErrValidation) {
+			return err
+		}
+		return fmt.Errorf("%w: webhook signature verification failed: %v", domain.ErrUnauthorized, err)
+	}
+	if ev.Ignored {
+		return nil
+	}
+	return s.tx.RunInTx(ctx, func(ctx context.Context) error {
+		first, err := s.events.Record(ctx, ev)
+		if err != nil {
+			return err
+		}
+		if !first {
+			return nil // already processed; duplicate deliveries are no-ops
+		}
+		return s.applyEvent(ctx, ev, false)
+	})
+}
+
+// applyEvent resolves the user (custom_data.user_id, else the stored
+// customer id), drops events older than the mirrored LastEventAt unless
+// force (reconciliation), and upserts the mirror. A provider subscription
+// existing clears trial_ends_at; otherwise the stored trial end is passed
+// through, because the Postgres Upsert writes trial_ends_at verbatim. An
+// event without occurred_at is stamped with now so last_event_at is never
+// NULL (ListForReconciliation exempts NULL) — both controller rulings from
+// the Track A review.
+func (s *BillingService) applyEvent(ctx context.Context, ev port.SubscriptionEvent, force bool) error {
+	userID := ev.UserID
+	var existing domain.Subscription
+	var err error
+	if userID == "" {
+		if ev.CustomerID == "" {
+			s.logger.Warn("billing: event carries neither user id nor customer id", "event_id", ev.EventID, "type", ev.Type)
+			return nil
+		}
+		existing, err = s.subs.GetByBillingCustomerID(ctx, ev.CustomerID)
+		if errors.Is(err, domain.ErrNotFound) {
+			s.logger.Warn("billing: event for unknown customer", "event_id", ev.EventID, "customer_id", ev.CustomerID, "type", ev.Type)
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		userID = existing.UserID
+	} else {
+		existing, err = s.subs.GetByUserID(ctx, userID)
+		if err != nil && !errors.Is(err, domain.ErrNotFound) {
+			return err
+		}
+	}
+
+	// An event with no occurred_at (not produced by the Paddle parser, but
+	// never written as NULL) is treated as happening now.
+	occurred := ev.OccurredAt
+	if occurred.IsZero() {
+		occurred = s.clock.Now()
+	}
+
+	// Paddle does not guarantee delivery order: an event older than the
+	// newest applied one is dropped (strict <, so same-instant replays apply).
+	if !force && existing.LastEventAt != nil && occurred.Before(*existing.LastEventAt) {
+		return nil
+	}
+
+	sub := domain.Subscription{
+		UserID:                userID,
+		Status:                ev.Status,
+		Plan:                  domain.PlanAnnual,
+		PriceUSD:              domain.PriceUSDAnnual,
+		CurrentPeriodEnd:      ev.CurrentPeriodEnd,
+		CancelAtPeriodEnd:     ev.CancelAtPeriodEnd,
+		TrialEndsAt:           existing.TrialEndsAt,
+		BillingCustomerID:     firstNonEmpty(ev.CustomerID, existing.BillingCustomerID),
+		BillingSubscriptionID: firstNonEmpty(ev.SubscriptionID, existing.BillingSubscriptionID),
+		LastEventAt:           &occurred,
+	}
+	if sub.BillingSubscriptionID != "" {
+		sub.TrialEndsAt = nil // a provider subscription supersedes the signup trial
+	}
+	if sub.Status == "" {
+		sub.Status = existing.Status
+	}
+	if sub.Status == "" {
+		sub.Status = domain.SubscriptionNone
+	}
+	return s.subs.Upsert(ctx, sub)
 }
 
 // Implemented in Task 11.
