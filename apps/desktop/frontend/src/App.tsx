@@ -1,4 +1,5 @@
 import type { InboxSplit } from '@calendium/shared';
+import { subscriptionDenialReason } from '@calendium/shared';
 import { useQuery } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import {
@@ -33,7 +34,8 @@ import { Kbd } from '@/ui/kbd';
 import { Toaster } from '@/ui/toaster';
 import { api, orMock } from '@/lib/api';
 import { openCompose } from '@/lib/compose';
-import { mockSearch } from '@/lib/mock';
+import { mockSearch, mockSubscription } from '@/lib/mock';
+import { useServerConfig } from '@/lib/server-config';
 import {
   globalShortcutsEnabled,
   isDesktop,
@@ -51,6 +53,7 @@ import {
 import { CalendarView, emitFocusDate } from '@/views/CalendarView';
 import { ComposeHost } from '@/views/ComposeView';
 import { emitFocusThread, emitMailAction, InboxView } from '@/views/InboxView';
+import { PaywallView } from '@/views/PaywallView';
 import { SettingsView } from '@/views/SettingsView';
 
 type View = 'inbox' | 'calendar' | 'settings';
@@ -187,6 +190,23 @@ export default function App() {
       ),
   });
 
+  const { config } = useServerConfig();
+  const billingEnabled = config?.features?.billing ?? false;
+  const subscriptionQuery = useQuery({
+    queryKey: ['subscription'],
+    queryFn: () =>
+      orMock(
+        () => api.getSubscription(),
+        () => mockSubscription()
+      ),
+    enabled: billingEnabled,
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,
+  });
+  // Fail open on fetch errors; only a fetched subscription that denies access paywalls.
+  const paywallReason =
+    billingEnabled && subscriptionQuery.data ? subscriptionDenialReason(subscriptionQuery.data) : null;
+
   const goToSplit = (s: InboxSplit) => {
     setSplit(s);
     setView('inbox');
@@ -250,9 +270,15 @@ export default function App() {
         </aside>
 
         <main className="min-w-0 flex-1">
-          {view === 'inbox' && <InboxView split={split} />}
-          {view === 'calendar' && <CalendarView />}
-          {view === 'settings' && <SettingsView />}
+          {paywallReason ? (
+            <PaywallView reason={paywallReason} />
+          ) : (
+            <>
+              {view === 'inbox' && <InboxView split={split} />}
+              {view === 'calendar' && <CalendarView />}
+              {view === 'settings' && <SettingsView />}
+            </>
+          )}
         </main>
       </div>
 

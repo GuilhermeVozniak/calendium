@@ -73,7 +73,7 @@ vi.mock('@/lib/server-config', () => ({
     demoMode: false,
     exitDemo: vi.fn(),
   }),
-  webOrigin: () => null,
+  billingWebOrigin: () => null,
 }));
 
 vi.mock('@/lib/auth', () => ({

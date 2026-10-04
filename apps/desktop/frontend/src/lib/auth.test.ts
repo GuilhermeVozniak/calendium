@@ -93,6 +93,7 @@ function configureServer(overrides: Partial<ServerConfig> = {}): ServerConfig {
     name: 'Test',
     features: { billing: false, google: false, microsoft: false, ai: false, push: false },
     undoSendSeconds: 15,
+    webUrl: '',
     ...overrides,
   };
   getActiveServerConfigMock.mockReturnValue(config);
