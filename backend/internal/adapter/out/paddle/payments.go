@@ -2,6 +2,7 @@ package paddle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -142,15 +143,49 @@ func (c *Client) GetSubscription(ctx context.Context, subscriptionID string) (po
 	return normalizeSubscription(sub, port.SubscriptionEvent{Type: "subscription.reconciled"}), nil
 }
 
+// alreadyCanceledCodes are Paddle request-error codes meaning the
+// subscription is already canceled, so a cancel has nothing left to do.
+var alreadyCanceledCodes = map[string]bool{
+	"subscription_is_canceled_action_invalid": true,
+	"subscription_update_when_canceled":       true,
+}
+
 // CancelSubscription cancels at the next billing period (Paddle keeps
 // status=active with scheduled_change.action=cancel) or immediately.
+// Idempotent: when Paddle refuses because the subscription is already
+// canceled — a known error code, or any other 4xx request error after which
+// the subscription reads back as canceled — the cancel counts as done (a
+// retried account purge must not stall on its own earlier cancel).
+// Auth, not-found, rate-limit and 5xx failures are returned unchanged.
 func (c *Client) CancelSubscription(ctx context.Context, subscriptionID string, immediately bool) error {
 	effective := "next_billing_period"
 	if immediately {
 		effective = "immediately"
 	}
-	return c.do(ctx, http.MethodPost, "/subscriptions/"+url.PathEscape(subscriptionID)+"/cancel",
+	err := c.do(ctx, http.MethodPost, "/subscriptions/"+url.PathEscape(subscriptionID)+"/cancel",
 		map[string]string{"effective_from": effective}, nil)
+	var apiErr *APIError
+	if err == nil || !errors.As(err, &apiErr) || !cancelRefusal(apiErr.Status) {
+		return err
+	}
+	if alreadyCanceledCodes[apiErr.Code] {
+		return nil
+	}
+	sub, gerr := c.GetSubscription(ctx, subscriptionID)
+	if gerr == nil && sub.Status == domain.SubscriptionCanceled {
+		return nil
+	}
+	return err
+}
+
+// cancelRefusal: a 4xx that is a statement about the subscription's state,
+// not an auth/lookup/throttle failure.
+func cancelRefusal(status int) bool {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusTooManyRequests:
+		return false
+	}
+	return status >= 400 && status < 500
 }
 
 // mapStatus normalizes Paddle statuses onto the domain set. Paddle trials
