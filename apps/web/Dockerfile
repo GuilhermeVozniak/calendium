@@ -9,7 +9,7 @@
 
 # ── deps: install the whole bun workspace (cached on the manifests) ─────────
 # oven/bun:1.3 resolved 2026-10-04 (docker buildx imagetools inspect)
-FROM oven/bun:1.3@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 AS deps
+FROM oven/bun:1.4@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS deps
 WORKDIR /app
 # Copy every workspace manifest so `bun install --frozen-lockfile` resolves
 # the full graph, then install once (hoisted to /app/node_modules).
@@ -26,7 +26,7 @@ RUN bun install --frozen-lockfile --ignore-scripts
 
 # ── build: compile the Next.js standalone bundle ────────────────────────────
 # oven/bun:1.3 resolved 2026-10-04 (docker buildx imagetools inspect)
-FROM oven/bun:1.3@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 AS build
+FROM oven/bun:1.4@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 # bun keeps each workspace's deps in that workspace's node_modules (it does not
