@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"calendium/backend/internal/domain"
 )
 
@@ -244,8 +246,9 @@ func TestSubscriptionRepoStatusCheckConstraint(t *testing.T) {
 		t.Fatalf("paused must be accepted: %v", err)
 	}
 	_, err := db.ExecContext(ctx, `UPDATE subscriptions SET status = 'expired' WHERE user_id = $1`, "u1")
-	if err == nil {
-		t.Fatal("status 'expired' must be rejected by subscriptions_status_check")
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" || pgErr.ConstraintName != "subscriptions_status_check" {
+		t.Fatalf("err = %v, want check_violation (23514) on subscriptions_status_check", err)
 	}
 }
 
@@ -254,7 +257,7 @@ func TestSubscriptionRepoListForReconciliation(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
 	ptr := func(v time.Time) *time.Time { return &v }
-	for _, id := range []string{"lapsed", "fresh", "stale", "nosub", "paused-lapsed", "canceled-lapsed"} {
+	for _, id := range []string{"lapsed", "fresh", "stale", "nosub", "paused-lapsed", "canceled-lapsed", "pastdue-lapsed", "null-lapsed", "null-fresh"} {
 		seedUser(t, st, id)
 	}
 	seed := []domain.Subscription{
@@ -270,6 +273,12 @@ func TestSubscriptionRepoListForReconciliation(t *testing.T) {
 		{UserID: "paused-lapsed", Status: domain.SubscriptionPaused, BillingSubscriptionID: "sub_paused", BillingCustomerID: "ctm_paused", CurrentPeriodEnd: ptr(now.Add(-2 * time.Hour)), LastEventAt: ptr(now.Add(-time.Hour))},
 		// canceled with lapsed period but recent event -> not selected (status not in the set)
 		{UserID: "canceled-lapsed", Status: domain.SubscriptionCanceled, BillingSubscriptionID: "sub_canceled", BillingCustomerID: "ctm_canceled", CurrentPeriodEnd: ptr(now.Add(-2 * time.Hour)), LastEventAt: ptr(now.Add(-time.Hour))},
+		// past_due with lapsed period -> selected (third status of the set)
+		{UserID: "pastdue-lapsed", Status: domain.SubscriptionPastDue, BillingSubscriptionID: "sub_pastdue", BillingCustomerID: "ctm_pastdue", CurrentPeriodEnd: ptr(now.Add(-2 * time.Hour)), LastEventAt: ptr(now.Add(-time.Hour))},
+		// NULL last_event_at with a lapsed period -> selected by the period clause
+		{UserID: "null-lapsed", Status: domain.SubscriptionActive, BillingSubscriptionID: "sub_null_lapsed", BillingCustomerID: "ctm_null_lapsed", CurrentPeriodEnd: ptr(now.Add(-2 * time.Hour))},
+		// NULL last_event_at, period in the future -> not selected (NULL never trips the 7-day clause)
+		{UserID: "null-fresh", Status: domain.SubscriptionActive, BillingSubscriptionID: "sub_null_fresh", BillingCustomerID: "ctm_null_fresh", CurrentPeriodEnd: ptr(now.Add(300 * 24 * time.Hour))},
 	}
 	for _, s := range seed {
 		if err := st.Subscriptions().Upsert(ctx, s); err != nil {
@@ -284,7 +293,7 @@ func TestSubscriptionRepoListForReconciliation(t *testing.T) {
 	for _, s := range got {
 		ids = append(ids, s.UserID)
 	}
-	want := []string{"lapsed", "paused-lapsed", "stale"}
+	want := []string{"lapsed", "null-lapsed", "pastdue-lapsed", "paused-lapsed", "stale"}
 	if len(ids) != len(want) {
 		t.Fatalf("selected = %v, want %v", ids, want)
 	}
