@@ -37,6 +37,8 @@ export interface ServerConfig {
   authProviders: string[];
   /** Feature flags from /v1/instance so the UI hides what the server can't do. */
   features: InstanceFeatures;
+  /** Public web app origin from /v1/instance; billing lives at `${webUrl}/pricing`. Empty on pre-webUrl servers. */
+  webUrl: string;
   /**
    * Explicit "Try the demo" mode: the app runs on deterministic mock data with
    * no backend. Only ever set by the demo button on the connect screen; absent
@@ -57,6 +59,7 @@ export const DEMO_CONFIG: ServerConfig = {
   name: 'Calendium Demo',
   authProviders: ['email', 'google', 'apple'],
   features: { billing: true, google: true, microsoft: true, ai: true, push: false },
+  webUrl: 'https://demo.calendium.app',
   demoMode: true,
 };
 
@@ -70,7 +73,9 @@ export function normalizeServerUrl(url: string): string {
 export async function getStoredServerConfig(): Promise<ServerConfig | null> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as ServerConfig) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ServerConfig>;
+    return { webUrl: '', ...parsed } as ServerConfig;
   } catch {
     return null;
   }
@@ -99,6 +104,7 @@ export async function discoverServer(serverUrl: string): Promise<ServerConfig> {
     name: info.name,
     authProviders: info.authProviders,
     features: info.features,
+    webUrl: info.webUrl ?? '',
   };
 }
 

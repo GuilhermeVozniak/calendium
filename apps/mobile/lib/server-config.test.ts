@@ -78,6 +78,7 @@ describe('discoverServer', () => {
       authProviders: ['email'],
       undoSendSeconds: 15,
       features: { billing: false, google: true, microsoft: false, ai: true, push: false },
+      webUrl: 'https://app.example.com',
     });
 
     const config = await discoverServer('example.com/');
@@ -90,9 +91,26 @@ describe('discoverServer', () => {
       name: 'My Calendium',
       authProviders: ['email'],
       features: { billing: false, google: true, microsoft: false, ai: true, push: false },
+      webUrl: 'https://app.example.com',
     });
     // demoMode is intentionally absent for a real discovered server.
     expect(config.demoMode).toBeUndefined();
+  });
+
+  it('falls back to an empty webUrl when the server predates instance.webUrl', async () => {
+    mockFetchInstance.mockResolvedValue({
+      name: 'Old Calendium',
+      mode: 'self_host',
+      version: '0.9.0',
+      authBaseUrl: 'https://old.example.com/api/auth',
+      authProviders: ['email'],
+      undoSendSeconds: 15,
+      features: { billing: false, google: false, microsoft: false, ai: false, push: false },
+    });
+
+    const config = await discoverServer('old.example.com');
+
+    expect(config.webUrl).toBe('');
   });
 
   it('propagates ApiRequestError when the server is unreachable/errors', async () => {
@@ -111,6 +129,7 @@ describe('AsyncStorage persistence', () => {
     name: 'My Calendium',
     authProviders: ['email'],
     features: { billing: false, google: true, microsoft: false, ai: true, push: false },
+    webUrl: 'https://app.example.com',
   };
 
   afterEach(async () => {
@@ -124,6 +143,12 @@ describe('AsyncStorage persistence', () => {
   it('setStoredServerConfig then getStoredServerConfig round-trips the config', async () => {
     await setStoredServerConfig(config);
     await expect(getStoredServerConfig()).resolves.toEqual(config);
+  });
+
+  it('backfills webUrl on a config persisted before instance.webUrl existed', async () => {
+    const { webUrl: _dropped, ...legacy } = config;
+    await AsyncStorage.setItem('calendium.serverConfig', JSON.stringify(legacy));
+    await expect(getStoredServerConfig()).resolves.toEqual({ ...legacy, webUrl: '' });
   });
 
   it('setStoredServerConfig persists under the expected storage key', async () => {

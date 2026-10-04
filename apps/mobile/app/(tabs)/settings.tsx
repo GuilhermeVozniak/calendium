@@ -19,6 +19,7 @@ import { applyNamedTheme, THEMES, useNamedTheme } from '@/lib/theme';
 import {
   THEME_NAMES,
   type ConnectedAccount,
+  hasBillingSubscription,
   type Provider,
   type Subscription,
   type ThemeName,
@@ -487,12 +488,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
  * unsubscribed users get a plain link to manage the plan on the web.
  */
 function SubscriptionCard({ subscription }: { subscription: Subscription | null }) {
+  const { config } = useServerConfig();
   if (!subscription) {
     return <Text className="text-sm text-muted-foreground">Couldn't load subscription.</Text>;
   }
 
   const { status } = subscription;
-  const unsubscribed = status === 'none' || status === 'expired';
+  const live = hasBillingSubscription(subscription);
 
   const statusLine = (() => {
     switch (status) {
@@ -502,10 +504,12 @@ function SubscriptionCard({ subscription }: { subscription: Subscription | null 
           : 'Free trial';
       case 'active':
         return subscription.currentPeriodEnd
-          ? `Calendium Pro · ${subscription.cancelAtPeriodEnd ? 'ends' : 'renews'} ${formatDate(subscription.currentPeriodEnd)}`
-          : 'Calendium Pro · active';
+          ? `Calendium Annual · ${subscription.cancelAtPeriodEnd ? 'ends' : 'renews'} ${formatDate(subscription.currentPeriodEnd)}`
+          : 'Calendium Annual · active';
       case 'past_due':
         return 'Payment issue — we are retrying your card';
+      case 'paused':
+        return 'Paused — resume or update your payment method on the web';
       case 'canceled':
         return subscription.currentPeriodEnd
           ? `Canceled · access until ${formatDate(subscription.currentPeriodEnd)}`
@@ -523,25 +527,25 @@ function SubscriptionCard({ subscription }: { subscription: Subscription | null 
           Calendium Annual · ${subscription.priceUsd}/year
         </Text>
       </View>
-      {unsubscribed ? (
-        <>
-          <Text className="text-sm text-muted-foreground">
-            Calendium Pro is managed on the web — there are no purchases in this app.
-          </Text>
-          <Button
-            variant="outline"
-            size="sm"
-            className="flex-row gap-2 self-start"
-            onPress={() => WebBrowser.openBrowserAsync('https://calendium.app/pricing')}>
-            <Icon as={ExternalLinkIcon} className="size-4" />
-            <Text>Manage on the web</Text>
-          </Button>
-        </>
-      ) : (
-        <Text className="text-xs text-muted-foreground">
-          Manage your plan anytime at calendium.app
-        </Text>
-      )}
+      <Text className="text-sm text-muted-foreground">
+        {live
+          ? 'Manage your plan on the web — there are no purchases in this app.'
+          : 'Calendium is managed on the web — there are no purchases in this app.'}
+      </Text>
+      {config?.webUrl ? (
+        <Button
+          variant="outline"
+          size="sm"
+          className="flex-row gap-2 self-start"
+          onPress={() =>
+            WebBrowser.openBrowserAsync(
+              `${config.webUrl}/${live ? 'settings?tab=billing' : 'pricing'}`
+            )
+          }>
+          <Icon as={ExternalLinkIcon} className="size-4" />
+          <Text>Manage on the web</Text>
+        </Button>
+      ) : null}
     </>
   );
 }
