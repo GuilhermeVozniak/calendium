@@ -17,6 +17,29 @@ describe('privacy page', () => {
     expect(screen.queryByText(/Stripe/)).toBeNull();
     expect(screen.queryByText(/nothing runs in the background/)).toBeNull();
   });
+
+  // Track C ⚠️: the export is the data you created and stored, not "everything".
+  it('describes the export as the data you created and stored and lists what it contains', () => {
+    render(<PrivacyPage />);
+    expect(screen.getByText(/download the data\s+you created and stored in Calendium/)).toBeInTheDocument();
+    const exportCopy = screen.getByText(/The export contains/);
+    for (const category of [
+      'mail mirror metadata and messages',
+      'calendar events',
+      'notes',
+      'tasks',
+      'snippets',
+      'settings',
+      'booking pages and bookings',
+      'thread comments',
+      'calendar subscriptions',
+      'classifier prompts',
+      'voice profile',
+    ]) {
+      expect(exportCopy.textContent).toContain(category);
+    }
+    expect(screen.queryByText(/copy of everything/)).toBeNull();
+  });
 });
 
 describe('terms page', () => {

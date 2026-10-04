@@ -121,9 +121,15 @@ export default function PrivacyPage() {
       <LegalSection title="Retention and deletion">
         <p>
           We keep your data for as long as your account is active. You can disconnect a mailbox at
-          any time, which removes its stored tokens and mirrored content. You can download a copy of
-          everything from Settings → Account → <strong>Download my data</strong>, and you can delete
-          your account from Settings → Account → <strong>Delete account</strong> — on the web, in
+          any time, which removes its stored tokens and mirrored content. You can download the data
+          you created and stored in Calendium from Settings → Account →{' '}
+          <strong>Download my data</strong>.{' '}
+          <span>
+            The export contains your mail mirror metadata and messages, calendar events, notes,
+            tasks, snippets, settings, booking pages and bookings, thread comments, calendar
+            subscriptions, classifier prompts and your voice profile.
+          </span>{' '}
+          You can delete your account from Settings → Account → <strong>Delete account</strong> — on the web, in
           the mobile app or on desktop. Deletion removes your personal data from Cloud immediately,
           subject to any records we must retain for legal or accounting reasons (Paddle keeps its
           own transaction records as merchant of record).
