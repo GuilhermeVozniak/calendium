@@ -1348,7 +1348,7 @@ func newHarness(t *testing.T) *harness {
 
 // server returns a bare *server for unit-testing individual middleware
 // (requireAuth/recoverPanics) without the full New() stack.
-func (h *harness) server() *server { return &server{deps: h.deps} }
+func (h *harness) server() *server { return newServer(h.deps) }
 
 // handler returns the full v1 stack (recover + log + CORS + auth + routes).
 func (h *harness) handler() http.Handler { return New(h.deps) }

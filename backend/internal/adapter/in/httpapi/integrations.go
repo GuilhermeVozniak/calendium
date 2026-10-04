@@ -47,7 +47,7 @@ func (s *server) handleConnectIntegration(w http.ResponseWriter, r *http.Request
 		return
 	}
 	authURL, err := s.deps.Integrations.BeginConnect(
-		r.Context(), userFrom(r).ID, vendor, in.RedirectURL, requestBaseURL(r))
+		r.Context(), userFrom(r).ID, vendor, in.RedirectURL, s.requestBaseURL(r))
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -74,7 +74,7 @@ func (s *server) handleIntegrationCallback(w http.ResponseWriter, r *http.Reques
 	}
 	q := r.URL.Query()
 	_, redirect, cerr := s.deps.Integrations.CompleteConnect(
-		r.Context(), vendor, q.Get("state"), q.Get("code"), requestBaseURL(r))
+		r.Context(), vendor, q.Get("state"), q.Get("code"), s.requestBaseURL(r))
 	if cerr != nil {
 		status, code := statusFor(cerr)
 		if status == http.StatusInternalServerError {

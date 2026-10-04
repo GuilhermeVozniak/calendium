@@ -86,27 +86,6 @@ func TestRateLimiterGCPrunesIdleBuckets(t *testing.T) {
 	}
 }
 
-func TestClientIP(t *testing.T) {
-	tests := []struct {
-		name       string
-		remoteAddr string
-		want       string
-	}{
-		{name: "with port", remoteAddr: "203.0.113.5:54321", want: "203.0.113.5"},
-		{name: "ipv6 with port", remoteAddr: "[2001:db8::1]:443", want: "2001:db8::1"},
-		{name: "no port", remoteAddr: "203.0.113.5", want: "203.0.113.5"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodGet, "/", nil)
-			r.RemoteAddr = tt.remoteAddr
-			if got := clientIP(r); got != tt.want {
-				t.Fatalf("clientIP(%q) = %q, want %q", tt.remoteAddr, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestRateLimitedHandler(t *testing.T) {
 	now := time.Now()
 	clock := func() time.Time { return now }

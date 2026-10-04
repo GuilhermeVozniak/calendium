@@ -7,6 +7,7 @@ package httpapi
 import (
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"calendium/backend/internal/port"
@@ -88,10 +89,29 @@ type Deps struct {
 	// are reflected regardless. The run-the-binary env template turns it
 	// on; production leaves it off.
 	AllowDevOrigins bool
+	// TrustProxy (TRUST_PROXY) makes X-Forwarded-* from a peer inside
+	// TrustedProxyCIDRs authoritative for the client IP, scheme and host.
+	TrustProxy bool
+	// TrustedProxyCIDRs (TRUSTED_PROXY_CIDRS) is the proxy allowlist; the
+	// config package supplies the default loopback/RFC1918/ULA set.
+	TrustedProxyCIDRs []netip.Prefix
 }
 
 type server struct {
-	deps Deps
+	deps  Deps
+	proxy proxyTrust
+}
+
+// newServer builds the handler state shared by New and the middleware unit
+// tests (harness.server()).
+func newServer(deps Deps) *server {
+	if deps.Logger == nil {
+		deps.Logger = slog.Default()
+	}
+	return &server{
+		deps:  deps,
+		proxy: proxyTrust{enabled: deps.TrustProxy, nets: deps.TrustedProxyCIDRs},
+	}
 }
 
 // New builds the full v1 REST handler with recovery, request logging, CORS
@@ -99,10 +119,8 @@ type server struct {
 // ALLOW_DEV_ORIGINS), and bearer-token auth on every /v1 route except the
 // Paddle webhook and the provider OAuth callback.
 func New(deps Deps) http.Handler {
-	if deps.Logger == nil {
-		deps.Logger = slog.Default()
-	}
-	s := &server{deps: deps}
+	s := newServer(deps)
+	deps = s.deps
 
 	mux := http.NewServeMux()
 

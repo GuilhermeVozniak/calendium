@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -13,13 +12,10 @@ import (
 // horizontal deployment multiplies the effective limit by replica count,
 // which is acceptable for M2.4.
 //
-// Deployment constraint: keys are derived from clientIP, i.e. r.RemoteAddr
-// only (see clientIP below) — no X-Forwarded-For/X-Real-IP support. This
-// assumes M2.4's deployment model where the API is directly exposed and
-// terminates its own TLS. Placing this behind a reverse proxy/load balancer
-// without adding trusted-proxy-aware IP extraction would make every request
-// arrive with the same RemoteAddr (the proxy's), collapsing all callers into
-// one shared bucket.
+// Keys come from s.clientIP (proxy.go): the socket peer, or the client named
+// by X-Forwarded-For when the peer is a trusted proxy (TRUST_PROXY +
+// TRUSTED_PROXY_CIDRS), so callers behind a reverse proxy keep their own
+// buckets.
 type rateLimiter struct {
 	mu      sync.Mutex
 	perMin  float64
@@ -69,21 +65,11 @@ func (l *rateLimiter) allow(key string) bool {
 	return true
 }
 
-// clientIP extracts the caller address. RemoteAddr only — proxy headers are
-// spoofable and this API terminates TLS itself in the reference deployment.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
-
 // rateLimited wraps a public handler: 429 {"error":{"code":"rate_limited"}}
 // with Retry-After: 60 when the caller's bucket is empty.
 func (s *server) rateLimited(l *rateLimiter, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !l.allow(clientIP(r)) {
+		if !l.allow(s.clientIP(r)) {
 			w.Header().Set("Retry-After", "60")
 			writeJSON(w, http.StatusTooManyRequests, errorBody{Error: errorDetail{
 				Code: "rate_limited", Message: "too many requests, slow down",
