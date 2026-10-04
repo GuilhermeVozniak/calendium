@@ -189,7 +189,7 @@ Auth client and hide features you didn't enable:
 {
   "name": "Calendium",
   "mode": "self_host",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "authBaseUrl": "https://your-domain/api/auth",
   "authProviders": ["email", "google", "apple"],
   "undoSendSeconds": 15,
@@ -378,6 +378,9 @@ HTTP/2 + ES256 JWT auth.
    APNS_TEAM_ID=YYYYYYYYYY
    # PEM *contents* of the .p8 with newlines escaped as \n — NOT a file path:
    APNS_KEY_P8=-----BEGIN PRIVATE KEY-----\nMIGT...\n-----END PRIVATE KEY-----\n
+   # Bundle id of the iOS build you distribute; defaults to app.calendium.mobile
+   # (apps/mobile/app.json). Only set it for a build under another bundle id.
+   APNS_TOPIC=app.calendium.mobile
    ```
 
    Produce the single-line escaped value:

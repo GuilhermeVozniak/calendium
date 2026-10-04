@@ -152,7 +152,7 @@ then delivers a push to the user's devices on newly-synced important/VIP message
 | `APNS_KEY_ID` | No | — | APNs key ID (iOS/macOS, HTTP/2 + ES256 JWT). |
 | `APNS_TEAM_ID` | No | — | Apple developer team ID. |
 | `APNS_KEY_P8` | No | — | PEM contents of the `.p8` key (newlines escaped as `\n`), **not** a file path. Presence enables the push feature flag. |
-| `APNS_TOPIC` | No | `app.calendium` | APNs topic — must equal your iOS/macOS app's **bundle id**. Change it to match the bundle id of the build you distribute (see [Clients → build from source](./clients.md)), or APNs rejects the pushes. |
+| `APNS_TOPIC` | No | `app.calendium.mobile` | APNs topic — must equal your iOS app's **bundle id** (`ios.bundleIdentifier` in `apps/mobile/app.json`). Change it only for a build under another bundle id (see [Clients → build from source](./clients.md)), or APNs rejects the pushes. |
 | `FCM_SERVICE_ACCOUNT_JSON` | No | — | FCM v1 service-account JSON on a single line (Android). |
 | `VAPID_PUBLIC_KEY` | No | — | Web Push VAPID public key. |
 | `VAPID_PRIVATE_KEY` | No | — | Web Push VAPID private key. Both VAPID keys must be set to enable Web Push. |
@@ -262,7 +262,7 @@ shape:
 {
   "name": "Calendium",
   "mode": "self_host",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "authBaseUrl": "https://mail.example.com/api/auth",
   "authProviders": ["email", "google", "apple"],
   "webUrl": "https://mail.example.com",
@@ -282,7 +282,7 @@ shape:
 | --- | --- |
 | `name` | `INSTANCE_NAME` (default `Calendium`). |
 | `mode` | `self_host` when `SELF_HOSTED=true`, else `cloud`. |
-| `version` | The running API build constant (currently `0.1.0`). |
+| `version` | The running API build: `dev` for source builds, the release tag (e.g. `1.0.0`) for images built with `VERSION` (`docker compose build` passes `${VERSION:-dev}`). |
 | `authBaseUrl` | `${PUBLIC_WEB_URL\|\|APP_URL}/api/auth` — the Better Auth base clients build their auth client against. |
 | `authProviders` | Sign-in methods: `["email"]`, plus `"google"` when `GOOGLE_CLIENT_ID` is set and `"apple"` when `APPLE_CLIENT_ID` is set. |
 | `webUrl` | `PUBLIC_WEB_URL` — mobile and desktop build billing links from it. |

@@ -31,6 +31,8 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
     image: calendium-backend:latest
     restart: unless-stopped
     env_file:
@@ -87,6 +89,8 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
     image: calendium-backend:latest
     restart: unless-stopped
     # Same image as api; run the worker binary instead of the default api.
