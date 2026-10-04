@@ -110,9 +110,14 @@ internet**:
   inside `TRUSTED_PROXY_CIDRS` (default loopback + RFC 1918 + `fc00::/7`).
   Caddy replaces client-supplied `X-Forwarded-For` and the nginx sample sets
   it to `$remote_addr` (web) or appends with `$proxy_add_x_forwarded_for`
-  (API), so the right-most untrusted hop is the real client in both setups. If
-  other machines on the private network can reach port 8080 or 3000 directly,
-  narrow `TRUSTED_PROXY_CIDRS` to the proxy's own address. Details:
+  (API), so the right-most untrusted hop is the real client for internet
+  clients in both setups. Appending leaves one gap: a client whose own address
+  is inside `TRUSTED_PROXY_CIDRS` (a LAN or VPN client of the nginx host) can
+  prepend any `X-Forwarded-For` entry and the API keys it as that address. To
+  close it, use `proxy_set_header X-Forwarded-For $remote_addr;` on the API
+  block too (unless a CDN sits in front). If other machines on the private
+  network can reach port 8080 or 3000 directly, narrow `TRUSTED_PROXY_CIDRS`
+  to the proxy's own address. Details:
   [Client IP](#client-ip-trust_proxy-and-trusted_proxy_cidrs).
 - **`/readyz` is internal.** It reports database reachability (and `draining`
   during shutdown) for the compose health check; neither the Caddyfile nor the
@@ -274,15 +279,21 @@ peer directly, so it needs no preload). Both tiers then apply the same rule:
   them is the client. Entries that are not a bare IP address (`garbage`,
   `203.0.113.5:4321`, `[2001:db8::1]`) are skipped. When every entry is inside
   them (a LAN or VPN client behind the proxy), both tiers take the left-most
-  valid entry (a forged left entry cannot win, because every hop to its right
-  is a trusted proxy); the peer only when it is the sole valid entry. Behind the
-  bundled Caddy each client therefore gets its own bucket. The default
+  valid entry; the peer only when it is the sole valid entry. An internet
+  client cannot forge its key: its own address, added by the proxy, is the
+  first untrusted hop. A client inside `TRUSTED_PROXY_CIDRS` can: behind an
+  appending proxy its forged entries sit left of its own trusted one, so the
+  left-most (forged) entry wins. Behind an overwriting proxy (the bundled
+  Caddy, nginx with `$remote_addr`) there is nothing to forge, so each client
+  gets its own bucket. The default
   `TRUSTED_PROXY_CIDRS` is `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7`
   (loopback and private ranges). It covers the bundled Caddy on the Compose
   network and nginx on the host in front of the published port. A client can
   prepend whatever it likes, but it cannot get past the entry its proxy added.
   Appending proxies (`$proxy_add_x_forwarded_for`, cloud load balancers) and
-  overwriting ones (Caddy, nginx with `$remote_addr`) both work, as long as
+  overwriting ones (Caddy, nginx with `$remote_addr`) both work for internet
+  clients (appending lets a client inside the trusted ranges pick its key, see
+  above), as long as
   every proxy hop is inside `TRUSTED_PROXY_CIDRS`. Add a CDN's public ranges
   if one sits in front. If untrusted clients can reach `web:3000` or
   `api:8080` from a private range, narrow the list to your proxy's own

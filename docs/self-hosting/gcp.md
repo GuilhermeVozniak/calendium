@@ -145,9 +145,21 @@ INSTANCE=$PROJECT:$REGION:calendium-db
 gcloud run deploy calendium-api \
   --image $REG/backend:$TAG --region $REGION --allow-unauthenticated \
   --add-cloudsql-instances $INSTANCE \
-  --set-env-vars "SELF_HOSTED=true,INSTANCE_NAME=Calendium,BETTER_AUTH_URL=https://app.<your-domain>,DATABASE_URL=postgres://calendium:<pw>@/calendium?host=/cloudsql/$INSTANCE&sslmode=disable" \
+  --set-env-vars "SELF_HOSTED=true,INSTANCE_NAME=Calendium,BETTER_AUTH_URL=https://app.<your-domain>,DATABASE_URL=postgres://calendium:<pw>@/calendium?host=/cloudsql/$INSTANCE&sslmode=disable,TRUST_PROXY=true,TRUSTED_PROXY_CIDRS=169.254.0.0/16" \
+  --startup-probe "httpGet.path=/readyz,httpGet.port=8080" \
   --set-secrets "TOKEN_ENCRYPTION_KEY=TOKEN_ENCRYPTION_KEY:latest"
 ```
+
+**Client IP and health.** Outside Compose `TRUST_PROXY` defaults to `false`,
+which would key every client's rate limit on Google's front end. Set
+`TRUST_PROXY=true` on the API and the web app (B5), and `TRUSTED_PROXY_CIDRS`
+to the range Cloud Run's front end connects from (typically link-local,
+`169.254.0.0/16`, which the default list does not cover), plus your HTTPS Load
+Balancer's frontend IP if one sits in front (several entries are
+comma-separated, so switch gcloud's delimiter: `--set-env-vars "^;^A=1;TRUSTED_PROXY_CIDRS=169.254.0.0/16,203.0.113.10"`).
+Check one api request log line: its client IP must be yours, not a Google
+address. The startup probe gates traffic on `/readyz` (database reachable);
+the web app's equivalent is `/api/health`. `/healthz` is liveness only.
 
 ### B5. Deploy the web app and the worker
 
@@ -156,7 +168,8 @@ gcloud run deploy calendium-api \
 gcloud run deploy calendium-web --image $REG/web:$TAG \
   --region $REGION --allow-unauthenticated \
   --add-cloudsql-instances $INSTANCE \
-  --set-env-vars "BETTER_AUTH_URL=https://app.<your-domain>,DATABASE_URL=postgres://calendium:<pw>@/calendium?host=/cloudsql/$INSTANCE&sslmode=disable" \
+  --set-env-vars "BETTER_AUTH_URL=https://app.<your-domain>,DATABASE_URL=postgres://calendium:<pw>@/calendium?host=/cloudsql/$INSTANCE&sslmode=disable,TRUST_PROXY=true,TRUSTED_PROXY_CIDRS=169.254.0.0/16" \
+  --startup-probe "httpGet.path=/api/health,httpGet.port=3000" \
   --set-secrets "BETTER_AUTH_SECRET=BETTER_AUTH_SECRET:latest"
 
 # Worker — same backend image, run the worker binary, always on, single instance
