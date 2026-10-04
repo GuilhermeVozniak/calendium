@@ -86,6 +86,39 @@ describe('UpdateBanner', () => {
     expect(screen.getByRole('status').textContent).toContain('Calendium 1.4.0 is available');
   });
 
+  it.each([
+    'http://github.com/GuilhermeVozniak/calendium/releases/tag/v1.3.0',
+    'javascript:alert(1)',
+    'ms-settings:privacy',
+    'https://',
+    '/releases/tag/v1.3.0',
+  ])('never shows or opens a non-https Download URL (%j)', async (url) => {
+    bridge.GetUpdateStatus.mockResolvedValue({ ...NEWER, url });
+    render(<UpdateBanner />);
+    await flush();
+    expect(screen.queryByRole('status')).toBeNull();
+    act(() => {
+      for (const l of bridge.listeners) l({ ...NEWER, url });
+    });
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(bridge.OpenExternal).not.toHaveBeenCalled();
+  });
+
+  it('a failing GetUpdateStatus leaves the banner hidden without an unhandled rejection', async () => {
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      bridge.GetUpdateStatus.mockRejectedValue(new Error('binding gone'));
+      render(<UpdateBanner />);
+      await flush();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(screen.queryByRole('status')).toBeNull();
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+
   it('unsubscribes on unmount', async () => {
     const view = render(<UpdateBanner />);
     await flush();

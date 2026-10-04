@@ -198,7 +198,9 @@ export default function App() {
   // flag in localStorage); resume it here outside demo mode and keep it
   // paused in demo, which never dials out (apps/desktop/update.go).
   useEffect(() => {
-    void desktop.SetUpdateChecksEnabled(!demoMode);
+    desktop.SetUpdateChecksEnabled(!demoMode).catch(() => {
+      // A missing binding just leaves the host checker paused.
+    });
   }, [demoMode]);
 
   const billingEnabled = config?.features?.billing ?? false;
