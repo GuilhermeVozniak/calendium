@@ -1,9 +1,9 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Download, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 
 import { api, orMock } from '@/lib/api';
-import { clearStoredToken, getAuthClient, signOut } from '@/lib/auth';
+import { getAuthClient, resumeApi, signOutLocally, suspendApi } from '@/lib/auth';
 import { mockUser } from '@/lib/mock';
 import { clearOfflineState } from '@/lib/offline';
 import { billingWebOrigin, useServerConfig } from '@/lib/server-config';
@@ -12,7 +12,12 @@ import { desktop } from '@/lib/wails';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
 
-type DeleteError = { status?: number; code?: string; details?: { teams?: { name: string }[] } };
+type DeleteError = {
+  status?: number;
+  code?: string;
+  message?: string;
+  details?: { teams?: { name: string }[] };
+};
 
 /**
  * Account lifecycle controls: "Download my data" opens the web account page
@@ -23,6 +28,7 @@ type DeleteError = { status?: number; code?: string; details?: { teams?: { name:
  * without an active subscription.
  */
 export function AccountControls() {
+  const queryClient = useQueryClient();
   const { config, demoMode } = useServerConfig();
   const { data: user } = useQuery({
     queryKey: ['me'],
@@ -37,6 +43,9 @@ export function AccountControls() {
   const [typedEmail, setTypedEmail] = useState('');
   const [deletePassword, setDeletePassword] = useState('');
   const [hasCredential, setHasCredential] = useState<boolean | null>(null);
+  const [accountsError, setAccountsError] = useState(false);
+  // Social-only account whose session is too old to delete in-app.
+  const [reauthInBrowser, setReauthInBrowser] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
 
   function openWebAccount(): boolean {
@@ -70,15 +79,58 @@ export function AccountControls() {
       return;
     }
     setDeleting(true);
-    setHasCredential(null);
     setTypedEmail('');
     setDeletePassword('');
+    setReauthInBrowser(false);
+    await loadAccounts();
+  }
+
+  async function loadAccounts() {
+    const c = getAuthClient();
+    if (!c) return;
+    setHasCredential(null);
+    setAccountsError(false);
     try {
       // Better Auth's list-accounts rows carry the provider as `providerId`.
-      const { data } = await c.listAccounts();
-      setHasCredential(!!data?.some((a) => a.providerId === 'credential'));
+      const { data, error } = await c.listAccounts();
+      if (error || !data) throw new Error('listAccounts failed');
+      setHasCredential(data.some((a) => a.providerId === 'credential'));
     } catch {
-      setHasCredential(false);
+      // Never guess social-only: a credential user would get no password
+      // field and a misleading error. Offer a retry instead.
+      setAccountsError(true);
+    }
+  }
+
+  function showDeleteError(err: DeleteError) {
+    const teams = err.details?.teams ?? [];
+    if (err.code === 'owns_teams' || teams.length > 0) {
+      toast({
+        title: 'Transfer your teams first',
+        description: teams.map((t) => t.name).join(', '),
+        variant: 'destructive',
+      });
+    } else if (err.code === 'SESSION_EXPIRED' || err.status === 403) {
+      // Re-authentication required (Better Auth 400 SESSION_EXPIRED: the
+      // session is older than freshAge and no password was sent).
+      if (hasCredential) {
+        setDeletePassword('');
+        toast({
+          title: 'Enter your password',
+          description: 'For your security, enter your password to delete your account.',
+          variant: 'destructive',
+        });
+      } else {
+        // Social sign-in runs in the browser: the web account page re-runs
+        // the provider sign-in and then retries the delete.
+        setReauthInBrowser(true);
+      }
+    } else if (err.code === 'INVALID_PASSWORD' || (hasCredential && (err.status === 400 || err.status === 401))) {
+      toast({ title: 'Incorrect password', variant: 'destructive' });
+    } else if ((err.status ?? 0) >= 500 && err.message) {
+      toast({ title: 'Could not delete your account', description: err.message, variant: 'destructive' });
+    } else {
+      toast({ title: 'Could not delete your account', description: 'Try again.', variant: 'destructive' });
     }
   }
 
@@ -87,40 +139,31 @@ export function AccountControls() {
     if (!c) return;
     setDeleteBusy(true);
     try {
+      // Pause every Go API request (and drop the cached JWT) BEFORE deleting:
+      // a background query carrying a JWT minted for this user would pass
+      // requireAuth → EnsureUser and re-create the purged users row.
+      suspendApi();
+      await queryClient.cancelQueries();
       const { error } = await c.deleteUser(hasCredential ? { password: deletePassword } : {});
       if (error) {
-        const err = error as DeleteError;
-        const teams = err.details?.teams ?? [];
-        if (err.code === 'owns_teams' || teams.length > 0) {
-          toast({
-            title: 'Transfer your teams first',
-            description: teams.map((t) => t.name).join(', '),
-            variant: 'destructive',
-          });
-        } else if (err.code === 'INVALID_PASSWORD' || err.status === 400 || err.status === 401) {
-          toast({ title: 'Incorrect password', variant: 'destructive' });
-        } else if (err.status === 403) {
-          toast({
-            title: 'Sign in again',
-            description: 'For your security, sign in again and then retry.',
-            variant: 'destructive',
-          });
-        } else {
-          toast({ title: 'Could not delete your account', description: 'Try again.', variant: 'destructive' });
-        }
+        resumeApi();
+        showDeleteError(error as DeleteError);
         return;
       }
-      // The session is gone server-side; drop the local token, cached mail
-      // and queued outbox, and return to sign-in.
-      clearStoredToken();
-      await signOut();
-      await clearOfflineState().catch(() => undefined);
-      toast({ title: 'Account deleted' });
     } catch {
+      resumeApi();
       toast({ title: 'Could not delete your account', description: 'Try again.', variant: 'destructive' });
+      return;
     } finally {
       setDeleteBusy(false);
     }
+    // The account is gone: forget it locally with no further request (the API
+    // stays paused until the next sign-in), then drop cached mail and the
+    // queued outbox. The session store flip returns the app to sign-in.
+    queryClient.clear();
+    await clearOfflineState().catch(() => undefined);
+    signOutLocally();
+    toast({ title: 'Account deleted' });
   }
 
   const email = (user?.email ?? '').trim().toLowerCase();
@@ -145,6 +188,25 @@ export function AccountControls() {
             any team where you are the only member. Type your email to confirm
             {hasCredential ? ' and enter your password' : ''}. There is no undo.
           </p>
+          {accountsError && (
+            <div className="flex items-center gap-2" role="alert">
+              <p className="text-xs text-destructive">Couldn’t check how you sign in. Check your connection and try again.</p>
+              <Button variant="outline" size="sm" onClick={() => void loadAccounts()}>
+                Retry
+              </Button>
+            </div>
+          )}
+          {reauthInBrowser && (
+            <div className="flex flex-col gap-2" role="alert">
+              <p className="text-xs text-muted-foreground">
+                For your security, confirm it’s you: sign in with your provider again in your browser, where your
+                account deletion continues.
+              </p>
+              <Button variant="outline" size="sm" className="self-start" onClick={() => openWebAccount()}>
+                Continue in browser
+              </Button>
+            </div>
+          )}
           <Input
             aria-label="Type your email to confirm"
             placeholder={user?.email ?? ''}
