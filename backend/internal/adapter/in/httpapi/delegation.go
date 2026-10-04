@@ -154,6 +154,7 @@ func (s *server) withActAs(next http.HandlerFunc) http.HandlerFunc {
 		}
 		ctx := context.WithValue(r.Context(), userCtxKey{}, principal)
 		ctx = context.WithValue(ctx, actorCtxKey{}, assistant)
+		setLogUser(ctx, principal.ID, assistant.ID)
 		r = r.WithContext(ctx)
 
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
@@ -162,7 +163,7 @@ func (s *server) withActAs(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		rec := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 		next(rec, r)
 		if rec.status >= 400 {
 			return // only successful mutations are audited
@@ -195,6 +196,13 @@ func (s *server) handleCreateDelegation(w http.ResponseWriter, r *http.Request) 
 		Scopes         []string `json:"scopes"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.email("assistantEmail", in.AssistantEmail)
+	fc.list("scopes", len(in.Scopes))
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}

@@ -3,15 +3,23 @@
  * `next start` / `next dev` boot the server — never during `next build` — so
  * a broken email/auth configuration aborts the process with the exact
  * variable named instead of failing on the first sign-up. Mirrors
- * config.FromEnv + ValidateCloudEmail on the Go side.
+ * config.FromEnv + ValidateCloudEmail on the Go side. The edge runtime never
+ * hosts Better Auth, and the build phase (Docker build stage) is secret-free.
  */
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return;
+  if (process.env.NEXT_PHASE === 'phase-production-build') return;
   const { assertMailConfigForMode } = await import('@/lib/email/config');
-  const { assertBooleanEnv, startupWarnings } = await import('@/lib/auth-env');
+  const { assertBooleanEnv, envBool, startupWarnings } = await import('@/lib/auth-env');
+  const { assertBetterAuthSecret } = await import('@/lib/auth-secret');
   // Same boolean grammar as config.FromEnv: an invalid SELF_HOSTED,
   // SMTP_SECURE, ALLOW_DEV_ORIGINS or TRUST_PROXY stops the boot.
   assertBooleanEnv(process.env);
+  // CSP_REPORT_ONLY (middleware.ts) uses the same grammar; blank = default.
+  envBool(process.env, 'CSP_REPORT_ONLY');
+  // A weak Better Auth root secret (signs sessions, encrypts the JWKS keys)
+  // stops the boot in every mode; a copied example placeholder in production.
+  assertBetterAuthSecret(process.env);
   const mail = assertMailConfigForMode(process.env);
   if (!mail.configured) {
     console.warn('email: disabled (no SMTP_HOST); verification off, invitations fall back to links');

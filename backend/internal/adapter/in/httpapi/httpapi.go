@@ -5,9 +5,10 @@
 package httpapi
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
-	"time"
+	"net/netip"
 
 	"calendium/backend/internal/port"
 )
@@ -88,10 +89,53 @@ type Deps struct {
 	// are reflected regardless. The run-the-binary env template turns it
 	// on; production leaves it off.
 	AllowDevOrigins bool
+	// TrustProxy (TRUST_PROXY) makes X-Forwarded-* from a peer inside
+	// TrustedProxyCIDRs authoritative for the client IP, scheme and host.
+	TrustProxy bool
+	// TrustedProxyCIDRs (TRUSTED_PROXY_CIDRS) is the proxy allowlist; the
+	// config package supplies the default loopback/RFC1918/ULA set.
+	TrustedProxyCIDRs []netip.Prefix
+	// RateLimits is the per-class budget; a zero class is disabled (the zero
+	// value disables API rate limiting).
+	RateLimits RateLimits
+	// Drain is closed by the composition root when shutdown begins: /readyz
+	// turns 503 and the SSE streams return so Shutdown can finish. nil = never.
+	Drain <-chan struct{}
+	// Ready pings the primary dependency (DB) for /readyz; nil = always ready.
+	Ready func(context.Context) error
 }
 
 type server struct {
-	deps Deps
+	deps  Deps
+	proxy proxyTrust
+	// limits holds the per-user class limiters (nil entry = class disabled);
+	// publicRead/publicWrite are the per-IP public limiters.
+	limits                  map[string]*rateLimiter
+	publicRead, publicWrite *rateLimiter
+	// classOf records each authed pattern's limiter class (tests).
+	classOf map[string]string
+}
+
+// newServer builds the handler state shared by New and the middleware unit
+// tests (harness.server()).
+func newServer(deps Deps) *server {
+	if deps.Logger == nil {
+		deps.Logger = slog.Default()
+	}
+	s := &server{
+		deps:    deps,
+		proxy:   proxyTrust{enabled: deps.TrustProxy, nets: deps.TrustedProxyCIDRs},
+		classOf: map[string]string{},
+	}
+	rl := deps.RateLimits
+	s.limits = map[string]*rateLimiter{
+		classUser:        newClassLimiter(rl.UserPerMin, rl.UserPerMin),
+		classMutateHeavy: newClassLimiter(rl.MutateHeavyPerMin, rl.MutateHeavyPerMin),
+		classSearch:      newClassLimiter(rl.SearchPerMin, rl.SearchPerMin),
+	}
+	s.publicRead = newClassLimiter(rl.PublicReadPerMin, rl.PublicReadPerMin/2)
+	s.publicWrite = newClassLimiter(rl.PublicWritePerMin, rl.PublicWritePerMin)
+	return s
 }
 
 // New builds the full v1 REST handler with recovery, request logging, CORS
@@ -99,15 +143,20 @@ type server struct {
 // ALLOW_DEV_ORIGINS), and bearer-token auth on every /v1 route except the
 // Paddle webhook and the provider OAuth callback.
 func New(deps Deps) http.Handler {
-	if deps.Logger == nil {
-		deps.Logger = slog.Default()
-	}
-	s := &server{deps: deps}
+	_, h := build(deps)
+	return h
+}
+
+// build is New returning the server state too (route-table tests).
+func build(deps Deps) (*server, http.Handler) {
+	s := newServer(deps)
+	deps = s.deps
 
 	mux := http.NewServeMux()
 
 	// Unauthenticated surface.
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /v1/instance", s.handleInstance)
 	mux.HandleFunc("POST /v1/webhooks/paddle", s.handlePaddleWebhook)
 	mux.HandleFunc("GET /v1/accounts/callback/{provider}", s.handleAccountCallback)
@@ -117,9 +166,9 @@ func New(deps Deps) http.Handler {
 
 	// Public scheduling surface (unauthenticated, rate limited): booking
 	// pages/slots/bookings and meeting-poll view/vote. Two buckets — reads
-	// generous, writes tight — per-IP, in-process (see ratelimit.go).
-	publicRead := newRateLimiter(60, 30, time.Now) // GETs: 60/min, burst 30
-	publicWrite := newRateLimiter(5, 5, time.Now)  // POSTs: 5/min, burst 5
+	// generous, writes tight — per client IP, in-process (see ratelimit.go;
+	// budgets from Deps.RateLimits).
+	publicRead, publicWrite := s.publicRead, s.publicWrite
 	mux.HandleFunc("GET /v1/public/booking/{slug}", s.rateLimited(publicRead, s.handlePublicBookingPage))
 	mux.HandleFunc("GET /v1/public/booking/{slug}/slots", s.rateLimited(publicRead, s.handlePublicSlots))
 	mux.HandleFunc("POST /v1/public/booking/{slug}/bookings", s.rateLimited(publicWrite, s.handlePublicBook))
@@ -132,9 +181,22 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("GET /v1/shared/threads/{token}", s.rateLimited(publicRead, s.handleGetSharedThread))
 	mux.HandleFunc("GET /v1/shared/threads/{token}/stream", s.rateLimited(publicRead, s.handleSharedThreadStream))
 
-	// Authenticated surface.
-	authed := func(pattern string, h http.HandlerFunc) {
-		mux.Handle(pattern, s.requireAuth(s.withActAs(h)))
+	// Authenticated surface. Chain: requireAuth → userLimited(class) →
+	// withActAs → deadline → handler, so the ACTOR is charged, never the
+	// principal.
+	authed := func(pattern string, h http.HandlerFunc, opts ...routeOption) {
+		o := routeOptions{class: classUser, deadline: defaultHandlerDeadline}
+		for _, opt := range opts {
+			opt(&o)
+		}
+		s.classOf[pattern] = o.class
+		inner := h
+		if !o.noDeadline {
+			inner = s.withDeadline(o.deadline, inner)
+		}
+		inner = s.withActAs(inner)
+		inner = s.userLimited(s.limits[o.class], inner)
+		mux.Handle(pattern, s.requireAuth(inner))
 	}
 
 	authed("GET /v1/me", s.handleMe)
@@ -160,7 +222,7 @@ func New(deps Deps) http.Handler {
 	authed("GET /v1/mail/threads", s.handleListThreads)
 	authed("GET /v1/mail/threads/{id}", s.handleGetThread)
 	authed("POST /v1/mail/threads/{id}/actions", s.handleThreadAction)
-	authed("POST /v1/mail/threads/bulk-actions", s.handleBulkThreadActions)
+	authed("POST /v1/mail/threads/bulk-actions", s.handleBulkThreadActions, limitClass(classMutateHeavy))
 	authed("POST /v1/mail/threads/{id}/open", s.handleMarkThreadOpened)
 	authed("POST /v1/mail/threads/{id}/snooze", s.handleSnoozeThread)
 	authed("DELETE /v1/mail/threads/{id}/snooze", s.handleUnsnoozeThread)
@@ -168,7 +230,7 @@ func New(deps Deps) http.Handler {
 	authed("POST /v1/mail/threads/{id}/unsubscribe", s.handleUnsubscribeThread)
 	authed("GET /v1/mail/threads/{id}/instant-replies", s.handleInstantReplies)
 	authed("GET /v1/mail/threads/{id}/team-activity", s.handleTeamThreadActivity)
-	authed("POST /v1/mail/threads/zero", s.handleGetMeToZero)
+	authed("POST /v1/mail/threads/zero", s.handleGetMeToZero, limitClass(classMutateHeavy))
 
 	authed("GET /v1/mail/labels", s.handleListLabels)
 	authed("POST /v1/mail/threads/{id}/labels", s.handleSetThreadLabel)
@@ -178,7 +240,7 @@ func New(deps Deps) http.Handler {
 	authed("GET /v1/mail/drafts/{id}", s.handleGetDraft)
 	authed("PUT /v1/mail/drafts/{id}", s.handleUpdateDraft)
 	authed("DELETE /v1/mail/drafts/{id}", s.handleDeleteDraft)
-	authed("POST /v1/mail/drafts/{id}/send", s.handleSendDraft)
+	authed("POST /v1/mail/drafts/{id}/send", s.handleSendDraft, limitClass(classMutateHeavy))
 	authed("POST /v1/mail/drafts/{id}/unsend", s.handleUnsendDraft)
 
 	authed("GET /v1/mail/snippets", s.handleListSnippets)
@@ -190,14 +252,14 @@ func New(deps Deps) http.Handler {
 	// summary, and emoji reactions.
 	authed("GET /v1/mail/opens", s.handleListOpens)
 	authed("GET /v1/mail/send-suggestion", s.handleSendSuggestion)
-	authed("GET /v1/mail/attachments", s.handleSearchAttachments)
-	authed("GET /v1/mail/attachments/{id}/content", s.handleGetAttachmentContent)
+	authed("GET /v1/mail/attachments", s.handleSearchAttachments, limitClass(classSearch))
+	authed("GET /v1/mail/attachments/{id}/content", s.handleGetAttachmentContent, deadline(attachmentHandlerDeadline))
 	authed("GET /v1/mail/contacts/{email}", s.handleGetContact)
 	authed("POST /v1/mail/messages/{id}/reactions", s.handleReactToMessage)
 	authed("DELETE /v1/mail/messages/{id}/reactions/{emoji}", s.handleRemoveReaction)
 
 	// M2.7: shared conversations (owner-side share management).
-	authed("POST /v1/mail/threads/{id}/share", s.handleShareThread)
+	authed("POST /v1/mail/threads/{id}/share", s.handleShareThread, limitClass(classMutateHeavy))
 	authed("GET /v1/mail/threads/{id}/shares", s.handleListThreadShares)
 	authed("DELETE /v1/mail/threads/{id}/shares/{shareId}", s.handleRevokeThreadShare)
 
@@ -241,14 +303,14 @@ func New(deps Deps) http.Handler {
 
 	// M2.8 Task 15: interesting-calendar ICS feed subscriptions.
 	authed("GET /v1/calendar-subscriptions", s.handleListCalendarSubscriptions)
-	authed("POST /v1/calendar-subscriptions", s.handleCreateCalendarSubscription)
+	authed("POST /v1/calendar-subscriptions", s.handleCreateCalendarSubscription, limitClass(classMutateHeavy))
 	authed("PATCH /v1/calendar-subscriptions/{id}", s.handleUpdateCalendarSubscription)
 	authed("DELETE /v1/calendar-subscriptions/{id}", s.handleDeleteCalendarSubscription)
 
-	authed("GET /v1/search", s.handleSearch)
-	authed("POST /v1/ai/compose", s.handleAiCompose)
-	authed("POST /v1/ai/ask", s.handleAiAsk)
-	authed("POST /v1/ai/event-proposal", s.handleAiEventProposal)
+	authed("GET /v1/search", s.handleSearch, limitClass(classSearch))
+	authed("POST /v1/ai/compose", s.handleAiCompose, limitClass(classMutateHeavy))
+	authed("POST /v1/ai/ask", s.handleAiAsk, limitClass(classMutateHeavy))
+	authed("POST /v1/ai/event-proposal", s.handleAiEventProposal, limitClass(classMutateHeavy))
 
 	authed("GET /v1/classifiers", s.handleListClassifiers)
 	authed("POST /v1/classifiers", s.handleCreateClassifier)
@@ -272,7 +334,7 @@ func New(deps Deps) http.Handler {
 	// public booking/poll routes are registered separately, in the
 	// unauthenticated section above, behind their own rate limiter.
 	authed("GET /v1/booking-links", s.handleListLinks)
-	authed("POST /v1/booking-links", s.handleCreateLink)
+	authed("POST /v1/booking-links", s.handleCreateLink, limitClass(classMutateHeavy))
 	authed("PUT /v1/booking-links/{id}", s.handleUpdateLink)
 	authed("DELETE /v1/booking-links/{id}", s.handleDeleteLink)
 
@@ -280,7 +342,7 @@ func New(deps Deps) http.Handler {
 	authed("POST /v1/bookings/{id}/cancel", s.handleCancelBooking)
 
 	authed("GET /v1/polls", s.handleListPolls)
-	authed("POST /v1/polls", s.handleCreatePoll)
+	authed("POST /v1/polls", s.handleCreatePoll, limitClass(classMutateHeavy))
 	authed("POST /v1/polls/{id}/confirm", s.handleConfirmPoll)
 	authed("DELETE /v1/polls/{id}", s.handleDeletePoll)
 
@@ -303,7 +365,7 @@ func New(deps Deps) http.Handler {
 	authed("PATCH /v1/teams/{id}/members/{userId}", s.handleSetMemberRole)
 	authed("PUT /v1/teams/{id}/read-status-sharing", s.handleSetShareReadStatuses)
 	authed("DELETE /v1/teams/{id}/members/{userId}", s.handleRemoveMember)
-	authed("POST /v1/teams/{id}/invitations", s.handleInvite)
+	authed("POST /v1/teams/{id}/invitations", s.handleInvite, limitClass(classMutateHeavy))
 	authed("GET /v1/teams/{id}/invitations", s.handleListInvitations)
 	authed("DELETE /v1/teams/{id}/invitations/{invitationId}", s.handleRevokeInvitation)
 	authed("POST /v1/invitations/accept", s.handleAcceptInvitation)
@@ -313,7 +375,7 @@ func New(deps Deps) http.Handler {
 	authed("GET /v1/teams/{id}/availability", s.handleTeamAvailability)
 
 	// M2.7: realtime collaboration stream (SSE) and team thread-comments.
-	authed("GET /v1/collab/stream", s.handleCollabStream)
+	authed("GET /v1/collab/stream", s.handleCollabStream, noDeadline())
 	authed("GET /v1/mail/threads/{id}/comments", s.handleListComments)
 	authed("POST /v1/mail/threads/{id}/comments", s.handleAddComment)
 	authed("PATCH /v1/comments/{id}", s.handleUpdateComment)
@@ -331,7 +393,7 @@ func New(deps Deps) http.Handler {
 	authed("GET /v1/weather", s.handleGetWeather)
 
 	// M2.8 Task 11: location autocomplete (Nominatim-backed; 501 unwired).
-	authed("GET /v1/places/autocomplete", s.handlePlacesAutocomplete)
+	authed("GET /v1/places/autocomplete", s.handlePlacesAutocomplete, limitClass(classSearch))
 
 	// M2.8 Task 16: CRM contact context + explicit email logging.
 	authed("GET /v1/crm/context", s.handleCrmContext)
@@ -343,8 +405,10 @@ func New(deps Deps) http.Handler {
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins, deps.AllowDevOrigins)
 	h = s.logRequests(h)
+	h = s.requestID(h)
+	h = s.securityHeaders(h)
 	h = s.recoverPanics(h)
-	return h
+	return s, h
 }
 
 func (s *server) handleHealthz(w http.ResponseWriter, _ *http.Request) {

@@ -73,7 +73,7 @@ curl https://<your-domain>/v1/instance      # mode: self_host
 
 Set the remaining `.env` values (`SELF_HOSTED=true`, `TOKEN_ENCRYPTION_KEY`,
 `DOMAIN`, `ACME_EMAIL`, Better Auth (`BETTER_AUTH_SECRET`/`BETTER_AUTH_URL`),
-provider OAuth, loopback `API_PORT`/`WEB_PORT`) exactly as in the
+provider OAuth, loopback `API_BIND`/`WEB_BIND` defaults) exactly as in the
 [VPS guide](./vps.md#step-6--clone-and-configure). Updating,
 backups, and pointing apps at your server are identical.
 
@@ -121,7 +121,8 @@ az containerapp create -g calendium-rg -n calendium-api --environment calendium-
   --secrets "token-key=keyvaultref:https://<vault>.vault.azure.net/secrets/token-key,identityref:$IDENTITY_ID" \
             "db-url=keyvaultref:https://<vault>.vault.azure.net/secrets/db-url,identityref:$IDENTITY_ID" \
   --env-vars "SELF_HOSTED=true" "TOKEN_ENCRYPTION_KEY=secretref:token-key" \
-             "DATABASE_URL=secretref:db-url" "BETTER_AUTH_URL=https://app.<your-domain>"
+             "DATABASE_URL=secretref:db-url" "BETTER_AUTH_URL=https://app.<your-domain>" \
+             "TRUST_PROXY=true" "TRUSTED_PROXY_CIDRS=<infrastructure subnet CIDR>"
 # The api only needs BETTER_AUTH_URL (it derives AUTH_JWKS_URL/AUTH_ISSUER and
 # verifies tokens against the public JWKS — no auth secret on the backend).
 ```
@@ -136,7 +137,8 @@ az containerapp create -g calendium-rg -n calendium-web --environment calendium-
   --secrets "auth-secret=keyvaultref:https://<vault>.vault.azure.net/secrets/auth-secret,identityref:$IDENTITY_ID" \
             "db-url=keyvaultref:https://<vault>.vault.azure.net/secrets/db-url,identityref:$IDENTITY_ID" \
   --env-vars "BETTER_AUTH_URL=https://app.<your-domain>" "BETTER_AUTH_SECRET=secretref:auth-secret" \
-             "DATABASE_URL=secretref:db-url"
+             "DATABASE_URL=secretref:db-url" \
+             "TRUST_PROXY=true" "TRUSTED_PROXY_CIDRS=<infrastructure subnet CIDR>"
 
 # Worker — no ingress, exactly one always-on replica, runs the worker binary
 az containerapp create -g calendium-rg -n calendium-worker --environment calendium-env \
@@ -149,6 +151,27 @@ az containerapp create -g calendium-rg -n calendium-worker --environment calendi
 
 The shipped backend image defaults to the `api` binary; `--command worker` runs
 `cmd/worker`.
+
+**Client IP and health.** Outside Compose `TRUST_PROXY` defaults to `false`,
+which would key every client's rate limit on the ingress. The Container Apps
+ingress (Envoy) connects from inside the environment and appends the client
+to `X-Forwarded-For`, so set `TRUST_PROXY=true` on `calendium-api` and
+`calendium-web` and `TRUSTED_PROXY_CIDRS` to the environment's infrastructure
+subnet (the VNet range you created it in; omit the variable to keep the
+default private ranges if that subnet is `10.x`, `172.16–31.x` or
+`192.168.x`). Check one api request log line: its client IP must be yours,
+not an internal address. Add a readiness probe to each app's YAML
+(`az containerapp update --yaml`): `GET /readyz` on port 8080 for the API
+(`503` while the database is unreachable or the replica is draining) and
+`GET /api/health` on port 3000 for the web app. Keep `/healthz` for liveness
+only.
+
+```yaml
+probes:
+  - type: Readiness
+    httpGet: { path: /readyz, port: 8080 }
+    periodSeconds: 10
+```
 
 ### B5. Domains and networking
 

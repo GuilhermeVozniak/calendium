@@ -200,8 +200,8 @@ func TestPublicBook_BodyTooLarge_413(t *testing.T) {
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected 413, got %d (body=%s)", rec.Code, rec.Body.String())
 	}
-	if e := decodeErr(t, rec); e.Code != "request_too_large" {
-		t.Fatalf("expected code request_too_large, got %q", e.Code)
+	if e := decodeErr(t, rec); e.Code != "payload_too_large" {
+		t.Fatalf("expected code payload_too_large, got %q", e.Code)
 	}
 	if h.scheduling.gotBookSlug != "" {
 		t.Fatal("expected the service not to be called for an oversized body")
@@ -303,8 +303,8 @@ func TestPublicRoutes_RateLimited429(t *testing.T) {
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429 after burst exhausted, got %d", rec.Code)
 	}
-	if got := rec.Header().Get("Retry-After"); got != "60" {
-		t.Fatalf("expected Retry-After: 60, got %q", got)
+	if got := rec.Header().Get("Retry-After"); got != "12" {
+		t.Fatalf("expected Retry-After: 12 (5/min, empty bucket), got %q", got)
 	}
 	if e := decodeErr(t, rec); e.Code != "rate_limited" {
 		t.Fatalf("expected code rate_limited, got %q", e.Code)

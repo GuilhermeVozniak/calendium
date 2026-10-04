@@ -28,6 +28,7 @@ docker compose logs --tail=100 api worker web caddy
 | `SMTP_*` startup error, "We couldn't send the email" | [Email not sending / SMTP errors](#email-not-sending--smtp-errors) |
 | "Too many attempts, try again in N s" / `429` on sign-in | [Sign-in rate limits](#too-many-attempts-try-again-in-n-s-http-429) |
 | `403 Invalid origin` on sign-in, CORS errors from a new origin | [Invalid origin](#invalid-origin-403-on-sign-in) |
+| `api`/`worker`/`web` restart in a loop, exit code `137` | [Out of memory (512m limit)](#out-of-memory-512m-limit) |
 
 ---
 
@@ -347,9 +348,18 @@ production: …` at startup. With `TRUST_PROXY=true` the same happens when a
 proxy hop is outside `TRUSTED_PROXY_CIDRS`, for example a CDN with public
 addresses.
 
+The Go API answers its own `429`s with a `Retry-After` header: per client IP
+on public booking/poll/share pages, per user on signed-in routes
+([Configuration → Platform hardening](./configuration.md#platform-hardening)).
+It finds the client IP with the same `TRUST_PROXY` / `TRUSTED_PROXY_CIDRS`
+rule, so if every visitor of a public page is limited at once the cause is the
+same.
+
 **Fix:** behind a proxy, remove `TRUST_PROXY=false` from `.env` (or set it to
-`true`), add any public proxy ranges to `TRUSTED_PROXY_CIDRS`, and restart `web`. To clear the counters (for example after a
+`true`), add any public proxy ranges to `TRUSTED_PROXY_CIDRS`, and restart `web`
+and `api`. To clear the web counters (for example after a
 load test): `docker compose exec db psql -U calendium -d calendium -c 'DELETE FROM "rateLimit";'`.
+The API's counters live in memory and reset when `api` restarts.
 
 ---
 
@@ -370,6 +380,34 @@ that localhost rule in every environment, including development.
 `CORS_ALLOWED_ORIGINS`, and restart `web` and `api`. For a local dev web app
 pointed at a production server, `ALLOW_DEV_ORIGINS=true` works (and logs a
 warning).
+
+---
+
+## Out of memory (512m limit)
+
+**Symptom:** `api`, `worker` or `web` keeps restarting; `docker compose ps`
+shows `Restarting`, and `docker inspect --format '{{.State.OOMKilled}} {{.State.ExitCode}}' <container>`
+prints `true 137`. There is usually no error line in the service's own log.
+
+**Cause:** `docker-compose.yml` caps each app container at **512 MiB**
+(`deploy.resources.limits.memory: 512m`) so one runaway service cannot take the
+host down. Very large mailboxes or many concurrent syncs can exceed it.
+
+**Fix:** raise the limit for that service in a `docker-compose.override.yml`
+next to `docker-compose.yml` (Compose merges it automatically), then
+`docker compose up -d`:
+
+```yaml
+services:
+  worker:
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+```
+
+Check usage first with `docker stats --no-stream`. `db` and `caddy` have no
+limit.
 
 ---
 

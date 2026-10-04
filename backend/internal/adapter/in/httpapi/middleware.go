@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"runtime/debug"
@@ -34,10 +36,15 @@ func (s *server) requireAuth(next http.HandlerFunc) http.Handler {
 		}
 		identity, err := s.deps.Verifier.Verify(r.Context(), token)
 		if err != nil {
+			if errors.Is(err, domain.ErrUpstream) {
+				s.writeError(w, r, err) // 502: the JWKS endpoint is down, the token may well be fine
+				return
+			}
 			s.deps.Logger.Debug("token rejected", "error", err)
 			writeJSON(w, http.StatusUnauthorized, errorBody{Error: errorDetail{
-				Code:    "unauthorized",
-				Message: "invalid or expired access token",
+				Code:      "unauthorized",
+				Message:   "invalid or expired access token",
+				RequestID: requestIDFrom(r.Context()),
 			}})
 			return
 		}
@@ -46,6 +53,7 @@ func (s *server) requireAuth(next http.HandlerFunc) http.Handler {
 			s.writeError(w, r, err)
 			return
 		}
+		setLogUser(r.Context(), user.ID, "")
 		ctx := context.WithValue(r.Context(), userCtxKey{}, user)
 		next(w, r.WithContext(ctx))
 	})
@@ -63,35 +71,131 @@ func bearerToken(r *http.Request) (string, bool) {
 
 // --- request logging ---------------------------------------------------------
 
-type statusRecorder struct {
+// responseWriter is the ONE wrapper every middleware uses: it records the
+// status and byte count, forwards Flush for the SSE streams, and exposes
+// Unwrap so http.ResponseController keeps working through the stack.
+type responseWriter struct {
 	http.ResponseWriter
 	status int
+	bytes  int64
+	wrote  bool
 }
 
-func (w *statusRecorder) WriteHeader(code int) {
+func (w *responseWriter) WriteHeader(code int) {
+	if w.wrote {
+		return
+	}
+	w.wrote = true
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
 }
 
-// Flush forwards http.Flusher so streaming handlers (the SSE collab
-// stream) keep working through the logging wrapper.
-func (w *statusRecorder) Flush() {
+func (w *responseWriter) Write(b []byte) (int, error) {
+	w.wrote = true
+	n, err := w.ResponseWriter.Write(b)
+	w.bytes += int64(n)
+	return n, err
+}
+
+// Flush forwards http.Flusher so streaming handlers keep working.
+func (w *responseWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
 }
 
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (w *responseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// logFields is the mutable per-request record requireAuth/withActAs fill
+// in; the outer logger cannot see values stored in inner contexts, so the
+// pointer is placed in the context before the handler runs.
+type logFields struct {
+	UserID  string
+	ActorID string
+}
+
+type logFieldsKey struct{}
+
+// setLogUser records the effective user (principal under act-as) and the
+// real actor for the request log line. No-op without logRequests.
+func setLogUser(ctx context.Context, userID, actorID string) {
+	if f, ok := ctx.Value(logFieldsKey{}).(*logFields); ok {
+		f.UserID = userID
+		if actorID != "" {
+			f.ActorID = actorID
+		}
+	}
+}
+
+// redactPath replaces the secret-bearing segment of the tokenized public
+// routes (and the contact email) with [redacted]; used only when no route
+// pattern matched (404/405), since patterns never carry the token.
+func redactPath(path string) string {
+	for _, prefix := range []string{"/v1/shared/threads/", "/v1/public/polls/", "/v1/mail/contacts/"} {
+		rest, ok := strings.CutPrefix(path, prefix)
+		if !ok {
+			continue
+		}
+		if _, tail, hasTail := strings.Cut(rest, "/"); hasTail {
+			return prefix + "[redacted]/" + tail
+		}
+		return prefix + "[redacted]"
+	}
+	return path
+}
+
+// routeOf is the loggable route: the matched ServeMux pattern without its
+// method ("/v1/mail/threads/{id}"), or the redacted raw path when nothing
+// matched. Query strings are never included.
+func routeOf(r *http.Request) string {
+	if r.Pattern != "" {
+		if _, route, ok := strings.Cut(r.Pattern, " "); ok {
+			return route
+		}
+		return r.Pattern
+	}
+	return redactPath(r.URL.Path)
+}
+
 func (s *server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
-		s.deps.Logger.Info("http",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"status", rec.status,
-			"duration_ms", time.Since(start).Milliseconds(),
-		)
+		fields := &logFields{}
+		// This pointer is the one ServeMux mutates (r.Pattern), so keep it.
+		r = r.WithContext(context.WithValue(r.Context(), logFieldsKey{}, fields))
+		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+		completed := false
+		// Deferred so a panicking request still gets its access line; the
+		// panic keeps unwinding to recoverPanics, which answers 500.
+		defer func() {
+			status := rw.status
+			if !completed && !rw.wrote {
+				status = http.StatusInternalServerError // what recoverPanics will answer
+			}
+			route := routeOf(r)
+			attrs := []any{
+				"request_id", requestIDFrom(r.Context()),
+				"method", r.Method,
+				"route", route,
+				"status", status,
+				"duration_ms", time.Since(start).Milliseconds(),
+				"bytes", rw.bytes,
+				"client_ip", s.clientIP(r),
+				"user_id", fields.UserID,
+				"actor_id", fields.ActorID,
+			}
+			if !completed {
+				attrs = append(attrs, "panic", true)
+			}
+			level := slog.LevelInfo
+			if route == "/healthz" || route == "/readyz" {
+				level = slog.LevelDebug // probes run every few seconds
+			}
+			s.deps.Logger.Log(r.Context(), level, "http", attrs...)
+		}()
+		next.ServeHTTP(rw, r)
+		completed = true
 	})
 }
 
@@ -107,12 +211,19 @@ func (s *server) recoverPanics(next http.Handler) http.Handler {
 			if rec == http.ErrAbortHandler {
 				panic(rec) // let the server abort the connection as intended
 			}
+			// recoverPanics sits outside requestID, so the id is read back
+			// from the response header requestID already set.
+			id := requestIDFrom(r.Context())
+			if id == "" {
+				id = w.Header().Get("X-Request-Id")
+			}
 			s.deps.Logger.Error("panic recovered",
-				"method", r.Method, "path", r.URL.Path,
+				"method", r.Method, "route", routeOf(r), "request_id", id,
 				"panic", rec, "stack", string(debug.Stack()))
 			writeJSON(w, http.StatusInternalServerError, errorBody{Error: errorDetail{
-				Code:    "internal",
-				Message: "internal server error",
+				Code:      "internal",
+				Message:   "internal server error",
+				RequestID: id,
 			}})
 		}()
 		next.ServeHTTP(w, r)

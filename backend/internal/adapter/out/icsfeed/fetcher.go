@@ -26,6 +26,7 @@ import (
 	"net/netip"
 	"time"
 
+	"calendium/backend/internal/adapter/out/netguard"
 	"calendium/backend/internal/ics"
 	"calendium/backend/internal/port"
 )
@@ -97,7 +98,7 @@ func newFetcher(hc *http.Client, lookup lookupFunc) *Fetcher {
 // made to the vetted literal itself — a rebinding DNS server never gets a
 // second query to answer differently.
 func guardedDialContext(lookup lookupFunc) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	dialer := guardDialer()
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -130,15 +131,18 @@ func guardedDialContext(lookup lookupFunc) func(ctx context.Context, network, ad
 	}
 }
 
-// isPublicAddr reports whether ip is a global-unicast, non-private address.
-// Refused: loopback (127/8, ::1), RFC1918 (10/8, 172.16/12, 192.168/16),
-// link-local (169.254/16, fe80::/10), ULA (fc00::/7 via RFC 4193),
-// unspecified (0.0.0.0, ::), and multicast — including their IPv4-mapped
-// IPv6 forms (Unmap).
-func isPublicAddr(ip netip.Addr) bool {
-	ip = ip.Unmap()
-	return ip.IsGlobalUnicast() && !ip.IsPrivate()
+// guardDialer is the dialer under guardedDialContext: netguard.Control
+// re-checks the literal at the syscall layer, the same guarantee the
+// unsubscribe client has.
+func guardDialer() *net.Dialer {
+	return &net.Dialer{Timeout: 10 * time.Second, Control: netguard.Control}
 }
+
+// isPublicAddr delegates to the shared SSRF predicate (netguard.IsPublic:
+// loopback, RFC 1918, link-local, ULA, unspecified, multicast, CGNAT and
+// NAT64 refused, IPv4-mapped forms unmapped first); kept as a package
+// function so the dial guard reads the same as before.
+func isPublicAddr(ip netip.Addr) bool { return netguard.IsPublic(ip) }
 
 // redirectPolicy allows up to maxRedirects hops and refuses any https →
 // http downgrade: a feed subscribed over TLS must never be silently

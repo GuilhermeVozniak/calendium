@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"calendium/backend/internal/domain"
 )
@@ -220,6 +221,28 @@ func TestLogEmailPostsEngagementAndAssociation(t *testing.T) {
 	}
 	if want := "/crm/v3/objects/emails/555/associations/contacts/301/email_to_contact"; f.gotAssocPut != want {
 		t.Fatalf("association path = %q, want %q", f.gotAssocPut, want)
+	}
+}
+
+// TestLogEmailTruncatesLongBody: HubSpot caps a string property at 65,536
+// characters, and the API now accepts bodies up to 1 MiB, so a long body is
+// cut at the cap (on a rune boundary) instead of failing the log.
+func TestLogEmailTruncatesLongBody(t *testing.T) {
+	f := &fakeHubSpot{
+		searchBody: json.RawMessage(contactHit),
+		emailBody:  json.RawMessage(`{"id":"557"}`),
+	}
+	c := newTestClient(t, f)
+	long := strings.Repeat("é", maxHubSpotTextChars+10)
+	if err := c.LogEmail(context.Background(), "tok", domain.CrmEmailLog{
+		ContactEmail: "ada@northwind.com", BodyText: long, SentAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("LogEmail: %v", err)
+	}
+	props, _ := f.gotEmail["properties"].(map[string]any)
+	got, _ := props["hs_email_text"].(string)
+	if n := utf8.RuneCountInString(got); n != maxHubSpotTextChars || !utf8.ValidString(got) {
+		t.Fatalf("hs_email_text = %d runes (valid=%v), want %d", n, utf8.ValidString(got), maxHubSpotTextChars)
 	}
 }
 

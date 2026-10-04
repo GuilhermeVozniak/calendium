@@ -38,3 +38,39 @@ describe('deployment defaults for TRUST_PROXY', () => {
     expect(proxyTrustFromEnv({ TRUST_PROXY: 'true' }).proxies.check('172.18.0.5', 'ipv4')).toBe(true);
   });
 });
+
+describe('compose stop grace periods (whole-branch final review I1)', () => {
+  // Docker's 10 s default SIGKILLs the 30 s SHUTDOWN_TIMEOUT drain.
+  it.each([
+    ['api', '40s'],
+    ['worker', '40s'],
+    ['web', '15s'],
+  ])('%s sets stop_grace_period: %s', (name, grace) => {
+    const svc = composeService(read('docker-compose.yml'), name);
+    expect(svc).toMatch(new RegExp(`^ {4}stop_grace_period: ${grace}$`, 'm'));
+  });
+
+  it('SHUTDOWN_TIMEOUT in .env.example leaves room under the 40s api/worker grace', () => {
+    const line = read('.env.example')
+      .split('\n')
+      .find((l) => l.startsWith('SHUTDOWN_TIMEOUT='));
+    expect(line).toBe('SHUTDOWN_TIMEOUT=30s');
+  });
+});
+
+describe('shipped proxies never relay a client X-Request-Id (whole-branch final review M2)', () => {
+  // The API honours X-Request-Id from a trusted proxy, so the proxy must not
+  // pass through whatever the client sent.
+  it('the Caddyfile strips X-Request-Id on the api upstream', () => {
+    expect(read('deploy/caddy/Caddyfile')).toMatch(/reverse_proxy api:8080 \{\s*header_up -X-Request-Id\s*\}/);
+  });
+
+  it('every nginx api location sets X-Request-Id to $request_id', () => {
+    const conf = read('deploy/nginx/calendium.conf');
+    const apiBlocks = conf.split(/location \/v1\/ \{/).slice(1);
+    expect(apiBlocks).toHaveLength(2);
+    for (const block of apiBlocks) {
+      expect(block.slice(0, block.indexOf('}'))).toMatch(/proxy_set_header X-Request-Id \$request_id;/);
+    }
+  });
+});

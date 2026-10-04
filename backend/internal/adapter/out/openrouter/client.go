@@ -197,7 +197,9 @@ func (c *Client) complete(ctx context.Context, system, user string, jsonMode boo
 		err := fmt.Errorf("openrouter: http %d: %s", res.StatusCode, oe.Error.Message)
 		switch {
 		case res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden:
-			return "", "", fmt.Errorf("%w: %w", domain.ErrUnauthorized, err)
+			// The platform's own API key was rejected: an upstream failure
+			// (502), not the caller's authentication (401).
+			return "", "", fmt.Errorf("%w: %w", domain.ErrUpstream, err)
 		case res.StatusCode == http.StatusTooManyRequests:
 			return "", "", fmt.Errorf("%w: %w", domain.ErrRateLimited, err)
 		case res.StatusCode >= 500:

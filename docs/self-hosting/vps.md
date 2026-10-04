@@ -22,9 +22,9 @@ on a single private bridge network named `calendium`:
 | Service   | Image                       | Host port                  | Role |
 | --------- | --------------------------- | -------------------------- | ---- |
 | `db`      | `postgres:16-alpine`        | none (internal only)       | Postgres 16; data in the `db_data` named volume |
-| `api`     | `calendium-backend:latest`  | `${API_PORT:-8080}` → 8080 | Go HTTP API; **applies embedded SQL migrations at boot** |
+| `api`     | `calendium-backend:latest`  | `127.0.0.1:${API_PORT:-8080}` → 8080 | Go HTTP API; **applies embedded SQL migrations at boot** |
 | `worker`  | `calendium-backend:latest`  | none                       | Same image, `command: ["worker"]`; sync / scheduled-send / push loops |
-| `web`     | `calendium-web:latest`      | `${WEB_PORT:-3000}` → 3000 | Next.js 15 app (`node apps/web/server.js`) |
+| `web`     | `calendium-web:latest`      | `127.0.0.1:${WEB_PORT:-3000}` → 3000 | Next.js 15 app (`node apps/web/server.js`) |
 | `caddy`   | `caddy:2-alpine`            | 80, 443, 443/udp           | Reverse proxy + automatic HTTPS (compose profile `caddy`) |
 
 Caddy serves a **single domain**: it routes `/v1/*` and `/healthz` to the API
@@ -127,20 +127,15 @@ sudo ufw status verbose
 > ⚠️ **UFW does not filter Docker-published ports.** Docker inserts its own
 > iptables NAT rules that skip UFW's `INPUT` chain, so a `ports:` mapping is
 > reachable from the internet even with `ufw deny`. The bundled Postgres is safe
-> because the compose file **never publishes it**. But the `api` (`8080`) and `web`
-> (`3000`) services *are* published to the host by default. When you run behind
-> the Caddy profile (recommended), bind those to loopback so only Caddy — which
-> reaches them by service name on the internal network — can see them. Set this in
-> your `.env` (Step 6):
->
-> ```dotenv
-> API_PORT=127.0.0.1:8080
-> WEB_PORT=127.0.0.1:3000
-> ```
->
-> These interpolate into the compose `ports:` as `127.0.0.1:8080:8080` /
-> `127.0.0.1:3000:3000`, so Docker binds them to localhost only and the internet
-> can't reach them directly — Caddy on `:80/:443` is the sole public entrypoint.
+> because the compose file **never publishes it**. The `api` (`8080`) and `web`
+> (`3000`) services *are* published to the host, but on loopback only by
+> default: `API_BIND` / `WEB_BIND` default to `127.0.0.1`, so the compose
+> `ports:` resolve to `127.0.0.1:8080:8080` / `127.0.0.1:3000:3000`. Only Caddy —
+> which reaches them by service name on the internal network — can see them, and
+> Caddy on `:80/:443` is the sole public entrypoint. Leave `API_BIND` / `WEB_BIND`
+> at `127.0.0.1` (Step 6) and never set them to `0.0.0.0` on a public server.
+> (Older versions of this guide set `API_PORT=127.0.0.1:8080`; `API_PORT` /
+> `WEB_PORT` are plain port numbers now, so remove such lines.)
 
 ## Step 5 — Point DNS at the server
 
@@ -210,9 +205,9 @@ GOOGLE_CLIENT_SECRET=...
 MS_CLIENT_ID=...
 MS_CLIENT_SECRET=...
 
-# ── Keep the API/web off the public internet (see Step 4 note) ──
-API_PORT=127.0.0.1:8080
-WEB_PORT=127.0.0.1:3000
+# ── Keep the API/web off the public internet (the default; see Step 4 note) ──
+API_BIND=127.0.0.1
+WEB_BIND=127.0.0.1
 ```
 
 Notes that trip people up:
@@ -323,7 +318,7 @@ sudo systemctl enable --now calendium-compose.service
 | Symptom | Cause & fix |
 | --- | --- |
 | No certificate / Caddy retries forever | DNS not pointing at the box yet, or ports 80/443 blocked. Confirm `dig +short DOMAIN` returns your IP and both ports are open, then `docker compose restart caddy`. |
-| `curl` to `:8080`/`:3000` from another host works | You didn't set `API_PORT`/`WEB_PORT` to `127.0.0.1:*`. Docker bypasses UFW — bind to loopback (Step 4) and `docker compose up -d`. |
+| `curl` to `:8080`/`:3000` from another host works | `API_BIND`/`WEB_BIND` are set to `0.0.0.0` (or an older `.env` overrides the ports). Docker bypasses UFW — set both to `127.0.0.1` (Step 4) and `docker compose up -d`. |
 | API won't start, complains about the key | `TOKEN_ENCRYPTION_KEY` isn't exactly 64 hex chars. Regenerate with `make gen-secret`. |
 | Web shows the wrong API URL | `NEXT_PUBLIC_API_URL` is baked at build time — fix `.env` and `docker compose build web && docker compose up -d web`. |
 | Provider connect fails / "redirect not allowed" | Add your web origin to `OAUTH_ALLOWED_REDIRECT_URIS` **and** register the same redirect URIs in Google/Microsoft consoles. See [Providers](./providers.md). |

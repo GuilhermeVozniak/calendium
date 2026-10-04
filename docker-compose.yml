@@ -1,7 +1,7 @@
 # Calendium — self-hosting stack.
 #
 #   cp .env.example .env    # then fill it in (see the file's header)
-#   docker compose up -d --build                 # db + api + worker + web
+#   docker compose up -d --build                 # db + api + worker + web (api/web on 127.0.0.1 only)
 #   docker compose --profile caddy up -d --build # + automatic-HTTPS proxy
 #
 # All tunables come from .env (auto-loaded for ${...} interpolation below and
@@ -44,11 +44,42 @@ services:
       # from inside this network, so default the JWKS to the in-network web
       # service. Override in .env only if web is reachable at another URL.
       AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://web:3000/api/auth/jwks}
+      # The bundled Caddy (or your own proxy on this host) is the only peer
+      # that can reach the API, so its X-Forwarded-* headers are trusted:
+      # rate limits, logs and OAuth callback URLs see the real client. Same
+      # rule, default and TRUSTED_PROXY_CIDRS as web below. Set
+      # TRUST_PROXY=false in .env only when clients reach api:8080 directly
+      # (API_BIND=0.0.0.0 with no proxy in front).
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+    # SIGKILL deadline after SIGTERM. Must exceed SHUTDOWN_DRAIN_DELAY +
+    # SHUTDOWN_TIMEOUT (30s default) + the 5s event-listener wait, or the
+    # graceful drain is cut short; raise it if you raise those.
+    stop_grace_period: 40s
     depends_on:
       db:
         condition: service_healthy
     ports:
-      - "${API_PORT:-8080}:8080"
+      # Loopback by default so only a proxy on this host reaches the API
+      # (Docker published ports bypass UFW). LAN without a proxy: API_BIND=0.0.0.0.
+      - "${API_BIND:-127.0.0.1}:${API_PORT:-8080}:8080"
+    # Readiness instead of the image's /healthz liveness: 503 while the DB is
+    # unreachable or the process is draining. Docker health only gates startup
+    # ordering (caddy waits for api to be healthy) and shows up in
+    # `docker compose ps`; neither Caddy nor nginx reads it, so it does not
+    # take a draining api out of rotation.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 3
+    # 512m hard cap per app container (api, worker, web). An OOM kill shows as
+    # a restart loop with exit code 137; raise it for a service in a
+    # docker-compose.override.yml (docs/self-hosting/troubleshooting.md).
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     networks:
       - calendium
 
@@ -74,6 +105,12 @@ services:
     # The worker serves no HTTP; the image's /healthz check does not apply.
     healthcheck:
       disable: true
+    # Loops get SHUTDOWN_TIMEOUT to finish a pass; keep this above it.
+    stop_grace_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     networks:
       - calendium
 
@@ -110,8 +147,16 @@ services:
         condition: service_healthy
       api:
         condition: service_started
+    # Next.js finishes in-flight requests on SIGTERM; 15s before SIGKILL.
+    stop_grace_period: 15s
+    # Loopback by default, like api above. LAN without a proxy: WEB_BIND=0.0.0.0.
+    # The image's HEALTHCHECK (GET /api/health) applies as-is.
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-3000}:3000"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     networks:
       - calendium
 
@@ -122,15 +167,19 @@ services:
     profiles: ["caddy"]
     restart: unless-stopped
     depends_on:
-      - web
-      - api
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
       - "443:443/udp"
     environment:
       DOMAIN: ${DOMAIN:-localhost}
-      ACME_EMAIL: ${ACME_EMAIL:-}
+      # The Caddyfile reads the whole directive line: `email <address>` when
+      # ACME_EMAIL is set, nothing when it is blank.
+      ACME_EMAIL_LINE: ${ACME_EMAIL:+email ${ACME_EMAIL}}
     volumes:
       - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

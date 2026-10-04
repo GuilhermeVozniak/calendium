@@ -63,21 +63,28 @@ const (
 )
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	if err := run(logger); err != nil {
-		logger.Error("worker: fatal", "error", err)
+	// run installs the configured logger as the slog default once config has
+	// loaded, so a fatal error after that point uses LOG_FORMAT/LOG_LEVEL.
+	if err := run(); err != nil {
+		slog.Error("worker: fatal", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(logger *slog.Logger) error {
+func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := config.FromEnv()
+	cfg, warnings, err := config.FromEnv()
 	if err != nil {
 		return err
 	}
+	logger := config.NewLogger(os.Stderr, cfg.Log)
+	slog.SetDefault(logger)
+	for _, w := range warnings {
+		logger.Warn(w)
+	}
+	logger.Info("worker: config", cfg.Summary()...)
 	if err := cfg.ValidateCloudBilling(); err != nil {
 		return err
 	}
@@ -140,6 +147,7 @@ func run(logger *slog.Logger) error {
 
 	var pushSender port.PushSender
 	if cfg.Push != (config.Push{}) {
+		// hc serves APNs/FCM; Web Push dials through its own netguard client.
 		pushSender = push.NewDispatcher(cfg.Push, hc)
 	}
 
@@ -397,7 +405,15 @@ func run(logger *slog.Logger) error {
 		"billing_reconcile_enabled", billingSvc != nil,
 		"billing_reconcile_interval", cfg.Billing.ReconcileInterval.String(),
 		"providers", len(mailProviders))
-	wg.Wait()
+
+	<-ctx.Done()
+	// Restore default signal handling: a second SIGINT/SIGTERM force-kills.
+	stop()
+	logger.Info("worker: shutdown requested; waiting for loops", "timeout", cfg.Shutdown.Timeout.String())
+	if !waitWithTimeout(&wg, cfg.Shutdown.Timeout) {
+		logger.Error("worker: shutdown timed out", "timeout", cfg.Shutdown.Timeout.String())
+		return errShutdownTimeout
+	}
 	logger.Info("worker: shut down cleanly")
 	return nil
 }

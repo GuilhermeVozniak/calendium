@@ -146,6 +146,29 @@ bunx @better-auth/cli generate
   `TRUST_PROXY=false` only if `web:3000` is exposed directly to a LAN with no
   proxy in front.
 
+## Platform hardening release
+
+- **`api` and `web` now publish on `127.0.0.1` only.** A proxy on the same
+  host (the bundled Caddy profile, nginx, Traefik) keeps working unchanged. If
+  clients reach `:3000` / `:8080` directly over the LAN, add
+  `API_BIND=0.0.0.0`, `WEB_BIND=0.0.0.0` and `TRUST_PROXY=false` to `.env`. If
+  you followed the old advice of `API_PORT=127.0.0.1:8080` /
+  `WEB_PORT=127.0.0.1:3000`, change them back to plain port numbers.
+- **The API now honours `TRUST_PROXY` too.** Compose sets
+  `${TRUST_PROXY:-true}` on `api` as it already did on `web`, with the same
+  `TRUSTED_PROXY_CIDRS`, so per-IP limits on public pages and the request logs
+  see the real client
+  ([Security → Client IP](./security.md#client-ip-trust_proxy-and-trusted_proxy_cidrs)).
+- **Signed-in API calls are rate limited per user** (`RATE_LIMIT_*`, see
+  [Configuration → Platform hardening](./configuration.md#platform-hardening));
+  the defaults are well above interactive use.
+- **`caddy` waits for `api` and `web` to be healthy** (`/readyz` and
+  `/api/health`), so the first `up` after a rebuild takes a few seconds longer.
+- **Boot checks are stricter.** `BETTER_AUTH_SECRET` shorter than 32 bytes
+  stops `web`; a default `DATABASE_URL` password (`change-me-please` /
+  `calendium`) stops the API in cloud mode and logs a warning when
+  self-hosted.
+
 ---
 
 ## Keep migrations backward-compatible
@@ -189,6 +212,19 @@ This is exactly why step 1 (`make db-backup`) is non-negotiable.
 - **Keep `api` at a single replica during the rollout.** Migrations are
   serialized by the advisory lock, but a single migrating replica keeps behavior
   simplest.
+- **Rate limits and shutdown assume that single `api` replica.** Limits are
+  per process (`RATE_LIMIT_*`, see [Configuration](./configuration.md#platform-hardening)),
+  so two replicas double every budget. On stop the API answers `503` on
+  `/readyz`, waits `SHUTDOWN_DRAIN_DELAY`, then gives in-flight requests up to
+  `SHUTDOWN_TIMEOUT` (default 30 s) before closing; SSE clients reconnect on
+  their own. Compose sends SIGKILL after `stop_grace_period` (40 s for `api`
+  and `worker`, 15 s for `web`), so keep `SHUTDOWN_DRAIN_DELAY +
+  SHUTDOWN_TIMEOUT` plus about 5 s below 40 s, or raise `stop_grace_period`
+  in a `docker-compose.override.yml` when you raise them.
+- **Watch the drain in the logs** during `make self-host-up`:
+  `api: shutdown requested; draining` … `api: shut down cleanly`. A
+  `worker: shutdown timed out` line means a loop ignored its cancelled
+  context past `SHUTDOWN_TIMEOUT` — the worker exits 1 and compose restarts it.
 - **The `worker` must stay at exactly one replica** regardless of upgrades —
   it's a continuous poller (Gmail `historyId` / Graph delta / scheduled send).
   Two workers would double-sync.

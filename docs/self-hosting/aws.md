@@ -70,7 +70,7 @@ DATABASE_URL=postgres://calendium:<pw>@<endpoint>:5432/calendium?sslmode=verify-
 (Mount it via a small override — see the `volumes:` in the external-DB override
 below.) Keep the other required vars (`SELF_HOSTED=true`, `TOKEN_ENCRYPTION_KEY`,
 `DOMAIN`, `ACME_EMAIL`, Better Auth (`BETTER_AUTH_SECRET`/`BETTER_AUTH_URL`),
-provider OAuth, and the loopback `API_PORT`/`WEB_PORT`) exactly as in the
+provider OAuth, and the loopback `API_BIND`/`WEB_BIND` defaults) exactly as in the
 [VPS guide](./vps.md#step-6--clone-and-configure).
 
 ### A6. Skip the bundled Postgres
@@ -185,14 +185,25 @@ OAuth vars; the `web` task reads `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, and
 ### B4. Three ECS services on Fargate
 
 - **`api`** — image `calendium/backend`, container port **8080**, registered to an
-  ALB target group with health check `GET /healthz`. Keep it at **1 task during a
+  ALB target group with health check `GET /readyz` (`503` while the database is
+  unreachable or the task is draining for shutdown, so the ALB stops routing to
+  it; `/healthz` is liveness only). Keep it at **1 task during a
   rollout** so migrations apply cleanly (or run a one-off `RunTask` of the api
-  image before scaling).
+  image before scaling). Set the container's `stopTimeout` above
+  `SHUTDOWN_DRAIN_DELAY + SHUTDOWN_TIMEOUT` + 5 s (40 s with the defaults) so
+  ECS does not SIGKILL a draining task.
 - **`worker`** — same image, **command override `["worker"]`**, `desiredCount = 1`,
   **no load balancer**, **do not autoscale**. It's a continuous poller — exactly
   one replica, always on.
 - **`web`** — image `calendium/web`, container port **3000**, its own target group
-  (health check `/`).
+  (health check `GET /api/health`).
+- **Client IP (both `api` and `web`)** — outside Compose `TRUST_PROXY` defaults
+  to `false`, which would put every client in the ALB's few rate-limit buckets.
+  Set `TRUST_PROXY=true` and `TRUSTED_PROXY_CIDRS=<your VPC CIDR>` (for example
+  `10.0.0.0/16`) in both task definitions: ALB nodes connect from private
+  addresses inside the VPC and append the client to `X-Forwarded-For`. Check
+  one api request log line: its client IP must be yours, not a `10.x` address.
+  See [Security → Client IP](./security.md#client-ip-trust_proxy-and-trusted_proxy_cidrs).
 
 ### B5. ALB + ACM + Route 53
 

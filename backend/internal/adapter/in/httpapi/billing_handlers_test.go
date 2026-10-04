@@ -201,8 +201,8 @@ func TestHandlePaddleWebhook(t *testing.T) {
 		h := newHarness(t)
 		big := bytes.Repeat([]byte("a"), (1<<20)+1024)
 		rec := post(h, big, "ts=1;h1=ab")
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400", rec.Code)
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413", rec.Code)
 		}
 		if h.billing.webhookCalls != 0 {
 			t.Fatalf("HandleWebhook called = %d, want 0", h.billing.webhookCalls)

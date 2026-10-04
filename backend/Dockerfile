@@ -7,7 +7,8 @@
 # .dockerignore applies:  docker build -f backend/Dockerfile .
 
 # ── build: compile static api + worker binaries ─────────────────────────────
-FROM golang:1.26-alpine AS build
+# golang:1.26-alpine resolved 2026-10-04 (docker buildx imagetools inspect)
+FROM golang:1.26-alpine@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS build
 WORKDIR /src
 ENV CGO_ENABLED=0 GOOS=linux GOFLAGS=-trimpath
 
@@ -20,7 +21,8 @@ RUN go build -ldflags="-s -w" -o /out/api ./cmd/api \
  && go build -ldflags="-s -w" -o /out/worker ./cmd/worker
 
 # ── runtime: minimal, non-root image running either binary ──────────────────
-FROM alpine:3.20
+# alpine:3.22 resolved 2026-10-04 (docker buildx imagetools inspect)
+FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 RUN apk add --no-cache ca-certificates wget \
  && addgroup -S calendium && adduser -S -G calendium calendium
 

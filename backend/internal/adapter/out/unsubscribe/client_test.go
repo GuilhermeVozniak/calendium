@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -108,5 +109,26 @@ func TestPostOneClickBlocksPrivateAndLoopbackAddresses(t *testing.T) {
 	// guard must reject before any connection attempt.
 	if err := New().PostOneClick(context.Background(), "https://127.0.0.1:1/x"); err == nil {
 		t.Fatal("loopback address accepted, want rejection")
+	}
+}
+
+func TestPostOneClickBlocksCGNATAndNAT64(t *testing.T) {
+	// The error must come from the guard itself: an unroutable target would
+	// fail anyway (eventually), so a bare err != nil proves nothing.
+	for _, target := range []string{"https://100.64.0.1:1/x", "https://[64:ff9b::7f00:1]:1/x", "https://[64:ff9b:1::a00:5]:1/x"} {
+		if err := New().PostOneClick(context.Background(), target); err == nil || !strings.Contains(err.Error(), "netguard") {
+			t.Fatalf("%s: err = %v, want a netguard refusal", target, err)
+		}
+	}
+}
+
+func TestBlockPrivateNetworksDelegatesToNetguard(t *testing.T) {
+	for _, addr := range []string{"100.64.0.1:443", "[64:ff9b::7f00:1]:443", "224.0.0.1:443"} {
+		if err := blockPrivateNetworks("tcp", addr, nil); err == nil {
+			t.Errorf("blockPrivateNetworks(%q) = nil, want refusal", addr)
+		}
+	}
+	if err := blockPrivateNetworks("tcp", "93.184.216.34:443", nil); err != nil {
+		t.Errorf("public address refused: %v", err)
 	}
 }

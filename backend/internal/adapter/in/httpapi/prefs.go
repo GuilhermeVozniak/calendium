@@ -21,6 +21,12 @@ func (s *server) handleUpdatePrefs(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.list("splitOrder", len(in.SplitOrder))
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	prefs, err := s.deps.Prefs.UpdatePrefs(r.Context(), userFrom(r).ID, in)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -43,6 +49,17 @@ func (s *server) handleGetCalendarPrefs(w http.ResponseWriter, r *http.Request) 
 func (s *server) handleUpdateCalendarPrefs(w http.ResponseWriter, r *http.Request) {
 	var patch domain.CalendarPrefsPatch
 	if err := decodeJSON(w, r, &patch); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.optTitle("timeZone", patch.TimeZone)
+	if patch.WorkDays != nil {
+		fc.list("workDays", len(*patch.WorkDays))
+	}
+	fc.optText("focusDeclineMessage", patch.FocusDeclineMessage)
+	fc.optText("oooDeclineMessage", patch.OOODeclineMessage)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}

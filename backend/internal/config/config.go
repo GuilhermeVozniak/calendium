@@ -6,7 +6,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	netmail "net/mail"
+	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -27,6 +30,55 @@ type HTTP struct {
 	// only the local dev servers. backend/.env.example (run-the-binary
 	// template) sets it true; the production root .env leaves it blank.
 	AllowDevOrigins bool
+	// TrustProxy (TRUST_PROXY, default false) makes X-Forwarded-* from peers
+	// inside TrustedProxyCIDRs authoritative for client IP, scheme and host.
+	TrustProxy bool
+	// TrustedProxyCIDRs (TRUSTED_PROXY_CIDRS, comma-separated) is the proxy
+	// allowlist; defaults to DefaultTrustedProxyCIDRs. A bad entry is a boot
+	// error.
+	TrustedProxyCIDRs []netip.Prefix
+}
+
+// DefaultTrustedProxyCIDRs is the TRUSTED_PROXY_CIDRS default: loopback,
+// RFC 1918 and IPv6 ULA — "the proxy is on this host or this private
+// network". Identical to the web tier's default (apps/web).
+var DefaultTrustedProxyCIDRs = []string{
+	"127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7",
+}
+
+// RateLimits are the per-class request budgets per minute (RATE_LIMIT_*);
+// unset means the default, 0 disables a class, and all five 0 disables API
+// rate limiting. Mirrors httpapi.RateLimits (the composition root copies
+// field by field so httpapi never imports config).
+type RateLimits struct {
+	PublicReadPerMin  int // RATE_LIMIT_PUBLIC_READ_PER_MIN (default 60)
+	PublicWritePerMin int // RATE_LIMIT_PUBLIC_WRITE_PER_MIN (default 5)
+	UserPerMin        int // RATE_LIMIT_USER_PER_MIN (default 600)
+	MutateHeavyPerMin int // RATE_LIMIT_MUTATE_HEAVY_PER_MIN (default 30)
+	SearchPerMin      int // RATE_LIMIT_SEARCH_PER_MIN (default 120)
+}
+
+// DefaultRateLimits are the RATE_LIMIT_* defaults (the spec table).
+func DefaultRateLimits() RateLimits {
+	return RateLimits{PublicReadPerMin: 60, PublicWritePerMin: 5, UserPerMin: 600, MutateHeavyPerMin: 30, SearchPerMin: 120}
+}
+
+// Disabled reports whether every class is 0, i.e. API rate limiting is off.
+func (r RateLimits) Disabled() bool { return r == RateLimits{} }
+
+// Shutdown tunes graceful shutdown for api and worker.
+type Shutdown struct {
+	// Timeout (SHUTDOWN_TIMEOUT, default 30s) bounds in-flight work.
+	Timeout time.Duration
+	// DrainDelay (SHUTDOWN_DRAIN_DELAY, default 0s) keeps /readyz at 503
+	// before listeners close so a load balancer can stop routing.
+	DrainDelay time.Duration
+}
+
+// Log selects the slog handler (LOG_FORMAT json|text, LOG_LEVEL).
+type Log struct {
+	Format string
+	Level  slog.Level
 }
 
 // DB configures Postgres.
@@ -280,14 +332,36 @@ type Config struct {
 	Weather    Weather
 	Maps       Maps
 	SMTP       SMTP
+	RateLimits RateLimits
+	Shutdown   Shutdown
+	Log        Log
+}
+
+type options struct{ requirePublicWebURL bool }
+
+// Option tunes FromEnv per binary.
+type Option func(*options)
+
+// RequirePublicWebURL makes an empty PUBLIC_WEB_URL/APP_URL a hard error in
+// both modes (cmd/api: GET /v1/instance must advertise an absolute Better
+// Auth base URL). Without it the worker gets a cloud error / self-host
+// warning.
+func RequirePublicWebURL() Option {
+	return func(o *options) { o.requirePublicWebURL = true }
 }
 
 // FromEnv builds a Config from environment variables. DATABASE_URL and a
 // valid TOKEN_ENCRYPTION_KEY are required; everything else is optional so
 // partial deployments (e.g. no push) still boot, with the affected adapters
-// left unwired by the composition root.
-func FromEnv() (Config, error) {
+// left unwired by the composition root. The second result carries
+// non-fatal warnings (self-host only) the caller logs at startup.
+func FromEnv(opts ...Option) (Config, []string, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	var errs []error
+	var warnings []string
 
 	cfg := Config{
 		DB: DB{URL: os.Getenv("DATABASE_URL")},
@@ -346,8 +420,19 @@ func FromEnv() (Config, error) {
 		}
 	}
 
+	// SELF_HOSTED is parsed first: the default-password and PUBLIC_WEB_URL
+	// rules below are errors in cloud mode and warnings on self-host.
+	cfg.Instance.SelfHosted = envBool("SELF_HOSTED", &errs)
+
 	if cfg.DB.URL == "" {
 		errs = append(errs, errors.New("DATABASE_URL is required"))
+	} else if usesDefaultDBPassword(cfg.DB.URL) {
+		const msg = "DATABASE_URL uses a default password; set POSTGRES_PASSWORD"
+		if cfg.Instance.SelfHosted {
+			warnings = append(warnings, msg)
+		} else {
+			errs = append(errs, errors.New(msg))
+		}
 	}
 
 	// Derive the Better Auth JWKS URL and issuer from BETTER_AUTH_URL unless
@@ -430,7 +515,16 @@ func FromEnv() (Config, error) {
 	if cfg.Instance.AppBaseURL == "" {
 		cfg.Instance.AppBaseURL = cfg.Instance.PublicWebURL
 	}
-	cfg.Instance.SelfHosted = envBool("SELF_HOSTED", &errs)
+	if cfg.Instance.PublicWebURL == "" {
+		switch {
+		case o.requirePublicWebURL:
+			errs = append(errs, errors.New("PUBLIC_WEB_URL (or APP_URL) is required: GET /v1/instance must advertise an absolute Better Auth base URL"))
+		case cfg.Instance.SelfHosted:
+			warnings = append(warnings, "PUBLIC_WEB_URL (or APP_URL) is not set; emailed links and GET /v1/instance need it")
+		default:
+			errs = append(errs, errors.New("PUBLIC_WEB_URL (or APP_URL) is required in cloud mode"))
+		}
+	}
 
 	// Transactional email (piece 2). Port/secure/from are validated even when
 	// SMTP_HOST is blank so a typo surfaces at boot; the cloud-mode
@@ -492,10 +586,355 @@ func FromEnv() (Config, error) {
 		}
 	}
 
+	parseHardening(&cfg, &errs)
+
 	if len(errs) > 0 {
-		return Config{}, errors.Join(errs...)
+		return Config{}, nil, errors.Join(errs...)
 	}
-	return cfg, nil
+	return cfg, warnings, nil
+}
+
+// parseHardening reads the platform-hardening knobs: proxy trust, rate
+// limits, shutdown timing and logging.
+func parseHardening(cfg *Config, errs *[]error) {
+	cfg.HTTP.TrustProxy = envBool("TRUST_PROXY", errs)
+	if ps, err := ParseTrustedProxyCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS")); err != nil {
+		*errs = append(*errs, err)
+	} else {
+		cfg.HTTP.TrustedProxyCIDRs = ps
+	}
+
+	// Unset (or blank) means the default; 0 disables that class.
+	cfg.RateLimits = DefaultRateLimits()
+	for _, rl := range []struct {
+		name string
+		dst  *int
+	}{
+		{"RATE_LIMIT_PUBLIC_READ_PER_MIN", &cfg.RateLimits.PublicReadPerMin},
+		{"RATE_LIMIT_PUBLIC_WRITE_PER_MIN", &cfg.RateLimits.PublicWritePerMin},
+		{"RATE_LIMIT_USER_PER_MIN", &cfg.RateLimits.UserPerMin},
+		{"RATE_LIMIT_MUTATE_HEAVY_PER_MIN", &cfg.RateLimits.MutateHeavyPerMin},
+		{"RATE_LIMIT_SEARCH_PER_MIN", &cfg.RateLimits.SearchPerMin},
+	} {
+		if v := os.Getenv(rl.name); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 {
+				*errs = append(*errs, fmt.Errorf("%s must be a non-negative integer (0 disables), got %q", rl.name, v))
+			} else {
+				*rl.dst = n
+			}
+		}
+	}
+
+	cfg.Shutdown = Shutdown{Timeout: 30 * time.Second}
+	for _, d := range []struct {
+		name string
+		dst  *time.Duration
+	}{
+		{"SHUTDOWN_TIMEOUT", &cfg.Shutdown.Timeout},
+		{"SHUTDOWN_DRAIN_DELAY", &cfg.Shutdown.DrainDelay},
+	} {
+		if v := os.Getenv(d.name); v != "" {
+			dur, err := time.ParseDuration(v)
+			if err != nil || dur < 0 {
+				*errs = append(*errs, fmt.Errorf("%s must be a non-negative Go duration (e.g. 30s), got %q", d.name, v))
+			} else {
+				*d.dst = dur
+			}
+		}
+	}
+
+	cfg.Log = Log{Format: "json", Level: slog.LevelInfo}
+	if v := os.Getenv("LOG_FORMAT"); v != "" {
+		switch v {
+		case "json", "text":
+			cfg.Log.Format = v
+		default:
+			*errs = append(*errs, fmt.Errorf("LOG_FORMAT must be json or text, got %q", v))
+		}
+	}
+	if v := os.Getenv("LOG_LEVEL"); v != "" {
+		switch strings.ToLower(v) {
+		case "debug":
+			cfg.Log.Level = slog.LevelDebug
+		case "info":
+			cfg.Log.Level = slog.LevelInfo
+		case "warn":
+			cfg.Log.Level = slog.LevelWarn
+		case "error":
+			cfg.Log.Level = slog.LevelError
+		default:
+			*errs = append(*errs, fmt.Errorf("LOG_LEVEL must be debug|info|warn|error, got %q", v))
+		}
+	}
+}
+
+// ParseTrustedProxyCIDRs parses TRUSTED_PROXY_CIDRS exactly like the web
+// tier (apps/web/lib/client-ip.ts proxyTrustFromEnv): comma-separated,
+// whitespace trimmed, blank entries ignored (none left = the defaults); an
+// entry is an IP (a single host, /32 or /128) or IP/bits with decimal bits
+// no larger than the family allows. Addresses are lower-cased, a zone is
+// dropped and IPv4-mapped IPv6 is unmapped. Anything else is an error.
+func ParseTrustedProxyCIDRs(v string) ([]netip.Prefix, error) {
+	var entries []string
+	for _, e := range strings.Split(v, ",") {
+		if e = strings.TrimSpace(e); e != "" {
+			entries = append(entries, e)
+		}
+	}
+	if len(entries) == 0 {
+		entries = DefaultTrustedProxyCIDRs
+	}
+	out := make([]netip.Prefix, 0, len(entries))
+	for _, e := range entries {
+		p, ok := parseProxyEntry(e)
+		if !ok {
+			return nil, fmt.Errorf("TRUSTED_PROXY_CIDRS: %q is not a valid IP or CIDR", e)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func parseProxyEntry(e string) (netip.Prefix, bool) {
+	addrText, bitsText, hasBits := strings.Cut(e, "/")
+	addrText = strings.ToLower(strings.TrimSpace(addrText))
+	if i := strings.IndexByte(addrText, '%'); i >= 0 {
+		addrText = addrText[:i]
+	}
+	addr, err := netip.ParseAddr(addrText)
+	if err != nil {
+		return netip.Prefix{}, false
+	}
+	addr = addr.Unmap()
+	bits := addr.BitLen()
+	if hasBits {
+		if bitsText == "" || strings.Trim(bitsText, "0123456789") != "" {
+			return netip.Prefix{}, false // also rejects a second '/'
+		}
+		n, err := strconv.Atoi(bitsText)
+		if err != nil || n > bits {
+			return netip.Prefix{}, false
+		}
+		bits = n
+	}
+	return netip.PrefixFrom(addr, bits).Masked(), true
+}
+
+// defaultDBPasswords are the shipped placeholder passwords (.env.example,
+// compose) that must never reach a cloud deployment.
+var defaultDBPasswords = map[string]bool{"change-me-please": true, "calendium": true}
+
+// usesDefaultDBPassword reports whether any password in the DSN — URL
+// userinfo, a password= query parameter or a libpq keyword/value pair — is
+// a shipped default.
+func usesDefaultDBPassword(dsn string) bool {
+	for _, pw := range dsnPasswords(dsn) {
+		if defaultDBPasswords[pw] {
+			return true
+		}
+	}
+	return false
+}
+
+// dsnPasswords returns every password value carried by a URL or libpq
+// keyword/value DSN; unparseable input yields none.
+func dsnPasswords(dsn string) []string {
+	var out []string
+	if strings.Contains(dsn, "://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return nil
+		}
+		if pw, ok := u.User.Password(); ok {
+			out = append(out, pw)
+		}
+		for k, vs := range u.Query() {
+			if strings.EqualFold(k, "password") {
+				out = append(out, vs...)
+			}
+		}
+		return out
+	}
+	pairs, ok := parseKeywordDSN(dsn)
+	if !ok {
+		return nil
+	}
+	for _, p := range pairs {
+		if strings.EqualFold(p.key, "password") {
+			out = append(out, p.value)
+		}
+	}
+	return out
+}
+
+// isSecretKey matches the DSN parameters whose value is a secret
+// (password, sslpassword, …).
+func isSecretKey(k string) bool { return strings.Contains(strings.ToLower(k), "password") }
+
+// dsnPair is one libpq keyword/value pair; start:end is the value's span in
+// the source string, quotes included.
+type dsnPair struct {
+	key, value string
+	start, end int
+}
+
+// parseKeywordDSN tokenises a libpq keyword/value connection string
+// ("host=db password='a b'"): spaces around '=' allowed, values plain (a
+// backslash escapes the next byte) or single-quoted (\' and \\ escapes).
+// ok is false on anything libpq itself would reject.
+func parseKeywordDSN(s string) (pairs []dsnPair, ok bool) {
+	isSpace := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v' }
+	i, n := 0, len(s)
+	skip := func() {
+		for i < n && isSpace(s[i]) {
+			i++
+		}
+	}
+	for skip(); i < n; skip() {
+		ks := i
+		for i < n && s[i] != '=' && !isSpace(s[i]) {
+			i++
+		}
+		key := s[ks:i]
+		skip()
+		if key == "" || i >= n || s[i] != '=' {
+			return nil, false
+		}
+		i++
+		skip()
+		vs := i
+		var val strings.Builder
+		if i < n && s[i] == '\'' {
+			i++
+			closed := false
+			for i < n {
+				if s[i] == '\\' && i+1 < n {
+					val.WriteByte(s[i+1])
+					i += 2
+					continue
+				}
+				if s[i] == '\'' {
+					i++
+					closed = true
+					break
+				}
+				val.WriteByte(s[i])
+				i++
+			}
+			if !closed {
+				return nil, false
+			}
+		} else {
+			for i < n && !isSpace(s[i]) {
+				if s[i] == '\\' && i+1 < n {
+					i++
+				}
+				val.WriteByte(s[i])
+				i++
+			}
+		}
+		pairs = append(pairs, dsnPair{key: key, value: val.String(), start: vs, end: i})
+	}
+	return pairs, len(pairs) > 0
+}
+
+// RedactURL renders a DSN so it can be logged: every password — URL
+// userinfo, a password-like query parameter, or a libpq keyword/value pair
+// (plain or quoted) — becomes ***. Input that does not parse is replaced
+// wholesale: an unparseable DSN may still contain a secret.
+func RedactURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		pairs, ok := parseKeywordDSN(raw)
+		if !ok {
+			return "[unparseable dsn]"
+		}
+		out := raw
+		for i := len(pairs) - 1; i >= 0; i-- { // back to front keeps spans valid
+			if p := pairs[i]; isSecretKey(p.key) {
+				out = out[:p.start] + "***" + out[p.end:]
+			}
+		}
+		return out
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "[unparseable url]"
+	}
+	if u.User != nil {
+		if _, has := u.User.Password(); has {
+			u.User = url.UserPassword(u.User.Username(), "***")
+		}
+	}
+	if u.RawQuery != "" {
+		params := strings.Split(u.RawQuery, "&")
+		for i, p := range params {
+			k, _, _ := strings.Cut(p, "=")
+			if dk, err := url.QueryUnescape(k); err != nil || isSecretKey(dk) {
+				params[i] = k + "=***"
+			}
+		}
+		u.RawQuery = strings.Join(params, "&")
+	}
+	// url.URL.String percent-encodes '*' in userinfo; un-escape the marker so
+	// the log line reads user:***@host.
+	return strings.Replace(u.String(), ":%2A%2A%2A@", ":***@", 1)
+}
+
+// loggableURL is a non-secret URL (public web/API origin, JWKS) as the boot
+// summary logs it: userinfo, query and fragment dropped.
+func loggableURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "[unparseable url]"
+	}
+	u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
+	return u.String()
+}
+
+// Summary is the one startup log line: names, booleans and redacted URLs
+// only — never a secret value. Passed straight to slog as key/value pairs.
+func (c Config) Summary() []any {
+	return []any{
+		"self_hosted", c.Instance.SelfHosted,
+		"instance_name", c.Instance.Name,
+		"http_addr", c.HTTP.Addr,
+		"database", RedactURL(c.DB.URL),
+		"public_web_url", loggableURL(c.Instance.PublicWebURL),
+		"public_api_url", loggableURL(c.Instance.PublicAPIURL),
+		"jwks_url", loggableURL(c.Auth.JWKSURL),
+		"trust_proxy", c.HTTP.TrustProxy,
+		"trusted_proxy_cidrs", len(c.HTTP.TrustedProxyCIDRs),
+		"allow_dev_origins", c.HTTP.AllowDevOrigins,
+		"rate_limit_public_read_per_min", c.RateLimits.PublicReadPerMin,
+		"rate_limit_public_write_per_min", c.RateLimits.PublicWritePerMin,
+		"rate_limit_user_per_min", c.RateLimits.UserPerMin,
+		"rate_limit_mutate_heavy_per_min", c.RateLimits.MutateHeavyPerMin,
+		"rate_limit_search_per_min", c.RateLimits.SearchPerMin,
+		"shutdown_timeout", c.Shutdown.Timeout.String(),
+		"shutdown_drain_delay", c.Shutdown.DrainDelay.String(),
+		"log_format", c.Log.Format,
+		"google", c.Google.ClientID != "",
+		"apple", c.Apple.ClientID != "",
+		"microsoft", c.Microsoft.ClientID != "",
+		"todoist", c.Todoist.ClientID != "",
+		"hubspot", c.HubSpot.ClientID != "",
+		"billing", c.Paddle.APIKey != "",
+		"paddle_env", c.Paddle.Env,
+		"email", c.SMTP.Configured(),
+		"ai", c.OpenRouter.APIKey != "",
+		"push_apns", c.Push.APNs.KeyP8 != "",
+		"push_fcm", c.Push.FCM.ServiceAccountJSON != "",
+		"push_webpush", c.Push.VAPID.PublicKey != "" && c.Push.VAPID.PrivateKey != "",
+		"weather", c.Weather.BaseURL != "",
+		"maps", c.Maps.NominatimBaseURL != "",
+	}
 }
 
 // parseBool is the boolean grammar every tier shares (the web mirrors it in

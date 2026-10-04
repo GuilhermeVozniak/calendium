@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -353,4 +354,37 @@ func TestSharedThreadStreamFailsClosedOnBadToken(t *testing.T) {
 	if h.events.activeSubscribers() != 0 {
 		t.Fatal("subscribed before authorization")
 	}
+}
+
+// TestSharedThreadStreamEndsOnDrain: the public shared-thread SSE stream
+// also returns when the server starts draining.
+func TestSharedThreadStreamEndsOnDrain(t *testing.T) {
+	h, f := collabHarness(t)
+	f.resolveID = "sh1"
+	drain := make(chan struct{})
+	h.deps.Drain = drain
+	srv := httptest.NewServer(h.handler())
+	defer srv.Close()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/v1/shared/threads/tok123/stream", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	waitFor(t, "subscription", func() bool { return h.events.activeSubscribers() == 1 })
+	close(drain)
+	done := make(chan error, 1)
+	go func() {
+		_, err := io.ReadAll(resp.Body)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("stream ended with error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shared stream did not end after drain")
+	}
+	waitFor(t, "unsubscribe", func() bool { return h.events.activeSubscribers() == 0 })
 }

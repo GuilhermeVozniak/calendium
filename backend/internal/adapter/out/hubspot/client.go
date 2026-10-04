@@ -242,6 +242,26 @@ func (c *Client) dealsForContact(ctx context.Context, accessToken, contactID str
 // LogEmail implements port.CrmProvider: creates an email engagement object
 // and associates it with the contact resolved by email. Logging an email is
 // always an explicit user action — this adapter is never called in bulk.
+// maxHubSpotTextChars is HubSpot's limit on a string property value
+// (65,536 characters); a longer email body is cut to it rather than
+// failing the log.
+const maxHubSpotTextChars = 65536
+
+// truncateRunes returns s cut to at most n runes, on a rune boundary.
+func truncateRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	i := 0
+	for j := range s {
+		if i == n {
+			return s[:j]
+		}
+		i++
+	}
+	return s
+}
+
 func (c *Client) LogEmail(ctx context.Context, accessToken string, log domain.CrmEmailLog) error {
 	contactID, _, found, err := c.searchContact(ctx, accessToken, log.ContactEmail)
 	if err != nil {
@@ -259,7 +279,7 @@ func (c *Client) LogEmail(ctx context.Context, accessToken string, log domain.Cr
 		"properties": map[string]string{
 			"hs_timestamp":       log.SentAt.UTC().Format(time.RFC3339),
 			"hs_email_subject":   log.Subject,
-			"hs_email_text":      log.BodyText,
+			"hs_email_text":      truncateRunes(log.BodyText, maxHubSpotTextChars),
 			"hs_email_direction": direction,
 		},
 	}

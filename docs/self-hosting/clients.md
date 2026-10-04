@@ -152,6 +152,15 @@ the default.
 | Local, no proxy (`PROFILE=`) | `http://localhost:8080` (or `http://<host-ip>:8080`) |
 | Calendium Cloud | tap the **Cloud** button (`https://api.calendium.app`) |
 
+For `http://<host-ip>:8080` from another device, the API must listen on the LAN
+(it binds to loopback by default): set `API_BIND=0.0.0.0` (and `WEB_BIND=0.0.0.0`
+for the web app) with `TRUST_PROXY=false` in `.env`, then `docker compose up -d`.
+If a proxy must stay trusted, keep `TRUST_PROXY=true` only with
+`TRUSTED_PROXY_CIDRS` narrowed to that proxy's address: the default includes
+Docker's `172.16.0.0/12` bridge gateway, which Docker can NAT direct LAN clients
+to, letting any of them forge `X-Forwarded-For`. See
+[Home server → LAN only](./local.md#1-lan-only-no-public-domain).
+
 Whatever you enter must be reachable from the device and must serve
 `GET /v1/instance`. If discovery fails, check that the API is up
 (`curl <url>/healthz`) and that your reverse proxy forwards `/v1/*` to the API

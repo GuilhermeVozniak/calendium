@@ -1,0 +1,24 @@
+# Weekly digest bumps for every pinned Dockerfile base image, plus tag bumps
+# for the images docker-compose.yml pulls (postgres, caddy).
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /backend
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /apps/web
+    schedule:
+      interval: weekly
+  # Compose files are their own ecosystem (`docker` only reads Dockerfiles).
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # A new Postgres major cannot open the old data directory without
+      # pg_upgrade (docs/self-hosting/upgrades.md); bump it by hand.
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
+      # Built locally from this repo, never pulled.
+      - dependency-name: calendium-*

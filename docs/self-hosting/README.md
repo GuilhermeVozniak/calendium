@@ -67,9 +67,9 @@ all defined in the repo-root [`docker-compose.yml`](../../docker-compose.yml):
 | Service | Image / build | Port | Role |
 | --- | --- | --- | --- |
 | `db` | `postgres:16-alpine` | `5432` (internal only) | Postgres data on the `db_data` volume. Never published to the host. |
-| `api` | `calendium-backend:latest` (`backend/Dockerfile`) | `${API_PORT:-8080}` → 8080 | Stdlib `net/http` API. **Applies embedded SQL migrations at boot.** Serves `GET /healthz` and `GET /v1/instance`. |
+| `api` | `calendium-backend:latest` (`backend/Dockerfile`) | `${API_BIND:-127.0.0.1}:${API_PORT:-8080}` → 8080 | Stdlib `net/http` API. **Applies embedded SQL migrations at boot.** Serves `GET /healthz` and `GET /v1/instance`. |
 | `worker` | same image, `command: [worker]` | none | Long-running poller: Gmail `historyId` / Graph delta sync, scheduled send, snooze/reminder wakeups, push dispatch. |
-| `web` | `calendium-web:latest` (`apps/web/Dockerfile`) | `${WEB_PORT:-3000}` → 3000 | Next.js 15 standalone server (`node apps/web/server.js`). `NEXT_PUBLIC_*` are baked at build time. |
+| `web` | `calendium-web:latest` (`apps/web/Dockerfile`) | `${WEB_BIND:-127.0.0.1}:${WEB_PORT:-3000}` → 3000 | Next.js 15 standalone server (`node apps/web/server.js`). `NEXT_PUBLIC_*` are baked at build time. |
 | `caddy` | `caddy:2-alpine`, compose profile `caddy` | `80`, `443`, `443/udp` | Optional reverse proxy with automatic HTTPS. Routes `/v1/*` + `/healthz` → `api:8080`, everything else → `web:3000`. |
 
 This mirrors the backend layout in [`../architecture.md`](../architecture.md):

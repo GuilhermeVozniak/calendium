@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"calendium/backend/internal/domain"
 )
 
 // signEdDSA builds a compact EdDSA JWS from the given header and claims maps.
@@ -418,5 +421,49 @@ func TestVerifyRS256Rejects(t *testing.T) {
 				t.Fatalf("err = %v, want contains %q", err, tc.wantContains)
 			}
 		})
+	}
+}
+
+// TestColdCacheJWKSFailureIsUpstream: no cached keys + unreachable JWKS
+// must surface as domain.ErrUpstream (502), not as an invalid token (401).
+func TestColdCacheJWKSFailureIsUpstream(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	const kid, issuer = "cold-kid", "https://app.calendium.com"
+	srv := jwksServer(t, kid, pub)
+	client := srv.Client()
+	url := srv.URL
+	srv.Close() // nothing is listening: every fetch fails
+
+	v := NewVerifier(url, issuer, client)
+	token := signEdDSA(t, priv,
+		map[string]any{"alg": "EdDSA", "kid": kid},
+		map[string]any{"sub": "u1", "iss": issuer, "exp": time.Now().Add(time.Minute).Unix()})
+	_, err := v.Verify(context.Background(), token)
+	if !errors.Is(err, domain.ErrUpstream) {
+		t.Fatalf("err = %v, want wrap of domain.ErrUpstream", err)
+	}
+}
+
+// TestWarmCacheUnknownKidStaysUnauthorized: with keys cached, an unknown
+// kid during an outage is still a bad token (no 502 oracle for forgeries).
+func TestWarmCacheUnknownKidStaysUnauthorized(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(nil)
+	_, otherPriv, _ := ed25519.GenerateKey(nil)
+	const kid, issuer = "warm-kid", "https://app.calendium.com"
+	srv := jwksServer(t, kid, pub)
+	v := NewVerifier(srv.URL, issuer, srv.Client())
+	if _, err := v.lookupKey(context.Background(), kid); err != nil {
+		t.Fatalf("warm-up: %v", err)
+	}
+	srv.Close()
+	v.mu.Lock()
+	v.fetchedAt = time.Now().Add(-jwksTTL - time.Minute) // force a refetch attempt
+	v.mu.Unlock()
+	token := signEdDSA(t, otherPriv,
+		map[string]any{"alg": "EdDSA", "kid": "forged-kid"},
+		map[string]any{"sub": "u1", "iss": issuer, "exp": time.Now().Add(time.Minute).Unix()})
+	_, err := v.Verify(context.Background(), token)
+	if err == nil || errors.Is(err, domain.ErrUpstream) {
+		t.Fatalf("err = %v, want a non-upstream rejection", err)
 	}
 }

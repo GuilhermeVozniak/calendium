@@ -17,7 +17,9 @@ worked top to bottom.
 - [ ] Base images updated on a schedule
 - [ ] Backups encrypted and stored off-box
 - [ ] Managed Postgres reached with `sslmode=require` (or stricter)
-- [ ] `web` behind your proxy with `TRUST_PROXY=true` (the Compose default), and the proxy's address inside `TRUSTED_PROXY_CIDRS`
+- [ ] `api` and `web` behind your proxy with `TRUST_PROXY=true` (the Compose default), and the proxy's address inside `TRUSTED_PROXY_CIDRS`
+- [ ] `api`/`web` published on loopback; `TRUST_PROXY` only behind your own proxy
+- [ ] `POSTGRES_PASSWORD` is not a default (the API refuses `change-me-please` / `calendium` in cloud mode)
 - [ ] `ALLOW_DEV_ORIGINS` blank (false) in production
 - [ ] SMTP configured over TLS (verification + password reset), or users know to ask you for a reset
 
@@ -90,12 +92,36 @@ internet**:
 - **`db` publishes no host ports.** Postgres is reachable only on the internal
   `calendium` Docker network, by service name (`db:5432`). Never add
   `ports: ["5432:5432"]` on a public host.
-- **`api` and `web` publish `${API_PORT:-8080}` and `${WEB_PORT:-3000}`** to the
-  host so a bring-your-own-proxy (nginx/Traefik on the host) can reach them.
-  When you run the bundled **Caddy** profile you don't need those host ports
-  open to the world — **firewall them** (allow only 80/443 inbound) or bind them
-  to loopback by setting, e.g., `API_PORT=127.0.0.1:8080` and
-  `WEB_PORT=127.0.0.1:3000` in `.env`.
+- **`api` and `web` publish on loopback only** — `127.0.0.1:${API_PORT:-8080}`
+  and `127.0.0.1:${WEB_PORT:-3000}` — so only a proxy running on the same host
+  (the bundled Caddy profile, or your own nginx/Traefik) can reach them. For a
+  LAN box without any proxy set `API_BIND=0.0.0.0` / `WEB_BIND=0.0.0.0` in
+  `.env` **and** `TRUST_PROXY=false`, otherwise any LAN client could spoof
+  `X-Forwarded-For` and share (or dodge) another client's rate-limit bucket.
+  The default `TRUSTED_PROXY_CIDRS` includes `172.16.0.0/12`, Docker's own
+  bridge gateway: docker-proxy, rootless Docker and Docker Desktop can
+  source-NAT direct clients to it, so with `TRUST_PROXY=true` every LAN client
+  would count as a trusted proxy and could forge `X-Forwarded-For` (and, on the
+  API, `X-Forwarded-Host` / `X-Request-Id`). If a proxy must stay trusted
+  while the ports are open, narrow `TRUSTED_PROXY_CIDRS` to its own address.
+- **`TRUST_PROXY=true` is set on `api` and `web` by the compose file**
+  (`${TRUST_PROXY:-true}`). Both then take the client IP — and the API also the
+  scheme and host — from `X-Forwarded-*`, but only when the socket peer is
+  inside `TRUSTED_PROXY_CIDRS` (default loopback + RFC 1918 + `fc00::/7`).
+  Caddy replaces client-supplied `X-Forwarded-For` and the nginx sample sets
+  it to `$remote_addr` (web) or appends with `$proxy_add_x_forwarded_for`
+  (API), so the right-most untrusted hop is the real client for internet
+  clients in both setups. Appending leaves one gap: a client whose own address
+  is inside `TRUSTED_PROXY_CIDRS` (a LAN or VPN client of the nginx host) can
+  prepend any `X-Forwarded-For` entry and the API keys it as that address. To
+  close it, use `proxy_set_header X-Forwarded-For $remote_addr;` on the API
+  block too (unless a CDN sits in front). If other machines on the private
+  network can reach port 8080 or 3000 directly, narrow `TRUSTED_PROXY_CIDRS`
+  to the proxy's own address. Details:
+  [Client IP](#client-ip-trust_proxy-and-trusted_proxy_cidrs).
+- **`/readyz` is internal.** It reports database reachability (and `draining`
+  during shutdown) for the compose health check; neither the Caddyfile nor the
+  nginx sample routes it. `/healthz` stays the public liveness probe.
 
 > **Docker bypasses UFW for published ports.** Docker inserts its own iptables
 > NAT rules that skip UFW's `INPUT` chain, so a `ufw deny` will *not* block a
@@ -151,15 +177,24 @@ web origin(s) — nothing broader. Built-in defaults already cover localhost and
 
 ## 7. Keep base images current
 
-The stack pins these images — rebuild/pull them on a schedule to pick up security
-fixes:
+The app images (`calendium-backend` for `api`/`worker`, `calendium-web` for
+`web`) build from base images **pinned by digest** (`image:tag@sha256:…`, with
+the tag and resolution date in a comment above each `FROM`).
+`postgres` and `caddy`, which Compose pulls as-is, are **pinned by tag only**
+(`postgres:16-alpine`, `caddy:2-alpine`), so `docker compose pull` picks up
+rebuilds of those tags.
+[`.github/dependabot.yml`](../../.github/dependabot.yml) opens a weekly PR when a
+pinned digest has a newer build or a compose image has a newer tag (Postgres
+major versions are skipped: they need a manual `pg_upgrade`, see
+[Upgrades](./upgrades.md)). CI builds both app images on every push
+(`docker-build` job) so a rotten pin fails before it reaches you.
 
 | Image | Used by |
 | --- | --- |
 | `postgres:16-alpine` | `db` |
 | `caddy:2-alpine` | `caddy` proxy |
-| `golang:1.26-alpine` (build), `alpine:3.20` (runtime) | backend image |
-| `oven/bun:1` (build), `node:22-alpine` (runtime) | web image |
+| `golang:1.26-alpine@sha256:…` (build), `alpine:3.22@sha256:…` (runtime) | backend image |
+| `oven/bun:1.3@sha256:…` (build), `node:22-alpine@sha256:…` (runtime) | web image |
 
 ```bash
 docker compose pull          # refresh db + caddy
@@ -214,6 +249,15 @@ Over the limit → `429` with `X-Retry-After: <seconds>`; the apps say
 
 ### Client IP: `TRUST_PROXY` and `TRUSTED_PROXY_CIDRS`
 
+The web app and the Go API find the client IP with the **same rule and the
+same two variables**. The web app uses it for the sign-in limits above; the
+API uses it for its per-IP limits on public endpoints (booking pages, polls
+and shared threads: reads 60/min with a burst of 30, writes 5/min with a burst
+of 5), for the `client_ip` in its request logs, and — together with
+`X-Forwarded-Proto` / `X-Forwarded-Host`, which it honours only from a trusted
+peer — for the OAuth callback origin. Compose sets `TRUST_PROXY` to
+`${TRUST_PROXY:-true}` on both services.
+
 The web app stamps the client IP into a server-only header
 (`x-calendium-client-ip`) and overwrites it on every request, so a value the
 client sends is discarded. The client IP is the **right-most `X-Forwarded-For`
@@ -225,41 +269,57 @@ on a host), start it the same way, `node -r ./scripts/forwarded-for-peer.cjs`,
 or a client could forge the right-most entry; production logs a warning when
 the preload is missing.
 
+The API reads `X-Forwarded-For` straight from the request (Go sees the socket
+peer directly, so it needs no preload). Both tiers then apply the same rule:
+`X-Forwarded-For` is used only when the socket peer itself is inside
+`TRUSTED_PROXY_CIDRS`; otherwise the socket peer is the client.
+
 - `TRUST_PROXY=true` (the default under Docker Compose): entries inside
   `TRUSTED_PROXY_CIDRS` are skipped from the right, and the first entry outside
-  them is the client. When every entry is inside them (a LAN or VPN client
-  behind the proxy), the left-most entry is the client: a forged left entry
-  cannot win, because every hop to its right is a trusted proxy. Behind the
-  bundled Caddy each client therefore gets its own bucket. The default
+  them is the client. Entries that are not a bare IP address (`garbage`,
+  `203.0.113.5:4321`, `[2001:db8::1]`) are skipped. When every entry is inside
+  them (a LAN or VPN client behind the proxy), both tiers take the left-most
+  valid entry; the peer only when it is the sole valid entry. An internet
+  client cannot forge its key: its own address, added by the proxy, is the
+  first untrusted hop. A client inside `TRUSTED_PROXY_CIDRS` can: behind an
+  appending proxy its forged entries sit left of its own trusted one, so the
+  left-most (forged) entry wins. Behind an overwriting proxy (the bundled
+  Caddy, nginx with `$remote_addr`) there is nothing to forge, so each client
+  gets its own bucket. The default
   `TRUSTED_PROXY_CIDRS` is `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7`
   (loopback and private ranges). It covers the bundled Caddy on the Compose
   network and nginx on the host in front of the published port. A client can
   prepend whatever it likes, but it cannot get past the entry its proxy added.
   Appending proxies (`$proxy_add_x_forwarded_for`, cloud load balancers) and
-  overwriting ones (Caddy, nginx with `$remote_addr`) both work, as long as
+  overwriting ones (Caddy, nginx with `$remote_addr`) both work for internet
+  clients (appending lets a client inside the trusted ranges pick its key, see
+  above), as long as
   every proxy hop is inside `TRUSTED_PROXY_CIDRS`. Add a CDN's public ranges
-  if one sits in front. If untrusted clients can reach `web:3000` from a
-  private range, narrow the list to your proxy's own address.
-- `TRUST_PROXY=false` (the default when `web` runs outside Compose): no proxy
-  is trusted, so only the immediate peer is used. A client-supplied
-  `X-Forwarded-For` is never trusted. Use it when `web:3000` is exposed
-  directly to a LAN with no proxy in front; with `true` a client on a private
-  range could choose its own bucket. Behind a reverse proxy the immediate peer
+  if one sits in front. If untrusted clients can reach `web:3000` or
+  `api:8080` from a private range, narrow the list to your proxy's own
+  address (a bare IP such as `192.168.1.2` means that one host). Entries are
+  trimmed and empty ones ignored; an invalid entry stops the service at boot,
+  even with `TRUST_PROXY=false`.
+- `TRUST_PROXY=false` (the default when `web` or `api` runs outside Compose):
+  no proxy is trusted, so only the immediate peer is used. A client-supplied
+  `X-Forwarded-For` is never trusted, and the API ignores
+  `X-Forwarded-Proto`/`Host`. Use it when `web:3000` / `api:8080` are exposed
+  directly to a LAN with no proxy in front (`WEB_BIND`/`API_BIND=0.0.0.0`);
+  with `true` a client on a private range could choose its own bucket. Behind a reverse proxy the immediate peer
   is the proxy, so every client shares the proxy's bucket on **all** auth
   endpoints: one client's typos, or an attacker's requests, block sign-in,
-  session reads and JWT minting for everyone. That is why production logs a
+  session reads and JWT minting for everyone (and on the API, every visitor
+  of a public booking page shares one bucket). That is why production logs a
   warning.
 
 `TRUST_PROXY` accepts `true`/`1`/`yes` and `false`/`0`/`no`
-(case-insensitive); any other value stops `web` at boot.
+(case-insensitive); any other value stops `web` or `api` at boot.
 
 The supported production shape is Caddy (or nginx) + `TRUST_PROXY=true`.
 
-The Go API rate-limits only its public endpoints (booking pages, polls and
-shared threads: reads 60/min with a burst of 30, writes 5/min with a burst
-of 5). It keys those limits on the TCP peer address (`RemoteAddr`). It reads
-neither `X-Forwarded-For` nor `TRUST_PROXY`, so behind a proxy all callers of
-those endpoints share the proxy's bucket.
+Signed-in API traffic is limited per **user**, not per IP (600/min overall,
+30/min for sends, bulk actions and AI calls, 120/min for search); see
+[Configuration → Platform hardening](./configuration.md#platform-hardening).
 
 ### Origins
 

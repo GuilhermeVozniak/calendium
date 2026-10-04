@@ -27,10 +27,18 @@ var _ port.PushSender = (*Dispatcher)(nil)
 
 // NewDispatcher wires the configured transports. Transports with missing
 // config are left nil and fail with a descriptive error at send time, so
-// partial deployments (e.g. web-push only) still boot. hc may be nil, in
-// which case http.DefaultClient is used (its TLS transport negotiates the
-// HTTP/2 APNs requires via ALPN).
+// partial deployments (e.g. web-push only) still boot. hc serves APNs and
+// FCM (operator-fixed hosts); it may be nil, in which case
+// http.DefaultClient is used (its TLS transport negotiates the HTTP/2 APNs
+// requires via ALPN). Web Push never uses hc: its endpoints are
+// user-registered URLs, so it gets its own netguard-dialled client.
 func NewDispatcher(cfg config.Push, hc *http.Client) *Dispatcher {
+	return newDispatcher(cfg, hc, newGuardedWebPushClient())
+}
+
+// newDispatcher is NewDispatcher with an injectable Web Push client, so
+// package tests can deliver to loopback httptest servers.
+func newDispatcher(cfg config.Push, hc, webHC *http.Client) *Dispatcher {
 	if hc == nil {
 		hc = http.DefaultClient
 	}
@@ -42,7 +50,7 @@ func NewDispatcher(cfg config.Push, hc *http.Client) *Dispatcher {
 		d.fcm = newFCMSender(cfg.FCM, hc)
 	}
 	if cfg.VAPID.PublicKey != "" && cfg.VAPID.PrivateKey != "" {
-		d.webpush = newWebPushSender(cfg.VAPID, hc)
+		d.webpush = newWebPushSender(cfg.VAPID, webHC)
 	}
 	return d
 }

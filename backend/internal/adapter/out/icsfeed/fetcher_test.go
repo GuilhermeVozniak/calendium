@@ -189,35 +189,40 @@ func TestDialGuardBlocksPrivateResolution(t *testing.T) {
 	}
 }
 
-// TestIsPublicAddr pins the guard predicate across every refused range and
-// their IPv4-mapped IPv6 forms.
-func TestIsPublicAddr(t *testing.T) {
-	cases := []struct {
-		addr string
-		want bool
-	}{
-		{"93.184.216.34", true},      // ordinary public v4
-		{"2606:2800:220:1::1", true}, // ordinary public v6
-		{"127.0.0.1", false},
-		{"127.8.8.8", false},
-		{"::1", false},
-		{"10.0.0.5", false},
-		{"172.16.0.1", false},
-		{"192.168.1.1", false},
-		{"169.254.169.254", false},
-		{"fe80::1", false},
-		{"fc00::1", false},
-		{"fdab::12", false},
-		{"0.0.0.0", false},
-		{"::", false},
-		{"224.0.0.1", false},
-		{"::ffff:10.0.0.5", false},  // IPv4-mapped private
-		{"::ffff:127.0.0.1", false}, // IPv4-mapped loopback
-		{"::ffff:93.184.216.34", true},
+// TestGuardDialerRefusesAtSyscallLayer: the dialer behind the guard carries
+// netguard.Control, so even a dial that skipped the pre-check (a vetted
+// literal) is refused for a private address before connect.
+func TestGuardDialerRefusesAtSyscallLayer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	d := guardDialer()
+	if d.Control == nil {
+		t.Fatal("guard dialer has no Control hook")
 	}
-	for _, tc := range cases {
-		if got := isPublicAddr(netip.MustParseAddr(tc.addr)); got != tc.want {
-			t.Errorf("isPublicAddr(%s) = %v, want %v", tc.addr, got, tc.want)
+	conn, err := d.DialContext(context.Background(), "tcp", srv.Listener.Addr().String())
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("loopback dial succeeded through the guard dialer")
+	}
+	if !strings.Contains(err.Error(), "netguard") {
+		t.Fatalf("err = %v, want a netguard refusal", err)
+	}
+}
+
+// TestIsPublicAddr: the guard predicate delegates to netguard (whose test
+// pins every refused range), so CGNAT and NAT64 are refused here too.
+func TestIsPublicAddr(t *testing.T) {
+	cases := map[string]bool{
+		"93.184.216.34":    true,
+		"10.0.0.5":         false,
+		"::ffff:10.0.0.5":  false,
+		"100.64.0.1":       false, // CGNAT
+		"64:ff9b::7f00:1":  false, // NAT64
+		"64:ff9b:1::a00:5": false, // local-use NAT64
+	}
+	for addr, want := range cases {
+		if got := isPublicAddr(netip.MustParseAddr(addr)); got != want {
+			t.Errorf("isPublicAddr(%s) = %v, want %v", addr, got, want)
 		}
 	}
 }
