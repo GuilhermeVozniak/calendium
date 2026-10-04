@@ -141,6 +141,12 @@ func TestRequestBaseURLForwardedOnlyFromTrustedProxy(t *testing.T) {
 		{"trusted peer first value wins", true, "10.0.0.2:1", false, "https, http", "app.example.com, internal", "https://app.example.com"},
 		{"trusted peer proto lower-cased", true, "10.0.0.2:1", false, "HTTPS", "", "https://api.example.test"},
 		{"trusted but untrusted peer address", true, "203.0.113.5:1", false, "https", "evil.example", "http://api.example.test"},
+		// Only http|https is ever taken from X-Forwarded-Proto; anything else
+		// falls back to the TLS-derived scheme.
+		{"trusted peer javascript proto ignored", true, "10.0.0.2:1", false, "javascript", "", "http://api.example.test"},
+		{"trusted peer ftp proto ignored over TLS", true, "10.0.0.2:1", true, "ftp", "", "https://api.example.test"},
+		{"trusted peer https:x proto ignored", true, "10.0.0.2:1", false, "https:x", "", "http://api.example.test"},
+		{"trusted peer http over TLS honoured", true, "10.0.0.2:1", true, "http", "", "http://api.example.test"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -99,6 +99,47 @@ func TestLogActorUnderActAs(t *testing.T) {
 	}
 }
 
+// TestProbesLoggedAtDebug: /healthz and /readyz run every few seconds, so
+// their access lines are Debug; every other route stays Info.
+func TestProbesLoggedAtDebug(t *testing.T) {
+	for _, path := range []string{"/healthz", "/readyz"} {
+		var buf bytes.Buffer
+		h := newHarness(t)
+		h.deps.Logger = jsonLogger(&buf)
+		h.anon(http.MethodGet, path, nil)
+		if line := httpLine(t, &buf); line["level"] != "DEBUG" || line["route"] != path {
+			t.Fatalf("%s access line = %v, want level DEBUG", path, line)
+		}
+	}
+	var buf bytes.Buffer
+	h := newHarness(t)
+	h.deps.Logger = jsonLogger(&buf)
+	h.anon(http.MethodGet, "/v1/instance", nil)
+	if line := httpLine(t, &buf); line["level"] != "INFO" {
+		t.Fatalf("/v1/instance access line = %v, want level INFO", line)
+	}
+}
+
+// TestPanicGetsAccessLogLine: a panicking request still gets its msg=http
+// line (status 500, its request id), not only the "panic recovered" line.
+func TestPanicGetsAccessLogLine(t *testing.T) {
+	var buf bytes.Buffer
+	h := newHarness(t)
+	h.deps.Logger = jsonLogger(&buf)
+	h.deps.Mail = &panicMailService{}
+	rec := h.authed(http.MethodGet, "/v1/mail/threads", nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	line := httpLine(t, &buf)
+	if line["status"] != float64(http.StatusInternalServerError) || line["route"] != "/v1/mail/threads" || line["panic"] != true {
+		t.Fatalf("access line = %v, want status 500 on /v1/mail/threads with panic=true", line)
+	}
+	if id := rec.Header().Get("X-Request-Id"); id == "" || line["request_id"] != id {
+		t.Fatalf("access line request_id = %v, response id = %q", line["request_id"], id)
+	}
+}
+
 func TestRedactPath(t *testing.T) {
 	tests := map[string]string{
 		"/v1/shared/threads/tok123":         "/v1/shared/threads/[redacted]",
