@@ -111,3 +111,50 @@ func TestBookingRepoListByUserPage(t *testing.T) {
 		}
 	}
 }
+
+// Migration 0029: the export keyset pagers (threads per account, events per
+// calendar, both ordered by id) have a matching (scope, id) btree, so a page
+// is an index range scan instead of a re-sort of the account's full set.
+func TestExportPagerIndexes(t *testing.T) {
+	_, db := newTestStore(t)
+	ctx := context.Background()
+	want := map[string]string{
+		"threads_account_id_id_idx": "(account_id, id)",
+		"events_calendar_id_id_idx": "(calendar_id, id)",
+	}
+	for name, cols := range want {
+		var def string
+		if err := db.QueryRowContext(ctx, `SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = $1`, name).Scan(&def); err != nil {
+			t.Fatalf("index %s: %v", name, err)
+		}
+		if !strings.Contains(def, cols) {
+			t.Fatalf("%s = %q, want columns %s", name, def, cols)
+		}
+	}
+	// The thread pager's plan uses the new index (sequential scans off so
+	// the tiny test table cannot hide a missing index).
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := tx.QueryContext(ctx, `EXPLAIN SELECT id FROM threads WHERE account_id = 'a' AND id > '' ORDER BY id LIMIT 200`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		plan.WriteString(line + "\n")
+	}
+	_ = rows.Close()
+	if !strings.Contains(plan.String(), "threads_account_id_id_idx") || strings.Contains(plan.String(), "Sort") {
+		t.Fatalf("thread pager plan does not use (account_id, id) without a sort:\n%s", plan.String())
+	}
+}

@@ -38,3 +38,9 @@ CREATE TABLE deleted_users (
     id         text PRIMARY KEY,
     deleted_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Export keyset pagers (ThreadRepo.ListByAccountPage, EventRepo
+-- .ListByUserPage) order by id within an account/calendar; without these a
+-- page re-sorts the scope's full set.
+CREATE INDEX threads_account_id_id_idx ON threads (account_id, id);
+CREATE INDEX events_calendar_id_id_idx ON events (calendar_id, id);
