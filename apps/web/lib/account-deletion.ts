@@ -1,9 +1,9 @@
 'use client';
 
-import type { QueryClient } from '@tanstack/react-query';
+import { focusManager, onlineManager, type QueryClient } from '@tanstack/react-query';
 
 import { clearActingAs } from '@/lib/act-as';
-import { invalidateAccessToken } from '@/lib/auth-client';
+import { invalidateAccessToken, resumeApi, suspendApi } from '@/lib/auth-client';
 import { clearOfflineState } from '@/lib/offline/queue';
 import { resetTourSession } from '@/lib/tour-state';
 
@@ -21,12 +21,28 @@ import { resetTourSession } from '@/lib/tour-state';
 
 let deleting = false;
 
-export function beginAccountDeletion(): void {
+/**
+ * Raises the flag and pauses ALL API activity from this tab before the
+ * delete call (review C-1): the API is suspended (no fetch, no JWT mint,
+ * collab streams dropped, outbox replay stopped), React Query is taken
+ * offline and unfocused so no query, refetch interval or mutation runs, and
+ * in-flight queries are cancelled. Nothing can then reach the API carrying
+ * the deleting user's JWT while the purge runs or after it.
+ */
+export async function beginAccountDeletion(queryClient?: QueryClient): Promise<void> {
   deleting = true;
+  suspendApi();
+  onlineManager.setOnline(false);
+  focusManager.setFocused(false);
+  if (queryClient) await queryClient.cancelQueries().catch(() => undefined);
 }
 
+/** A failed delete: lower the flag and resume the API, queries and polling. */
 export function endAccountDeletion(): void {
   deleting = false;
+  resumeApi();
+  focusManager.setFocused(undefined);
+  onlineManager.setOnline(typeof navigator === 'undefined' ? true : navigator.onLine);
 }
 
 export function isAccountDeletionInProgress(): boolean {

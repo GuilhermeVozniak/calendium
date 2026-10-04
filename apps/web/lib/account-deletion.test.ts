@@ -1,10 +1,14 @@
-import { QueryClient } from '@tanstack/react-query';
+import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const order: string[] = [];
 const invalidateMock = vi.fn(() => order.push('invalidateAccessToken'));
+const suspendMock = vi.fn(() => order.push('suspendApi'));
+const resumeMock = vi.fn(() => order.push('resumeApi'));
 vi.mock('@/lib/auth-client', () => ({
   invalidateAccessToken: () => invalidateMock(),
+  suspendApi: () => suspendMock(),
+  resumeApi: () => resumeMock(),
 }));
 const clearActingAsMock = vi.fn(() => order.push('clearActingAs'));
 vi.mock('@/lib/act-as', () => ({ clearActingAs: () => clearActingAsMock() }));
@@ -35,10 +39,10 @@ function stubServiceWorker() {
 }
 
 beforeEach(() => {
+  endAccountDeletion();
   order.length = 0;
   vi.clearAllMocks();
   window.localStorage.clear();
-  endAccountDeletion();
 });
 
 afterEach(() => {
@@ -47,12 +51,77 @@ afterEach(() => {
 });
 
 describe('deletion-in-progress flag', () => {
-  it('is set by beginAccountDeletion and cleared by endAccountDeletion', () => {
+  it('is set by beginAccountDeletion and cleared by endAccountDeletion', async () => {
     expect(isAccountDeletionInProgress()).toBe(false);
-    beginAccountDeletion();
+    await beginAccountDeletion();
     expect(isAccountDeletionInProgress()).toBe(true);
     endAccountDeletion();
     expect(isAccountDeletionInProgress()).toBe(false);
+  });
+});
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// C-1 (web): the deleting tab must not reach the API while the purge runs or
+// after it — a request carrying the about-to-be-deleted user's JWT is exactly
+// what could race the purge. beginAccountDeletion pauses everything first.
+describe('beginAccountDeletion pauses all API activity', () => {
+  it('suspends the API, cancels in-flight queries and stops refetch intervals until endAccountDeletion', async () => {
+    const client = new QueryClient();
+    client.mount(); // as QueryClientProvider does: online/focus changes reach the cache
+    let aborted = 0;
+    const queryFn = vi.fn(
+      ({ signal }: { signal: AbortSignal }) =>
+        new Promise<number>((resolve, reject) => {
+          const timer = setTimeout(() => resolve(1), 5);
+          signal.addEventListener('abort', () => {
+            clearTimeout(timer);
+            aborted += 1;
+            reject(new Error('aborted'));
+          });
+        })
+    );
+    const observer = new QueryObserver(client, { queryKey: ['poll'], queryFn, refetchInterval: 15 });
+    const unsubscribe = observer.subscribe(() => {});
+    await vi.waitFor(() => expect(queryFn.mock.calls.length).toBeGreaterThan(1));
+    // Park the next fetch in flight so the pause has something to cancel.
+    queryFn.mockImplementation(
+      ({ signal }: { signal: AbortSignal }) =>
+        new Promise<number>((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            aborted += 1;
+            reject(new Error('aborted'));
+          });
+        })
+    );
+    const before = queryFn.mock.calls.length;
+    await vi.waitFor(() => expect(queryFn.mock.calls.length).toBeGreaterThan(before));
+
+    await beginAccountDeletion(client);
+    expect(suspendMock).toHaveBeenCalledTimes(1);
+    expect(isAccountDeletionInProgress()).toBe(true);
+    expect(aborted).toBeGreaterThan(0);
+
+    const paused = queryFn.mock.calls.length;
+    await sleep(100); // several interval periods
+    void client.invalidateQueries(); // an explicit refetch is held too
+    void client.refetchQueries();
+    await sleep(30);
+    expect(queryFn.mock.calls.length).toBe(paused);
+
+    queryFn.mockResolvedValue(2);
+    endAccountDeletion();
+    expect(resumeMock).toHaveBeenCalled();
+    await vi.waitFor(() => expect(queryFn.mock.calls.length).toBeGreaterThan(paused));
+    unsubscribe();
+    client.unmount();
+    client.clear();
+  });
+
+  it('suspends the API before anything else and works without a query client', async () => {
+    await beginAccountDeletion();
+    expect(order[0]).toBe('suspendApi');
+    expect(isAccountDeletionInProgress()).toBe(true);
   });
 });
 

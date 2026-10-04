@@ -29,7 +29,7 @@ const endMock = vi.fn();
 const scrubMock = vi.fn();
 const leaveMock = vi.fn();
 vi.mock('@/lib/account-deletion', () => ({
-  beginAccountDeletion: () => beginMock(),
+  beginAccountDeletion: (...args: unknown[]) => beginMock(...args),
   endAccountDeletion: () => endMock(),
   scrubLocalStateAfterDeletion: (...args: unknown[]) => scrubMock(...args),
   leaveAfterAccountDeletion: () => leaveMock(),
@@ -217,7 +217,11 @@ describe('DeleteAccountDialog', () => {
 
   it('on success flags the deletion before the call, scrubs local state, then hard-navigates to /goodbye', async () => {
     const order: string[] = [];
-    beginMock.mockImplementation(() => order.push('begin'));
+    beginMock.mockImplementation(async () => {
+      order.push('begin');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      order.push('paused');
+    });
     deleteUserMock.mockImplementation(async () => {
       order.push('deleteUser');
       return { data: { success: true }, error: null };
@@ -230,7 +234,10 @@ describe('DeleteAccountDialog', () => {
     renderDialog();
     await confirmAs(user, 'hunter2');
     await waitFor(() => expect(leaveMock).toHaveBeenCalled());
-    expect(order).toEqual(['begin', 'deleteUser', 'scrub', 'leave']);
+    // The API is fully paused (queries cancelled, polling stopped) before
+    // the delete call goes out.
+    expect(order).toEqual(['begin', 'paused', 'deleteUser', 'scrub', 'leave']);
+    expect(beginMock).toHaveBeenCalledWith(queryClient);
     expect(scrubMock).toHaveBeenCalledWith(queryClient);
     expect(endMock).not.toHaveBeenCalled();
     // No soft navigation and no sign-out round trip after the account is gone.

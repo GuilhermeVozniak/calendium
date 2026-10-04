@@ -1,7 +1,7 @@
 import { ApiClient } from '@calendium/shared';
 
 import { getActingAs } from '@/lib/act-as';
-import { accessTokens, getAccessToken } from '@/lib/auth-client';
+import { accessTokens, getAccessToken, isApiSuspended } from '@/lib/auth-client';
 import { env } from '@/lib/env';
 
 let client: ApiClient | undefined;
@@ -23,6 +23,8 @@ export function onPaymentRequired(listener: () => void): () => void {
 
 /** fetch that reports 402s to the listeners above; resolves the global at call time. */
 const notifyingFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  // Account deletion pauses the API (lib/auth-client.ts suspendApi).
+  if (isApiSuspended()) throw new Error('Calendium API requests are paused.');
   const res = await fetch(input, init);
   if (res.status === 402) {
     for (const listener of [...paymentRequiredListeners]) listener();

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { resumeApi, suspendApi } from '@/lib/auth-client';
 import { type CollabEvent, openCollabStream } from '@/lib/collab-stream';
 
 const encoder = new TextEncoder();
@@ -26,6 +27,35 @@ function hangForever(): Promise<Response> {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe('openCollabStream', () => {
+  it('drops the open connection and does not reconnect while the API is suspended (account deletion)', async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        })
+    );
+    const close = openCollabStream(() => {}, {
+      fetchFn,
+      getToken: async () => 'tok',
+      baseUrl: 'http://api.test',
+      initialDelayMs: 5,
+      maxDelayMs: 5,
+    });
+    try {
+      await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
+      const signal = fetchFn.mock.calls[0]?.[1]?.signal;
+      suspendApi();
+      expect(signal?.aborted).toBe(true);
+      await sleep(60);
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+      resumeApi();
+      await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(2));
+    } finally {
+      resumeApi();
+      close();
+    }
+  });
+
   it('parses data frames into events, ignoring comments and split chunks', async () => {
     const ev = { topic: 'team:t1', type: 'comment.created', payload: { id: 'c1' } };
     const frame = `event: comment.created\ndata: ${JSON.stringify(ev)}\n\n`;

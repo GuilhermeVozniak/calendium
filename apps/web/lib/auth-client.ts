@@ -48,8 +48,41 @@ async function mintAccessToken(): Promise<string | null> {
  */
 export const accessTokens = createAccessTokenCache(mintAccessToken);
 
-/** The Bearer credential for the Go API (cached JWT, minted on demand). */
+let apiSuspended = false;
+const suspendListeners = new Set<() => void>();
+
+/**
+ * Pauses every Go API request from this tab (lib/api.ts refuses to fetch, no
+ * JWT is minted, open collab streams drop and the outbox stops replaying)
+ * until resumeApi(). Account deletion suspends BEFORE calling deleteUser: a
+ * request carrying the deleting user's JWT is what could race the purge.
+ */
+export function suspendApi(): void {
+  apiSuspended = true;
+  accessTokens.invalidate();
+  for (const listener of [...suspendListeners]) listener();
+}
+
+/** Lifts suspendApi() (a failed delete). */
+export function resumeApi(): void {
+  apiSuspended = false;
+}
+
+export function isApiSuspended(): boolean {
+  return apiSuspended;
+}
+
+/** Called on every suspendApi() (collab streams abort their connection). Returns the unsubscribe function. */
+export function onApiSuspended(listener: () => void): () => void {
+  suspendListeners.add(listener);
+  return () => {
+    suspendListeners.delete(listener);
+  };
+}
+
+/** The Bearer credential for the Go API (cached JWT, minted on demand); null while the API is suspended. */
 export function getAccessToken(): Promise<string | null> {
+  if (apiSuspended) return Promise.resolve(null);
   return accessTokens.get();
 }
 

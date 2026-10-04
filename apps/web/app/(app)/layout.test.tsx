@@ -23,6 +23,9 @@ const sessionState = vi.hoisted(() => ({
 vi.mock('@/lib/auth-client', () => ({
   authClient: { useSession: () => sessionState.value },
   syncAccessTokenOwner: (id: string | null) => syncAccessTokenOwner(id),
+  suspendApi: () => {},
+  resumeApi: () => {},
+  isApiSuspended: () => false,
 }));
 
 const routerReplace = vi.fn();
@@ -120,7 +123,7 @@ describe('(app) layout signed-out redirect', () => {
   // Track C I-1: deleteUser flips the session to null before the dialog's
   // hard navigation to /goodbye; the soft /signin redirect must not race it.
   it('does not redirect to /signin while an account deletion is in progress', () => {
-    beginAccountDeletion();
+    void beginAccountDeletion();
     sessionState.value = { data: null, isPending: false };
     renderLayout();
     expect(routerReplace).not.toHaveBeenCalled();

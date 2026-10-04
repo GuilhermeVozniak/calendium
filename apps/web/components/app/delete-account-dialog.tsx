@@ -104,8 +104,9 @@ interface LinkedAccount {
 /**
  * Danger-zone confirmation: explains what goes, requires the typed email and
  * (credential accounts only) the password, then calls Better Auth's
- * deleteUser. The deletion flag goes up BEFORE the call so the (app) layout
- * does not bounce the now session-less shell to /signin; on success the
+ * deleteUser. The deletion flag goes up and all API activity is paused
+ * BEFORE the call so the (app) layout does not bounce the now session-less
+ * shell to /signin and nothing from this tab races the purge; on success the
  * browser state is scrubbed without any network call (the session and the
  * Go user are gone) and the page hard-navigates to /goodbye.
  */
@@ -170,9 +171,11 @@ export function DeleteAccountDialog({
     setError(null);
     setTeams([]);
     setReauth(null);
-    beginAccountDeletion();
     let deleted = false;
     try {
+      // Pause every query, poll and stream first: the purge must never race
+      // a request from this tab.
+      await beginAccountDeletion(queryClient);
       const { error: err } = await authClient.deleteUser(hasCredential ? { password } : {});
       if (err) {
         const described = describeDeleteError(err as DeleteUserError, { hasCredential, socialProvider });

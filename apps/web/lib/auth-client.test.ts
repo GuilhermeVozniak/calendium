@@ -1,6 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { accessTokens, getAccessToken, invalidateAccessToken, syncAccessTokenOwner } from '@/lib/auth-client';
+import {
+  accessTokens,
+  getAccessToken,
+  invalidateAccessToken,
+  isApiSuspended,
+  onApiSuspended,
+  resumeApi,
+  suspendApi,
+  syncAccessTokenOwner,
+} from '@/lib/auth-client';
 
 function jwt(expSeconds: number, sub = 'u1'): string {
   const payload = btoa(JSON.stringify({ sub, exp: expSeconds })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -16,7 +25,32 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resumeApi();
   vi.unstubAllGlobals();
+});
+
+describe('suspendApi (account deletion)', () => {
+  it('drops the cached JWT, mints nothing while suspended, notifies listeners, and resumeApi lifts it', async () => {
+    const token = jwt(Math.floor(Date.now() / 1000) + 900);
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ token }), { status: 200 }));
+    expect(await getAccessToken()).toBe(token);
+    const listener = vi.fn();
+    const off = onApiSuspended(listener);
+
+    suspendApi();
+    expect(isApiSuspended()).toBe(true);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(await getAccessToken()).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1); // no mint while suspended
+
+    resumeApi();
+    expect(isApiSuspended()).toBe(false);
+    expect(await getAccessToken()).toBe(token);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // the suspended cache was dropped, so it re-mints
+    off();
+    suspendApi();
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('getAccessToken (web, cached)', () => {

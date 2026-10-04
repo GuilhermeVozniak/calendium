@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/lib/auth-client', () => ({ getAccessToken: async () => 'tok', accessTokens: undefined }));
+const suspended = vi.hoisted(() => ({ current: false }));
+vi.mock('@/lib/auth-client', () => ({
+  getAccessToken: async () => 'tok',
+  accessTokens: undefined,
+  isApiSuspended: () => suspended.current,
+}));
 const actingAs: { id: string | null } = { id: null };
 vi.mock('@/lib/act-as', () => ({ getActingAs: () => actingAs.id }));
 
@@ -14,6 +19,20 @@ const PAYMENT_REQUIRED = { error: { code: 'payment_required', message: 'x', deta
 
 beforeEach(() => {
   actingAs.id = null;
+  suspended.current = false;
+});
+
+describe('getApiClient — account deletion pause', () => {
+  it('refuses every request without touching the network while the API is suspended', async () => {
+    const fetchMock = respond(200, {});
+    vi.stubGlobal('fetch', fetchMock);
+    suspended.current = true;
+    await expect(getApiClient().getMe()).rejects.toThrow(/paused/);
+    expect(fetchMock).not.toHaveBeenCalled();
+    suspended.current = false;
+    await getApiClient().getMe();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 afterEach(() => {
