@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -16,11 +17,9 @@ import (
 const ExportWindow = time.Hour
 
 const (
-	exportThreadPage = 200
-	exportEventPage  = 500
-	// exportBookingCap bounds bookings.json (BookingRepo.ListByUser is
-	// limit-based; a personal booking page never approaches this).
-	exportBookingCap = 10000
+	exportThreadPage  = 200
+	exportEventPage   = 500
+	exportBookingPage = 500
 )
 
 // ExportDeps wires one repo per export file plus the throttle and clock.
@@ -47,22 +46,29 @@ type ExportDeps struct {
 	Settings      port.UserSettingsRepo
 	Exports       port.UserExportRepo
 	Clock         port.Clock
+	// User-authored datasets the purge also deletes.
+	Comments              port.CommentRepo
+	CalendarSubscriptions port.CalendarSubscriptionRepo
+	Classifiers           port.ClassifierRepo
+	VoiceProfiles         port.VoiceProfileRepo
 }
 
 // ExportService implements port.ExportService: claims the hourly slot, then
-// writes the 16 export files into the sink in a fixed order, paging threads
-// (per account, keyset on id) and events (keyset on id) so memory stays
-// flat. It never touches AccountRepo.GetTokens.
+// writes every user-authored dataset the purge deletes into the sink in a
+// fixed order, paging threads (per account, keyset on id), events and
+// bookings (keyset on id) so memory stays flat. Every read is scoped to the
+// requesting user. It never touches AccountRepo.GetTokens.
 type ExportService struct {
-	d          ExportDeps
-	threadPage int
-	eventPage  int
+	d           ExportDeps
+	threadPage  int
+	eventPage   int
+	bookingPage int
 }
 
 var _ port.ExportService = (*ExportService)(nil)
 
 func NewExportService(d ExportDeps) *ExportService {
-	return &ExportService{d: d, threadPage: exportThreadPage, eventPage: exportEventPage}
+	return &ExportService{d: d, threadPage: exportThreadPage, eventPage: exportEventPage, bookingPage: exportBookingPage}
 }
 
 // exportAccount is accounts.json's row: identity only, never tokens/scopes.
@@ -277,11 +283,26 @@ func (s *ExportService) Export(ctx context.Context, userID string, sink port.Exp
 	if err := writeExportFile(sink, "booking-links.json", links); err != nil {
 		return err
 	}
-	bookings, err := s.d.Bookings.ListByUser(ctx, userID, exportBookingCap)
+	bookings, err := newExportArray(sink, "bookings.json")
 	if err != nil {
 		return err
 	}
-	if err := writeExportFile(sink, "bookings.json", bookings); err != nil {
+	for after := ""; ; {
+		page, err := s.d.Bookings.ListByUserPage(ctx, userID, after, s.bookingPage)
+		if err != nil {
+			return err
+		}
+		for _, b := range page {
+			if err := bookings.item(b); err != nil {
+				return err
+			}
+		}
+		if len(page) < s.bookingPage {
+			break
+		}
+		after = page[len(page)-1].ID
+	}
+	if err := bookings.close(); err != nil {
 		return err
 	}
 	polls, err := s.d.Polls.ListByUser(ctx, userID)
@@ -329,5 +350,56 @@ func (s *ExportService) Export(ctx context.Context, userID string, sink port.Exp
 	if err != nil {
 		return err
 	}
-	return writeExportFile(sink, "event-notes.json", notes)
+	if err := writeExportFile(sink, "event-notes.json", notes); err != nil {
+		return err
+	}
+	return s.exportAuthored(ctx, userID, sink)
+}
+
+// exportAuthored writes the remaining user-authored datasets: team snippets
+// the user wrote, their thread comments, ICS subscriptions, classifier
+// prompts and the AI voice profile (null when none was learned).
+func (s *ExportService) exportAuthored(ctx context.Context, userID string, sink port.ExportSink) error {
+	teamSnippets, err := s.d.Snippets.ListTeamByAuthor(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if err := writeExportFile(sink, "team-snippets.json", teamSnippets); err != nil {
+		return err
+	}
+	comments, err := s.d.Comments.ListByAuthor(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if err := writeExportFile(sink, "thread-comments.json", comments); err != nil {
+		return err
+	}
+	subs, err := s.d.CalendarSubscriptions.ListByUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if subs == nil {
+		subs = []domain.CalendarSubscription{}
+	}
+	if err := writeExportFile(sink, "calendar-subscriptions.json", subs); err != nil {
+		return err
+	}
+	classifiers, err := s.d.Classifiers.ListByUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if classifiers == nil {
+		classifiers = []domain.AiClassifier{}
+	}
+	if err := writeExportFile(sink, "classifiers.json", classifiers); err != nil {
+		return err
+	}
+	var voice *domain.VoiceProfile
+	switch p, err := s.d.VoiceProfiles.Get(ctx, userID); {
+	case err == nil:
+		voice = &p
+	case !errors.Is(err, domain.ErrNotFound):
+		return err
+	}
+	return writeExportFile(sink, "voice-profile.json", voice)
 }

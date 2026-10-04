@@ -102,6 +102,27 @@ func (r *CommentRepo) ListByThreadTeam(ctx context.Context, threadID, teamID str
 	return out, rows.Err()
 }
 
+// ListByAuthor returns authorID's live comments, oldest first (export).
+func (r *CommentRepo) ListByAuthor(ctx context.Context, authorID string) ([]domain.Comment, error) {
+	rows, err := r.s.q(ctx).QueryContext(ctx, `
+		SELECT `+commentCols+` FROM thread_comments
+		WHERE author_id = $1 AND deleted_at IS NULL
+		ORDER BY created_at, id`, authorID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := []domain.Comment{}
+	for rows.Next() {
+		c, err := scanComment(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 func (r *CommentRepo) Update(ctx context.Context, c domain.Comment) error {
 	mentions, err := jsonArray(c.Mentions)
 	if err != nil {

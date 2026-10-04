@@ -246,6 +246,9 @@ type SnippetRepo interface {
 	ListByUser(ctx context.Context, userID string) ([]domain.Snippet, error)
 	// ListByTeams returns every snippet scoped to any of teamIDs.
 	ListByTeams(ctx context.Context, teamIDs []string) ([]domain.Snippet, error)
+	// ListTeamByAuthor returns the team snippets userID authored (team_id
+	// set), ordered by name (data export; purge cascades them via user_id).
+	ListTeamByAuthor(ctx context.Context, userID string) ([]domain.Snippet, error)
 	Update(ctx context.Context, s domain.Snippet) error
 	Delete(ctx context.Context, id string) error
 }
@@ -506,6 +509,9 @@ type BookingRepo interface {
 	// ListActiveInRange returns hold+confirmed bookings overlapping [from,to).
 	ListActiveInRange(ctx context.Context, linkID string, from, to time.Time) ([]domain.Booking, error)
 	ListByUser(ctx context.Context, userID string, limit int) ([]domain.Booking, error)
+	// ListByUserPage keyset-pages every booking on the user's links by id
+	// (ids > afterID, ascending, at most limit) — the uncapped export read.
+	ListByUserPage(ctx context.Context, userID, afterID string, limit int) ([]domain.Booking, error)
 	// Confirm promotes a hold: status="confirmed", event_id set, hold_expires_at cleared.
 	Confirm(ctx context.Context, id, eventID string) error
 	Cancel(ctx context.Context, id string) error
@@ -616,6 +622,9 @@ type CommentRepo interface {
 	// ListByThreadTeam returns the live comments one team sees on one
 	// thread, oldest first.
 	ListByThreadTeam(ctx context.Context, threadID, teamID string) ([]domain.Comment, error)
+	// ListByAuthor returns every live comment authorID wrote, across all
+	// threads and teams, oldest first (data export).
+	ListByAuthor(ctx context.Context, authorID string) ([]domain.Comment, error)
 	Update(ctx context.Context, c domain.Comment) error
 	SoftDelete(ctx context.Context, id string, at time.Time) error
 }

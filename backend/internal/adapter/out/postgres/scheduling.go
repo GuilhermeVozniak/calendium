@@ -335,6 +335,27 @@ func (r bookingRepo) ListByUser(ctx context.Context, userID string, limit int) (
 	return collectBookings(rows)
 }
 
+// ListByUserPage keyset-pages every booking on the user's links by id
+// (the uncapped export read).
+func (r bookingRepo) ListByUserPage(ctx context.Context, userID, afterID string, limit int) ([]domain.Booking, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := r.q(ctx).QueryContext(ctx, `
+		SELECT b.id, b.link_id, b.status, b.start_at, b.end_at, b.invitee_name, b.invitee_email,
+			b.invitee_tz, b.note, b.event_id, b.hold_expires_at, b.created_at
+		FROM bookings b
+		JOIN booking_links bl ON bl.id = b.link_id
+		WHERE bl.user_id = $1 AND b.id > $2
+		ORDER BY b.id
+		LIMIT $3`, userID, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return collectBookings(rows)
+}
+
 func collectBookings(rows *sql.Rows) ([]domain.Booking, error) {
 	bookings := []domain.Booking{}
 	for rows.Next() {

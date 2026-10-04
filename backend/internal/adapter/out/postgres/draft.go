@@ -229,6 +229,17 @@ func (r snippetRepo) ListByUser(ctx context.Context, userID string) ([]domain.Sn
 	return collectSnippets(rows)
 }
 
+// ListTeamByAuthor returns the team snippets userID authored (export).
+func (r snippetRepo) ListTeamByAuthor(ctx context.Context, userID string) ([]domain.Snippet, error) {
+	rows, err := r.q(ctx).QueryContext(ctx,
+		`SELECT `+snippetCols+` FROM snippets WHERE user_id = $1 AND team_id IS NOT NULL ORDER BY name, id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return collectSnippets(rows)
+}
+
 // ListByTeams returns every snippet scoped to any of teamIDs (M2.7 team
 // snippets), ordered by name.
 func (r snippetRepo) ListByTeams(ctx context.Context, teamIDs []string) ([]domain.Snippet, error) {

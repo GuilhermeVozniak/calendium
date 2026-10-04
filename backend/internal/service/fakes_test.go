@@ -798,6 +798,16 @@ func (r *fakeSnippetRepo) ListByUser(_ context.Context, userID string) ([]domain
 	return out, nil
 }
 
+func (r *fakeSnippetRepo) ListTeamByAuthor(_ context.Context, userID string) ([]domain.Snippet, error) {
+	out := []domain.Snippet{}
+	for _, id := range r.order {
+		if s, ok := r.byID[id]; ok && s.UserID == userID && s.TeamID != nil {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
 func (r *fakeSnippetRepo) ListByTeams(_ context.Context, teamIDs []string) ([]domain.Snippet, error) {
 	out := []domain.Snippet{}
 	for _, id := range r.order {
@@ -2357,6 +2367,26 @@ func (r *fakeBookingRepo) ListByUser(_ context.Context, userID string, limit int
 		out = append(out, b)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (r *fakeBookingRepo) ListByUserPage(_ context.Context, userID, afterID string, limit int) ([]domain.Booking, error) {
+	out := []domain.Booking{}
+	for _, b := range r.byID {
+		if r.links != nil {
+			link, ok := r.links.byID[b.LinkID]
+			if !ok || link.UserID != userID {
+				continue
+			}
+		}
+		if b.ID > afterID {
+			out = append(out, b)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
