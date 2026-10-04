@@ -1,6 +1,6 @@
 // Package netguard is the ONE SSRF predicate shared by every outbound
 // adapter that dials user-supplied hosts (icsfeed subscriptions, RFC 8058
-// unsubscribe POSTs): an address may be dialled only when it is public
+// unsubscribe POSTs, Web Push endpoints): an address may be dialled only when it is public
 // global unicast and outside every private, loopback, link-local, ULA,
 // unspecified, multicast, CGNAT (100.64.0.0/10) and NAT64 (64:ff9b::/96,
 // plus the local-use 64:ff9b:1::/48) range. Nothing in Calendium needs
