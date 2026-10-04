@@ -674,8 +674,9 @@ export class ApiClient {
    * GET /v1/me/export — streams the account's data as a zip. Unlike every
    * other call this returns the raw Blob (no JSON parsing). A 409
    * export_throttled carries `retryAfterSeconds` from the Retry-After header.
-   * Never delegable (403 under act-as). Mobile/desktop never call it: they
-   * link to the web settings page instead. Shares request()'s token cache and
+   * Never delegable (403 under act-as). Web and mobile call it (mobile hands
+   * the file to the share sheet); desktop links to the web settings page.
+   * Shares request()'s token cache and
    * its single re-mint on an access-token rejection.
    */
   downloadExport(): Promise<Blob> {
