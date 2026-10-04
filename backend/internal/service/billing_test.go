@@ -122,6 +122,64 @@ func TestGetSubscriptionUnknownUserPropagatesNotFound(t *testing.T) {
 	}
 }
 
+// --- RequireActive: lazy trial grant for brand-new users -------------------
+
+// A brand-new user whose first call is a gated one (before any client has
+// fetched GET /v1/billing/subscription) gets the signup trial from the gate
+// itself, anchored to users.created_at exactly like GetSubscription.
+func TestRequireActiveGrantsTrialToBrandNewUser(t *testing.T) {
+	ctx := context.Background()
+	signup := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	h := newBillingHarness(signup.Add(time.Minute))
+	h.seedUser(t, "u1", signup)
+
+	if err := h.svc.RequireActive(ctx, "u1"); err != nil {
+		t.Fatalf("first gated call of a new user = %v, want allowed (trial)", err)
+	}
+	sub, err := h.subs.GetByUserID(ctx, "u1")
+	if err != nil {
+		t.Fatalf("trial row not created: %v", err)
+	}
+	if want := signup.Add(domain.TrialLength); sub.Status != domain.SubscriptionTrialing || sub.TrialEndsAt == nil || !sub.TrialEndsAt.Equal(want) {
+		t.Fatalf("row = %+v, want trialing until created_at+14d = %v", sub, want)
+	}
+	if h.subs.ensureTrialCalls != 1 {
+		t.Fatalf("ensureTrialCalls = %d, want 1", h.subs.ensureTrialCalls)
+	}
+}
+
+// The lazy grant is anchored to signup, so an old account without a row is
+// not handed a fresh trial by the gate.
+func TestRequireActiveLazyTrialIsAnchoredToSignup(t *testing.T) {
+	now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	h.seedUser(t, "u1", now.Add(-20*24*time.Hour))
+
+	var pr *domain.PaymentRequiredError
+	if err := h.svc.RequireActive(context.Background(), "u1"); !errors.As(err, &pr) || pr.Reason != domain.DenialTrialEnded {
+		t.Fatalf("err = %v, want 402 trial_ended for a 20-day-old account", err)
+	}
+}
+
+// Every gated service shares entitlement; the grant works through it
+// directly, and an unknown user (no users row to anchor) stays 402 none.
+func TestEntitlementLazyTrialGrant(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	users, subs := newUserRepo(), newSubscriptionRepo()
+	if _, err := users.Upsert(ctx, domain.User{ID: "u1", Email: "u1@example.com", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	ent := entitlement{subs: subs, users: users, clock: newClock(now)}
+	if err := ent.require(ctx, "u1"); err != nil {
+		t.Fatalf("new user = %v, want allowed", err)
+	}
+	var pr *domain.PaymentRequiredError
+	if err := ent.require(ctx, "ghost"); !errors.As(err, &pr) || pr.Reason != domain.DenialNone {
+		t.Fatalf("unknown user = %v, want 402 none", err)
+	}
+}
+
 // --- RequireActive: entitlement matrix with typed 402 -----------------------
 
 func TestRequireActiveMatrix(t *testing.T) {

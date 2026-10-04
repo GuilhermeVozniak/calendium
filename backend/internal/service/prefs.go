@@ -20,11 +20,11 @@ type PrefsService struct {
 
 var _ port.PrefsService = (*PrefsService)(nil)
 
-func NewPrefsService(prefs port.PrefsRepo, calendar port.CalendarPrefsRepo, subs port.SubscriptionRepo, clock port.Clock, selfHosted bool) *PrefsService {
+func NewPrefsService(prefs port.PrefsRepo, calendar port.CalendarPrefsRepo, subs port.SubscriptionRepo, users port.UserRepo, clock port.Clock, selfHosted bool) *PrefsService {
 	return &PrefsService{
 		prefs:    prefs,
 		calendar: calendar,
-		ent:      entitlement{subs: subs, clock: clock, selfHost: selfHosted},
+		ent:      entitlement{subs: subs, users: users, clock: clock, selfHost: selfHosted},
 	}
 }
 

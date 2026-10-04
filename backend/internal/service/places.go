@@ -29,6 +29,7 @@ const (
 // configured); Autocomplete then answers ErrNotImplemented.
 type PlacesServiceDeps struct {
 	Subscriptions port.SubscriptionRepo
+	Users         port.UserRepo // anchors the entitlement gate's lazy trial grant
 	Maps          port.MapsProvider
 	Clock         port.Clock
 	SelfHosted    bool
@@ -55,7 +56,7 @@ var _ port.PlacesService = (*PlacesService)(nil)
 
 func NewPlacesService(d PlacesServiceDeps) *PlacesService {
 	return &PlacesService{
-		ent:   entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
+		ent:   entitlement{subs: d.Subscriptions, users: d.Users, clock: d.Clock, selfHost: d.SelfHosted},
 		maps:  d.Maps,
 		clock: d.Clock,
 		cache: map[string]placesEntry{},

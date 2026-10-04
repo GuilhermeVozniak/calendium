@@ -25,6 +25,7 @@ const (
 // MailServiceDeps wires a MailService.
 type MailServiceDeps struct {
 	Subscriptions port.SubscriptionRepo
+	Users         port.UserRepo // anchors the entitlement gate's lazy trial grant
 	Accounts      port.AccountRepo
 	Threads       port.ThreadRepo
 	Messages      port.MessageRepo
@@ -89,7 +90,7 @@ func NewMailService(d MailServiceDeps) *MailService {
 		logger = slog.Default()
 	}
 	return &MailService{
-		ent:           entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
+		ent:           entitlement{subs: d.Subscriptions, users: d.Users, clock: d.Clock, selfHost: d.SelfHosted},
 		accounts:      d.Accounts,
 		threads:       d.Threads,
 		messages:      d.Messages,

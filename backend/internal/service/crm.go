@@ -19,6 +19,7 @@ const crmContextTTL = 5 * time.Minute
 // CrmServiceDeps wires the CRM use-cases (M2.8 Task 16).
 type CrmServiceDeps struct {
 	Subscriptions port.SubscriptionRepo
+	Users         port.UserRepo // anchors the entitlement gate's lazy trial grant
 	// Connections is the narrow consumer-side view of the per-user
 	// integration-connection storage built by the parallel integration-OAuth
 	// task (Task 9). This service never stores or refreshes tokens itself
@@ -55,7 +56,7 @@ var _ port.CrmService = (*CrmService)(nil)
 
 func NewCrmService(d CrmServiceDeps) *CrmService {
 	return &CrmService{
-		ent:       entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
+		ent:       entitlement{subs: d.Subscriptions, users: d.Users, clock: d.Clock, selfHost: d.SelfHosted},
 		conns:     d.Connections,
 		providers: d.Providers,
 		oauth:     d.OAuth,

@@ -205,6 +205,7 @@ func run(logger *slog.Logger) error {
 	})
 	calendarSvc := service.NewCalendarService(service.CalendarServiceDeps{
 		Subscriptions:     store.Subscriptions(),
+		Users:             store.Users(),
 		Accounts:          store.Accounts(),
 		Calendars:         store.Calendars(),
 		Events:            store.Events(),
@@ -273,6 +274,7 @@ func run(logger *slog.Logger) error {
 		CalendarSvc: calendarSvc,
 		// Entitlement gate: lapsed cloud users are skipped silently.
 		Subscriptions: store.Subscriptions(),
+		Users:         store.Users(),
 		SelfHosted:    cfg.Instance.SelfHosted,
 		// Travel pass (M2.8 Task 12): managed "Travel to …" blocks + leave
 		// alerts, folded into the automation loop so a single writer owns

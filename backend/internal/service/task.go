@@ -15,6 +15,7 @@ const positionStep = 1024
 // TaskServiceDeps wires a TaskService.
 type TaskServiceDeps struct {
 	Subscriptions port.SubscriptionRepo
+	Users         port.UserRepo // anchors the entitlement gate's lazy trial grant
 	Tasks         port.TaskRepo
 	Clock         port.Clock
 	// TodoProviders + Integrations power completion write-through on external
@@ -44,7 +45,7 @@ var _ port.TaskService = (*TaskService)(nil)
 
 func NewTaskService(d TaskServiceDeps) *TaskService {
 	return &TaskService{
-		ent:           entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
+		ent:           entitlement{subs: d.Subscriptions, users: d.Users, clock: d.Clock, selfHost: d.SelfHosted},
 		tasks:         d.Tasks,
 		clock:         d.Clock,
 		todoProviders: d.TodoProviders,

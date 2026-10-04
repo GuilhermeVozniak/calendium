@@ -177,6 +177,7 @@ func run(logger *slog.Logger) error {
 		clock)
 	mail := service.NewMailService(service.MailServiceDeps{
 		Subscriptions: store.Subscriptions(),
+		Users:         store.Users(),
 		Accounts:      store.Accounts(),
 		Threads:       store.Threads(),
 		Messages:      store.Messages(),
@@ -222,9 +223,10 @@ func run(logger *slog.Logger) error {
 		CalendarSubs: store.CalendarSubscriptions(),
 		IcsFetcher:   icsfeed.New(nil),
 	})
-	search := service.NewSearchService(store.Subscriptions(), store.Threads(), store.Events(), clock, cfg.Instance.SelfHosted)
+	search := service.NewSearchService(store.Subscriptions(), store.Users(), store.Threads(), store.Events(), clock, cfg.Instance.SelfHosted)
 	aiSvc := service.NewAIService(service.AIServiceDeps{
 		Subscriptions: store.Subscriptions(),
+		Users:         store.Users(),
 		Accounts:      store.Accounts(),
 		Threads:       store.Threads(),
 		Messages:      store.Messages(),
@@ -239,7 +241,7 @@ func run(logger *slog.Logger) error {
 		SelfHosted:    cfg.Instance.SelfHosted,
 	})
 	devices := service.NewDeviceService(store.Devices(), clock)
-	prefs := service.NewPrefsService(store.Prefs(), store.CalendarPrefs(), store.Subscriptions(), clock, cfg.Instance.SelfHosted)
+	prefs := service.NewPrefsService(store.Prefs(), store.CalendarPrefs(), store.Subscriptions(), store.Users(), clock, cfg.Instance.SelfHosted)
 	scheduling := service.NewSchedulingService(service.SchedulingServiceDeps{
 		Subscriptions:     store.Subscriptions(),
 		Users:             store.Users(),
@@ -317,6 +319,7 @@ func run(logger *slog.Logger) error {
 	// M2.8: first-class tasks (local todos + mirrored provider todos).
 	tasksSvc := service.NewTaskService(service.TaskServiceDeps{
 		Subscriptions: store.Subscriptions(),
+		Users:         store.Users(),
 		Tasks:         store.Tasks(),
 		Clock:         clock,
 		TodoProviders: todoProviders,
@@ -327,6 +330,7 @@ func run(logger *slog.Logger) error {
 	// M2.7 Task 10: teammate read/reply indicators.
 	teamActivitySvc := service.NewTeamActivityService(service.TeamActivityServiceDeps{
 		Subscriptions: store.Subscriptions(),
+		Users:         store.Users(),
 		Accounts:      store.Accounts(),
 		Threads:       store.Threads(),
 		Teams:         postgres.NewTeamRepo(store),
@@ -343,6 +347,7 @@ func run(logger *slog.Logger) error {
 		weatherSvc = service.NewWeatherService(service.WeatherServiceDeps{
 			Provider:      openmeteo.New(cfg.Weather.BaseURL),
 			Subscriptions: store.Subscriptions(),
+			Users:         store.Users(),
 			Clock:         clock,
 			SelfHosted:    cfg.Instance.SelfHosted,
 		})
@@ -357,6 +362,7 @@ func run(logger *slog.Logger) error {
 	if mapsConfigured {
 		placesSvc = service.NewPlacesService(service.PlacesServiceDeps{
 			Subscriptions: store.Subscriptions(),
+			Users:         store.Users(),
 			Maps:          nominatim.New(cfg.Maps.NominatimBaseURL, cfg.Maps.OSRMBaseURL, hc),
 			Clock:         clock,
 			SelfHosted:    cfg.Instance.SelfHosted,
@@ -371,6 +377,7 @@ func run(logger *slog.Logger) error {
 	if cfg.HubSpot.ClientID != "" {
 		crmSvc = service.NewCrmService(service.CrmServiceDeps{
 			Subscriptions: store.Subscriptions(),
+			Users:         store.Users(),
 			Connections:   crmConnectionStore{repo: postgres.NewIntegrationRepo(store)},
 			Providers: map[domain.IntegrationVendor]port.CrmProvider{
 				domain.IntegrationHubSpot: hubspot.NewClient(hc),

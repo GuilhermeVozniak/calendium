@@ -81,7 +81,7 @@ func (s *BillingService) GetSubscription(ctx context.Context, userID string) (do
 	}
 	sub, err := s.subs.GetByUserID(ctx, userID)
 	if errors.Is(err, domain.ErrNotFound) {
-		sub, err = s.grantTrial(ctx, userID)
+		sub, err = grantTrial(ctx, s.users, s.subs, userID)
 	}
 	if err != nil {
 		return domain.Subscription{}, err
@@ -105,16 +105,17 @@ func (s *BillingService) GetSubscription(ctx context.Context, userID string) (do
 // grantTrial anchors the 14-day trial to users.created_at (signup, since
 // the users row is provisioned on the first authenticated call). EnsureTrial
 // is ON CONFLICT DO NOTHING, so concurrent first calls both read back the
-// same row.
-func (s *BillingService) grantTrial(ctx context.Context, userID string) (domain.Subscription, error) {
-	user, err := s.users.GetByID(ctx, userID)
+// same row. Shared by GetSubscription and the entitlement gate; an unknown
+// user propagates ErrNotFound.
+func grantTrial(ctx context.Context, users port.UserRepo, subs port.SubscriptionRepo, userID string) (domain.Subscription, error) {
+	user, err := users.GetByID(ctx, userID)
 	if err != nil {
 		return domain.Subscription{}, err
 	}
-	if err := s.subs.EnsureTrial(ctx, userID, user.CreatedAt.Add(domain.TrialLength)); err != nil {
+	if err := subs.EnsureTrial(ctx, userID, user.CreatedAt.Add(domain.TrialLength)); err != nil {
 		return domain.Subscription{}, err
 	}
-	return s.subs.GetByUserID(ctx, userID)
+	return subs.GetByUserID(ctx, userID)
 }
 
 // CreateCheckout starts the hosted checkout: grants the trial row if
@@ -358,5 +359,5 @@ func (s *BillingService) claimInlineReconcile(userID string, now time.Time) bool
 }
 
 func (s *BillingService) RequireActive(ctx context.Context, userID string) error {
-	return entitlement{subs: s.subs, clock: s.clock, selfHost: s.selfHosted}.require(ctx, userID)
+	return entitlement{subs: s.subs, users: s.users, clock: s.clock, selfHost: s.selfHosted}.require(ctx, userID)
 }
