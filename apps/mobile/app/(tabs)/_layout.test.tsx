@@ -24,7 +24,7 @@ jest.mock('nativewind', () => ({
 // The layout now runs the billing gate's `useQuery` (Paddle Task 19). These
 // configs carry `billing: false`, so nothing is fetched; the mocks only keep
 // the module graph loadable under Jest.
-jest.mock('@/lib/api', () => ({ api: { getSubscription: jest.fn() } }));
+jest.mock('@/lib/api', () => ({ api: { getSubscription: jest.fn() }, onPaymentRequired: () => () => {} }));
 jest.mock('@/lib/mock', () => ({
   withMockFallback: (real: () => unknown) => real(),
   mockSubscription: { status: 'trialing' },

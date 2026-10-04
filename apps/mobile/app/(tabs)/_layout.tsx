@@ -1,12 +1,12 @@
 import { PaywallScreen } from '@/components/paywall-screen';
 import useAuth from '@/context/auth';
 import { usePushRegistration } from '@/hooks/use-push-registration';
-import { api } from '@/lib/api';
+import { api, onPaymentRequired } from '@/lib/api';
 import { mockSubscription, withMockFallback } from '@/lib/mock';
 import { useServerConfig } from '@/lib/server-config';
 import { THEME } from '@/lib/theme';
 import { subscriptionDenialReason } from '@calendium/shared';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Redirect, Tabs, useRouter } from 'expo-router';
 import {
   CalendarDaysIcon,
@@ -16,6 +16,7 @@ import {
   SparklesIcon,
 } from 'lucide-react-native';
 import { useColorScheme } from 'nativewind';
+import { useEffect } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 
 export default function TabsLayout() {
@@ -43,6 +44,19 @@ export default function TabsLayout() {
     // user who just subscribed elsewhere is not left paywalled.
     refetchOnWindowFocus: 'always',
   });
+
+  // Any 402 from the API client means the server now denies access (e.g. the
+  // trial ended while the app stayed open): re-check right away so the user
+  // lands on the paywall instead of per-screen errors. cancelRefetch:false
+  // joins an in-flight fetch, so a burst of 402s can never loop.
+  const queryClient = useQueryClient();
+  useEffect(
+    () =>
+      onPaymentRequired(() => {
+        void queryClient.invalidateQueries({ queryKey: ['subscription'] }, { cancelRefetch: false });
+      }),
+    [queryClient]
+  );
 
   usePushRegistration();
 

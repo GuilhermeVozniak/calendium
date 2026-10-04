@@ -11,7 +11,14 @@ jest.mock('@/lib/server-config', () => ({
 }));
 
 const mockGetSubscription = jest.fn();
-jest.mock('@/lib/api', () => ({ api: { getSubscription: (...a: unknown[]) => mockGetSubscription(...a) } }));
+const mockPaymentRequiredListeners = new Set<() => void>();
+jest.mock('@/lib/api', () => ({
+  api: { getSubscription: (...a: unknown[]) => mockGetSubscription(...a) },
+  onPaymentRequired: (listener: () => void) => {
+    mockPaymentRequiredListeners.add(listener);
+    return () => mockPaymentRequiredListeners.delete(listener);
+  },
+}));
 jest.mock('@/lib/mock', () => ({
   withMockFallback: (real: () => unknown) => real(),
   mockSubscription: { status: 'trialing' },
@@ -132,6 +139,24 @@ describe('TabsLayout billing gate', () => {
     await flush();
     expect(mockGetSubscription).toHaveBeenCalledTimes(2);
     expect(screen.getByText('inbox')).toBeTruthy();
+  });
+
+  // Mid-session lapse: a 402 from any gated call re-checks the subscription at
+  // once, so the user lands on the paywall instead of per-screen 402 errors.
+  it('re-evaluates the subscription when the API client sees a 402', async () => {
+    mockUseServerConfig.mockReturnValue({ config: CLOUD });
+    mockGetSubscription.mockResolvedValue({ status: 'trialing', plan: 'annual', priceUsd: 50, currentPeriodEnd: null, cancelAtPeriodEnd: false, trialEndsAt: new Date(Date.now() + 86_400_000).toISOString() });
+    await renderLayout();
+    await flush();
+    expect(screen.getByText('inbox')).toBeTruthy();
+
+    mockGetSubscription.mockResolvedValue({ status: 'trialing', plan: 'annual', priceUsd: 50, currentPeriodEnd: null, cancelAtPeriodEnd: false, trialEndsAt: new Date(Date.now() - 1000).toISOString() });
+    await act(async () => {
+      for (const listener of mockPaymentRequiredListeners) listener();
+    });
+    await flush();
+    expect(mockGetSubscription).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText('inbox')).toBeNull();
   });
 
   it('fails open when the subscription cannot be fetched', async () => {

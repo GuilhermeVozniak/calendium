@@ -1,6 +1,6 @@
 import type { InboxSplit } from '@calendium/shared';
 import { subscriptionDenialReason } from '@calendium/shared';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import {
   Archive,
@@ -32,7 +32,7 @@ import {
 } from '@/ui/command';
 import { Kbd } from '@/ui/kbd';
 import { Toaster } from '@/ui/toaster';
-import { api, orMock } from '@/lib/api';
+import { api, onPaymentRequired, orMock } from '@/lib/api';
 import { openCompose } from '@/lib/compose';
 import { mockSearch, mockSubscription } from '@/lib/mock';
 import { useServerConfig } from '@/lib/server-config';
@@ -203,6 +203,18 @@ export default function App() {
     staleTime: 60_000,
     refetchInterval: 5 * 60_000,
   });
+  // Any 402 from the API client means the server now denies access (e.g. the
+  // trial ended mid-session): re-check right away instead of waiting for the
+  // poll. cancelRefetch:false joins an in-flight fetch, so a burst of 402s
+  // (or one from the subscription endpoint itself) can never loop.
+  const queryClient = useQueryClient();
+  useEffect(
+    () =>
+      onPaymentRequired(() => {
+        void queryClient.invalidateQueries({ queryKey: ['subscription'] }, { cancelRefetch: false });
+      }),
+    [queryClient]
+  );
   // Fail open on fetch errors; only a fetched subscription that denies access paywalls.
   const paywallReason =
     billingEnabled && subscriptionQuery.data ? subscriptionDenialReason(subscriptionQuery.data) : null;
