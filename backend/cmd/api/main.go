@@ -31,6 +31,7 @@ import (
 	"calendium/backend/internal/adapter/out/pgbus"
 	"calendium/backend/internal/adapter/out/postgres"
 	"calendium/backend/internal/adapter/out/push"
+	"calendium/backend/internal/adapter/out/smtp"
 	"calendium/backend/internal/adapter/out/todoist"
 	"calendium/backend/internal/adapter/out/unsubscribe"
 	"calendium/backend/internal/config"
@@ -70,6 +71,10 @@ func run(logger *slog.Logger) error {
 	if err := cfg.ValidateCloudBilling(); err != nil {
 		return err
 	}
+	// Cloud mode must never boot without a transactional sender (piece 2).
+	if err := cfg.ValidateCloudEmail(); err != nil {
+		return err
+	}
 
 	// --- Postgres + migrations ---
 	db, err := sql.Open("pgx", cfg.DB.URL)
@@ -96,6 +101,17 @@ func run(logger *slog.Logger) error {
 
 	// --- outbound gateways ---
 	hc := &http.Client{Timeout: 30 * time.Second}
+
+	// Transactional email (piece 2): the instance's own SMTP sender. nil
+	// when SMTP_HOST is unset — team invitations then fall back to copyable
+	// links and GET /v1/instance advertises features.email=false.
+	var mailer port.Mailer
+	if cfg.SMTP.Configured() {
+		mailer = smtp.New(cfg.SMTP)
+		logger.Info("api: email enabled", "host", cfg.SMTP.Host, "port", cfg.SMTP.Port, "secure", cfg.SMTP.Secure)
+	} else {
+		logger.Warn("email: disabled (no SMTP_HOST); verification off, invitations fall back to links")
+	}
 
 	verifier := authjwt.NewVerifier(cfg.Auth.JWKSURL, cfg.Auth.Issuer, hc)
 	payments := paddle.NewClient(paddle.Config{
@@ -274,6 +290,7 @@ func run(logger *slog.Logger) error {
 		Accounts:    store.Accounts(),
 		Mail:        mailProviders,
 		OAuth:       oauth,
+		Mailer:      mailer,
 		Subs:        store.Subscriptions(),
 		Tx:          store,
 		Clock:       clock,
@@ -447,6 +464,7 @@ func run(logger *slog.Logger) error {
 			AI:        cfg.OpenRouter.APIKey != "",
 			Push:      pushConfigured,
 			Maps:      mapsConfigured,
+			Email:     cfg.SMTP.Configured(),
 		},
 		// Only vendors whose config is present are advertised (M2.8).
 		Capabilities: httpapi.InstanceCapabilities{
@@ -473,6 +491,7 @@ func run(logger *slog.Logger) error {
 		"crm", crmSvc != nil,
 		"insights", insightsSvc != nil,
 		"push", pushSender != nil,
+		"mailer", mailer != nil,
 	}, billingEnvLogAttrs(cfg.Instance.SelfHosted, cfg.Paddle.Env)...)...)
 
 	// --- HTTP server ---
@@ -514,9 +533,15 @@ func run(logger *slog.Logger) error {
 		// when the HubSpot OAuth app is unconfigured → /v1/crm answers 501).
 		Crm: crmSvc,
 		// M2.8 Task 17: time insights over the local mirror.
-		Insights:           insightsSvc,
-		Instance:           instance,
-		CORSAllowedOrigins: cfg.HTTP.CORSAllowedOrigins,
+		Insights: insightsSvc,
+		Instance: instance,
+		// Explicit origins are always reflected: CORS_ALLOWED_ORIGINS plus the
+		// web app's own public origins (spec: Origins), so a production web
+		// tier keeps working with ALLOW_DEV_ORIGINS off. Blank entries are
+		// ignored by the middleware.
+		CORSAllowedOrigins: append(append([]string(nil), cfg.HTTP.CORSAllowedOrigins...),
+			cfg.Instance.PublicWebURL, cfg.Auth.BetterAuthURL),
+		AllowDevOrigins: cfg.HTTP.AllowDevOrigins,
 	})
 
 	srv := &http.Server{

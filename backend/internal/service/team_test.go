@@ -27,11 +27,19 @@ type teamFixture struct {
 	accounts *fakeAccountRepo
 	subs     *fakeSubscriptionRepo
 	provider *fakeMailProvider
+	mailer   *fakeMailer
 	tx       *fakeTxRunner
 	clock    *fakeClock
 }
 
 func newTeamFixture(t *testing.T, selfHost bool) *teamFixture {
+	return newTeamFixtureWithMailer(t, selfHost, nil)
+}
+
+// newTeamFixtureWithMailer wires an optional instance Mailer (nil = SMTP
+// unset, the default self-host shape). A nil *fakeMailer must become a nil
+// port.Mailer, never a typed nil, so the service's nil check holds.
+func newTeamFixtureWithMailer(t *testing.T, selfHost bool, mailer *fakeMailer) *teamFixture {
 	t.Helper()
 	f := &teamFixture{
 		teams:    newTeamRepo(),
@@ -40,8 +48,13 @@ func newTeamFixture(t *testing.T, selfHost bool) *teamFixture {
 		accounts: newAccountRepo(),
 		subs:     newSubscriptionRepo(),
 		provider: newMailProvider(),
+		mailer:   mailer,
 		tx:       newTxRunner(),
 		clock:    newClock(time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)),
+	}
+	var m port.Mailer
+	if mailer != nil {
+		m = mailer
 	}
 	f.svc = NewTeamService(TeamServiceDeps{
 		Teams:       f.teams,
@@ -50,6 +63,7 @@ func newTeamFixture(t *testing.T, selfHost bool) *teamFixture {
 		Accounts:    f.accounts,
 		Mail:        map[domain.Provider]port.MailProvider{domain.ProviderGoogle: f.provider},
 		OAuth:       map[domain.Provider]port.OAuthGateway{domain.ProviderGoogle: newOAuthGateway()},
+		Mailer:      m,
 		Subs:        f.subs,
 		Tx:          f.tx,
 		Clock:       f.clock,
@@ -502,16 +516,151 @@ func TestTeamInviteAuthorization(t *testing.T) {
 	}
 }
 
-func TestTeamInviteRequiresConnectedAccount(t *testing.T) {
+// TestTeamInviteFallsBackToLinkWithoutSender replaces the old
+// TestTeamInviteRequiresConnectedAccount: with neither a connected mailbox
+// nor an instance Mailer the invitation is still created and the response
+// carries the accept link for the inviter to share by hand.
+func TestTeamInviteFallsBackToLinkWithoutSender(t *testing.T) {
 	f := newTeamFixture(t, true)
 	f.seedTeam(t, "t1", "owner")
 	ctx := context.Background()
 
-	if _, err := f.svc.Invite(ctx, "owner", "t1", "x@example.com", domain.TeamRoleMember); !errors.Is(err, domain.ErrValidation) {
-		t.Fatalf("Invite without connected account err = %v, want ErrValidation", err)
+	inv, err := f.svc.Invite(ctx, "owner", "t1", "x@example.com", domain.TeamRoleMember)
+	if err != nil {
+		t.Fatalf("Invite without any sender: %v", err)
 	}
-	if invs, _ := f.invites.ListByTeam(ctx, "t1"); len(invs) != 0 {
-		t.Fatalf("dangling invitation persisted despite send being impossible: %+v", invs)
+	if inv.Delivery != domain.DeliveryLink {
+		t.Fatalf("Delivery = %q, want link", inv.Delivery)
+	}
+	const prefix = "https://app.calendium.test/invite/"
+	if !strings.HasPrefix(inv.InviteURL, prefix) {
+		t.Fatalf("InviteURL = %q, want prefix %q", inv.InviteURL, prefix)
+	}
+	raw := strings.TrimPrefix(inv.InviteURL, prefix)
+	if len(raw) != 64 {
+		t.Fatalf("token in link has length %d, want 64 hex chars", len(raw))
+	}
+	if inv.TokenHash != hashInviteToken(raw) {
+		t.Fatal("InviteURL token does not hash to the stored TokenHash")
+	}
+	if len(f.provider.sent) != 0 {
+		t.Fatalf("link fallback sent %d mailbox emails, want 0", len(f.provider.sent))
+	}
+	stored, _ := f.invites.ListByTeam(ctx, "t1")
+	if len(stored) != 1 || stored[0].Status != domain.InvitePending {
+		t.Fatalf("stored = %+v, want one pending invitation", stored)
+	}
+	// The link is response-only: the raw token is never persisted.
+	if _, err := f.invites.GetByTokenHash(ctx, raw); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatal("raw token must not be stored")
+	}
+}
+
+func TestTeamInviteUsesSMTPWhenNoMailbox(t *testing.T) {
+	mailer := newMailer()
+	f := newTeamFixtureWithMailer(t, true, mailer)
+	f.seedTeam(t, "t1", "owner")
+	name := "Olive Owner"
+	if _, err := f.users.Upsert(context.Background(), domain.User{ID: "owner", Email: "olive@acme.com", Name: &name}); err != nil {
+		t.Fatal(err)
+	}
+
+	inv, err := f.svc.Invite(context.Background(), "owner", "t1", "New@Example.com", domain.TeamRoleMember)
+	if err != nil {
+		t.Fatalf("Invite: %v", err)
+	}
+	if inv.Delivery != domain.DeliverySMTP || inv.InviteURL != "" {
+		t.Fatalf("inv = %+v, want smtp delivery without an inviteUrl", inv)
+	}
+	if len(mailer.sent) != 1 {
+		t.Fatalf("mailer sends = %d, want 1", len(mailer.sent))
+	}
+	if len(f.provider.sent) != 0 {
+		t.Fatal("the mailbox provider must not be used without a connected account")
+	}
+	m := mailer.sent[0]
+	if len(m.To) != 1 || m.To[0] != "new@example.com" {
+		t.Fatalf("To = %v, want the canonical invitee", m.To)
+	}
+	if m.ReplyTo != "olive@acme.com" {
+		t.Fatalf("ReplyTo = %q, want the inviter's email", m.ReplyTo)
+	}
+	if m.Subject != "Olive Owner invited you to Team t1 on Calendium" {
+		t.Fatalf("Subject = %q", m.Subject)
+	}
+	if !strings.Contains(m.Text, `Olive Owner has invited you to join the team "Team t1" on Calendium.`) {
+		t.Fatalf("Text = %q, want the shared wording", m.Text)
+	}
+	if !strings.Contains(m.Text, "https://app.calendium.test/invite/") || !strings.Contains(m.HTML, "https://app.calendium.test/invite/") {
+		t.Fatal("both bodies must carry the invite link")
+	}
+	if !strings.Contains(m.Text, "expires in 14 days") {
+		t.Fatalf("Text = %q, want the expiry footer", m.Text)
+	}
+}
+
+func TestTeamInvitePrefersMailboxOverSMTP(t *testing.T) {
+	mailer := newMailer()
+	f := newTeamFixtureWithMailer(t, true, mailer)
+	f.seedTeam(t, "t1", "owner")
+	acct := f.seedSendAccount(t, "owner")
+
+	inv, raw := f.invite(t, "owner", "t1", "x@example.com", domain.TeamRoleMember)
+	if inv.Delivery != domain.DeliveryMailbox || inv.InviteURL != "" {
+		t.Fatalf("inv = %+v, want mailbox delivery", inv)
+	}
+	if len(mailer.sent) != 0 {
+		t.Fatalf("SMTP used although a mailbox exists: %d sends", len(mailer.sent))
+	}
+	if f.provider.sent[0].From.Email != acct.Email {
+		t.Fatalf("From = %q, want the inviter's mailbox %q", f.provider.sent[0].From.Email, acct.Email)
+	}
+	if !strings.Contains(f.provider.sent[0].BodyText, "/invite/"+raw) {
+		t.Fatal("mailbox email must carry the invite link")
+	}
+}
+
+func TestTeamInviteSMTPFailureRevokesInvitation(t *testing.T) {
+	mailer := newMailer()
+	mailer.sendErr = errors.New("smtp exploded")
+	f := newTeamFixtureWithMailer(t, true, mailer)
+	f.seedTeam(t, "t1", "owner")
+	ctx := context.Background()
+
+	_, err := f.svc.Invite(ctx, "owner", "t1", "x@example.com", domain.TeamRoleMember)
+	if !errors.Is(err, mailer.sendErr) {
+		t.Fatalf("err = %v, want wrapped %v", err, mailer.sendErr)
+	}
+	if !strings.HasPrefix(err.Error(), "sending invitation email: ") {
+		t.Fatalf("err text = %q", err.Error())
+	}
+	invs, _ := f.invites.ListByTeam(ctx, "t1")
+	if len(invs) != 1 || invs[0].Status != domain.InviteRevoked {
+		t.Fatalf("stored = %+v, want one revoked invitation (rollback frees the pending-unique index)", invs)
+	}
+}
+
+func TestTeamInviteHTMLEscapesTeamName(t *testing.T) {
+	mailer := newMailer()
+	f := newTeamFixtureWithMailer(t, true, mailer)
+	team := f.seedTeam(t, "t1", "owner")
+	team.Name = `Ops <script>alert(1)</script> & "Co"`
+	if err := f.teams.Update(context.Background(), team); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.svc.Invite(context.Background(), "owner", "t1", "x@example.com", domain.TeamRoleMember); err != nil {
+		t.Fatal(err)
+	}
+	got := mailer.sent[0]
+	if strings.Contains(got.HTML, "<script>") {
+		t.Fatalf("HTML body carries raw markup: %q", got.HTML)
+	}
+	if !strings.Contains(got.HTML, "&lt;script&gt;") {
+		t.Fatalf("HTML body = %q, want escaped markup", got.HTML)
+	}
+	if !strings.Contains(got.Text, `Ops <script>alert(1)</script> & "Co"`) {
+		t.Fatal("text body must not be HTML-escaped")
 	}
 }
 

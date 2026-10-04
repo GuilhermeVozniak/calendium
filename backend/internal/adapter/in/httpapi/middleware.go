@@ -122,11 +122,13 @@ func (s *server) recoverPanics(next http.Handler) http.Handler {
 // --- CORS ---------------------------------------------------------------------
 
 // corsMiddleware reflects an allowed Origin so browser clients can call the
-// API cross-origin: localhost/127.0.0.1 dev servers (web/desktop/Expo, any
-// port), the packaged Wails WebView origins, and any origin in the
-// CORS_ALLOWED_ORIGINS env allowlist. Credentials are allowed (bearer JWTs);
-// preflights get a 204.
-func corsMiddleware(next http.Handler, allowedOrigins []string) http.Handler {
+// API cross-origin. Always reflected: the packaged Wails WebView origins
+// (production desktop clients) and every origin in allowedOrigins
+// (CORS_ALLOWED_ORIGINS + PUBLIC_WEB_URL + BETTER_AUTH_URL). Reflected only
+// when allowDevOrigins (ALLOW_DEV_ORIGINS=true): http(s)://localhost,
+// 127.0.0.1 and ::1 on any port — the dev servers. Credentials are allowed
+// (bearer JWTs); preflights get a 204.
+func corsMiddleware(next http.Handler, allowedOrigins []string, allowDevOrigins bool) http.Handler {
 	allow := make(map[string]struct{}, len(allowedOrigins))
 	for _, o := range allowedOrigins {
 		if o = strings.TrimRight(strings.TrimSpace(o), "/"); o != "" {
@@ -135,7 +137,7 @@ func corsMiddleware(next http.Handler, allowedOrigins []string) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin != "" && originAllowed(origin, allow) {
+		if origin != "" && originAllowed(origin, allow, allowDevOrigins) {
 			h := w.Header()
 			h.Set("Access-Control-Allow-Origin", origin)
 			h.Add("Vary", "Origin")
@@ -152,8 +154,11 @@ func corsMiddleware(next http.Handler, allowedOrigins []string) http.Handler {
 	})
 }
 
-func originAllowed(origin string, allow map[string]struct{}) bool {
-	if isLocalDevOrigin(origin) || isWailsOrigin(origin) {
+func originAllowed(origin string, allow map[string]struct{}, allowDevOrigins bool) bool {
+	if isWailsOrigin(origin) {
+		return true
+	}
+	if allowDevOrigins && isLocalDevOrigin(origin) {
 		return true
 	}
 	_, ok := allow[strings.TrimRight(origin, "/")]

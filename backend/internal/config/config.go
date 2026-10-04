@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	netmail "net/mail"
 	"os"
 	"strconv"
 	"strings"
@@ -20,6 +21,12 @@ type HTTP struct {
 	// (CORS_ALLOWED_ORIGINS, comma-separated) reflected in addition to the
 	// built-in localhost-dev and Wails WebView origins.
 	CORSAllowedOrigins []string
+	// AllowDevOrigins (ALLOW_DEV_ORIGINS, default false) reflects
+	// http(s)://localhost, 127.0.0.1 and ::1 origins in CORS. The Wails
+	// WebView origins and CORSAllowedOrigins are always reflected; this gates
+	// only the local dev servers. backend/.env.example (run-the-binary
+	// template) sets it true; the production root .env leaves it blank.
+	AllowDevOrigins bool
 }
 
 // DB configures Postgres.
@@ -207,6 +214,51 @@ type Instance struct {
 	AppBaseURL string
 }
 
+// SMTP configures the instance's own transactional sender (SMTP_*): team
+// invitations go through it when the inviter has no connected mailbox, and
+// the web app uses the same variables for verification and password-reset
+// mail. Unset on self-host disables it (invitations fall back to copyable
+// links); cloud mode (SELF_HOSTED=false) requires SMTP_HOST and SMTP_FROM —
+// see ValidateCloudEmail.
+type SMTP struct {
+	Host   string // SMTP_HOST
+	Port   int    // SMTP_PORT (default 587)
+	User   string // SMTP_USER (optional; must be paired with SMTP_PASS)
+	Pass   string // SMTP_PASS
+	From   string // SMTP_FROM: "addr" or "Name <addr>"
+	Secure bool   // SMTP_SECURE: true = implicit TLS, false = STARTTLS (default)
+}
+
+// Configured reports whether an SMTP sender is set up (SMTP_HOST present).
+func (s SMTP) Configured() bool { return s.Host != "" }
+
+// partialError reports a half-set SMTP block: SMTP_HOST, SMTP_FROM,
+// SMTP_USER or SMTP_PASS present without SMTP_HOST+SMTP_FROM, or a lone
+// SMTP_USER/SMTP_PASS. SMTP_PORT/SMTP_SECURE alone are fine (the env
+// templates ship them pre-filled).
+func (s SMTP) partialError() error {
+	if s.Host == "" && s.From == "" && s.User == "" && s.Pass == "" {
+		return nil
+	}
+	var missing []string
+	if s.Host == "" {
+		missing = append(missing, "SMTP_HOST")
+	}
+	if s.From == "" {
+		missing = append(missing, "SMTP_FROM")
+	}
+	if s.User == "" && s.Pass != "" {
+		missing = append(missing, "SMTP_USER")
+	}
+	if s.User != "" && s.Pass == "" {
+		missing = append(missing, "SMTP_PASS")
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("SMTP_* is partially configured: %s", strings.Join(missing, ", "))
+}
+
 // Config is the full backend configuration.
 type Config struct {
 	HTTP       HTTP
@@ -227,6 +279,7 @@ type Config struct {
 	Instance   Instance
 	Weather    Weather
 	Maps       Maps
+	SMTP       SMTP
 }
 
 // FromEnv builds a Config from environment variables. DATABASE_URL and a
@@ -386,6 +439,49 @@ func FromEnv() (Config, error) {
 		}
 	}
 
+	// Transactional email (piece 2). Port/secure/from are validated even when
+	// SMTP_HOST is blank so a typo surfaces at boot; the cloud-mode
+	// requirement lives in ValidateCloudEmail so FromEnv stays mode-agnostic.
+	cfg.SMTP = SMTP{
+		Host: strings.TrimSpace(os.Getenv("SMTP_HOST")),
+		Port: 587,
+		User: os.Getenv("SMTP_USER"),
+		Pass: os.Getenv("SMTP_PASS"),
+		From: strings.TrimSpace(os.Getenv("SMTP_FROM")),
+	}
+	if v := os.Getenv("SMTP_PORT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 65535 {
+			errs = append(errs, fmt.Errorf("SMTP_PORT must be an integer between 1 and 65535, got %q", v))
+		} else {
+			cfg.SMTP.Port = n
+		}
+	}
+	if v := os.Getenv("SMTP_SECURE"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("SMTP_SECURE must be true or false, got %q", v))
+		} else {
+			cfg.SMTP.Secure = b
+		}
+	}
+	if cfg.SMTP.From != "" {
+		if _, err := netmail.ParseAddress(cfg.SMTP.From); err != nil {
+			errs = append(errs, fmt.Errorf("SMTP_FROM must be an email address or \"Name <addr>\", got %q", cfg.SMTP.From))
+		}
+	}
+	if err := cfg.SMTP.partialError(); err != nil {
+		errs = append(errs, err)
+	}
+	if v := os.Getenv("ALLOW_DEV_ORIGINS"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("ALLOW_DEV_ORIGINS must be true or false, got %q", v))
+		} else {
+			cfg.HTTP.AllowDevOrigins = b
+		}
+	}
+
 	// Weather (M2.8 Task 13): keyless vendor, so the default is on. LookupEnv
 	// (not Getenv) so an explicitly empty OPEN_METEO_URL means "disable",
 	// while an unset one means "use the public API".
@@ -421,6 +517,17 @@ func FromEnv() (Config, error) {
 		return Config{}, errors.Join(errs...)
 	}
 	return cfg, nil
+}
+
+// ValidateCloudEmail enforces the cloud startup rule for transactional
+// email: with SELF_HOSTED=false an SMTP sender is mandatory because email
+// verification, password reset and team invitations all depend on it. Both
+// cmd/api and cmd/worker call it right after FromEnv.
+func (c Config) ValidateCloudEmail() error {
+	if c.Instance.SelfHosted || c.SMTP.Configured() {
+		return nil
+	}
+	return errors.New("SMTP_HOST and SMTP_FROM are required when SELF_HOSTED=false (cloud mode); set them or run with SELF_HOSTED=true")
 }
 
 // ValidateCloudBilling enforces the cloud startup rule (docs/payments.md):
