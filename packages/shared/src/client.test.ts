@@ -635,6 +635,7 @@ const USER_SETTINGS: UserSettings = {
   timeZone: 'America/New_York',
   workingHours: [{ weekday: 1, start: '09:00', end: '17:00' }],
   workingLocation: 'home',
+  aiBackground: true,
 };
 
 interface MethodCase {
