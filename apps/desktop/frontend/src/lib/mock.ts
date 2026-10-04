@@ -21,6 +21,7 @@ import type {
   TaskInput,
   Thread,
   User,
+  UserSettings,
 } from '@calendium/shared';
 import { addDays, addMinutes, setHours, setMinutes, startOfDay, subDays, subMinutes } from 'date-fns';
 
@@ -625,4 +626,16 @@ export function updateMockClassifier(id: string, input: ClassifierInput): AiClas
 
 export function deleteMockClassifier(id: string): void {
   mockClassifiers = mockClassifiers.filter((c) => c.id !== id);
+}
+
+// --- Settings (background-AI switch) -----------------------------------------
+let mockSettingsState: UserSettings = { timeZone: 'UTC', workingHours: [], workingLocation: '', aiBackground: true };
+
+export function mockSettings(): UserSettings {
+  return { ...mockSettingsState };
+}
+
+export function updateMockSettings(next: UserSettings): UserSettings {
+  mockSettingsState = { ...next };
+  return mockSettings();
 }

@@ -1,3 +1,4 @@
+import { AccountControls } from '@/components/account-controls';
 import { Button } from '@/components/ui/button';
 import { Icon } from '@/components/ui/icon';
 import { Input } from '@/components/ui/input';
@@ -11,7 +12,9 @@ import {
   mockAccounts,
   mockSetAutoBcc,
   mockSetSignature,
+  mockSettings,
   mockSubscription,
+  updateMockSettings,
   withMockFallback,
 } from '@/lib/mock';
 import { htmlToPlainText, plainTextToHtml } from '@/lib/mail-extras';
@@ -22,6 +25,7 @@ import {
   type Provider,
   type Subscription,
   type ThemeName,
+  type UserSettings,
 } from '@calendium/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Linking from 'expo-linking';
@@ -39,7 +43,7 @@ import {
 } from 'lucide-react-native';
 import { useColorScheme } from 'nativewind';
 import * as React from 'react';
-import { ActivityIndicator, Alert, Image, Pressable, ScrollView, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Pressable, ScrollView, Switch, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const PROVIDER_LABEL: Record<Provider, string> = {
@@ -159,6 +163,28 @@ export default function SettingsScreen() {
             : 'Unknown error'
       );
     },
+  });
+
+  // --- Settings → AI → "Background AI processing" (account lifecycle) ---
+  const settingsQuery = useQuery({
+    queryKey: ['settings'],
+    queryFn: () =>
+      withMockFallback(
+        () => api.getSettings(),
+        () => mockSettings()
+      ),
+    enabled: aiEnabled,
+  });
+  const toggleBackgroundAi = useMutation({
+    mutationFn: (aiBackground: boolean) => {
+      const next: UserSettings = { ...(settingsQuery.data as UserSettings), aiBackground };
+      return withMockFallback(
+        () => api.updateSettings(next),
+        () => updateMockSettings(next)
+      );
+    },
+    onSuccess: (s) => queryClient.setQueryData(['settings'], s),
+    onError: () => Alert.alert('Could not update', 'Background AI processing was not changed.'),
   });
 
   const subscriptionQuery = useQuery({
@@ -406,13 +432,28 @@ export default function SettingsScreen() {
         </Section>
       )}
 
-      {/* AI — full classifier CRUD lives on its own screen (Task 17), not a
-          read-only link out to the web app. */}
+      {/* AI — background switch + full classifier CRUD on its own screen
+          (Task 17), not a read-only link out to the web app. */}
       {aiEnabled && (
         <Section title="AI">
+          <View className="flex-row items-center justify-between p-4">
+            <View className="flex-1 gap-0.5 pr-3">
+              <Text className="text-sm font-medium">Background AI processing</Text>
+              <Text className="text-xs text-muted-foreground">
+                Summaries, quick replies, auto drafts, classifiers and your writing profile run
+                automatically when mail arrives.
+              </Text>
+            </View>
+            <Switch
+              accessibilityLabel="Background AI processing"
+              value={settingsQuery.data?.aiBackground ?? true}
+              disabled={!settingsQuery.data || toggleBackgroundAi.isPending}
+              onValueChange={(value) => toggleBackgroundAi.mutate(value)}
+            />
+          </View>
           <Pressable
             onPress={() => router.push('/classifiers')}
-            className="flex-row items-center justify-between p-4 active:bg-accent">
+            className="flex-row items-center justify-between border-t border-border p-4 active:bg-accent">
             <View className="flex-row items-center gap-3">
               <Icon as={SparklesIcon} className="size-5 text-muted-foreground" />
               <Text className="text-sm font-medium">AI classifiers</Text>
@@ -461,6 +502,9 @@ export default function SettingsScreen() {
           </View>
         </View>
       </Section>
+
+      {/* Account: export on the web, deletion in-app (also on the paywall). */}
+      <AccountControls />
 
       <Button variant="outline" className="flex-row gap-2" onPress={() => signOut()}>
         <Icon as={LogOutIcon} className="size-4 text-destructive" />

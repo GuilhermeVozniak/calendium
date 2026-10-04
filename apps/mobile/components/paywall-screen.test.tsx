@@ -1,7 +1,32 @@
 const mockSignOut = jest.fn();
 jest.mock('@/context/auth', () => ({
   __esModule: true,
-  default: () => ({ signOut: mockSignOut }),
+  default: () => ({ signOut: mockSignOut, signInWithOAuth: jest.fn() }),
+}));
+
+// Account & data (account lifecycle): export link-out + in-app deletion must
+// stay reachable while paywalled.
+const mockListAuthAccounts = jest.fn();
+const mockDeleteUser = jest.fn();
+jest.mock('@/lib/server-config', () => ({
+  useServerConfig: () => ({
+    config: { mode: 'cloud', webUrl: 'https://web.example', features: { billing: true } },
+    authClient: {
+      listAccounts: (...args: unknown[]) => mockListAuthAccounts(...args),
+      deleteUser: (...args: unknown[]) => mockDeleteUser(...args),
+    },
+  }),
+  webOrigin: () => 'https://web.example',
+}));
+
+const mockOpenURL = jest.fn();
+jest.mock('expo-linking', () => ({
+  openURL: (...args: unknown[]) => mockOpenURL(...args),
+}));
+
+const mockReplace = jest.fn();
+jest.mock('expo-router', () => ({
+  useRouter: () => ({ replace: mockReplace, push: jest.fn() }),
 }));
 
 const mockOpenBrowser = jest.fn();
@@ -13,13 +38,26 @@ jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
-import { fireEvent, render, screen } from '@testing-library/react-native';
+import { act, fireEvent, render, screen } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 import { PaywallScreen } from './paywall-screen';
 
 /** App Store 3.1.1/3.1.3: no price, purchase CTA or purchase/billing link. */
 const STORE_FORBIDDEN = /\$|price|subscribe|pricing|checkout/i;
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  mockListAuthAccounts.mockResolvedValue({ data: [{ id: 'acc1', providerId: 'credential' }], error: null });
+  mockDeleteUser.mockResolvedValue({ data: { success: true }, error: null });
+  mockSignOut.mockResolvedValue(undefined);
+});
+
+async function flush() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+}
 
 describe('PaywallScreen (mobile, store-compliant)', () => {
   it('renders the neutral copy with a header-role title', async () => {
@@ -34,12 +72,13 @@ describe('PaywallScreen (mobile, store-compliant)', () => {
     ).toBeTruthy();
   });
 
-  it('offers only Refresh and Sign out', async () => {
+  it('offers only Refresh, Sign out and Account & data', async () => {
     await render(<PaywallScreen onRefresh={jest.fn()} />);
     const buttons = screen.getAllByRole('button');
-    expect(buttons).toHaveLength(2);
+    expect(buttons).toHaveLength(3);
     expect(screen.getByRole('button', { name: 'Refresh' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Account & data' })).toBeTruthy();
   });
 
   it('shows no price, purchase call to action or billing link', async () => {
@@ -50,6 +89,10 @@ describe('PaywallScreen (mobile, store-compliant)', () => {
     expect(screen.queryAllByRole('link')).toHaveLength(0);
     for (const b of screen.getAllByRole('button')) await fireEvent.press(b);
     expect(mockOpenBrowser).not.toHaveBeenCalled();
+    // The expanded Account & data panel adds no price or purchase wording either.
+    expect(screen.getByText('Download my data')).toBeTruthy();
+    expect(screen.queryAllByText(STORE_FORBIDDEN)).toHaveLength(0);
+    expect(screen.queryAllByRole('link')).toHaveLength(0);
   });
 
   it('Refresh re-checks the subscription', async () => {
@@ -63,5 +106,26 @@ describe('PaywallScreen (mobile, store-compliant)', () => {
     await render(<PaywallScreen onRefresh={jest.fn()} />);
     await fireEvent.press(screen.getByText('Sign out'));
     expect(mockSignOut).toHaveBeenCalled();
+  });
+
+  it('keeps export and in-app deletion reachable while paywalled', async () => {
+    await render(<PaywallScreen onRefresh={jest.fn()} />);
+    await fireEvent.press(screen.getByText('Account & data'));
+    await fireEvent.press(screen.getByText('Download my data'));
+    expect(mockOpenURL).toHaveBeenCalledWith('https://web.example/settings?tab=account');
+
+    await fireEvent.press(screen.getByText('Delete account'));
+    await flush();
+    await fireEvent.changeText(screen.getByPlaceholderText('Your password'), 'hunter2');
+    await fireEvent.press(screen.getByText('Delete my account'));
+    const calls = (Alert.alert as jest.Mock).mock.calls;
+    const buttons = calls[calls.length - 1]?.[2] as { style?: string; onPress?: () => void }[];
+    await act(async () => {
+      await buttons.find((b) => b.style === 'destructive')?.onPress?.();
+    });
+    await flush();
+    expect(mockDeleteUser).toHaveBeenCalledWith({ password: 'hunter2' });
+    expect(mockSignOut).toHaveBeenCalled();
+    expect(mockReplace).toHaveBeenCalledWith('/');
   });
 });

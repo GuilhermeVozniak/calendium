@@ -1,3 +1,4 @@
+import '@testing-library/jest-dom/vitest';
 import type { ConnectedAccount } from '@calendium/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -8,7 +9,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // through the mock branch and supply test-controlled fixtures.
 const fixtures = vi.hoisted(() => ({
   accounts: [] as ConnectedAccount[],
+  ai: false,
+  origin: 'https://app.example.com' as string | null,
+  authClient: null as null | {
+    listAccounts: () => Promise<{ data: { id: string; providerId: string }[] }>;
+    deleteUser: (input: { password?: string }) => Promise<{ error: null | Record<string, unknown> }>;
+  },
 }));
+const openExternalMock = vi.hoisted(() => vi.fn());
+const clearStoredTokenMock = vi.hoisted(() => vi.fn());
+const signOutMock = vi.hoisted(() => vi.fn(async () => undefined));
+const getSettingsMock = vi.hoisted(() => vi.fn());
+const updateSettingsMock = vi.hoisted(() => vi.fn());
+const toastMock = vi.hoisted(() => vi.fn());
 
 const setSignatureMock = vi.fn();
 const setAutoBccMock = vi.fn();
@@ -26,6 +39,8 @@ vi.mock('@/lib/api', () => ({
     deleteClassifier: vi.fn(),
     setSignature: vi.fn(),
     setAutoBcc: vi.fn(),
+    getSettings: (...args: unknown[]) => getSettingsMock(...args),
+    updateSettings: (...args: unknown[]) => updateSettingsMock(...args),
   },
   apiConfigured: () => false,
   orMock: async (_real: () => unknown, mock: () => unknown) => mock(),
@@ -50,6 +65,11 @@ vi.mock('@/lib/mock', () => ({
     cancelAtPeriodEnd: false,
     trialEndsAt: null,
   }),
+  mockSettings: () => ({ timeZone: 'UTC', workingHours: [], workingLocation: '', aiBackground: true }),
+  updateMockSettings: (s: unknown) => {
+    updateSettingsMock(s);
+    return s;
+  },
   listMockClassifiers: () => [],
   createMockClassifier: vi.fn(),
   updateMockClassifier: vi.fn(),
@@ -66,25 +86,30 @@ vi.mock('@/lib/mock', () => ({
   },
 }));
 
+const serverState = vi.hoisted(() => ({ demoMode: false }));
 vi.mock('@/lib/server-config', () => ({
   useServerConfig: () => ({
-    config: { features: { billing: false, google: true, microsoft: false, ai: false, push: false } },
+    config: { features: { billing: false, google: true, microsoft: false, ai: fixtures.ai, push: false } },
     clear: vi.fn(),
-    demoMode: false,
+    demoMode: serverState.demoMode,
     exitDemo: vi.fn(),
   }),
-  billingWebOrigin: () => null,
+  billingWebOrigin: () => fixtures.origin,
+  webOrigin: () => fixtures.origin,
 }));
 
 vi.mock('@/lib/auth', () => ({
-  clearStoredToken: vi.fn(),
-  signOut: vi.fn(),
+  clearStoredToken: (...args: unknown[]) => clearStoredTokenMock(...args),
+  signOut: () => signOutMock(),
+  getAuthClient: () => fixtures.authClient,
 }));
+
+vi.mock('@/lib/offline', () => ({ clearOfflineState: vi.fn(async () => undefined) }));
 
 const setGlobalShortcutsEnabledMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 
 vi.mock('@/lib/wails', () => ({
-  desktop: { GetAppVersion: () => Promise.resolve('0.1.0'), OpenExternal: vi.fn() },
+  desktop: { GetAppVersion: () => Promise.resolve('0.1.0'), OpenExternal: (...args: unknown[]) => openExternalMock(...args) },
   isDesktop: false,
   onDeepLink: () => () => {},
   globalShortcutsEnabled: () => true,
@@ -92,7 +117,7 @@ vi.mock('@/lib/wails', () => ({
 }));
 
 vi.mock('@/lib/toast', () => ({
-  toast: vi.fn(),
+  toast: (...args: unknown[]) => toastMock(...args),
   errorMessage: (e: unknown) => (e instanceof Error ? e.message : 'error'),
 }));
 
@@ -202,5 +227,136 @@ describe('SettingsView — signature & auto-BCC', () => {
 
     expect((await screen.findByLabelText('Signature') as HTMLTextAreaElement).value).toBe('Existing sig');
     expect((screen.getByLabelText('Auto-BCC') as HTMLInputElement).value).toBe('a@b.com');
+  });
+});
+
+describe('SettingsView — account lifecycle', () => {
+  const deleteUser = vi.fn(async (_input: { password?: string }) => ({ error: null as null | Record<string, unknown> }));
+  beforeEach(() => {
+    fixtures.ai = false;
+    fixtures.origin = 'https://app.example.com';
+    serverState.demoMode = false;
+    deleteUser.mockReset();
+    deleteUser.mockResolvedValue({ error: null });
+    fixtures.authClient = {
+      listAccounts: async () => ({ data: [{ id: 'acc1', providerId: 'credential' }] }),
+      deleteUser,
+    };
+    openExternalMock.mockClear();
+    clearStoredTokenMock.mockClear();
+    signOutMock.mockClear();
+    toastMock.mockClear();
+  });
+
+  it('"Download my data" opens the web account page', async () => {
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /download my data/i }));
+    expect(openExternalMock).toHaveBeenCalledWith('https://app.example.com/settings?tab=account');
+  });
+
+  it('deleteUser with the password, then clearStoredToken and signOut', async () => {
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /delete account/i }));
+    await userEvent.type(await screen.findByLabelText('Type your email to confirm'), 'ada@calendium.app');
+    await userEvent.type(await screen.findByLabelText('Your password'), 'hunter2');
+    await userEvent.click(screen.getByRole('button', { name: /delete my account/i }));
+    await waitFor(() => expect(deleteUser).toHaveBeenCalledWith({ password: 'hunter2' }));
+    await waitFor(() => expect(clearStoredTokenMock).toHaveBeenCalled());
+    expect(signOutMock).toHaveBeenCalled();
+  });
+
+  it('enables confirm when the typed email matches ignoring case and whitespace', async () => {
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /delete account/i }));
+    await userEvent.type(await screen.findByLabelText('Type your email to confirm'), '  Ada@Calendium.app ');
+    await userEvent.type(await screen.findByLabelText('Your password'), 'hunter2');
+    expect(screen.getByRole('button', { name: /delete my account/i })).toBeEnabled();
+  });
+
+  it('keeps "Delete my account" disabled until the typed email matches', async () => {
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /delete account/i }));
+    await userEvent.type(await screen.findByLabelText('Type your email to confirm'), 'someone@else.test');
+    await userEvent.type(await screen.findByLabelText('Your password'), 'hunter2');
+    expect(screen.getByRole('button', { name: /delete my account/i })).toBeDisabled();
+  });
+
+  it('social-only accounts get no password field and call deleteUser({})', async () => {
+    fixtures.authClient = {
+      listAccounts: async () => ({ data: [{ id: 'acc2', providerId: 'google' }] }),
+      deleteUser,
+    };
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /delete account/i }));
+    await userEvent.type(await screen.findByLabelText('Type your email to confirm'), 'ada@calendium.app');
+    expect(screen.queryByLabelText('Your password')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: /delete my account/i }));
+    await waitFor(() => expect(deleteUser).toHaveBeenCalledWith({}));
+  });
+
+  it('owns_teams names the blocking teams and keeps the session', async () => {
+    deleteUser.mockResolvedValue({
+      error: { status: 409, code: 'owns_teams', details: { teams: [{ id: 't1', name: 'Design' }] } },
+    });
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /delete account/i }));
+    await userEvent.type(await screen.findByLabelText('Type your email to confirm'), 'ada@calendium.app');
+    await userEvent.type(await screen.findByLabelText('Your password'), 'hunter2');
+    await userEvent.click(screen.getByRole('button', { name: /delete my account/i }));
+    await waitFor(() =>
+      expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ title: 'Transfer your teams first', description: 'Design' }))
+    );
+    expect(clearStoredTokenMock).not.toHaveBeenCalled();
+    expect(signOutMock).not.toHaveBeenCalled();
+  });
+
+  it('demo mode renders the buttons but never deletes or opens a URL', async () => {
+    serverState.demoMode = true;
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /delete account/i }));
+    await userEvent.click(screen.getByRole('button', { name: /download my data/i }));
+    expect(toastMock).toHaveBeenCalledWith({ title: 'Not available in demo' });
+    expect(deleteUser).not.toHaveBeenCalled();
+    expect(openExternalMock).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText('Type your email to confirm')).toBeNull();
+  });
+
+  it('without a Better Auth client it opens the web settings page instead', async () => {
+    fixtures.authClient = null;
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /delete account/i }));
+    expect(openExternalMock).toHaveBeenCalledWith('https://app.example.com/settings?tab=account');
+    expect(screen.queryByLabelText('Type your email to confirm')).toBeNull();
+  });
+});
+
+describe('SettingsView — background AI switch', () => {
+  beforeEach(() => {
+    updateSettingsMock.mockClear();
+    serverState.demoMode = false;
+  });
+
+  it('renders when AI is on and PUTs the flipped document', async () => {
+    fixtures.ai = true;
+    renderSettings();
+    const toggle = (await screen.findByLabelText('Background AI processing')) as HTMLInputElement;
+    await waitFor(() => expect(toggle.checked).toBe(true));
+    await userEvent.click(toggle);
+    await waitFor(() =>
+      expect(updateSettingsMock).toHaveBeenCalledWith({
+        timeZone: 'UTC',
+        workingHours: [],
+        workingLocation: '',
+        aiBackground: false,
+      })
+    );
+    await waitFor(() => expect(toggle.checked).toBe(false));
+  });
+
+  it('is absent when the server disables AI', async () => {
+    fixtures.ai = false;
+    renderSettings();
+    await screen.findByText('Appearance');
+    expect(screen.queryByLabelText('Background AI processing')).toBeNull();
   });
 });
