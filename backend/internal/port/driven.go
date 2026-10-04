@@ -741,7 +741,7 @@ type SubscriptionEvent struct {
 	OccurredAt        time.Time
 	CustomerID        string
 	SubscriptionID    string
-	UserID            string // custom_data.user_id when present
+	UserID            string // custom_data.user_id when present (client-settable: never beats CustomerID)
 	Status            domain.SubscriptionStatus
 	CurrentPeriodEnd  *time.Time
 	CancelAtPeriodEnd bool // scheduled_change.action == "cancel"

@@ -24,6 +24,9 @@ var testKey = []byte("0123456789abcdef0123456789abcdef") // len == 32
 var (
 	sharedStore *Store
 	sharedDB    *sql.DB
+	// sharedDSN reaches the container's server so a test can create its own
+	// database (migration tests that stop before the latest version).
+	sharedDSN string
 	// dockerErr != nil means the container could not start (Docker
 	// unavailable); every test t.Skip()s on it.
 	dockerErr error
@@ -71,7 +74,7 @@ func runSuite(m *testing.M) int {
 	if err := st.SetTokenEncryptionKey(testKey); err != nil {
 		log.Fatalf("postgres test: token key: %v", err)
 	}
-	sharedStore, sharedDB = st, db
+	sharedStore, sharedDB, sharedDSN = st, db, dsn
 	return m.Run()
 }
 

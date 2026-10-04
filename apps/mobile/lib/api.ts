@@ -15,11 +15,35 @@ const DEFAULT_BASE = (process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8080'
   ''
 );
 
+const paymentRequiredListeners = new Set<() => void>();
+
+/**
+ * Subscribes to every 402 Payment Required the shared client receives (any
+ * endpoint) so the tabs billing gate can re-check the subscription mid-session
+ * instead of waiting for the next foreground. Returns the unsubscribe function.
+ */
+export function onPaymentRequired(listener: () => void): () => void {
+  paymentRequiredListeners.add(listener);
+  return () => {
+    paymentRequiredListeners.delete(listener);
+  };
+}
+
+/** fetch that reports 402s to the listeners above; resolves the global at call time. */
+const notifyingFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const res = await fetch(input, init);
+  if (res.status === 402) {
+    for (const listener of [...paymentRequiredListeners]) listener();
+  }
+  return res;
+}) as typeof fetch;
+
 // A single, mutable options object: ApiClient reads `opts.baseUrl` on every
 // request, so updating it here re-points the shared client at runtime.
 const options = {
   baseUrl: DEFAULT_BASE,
   getAccessToken: (): Promise<string | null> => getBetterAuthToken(),
+  fetch: notifyingFetch,
 };
 
 export const api = new ApiClient(options);

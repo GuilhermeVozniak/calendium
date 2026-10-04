@@ -890,8 +890,9 @@ export interface InstanceInfo {
   /** Enabled sign-in methods, e.g. ["email", "google", "apple"]. */
   authProviders: string[];
   /**
-   * Public web app origin (PUBLIC_WEB_URL, no trailing slash). Mobile and
-   * desktop build billing links from it: `${webUrl}/pricing`, `${webUrl}/settings`.
+   * Public web app origin (PUBLIC_WEB_URL, no trailing slash). Desktop builds
+   * its billing link from it (`${webUrl}/settings?tab=billing`); the mobile
+   * apps show no billing links (store rules).
    */
   webUrl: string;
   /**

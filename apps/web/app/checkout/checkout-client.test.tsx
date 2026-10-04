@@ -47,7 +47,7 @@ describe('/checkout', () => {
     expect(initialize).toHaveBeenCalledWith(
       expect.objectContaining({
         token: 'test_tok',
-        checkout: { settings: expect.objectContaining({ successUrl: `${window.location.origin}/checkout/success`, displayMode: 'overlay' }) },
+        checkout: { settings: expect.objectContaining({ successUrl: `${window.location.origin}/checkout/success`, displayMode: 'overlay', allowLogout: false }) },
       })
     );
     expect(screen.getByText(/Opening secure checkout/)).toBeInTheDocument();

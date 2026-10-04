@@ -158,7 +158,7 @@ where `mode` is
 (where Better Auth is hosted), `authProviders` lists enabled sign-in methods (`["email"]`, plus
 `"google"`/`"apple"` when their credentials are configured), `undoSendSeconds` is the
 undo-send grace window (`UNDO_SEND_SECONDS`, default 15), `vapidPublicKey` is present only
-when web push is configured, `features.billing = !SELF_HOSTED`, and `webUrl` is `PUBLIC_WEB_URL` (mobile/desktop build billing links from it);
+when web push is configured, `features.billing = !SELF_HOSTED`, and `webUrl` is `PUBLIC_WEB_URL` (desktop builds its billing link `<webUrl>/settings?tab=billing` from it; the mobile apps show no billing links);
 the remaining feature flags reflect which gateways/credentials are configured. Clients build
 their Better Auth client against `authBaseUrl` and read `features.billing` to decide whether to
 show any billing/paywall UI at all.

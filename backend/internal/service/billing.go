@@ -227,44 +227,58 @@ func (s *BillingService) HandleWebhook(ctx context.Context, payload []byte, sigH
 		if !first {
 			return nil // already processed; duplicate deliveries are no-ops
 		}
-		return s.applyEvent(ctx, ev, false)
+		existing, ok, err := s.resolveEventUser(ctx, ev)
+		if err != nil || !ok {
+			return err
+		}
+		return s.applyEvent(ctx, ev, existing, false)
 	})
 }
 
-// applyEvent resolves the user (custom_data.user_id, else the stored
-// customer id) and upserts the mirror. Unless force (reconciliation), the
-// write goes through UpsertIfNewer, whose SQL guard drops an event older
-// than the stored last_event_at atomically; the read here only resolves
-// the user and passes the stored trial / ids through. A provider subscription
-// existing clears trial_ends_at; otherwise the stored trial end is passed
-// through, because the Postgres Upsert writes trial_ends_at verbatim. An
-// event without occurred_at is stamped with now so last_event_at is never
-// NULL (ListForReconciliation exempts NULL) — both controller rulings from
-// the Track A review.
-func (s *BillingService) applyEvent(ctx context.Context, ev port.SubscriptionEvent, force bool) error {
-	userID := ev.UserID
-	var existing domain.Subscription
-	var err error
-	if userID == "" {
-		if ev.CustomerID == "" {
-			s.logger.Warn("billing: event carries neither user id nor customer id", "event_id", ev.EventID, "type", ev.Type)
-			return nil
-		}
-		existing, err = s.subs.GetByBillingCustomerID(ctx, ev.CustomerID)
-		if errors.Is(err, domain.ErrNotFound) {
-			s.logger.Warn("billing: event for unknown customer", "event_id", ev.EventID, "customer_id", ev.CustomerID, "type", ev.Type)
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		userID = existing.UserID
-	} else {
-		existing, err = s.subs.GetByUserID(ctx, userID)
-		if err != nil && !errors.Is(err, domain.ErrNotFound) {
-			return err
+// resolveEventUser picks the row a webhook event applies to. The event's
+// customer id is authoritative: our checkout persists billing_customer_id
+// before creating the transaction, so every legitimate event resolves by
+// it. custom_data.user_id is client-settable (Paddle.js accepts customData
+// on our public /checkout page), so it never selects a row on its own: an
+// event whose customer no row owns is not ours to attach (it would let a
+// paying attacker bind a subscription to another user's account and then
+// cancel it). Such events, mismatches, and owners with no users row are
+// logged at warn and acknowledged (ok=false, nil error -> 200) so Paddle
+// does not retry them for days.
+func (s *BillingService) resolveEventUser(ctx context.Context, ev port.SubscriptionEvent) (existing domain.Subscription, ok bool, err error) {
+	skip := func(msg string, args ...any) (domain.Subscription, bool, error) {
+		base := []any{"notification_id", ev.NotificationID, "event_id", ev.EventID, "type", ev.Type}
+		s.logger.Warn(msg, append(base, args...)...)
+		return domain.Subscription{}, false, nil
+	}
+	if ev.CustomerID != "" {
+		owner, err := s.subs.GetByBillingCustomerID(ctx, ev.CustomerID)
+		switch {
+		case err == nil:
+			if ev.UserID != "" && ev.UserID != owner.UserID {
+				return skip("billing: event custom data disagrees with the customer's owner; not applied",
+					"customer_id", ev.CustomerID, "owner_user_id", owner.UserID, "custom_data_user_id", ev.UserID)
+			}
+			return owner, true, nil
+		case !errors.Is(err, domain.ErrNotFound):
+			return domain.Subscription{}, false, err
 		}
 	}
+	return skip("billing: event for a customer no account owns; not applied",
+		"customer_id", ev.CustomerID, "custom_data_user_id", ev.UserID)
+}
+
+// applyEvent upserts the mirror onto existing (the resolved row; its
+// UserID is the target). Unless force (reconciliation), the write goes
+// through UpsertIfNewer, whose SQL guard drops an event older than the
+// stored last_event_at atomically. A provider subscription existing clears
+// trial_ends_at; otherwise the stored trial end is passed through, because
+// the Postgres Upsert writes trial_ends_at verbatim. An event without
+// occurred_at is stamped with now so last_event_at is never NULL
+// (ListForReconciliation exempts NULL) — both controller rulings from the
+// Track A review.
+func (s *BillingService) applyEvent(ctx context.Context, ev port.SubscriptionEvent, existing domain.Subscription, force bool) error {
+	userID := existing.UserID
 
 	// An event with no occurred_at (not produced by the Paddle parser, but
 	// never written as NULL) is treated as happening now.
@@ -344,12 +358,13 @@ func (s *BillingService) reconcileOne(ctx context.Context, sub domain.Subscripti
 	if err != nil {
 		return sub, err
 	}
-	ev.UserID = sub.UserID
 	ev.OccurredAt = s.clock.Now()
 	if ev.SubscriptionID == "" {
 		ev.SubscriptionID = sub.BillingSubscriptionID
 	}
-	if err := s.applyEvent(ctx, ev, true); err != nil {
+	// The row came from our own store, so the user is known: no webhook
+	// resolution (custom data / customer lookup) applies here.
+	if err := s.applyEvent(ctx, ev, sub, true); err != nil {
 		return sub, err
 	}
 	return s.subs.GetByUserID(ctx, sub.UserID)

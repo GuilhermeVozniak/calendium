@@ -23,8 +23,9 @@ type InstanceInfo struct {
 	// plus "google"/"apple" when their credentials are configured.
 	AuthProviders []string `json:"authProviders"`
 	// WebURL is the public web app origin (PUBLIC_WEB_URL, no trailing
-	// slash). Mobile and desktop build billing links from it
-	// (<webUrl>/pricing, <webUrl>/settings) instead of hardcoded domains.
+	// slash). Desktop builds its billing link from it
+	// (<webUrl>/settings?tab=billing) instead of a hardcoded domain; the
+	// mobile apps show no billing links (store rules).
 	WebURL string `json:"webUrl"`
 	// UndoSendSeconds is the undo-send grace window (UNDO_SEND_SECONDS,
 	// default 15): clients show a post-send Undo affordance for this long.

@@ -8,6 +8,29 @@ export function apiConfigured(): boolean {
   return !!getActiveServerConfig()?.serverUrl;
 }
 
+const paymentRequiredListeners = new Set<() => void>();
+
+/**
+ * Subscribes to every 402 Payment Required the shared client receives (any
+ * endpoint) so the App billing gate can re-check the subscription mid-session
+ * instead of waiting for its poll. Returns the unsubscribe function.
+ */
+export function onPaymentRequired(listener: () => void): () => void {
+  paymentRequiredListeners.add(listener);
+  return () => {
+    paymentRequiredListeners.delete(listener);
+  };
+}
+
+/** fetch that reports 402s to the listeners above; resolves the global at call time. */
+const notifyingFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const res = await fetch(input, init);
+  if (res.status === 402) {
+    for (const listener of [...paymentRequiredListeners]) listener();
+  }
+  return res;
+}) as typeof fetch;
+
 /**
  * Shared typed client for the Calendium REST API. `baseUrl` is a getter so the
  * client always targets the currently-configured server (lib/server-config),
@@ -18,6 +41,7 @@ export const api = new ApiClient({
     return getActiveServerConfig()?.serverUrl || 'http://localhost:8080';
   },
   getAccessToken,
+  fetch: notifyingFetch,
 });
 
 /**

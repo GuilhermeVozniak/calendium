@@ -9,9 +9,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // only the gate wiring is under test.
 
 const getSubscription = vi.hoisted(() => vi.fn());
+const paymentRequired = vi.hoisted(() => ({ listeners: new Set<() => void>() }));
 vi.mock('@/lib/api', () => ({
   api: { getSubscription, search: vi.fn() },
   orMock: (real: () => Promise<unknown>) => real(),
+  onPaymentRequired: (listener: () => void) => {
+    paymentRequired.listeners.add(listener);
+    return () => paymentRequired.listeners.delete(listener);
+  },
 }));
 vi.mock('@/lib/mock', () => ({ mockSearch: vi.fn(), mockSubscription: vi.fn() }));
 
@@ -110,6 +115,26 @@ describe('App billing gate', () => {
     await settle();
     expect(screen.getByTestId('inbox-view')).toBeInTheDocument();
     expect(screen.queryByTestId('paywall-view')).not.toBeInTheDocument();
+  });
+
+  // Mid-session lapse: any 402 from the API client re-checks the subscription
+  // at once instead of waiting for the 5-minute poll.
+  it('re-evaluates the subscription when the API client sees a 402', async () => {
+    getSubscription.mockResolvedValue({
+      ...SUB,
+      status: 'trialing',
+      trialEndsAt: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    renderApp();
+    await settle();
+    expect(screen.getByTestId('inbox-view')).toBeInTheDocument();
+
+    getSubscription.mockResolvedValue({ ...SUB, status: 'trialing', trialEndsAt: new Date(Date.now() - 1000).toISOString() });
+    act(() => {
+      for (const listener of paymentRequired.listeners) listener();
+    });
+    expect(await screen.findByTestId('paywall-view')).toHaveTextContent('trial_ended');
+    expect(getSubscription).toHaveBeenCalledTimes(2);
   });
 
   it('never fetches the subscription when billing is off', async () => {
