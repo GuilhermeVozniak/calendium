@@ -1,4 +1,4 @@
-import type { EnvLike } from '@/lib/auth-env';
+import { type EnvLike, envBool } from '@/lib/auth-env';
 
 /**
  * SMTP settings for the web tier, read from the same SMTP_* variables as the
@@ -53,14 +53,10 @@ export function readMailConfig(env: EnvLike): MailConfig {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`SMTP_PORT must be an integer between 1 and 65535, got "${portRaw}"`);
   }
-  const secureRaw = env.SMTP_SECURE?.trim() || 'false';
-  if (secureRaw !== 'true' && secureRaw !== 'false') {
-    throw new Error(`SMTP_SECURE must be true or false, got "${secureRaw}"`);
-  }
+  const secure = envBool(env, 'SMTP_SECURE');
   if (!FROM_RE.test(from)) {
     throw new Error(`SMTP_FROM must be an email address or "Name <addr>", got "${from}"`);
   }
-  const secure = secureRaw === 'true';
   return {
     configured: true,
     host,
@@ -73,13 +69,14 @@ export function readMailConfig(env: EnvLike): MailConfig {
 }
 
 /**
- * readMailConfig plus the cloud rule: with SELF_HOSTED!=true an SMTP sender
+ * readMailConfig plus the cloud rule: unless SELF_HOSTED is true (envBool,
+ * the Go config's grammar) an SMTP sender
  * is mandatory (verification, reset and invitations depend on it). Called
  * from instrumentation.ts at server boot — never from `next build`.
  */
 export function assertMailConfigForMode(env: EnvLike): MailConfig {
   const mail = readMailConfig(env);
-  if (!mail.configured && env.SELF_HOSTED !== 'true') {
+  if (!mail.configured && !envBool(env, 'SELF_HOSTED')) {
     throw new Error(
       'SMTP_HOST and SMTP_FROM are required when SELF_HOSTED=false (cloud mode); set them or run with SELF_HOSTED=true'
     );

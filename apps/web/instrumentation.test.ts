@@ -46,6 +46,17 @@ describe('instrumentation.register', () => {
     expect(messages.some((m) => m.startsWith('scripts/forwarded-for-peer.cjs is not preloaded'))).toBe(true);
   });
 
+  it('aborts on an invalid boolean, like the Go config, even outside production', async () => {
+    vi.stubEnv('SELF_HOSTED', 'true');
+    vi.stubEnv('ALLOW_DEV_ORIGINS', 'on');
+    await expect(register()).rejects.toThrow('ALLOW_DEV_ORIGINS must be true or false (also 1/0, yes/no), got "on"');
+  });
+
+  it('accepts SELF_HOSTED=1 as self-host, like the api and worker', async () => {
+    vi.stubEnv('SELF_HOSTED', '1');
+    await expect(register()).resolves.toBeUndefined();
+  });
+
   it('aborts on an invalid TRUSTED_PROXY_CIDRS', async () => {
     vi.stubEnv('SELF_HOSTED', 'true');
     vi.stubEnv('TRUST_PROXY', 'true');

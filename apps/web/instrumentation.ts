@@ -8,7 +8,10 @@
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return;
   const { assertMailConfigForMode } = await import('@/lib/email/config');
-  const { startupWarnings } = await import('@/lib/auth-env');
+  const { assertBooleanEnv, startupWarnings } = await import('@/lib/auth-env');
+  // Same boolean grammar as config.FromEnv: an invalid SELF_HOSTED,
+  // SMTP_SECURE, ALLOW_DEV_ORIGINS or TRUST_PROXY stops the boot.
+  assertBooleanEnv(process.env);
   const mail = assertMailConfigForMode(process.env);
   if (!mail.configured) {
     console.warn('email: disabled (no SMTP_HOST); verification off, invitations fall back to links');

@@ -13,6 +13,13 @@ adapter when set and is otherwise ignored.
 > backend binary *directly* (defaults to `SELF_HOSTED=false`, `DATABASE_URL`
 > host `localhost`, and adds `HTTP_ADDR`/`PORT`). Self-hosters use the root one.
 
+> **Booleans.** `SELF_HOSTED`, `SMTP_SECURE`, `ALLOW_DEV_ORIGINS` and
+> `TRUST_PROXY` accept `true`/`1`/`yes` and `false`/`0`/`no`
+> (case-insensitive); blank means `false` (except `TRUST_PROXY` under
+> Compose, which defaults to `true`). Every service that reads one parses it
+> the same way, and any other value stops that service at boot with the
+> variable named.
+
 See also: [Quickstart](./quickstart.md) · [Clients](./clients.md) ·
 [Overview](./README.md).
 

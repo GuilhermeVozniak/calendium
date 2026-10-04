@@ -35,11 +35,18 @@ describe('clientIpFor — TRUST_PROXY unset/false: the immediate peer only', () 
     expect(clientIpFor(xff(header), UNTRUSTED)).toBe('');
   });
 
-  it('TRUST_PROXY values other than "true" do not trust anything', () => {
+  it('TRUST_PROXY parses like the Go config: false/0/no/blank trust nothing, true/1/yes trust the proxy', () => {
     const header = xff('198.51.100.7, 172.18.0.5');
-    for (const value of ['false', '1', 'TRUE', 'yes', '']) {
+    for (const value of ['false', 'FALSE', '0', 'no', '']) {
       expect(clientIpFor(header, proxyTrustFromEnv({ TRUST_PROXY: value }))).toBe('172.18.0.5');
     }
+    for (const value of ['true', 'TRUE', '1', 'yes', 'Yes']) {
+      expect(clientIpFor(header, proxyTrustFromEnv({ TRUST_PROXY: value }))).toBe('198.51.100.7');
+    }
+  });
+
+  it('an invalid TRUST_PROXY is a configuration error naming the variable', () => {
+    expect(() => proxyTrustFromEnv({ TRUST_PROXY: 'on' })).toThrow('TRUST_PROXY must be true or false (also 1/0, yes/no), got "on"');
   });
 });
 
