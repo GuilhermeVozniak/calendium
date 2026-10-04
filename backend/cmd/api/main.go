@@ -8,10 +8,12 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -43,33 +45,45 @@ import (
 )
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	if err := run(logger); err != nil {
-		logger.Error("api: fatal", "error", err)
+	// run installs the configured logger as the slog default once config has
+	// loaded, so a fatal error after that point uses LOG_FORMAT/LOG_LEVEL.
+	if err := run(); err != nil {
+		slog.Error("api: fatal", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(logger *slog.Logger) error {
+func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	cfg, warnings, err := config.FromEnv()
+	// RequirePublicWebURL: GET /v1/instance must advertise an absolute Better
+	// Auth base URL, so an empty PUBLIC_WEB_URL/APP_URL refuses to boot.
+	cfg, warnings, err := config.FromEnv(config.RequirePublicWebURL())
 	if err != nil {
 		return err
 	}
+	logger := config.NewLogger(os.Stderr, cfg.Log)
+	slog.SetDefault(logger)
 	for _, w := range warnings {
-		logger.Warn("api: config", "warning", w)
+		logger.Warn(w)
+	}
+	logger.Info("api: config", cfg.Summary()...)
+	if cfg.RateLimits == (config.RateLimits{}) {
+		// httpapi reads an all-zero RateLimits as "use the defaults".
+		logger.Warn("api: every RATE_LIMIT_* is 0; httpapi applies the default budgets (disable classes individually)")
 	}
 
 	// Fail fast on a guaranteed-broken auth configuration instead of booting
-	// healthy and 401ing every request / advertising a relative authBaseUrl.
+	// healthy and 401ing every request.
 	if cfg.Auth.JWKSURL == "" {
 		return errors.New("BETTER_AUTH_URL (or AUTH_JWKS_URL) is required: without it every authenticated request fails with 401")
 	}
-	if cfg.Instance.PublicWebURL == "" {
-		return errors.New("PUBLIC_WEB_URL (or APP_URL) is required: GET /v1/instance must advertise an absolute Better Auth base URL")
-	}
+	// A second signal after the first restores default handling (force-kill).
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	// Cloud mode must never boot without a biller or with a forgeable webhook.
 	if err := cfg.ValidateCloudBilling(); err != nil {
 		return err
@@ -172,7 +186,15 @@ func run(logger *slog.Logger) error {
 	// listener reconnects with capped backoff on connection loss and never
 	// takes the server down; a notification arriving mid-reconnect is
 	// dropped, matching the bus's drop-on-full contract (clients refetch).
-	go pgbus.NewListener(cfg.DB.URL, bus, logger).Run(ctx)
+	var listeners sync.WaitGroup
+	listeners.Add(1)
+	go func() {
+		defer listeners.Done()
+		pgbus.NewListener(cfg.DB.URL, bus, logger).Run(ctx)
+	}()
+	// drain is closed by serve() when shutdown begins: /readyz answers 503
+	// and the SSE streams end.
+	drain := make(chan struct{})
 	activityRepo := postgres.NewTeamThreadActivityRepo(store)
 
 	users := service.NewUserService(store.Users(), store.UserPreferences(), clock)
@@ -547,23 +569,55 @@ func run(logger *slog.Logger) error {
 		CORSAllowedOrigins: append(append([]string(nil), cfg.HTTP.CORSAllowedOrigins...),
 			cfg.Instance.PublicWebURL, cfg.Auth.BetterAuthURL),
 		AllowDevOrigins: cfg.HTTP.AllowDevOrigins,
+		// Platform hardening: trusted-proxy client IPs, per-class rate
+		// limits (copied field by field so httpapi never imports config),
+		// and the drain/readiness pair behind GET /readyz.
+		TrustProxy:        cfg.HTTP.TrustProxy,
+		TrustedProxyCIDRs: cfg.HTTP.TrustedProxyCIDRs,
+		RateLimits: httpapi.RateLimits{
+			PublicReadPerMin:  cfg.RateLimits.PublicReadPerMin,
+			PublicWritePerMin: cfg.RateLimits.PublicWritePerMin,
+			UserPerMin:        cfg.RateLimits.UserPerMin,
+			MutateHeavyPerMin: cfg.RateLimits.MutateHeavyPerMin,
+			SearchPerMin:      cfg.RateLimits.SearchPerMin,
+		},
+		Drain: drain,
+		Ready: db.PingContext,
 	})
 
 	srv := &http.Server{
 		Addr:              cfg.HTTP.Addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+		// No WriteTimeout: SSE streams and attachment downloads outlive any
+		// sane value; per-handler deadlines live in httpapi instead.
 	}
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-	}()
-
-	logger.Info("api: listening", "addr", cfg.HTTP.Addr)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	ln, err := net.Listen("tcp", cfg.HTTP.Addr)
+	if err != nil {
 		return err
+	}
+	logger.Info("api: listening", "addr", ln.Addr().String())
+	if err := serve(ctx, logger, srv, ln, drain, serveOptions{
+		shutdownTimeout: cfg.Shutdown.Timeout,
+		drainDelay:      cfg.Shutdown.DrainDelay,
+	}); err != nil {
+		return err
+	}
+
+	// The LISTEN connection ends with ctx; give it a moment before the
+	// deferred db.Close().
+	listenersDone := make(chan struct{})
+	go func() {
+		listeners.Wait()
+		close(listenersDone)
+	}()
+	select {
+	case <-listenersDone:
+	case <-time.After(5 * time.Second):
+		logger.Warn("api: pgbus listener did not stop within 5s")
 	}
 	logger.Info("api: shut down cleanly")
 	return nil
