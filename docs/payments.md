@@ -6,7 +6,7 @@ One plan: **Calendium Annual — $50/year**, 14-day free trial granted server-si
 
 ## Why the Spotify model
 
-Purchases never go through Apple/Google IAP: web and desktop run the Paddle overlay checkout in a browser, and the mobile apps never show a purchase UI — they only reflect subscription state fetched from the backend (`GET /v1/billing/subscription`) and link to `<webUrl>/pricing`.
+Purchases never go through Apple/Google IAP: web and desktop run the Paddle overlay checkout in a browser, and the mobile apps never show a purchase UI — they only reflect subscription state fetched from the backend (`GET /v1/billing/subscription`) and show no purchase or billing links (App Store / Play rules).
 
 ## Trial and entitlement
 
