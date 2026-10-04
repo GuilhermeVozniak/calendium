@@ -307,6 +307,33 @@ func run() error {
 		Logger:            logger,
 	})
 	settingsSvc := service.NewSettingsService(store.UserSettings())
+	// Account deletion (piece 3). A live Paddle subscription is cancelled
+	// first (immediately); self-hosted instances have no biller, so Payments
+	// stays nil and the cancel step is skipped.
+	var lifecyclePayments port.Payments
+	if !cfg.Instance.SelfHosted {
+		lifecyclePayments = payments
+	}
+	lifecycle := service.NewUserLifecycleService(service.UserLifecycleDeps{
+		Users:         store.Users(),
+		Teams:         postgres.NewTeamRepo(store),
+		Delegations:   postgres.NewDelegationRepo(store),
+		Subscriptions: store.Subscriptions(),
+		Payments:      lifecyclePayments,
+		Tx:            store,
+		Clock:         clock,
+		Logger:        logger,
+	})
+	// Data export (GET /v1/me/export): one repo per zip file.
+	exportSvc := service.NewExportService(service.ExportDeps{
+		Users: store.Users(), Accounts: store.Accounts(), Calendars: store.Calendars(), Events: store.Events(),
+		Threads: store.Threads(), Messages: store.Messages(), Drafts: store.Drafts(), Snippets: store.Snippets(),
+		Templates: store.EventTemplates(), Sets: store.CalendarSets(), Tasks: store.Tasks(),
+		Links: store.BookingLinks(), Bookings: store.Bookings(), Polls: store.Polls(), Labels: store.Labels(),
+		EventNotes: store.EventNotes(), Prefs: store.Prefs(), Preferences: store.UserPreferences(),
+		CalendarPrefs: store.CalendarPrefs(), Settings: store.UserSettings(), Exports: store.UserExports(),
+		Clock: clock,
+	})
 	// The Store has no accessors for the team repos; they are standalone
 	// constructors over the same *Store (shared tx plumbing).
 	teams := service.NewTeamService(service.TeamServiceDeps{
@@ -517,6 +544,8 @@ func run() error {
 		"integrations", integrations != nil,
 		"crm", crmSvc != nil,
 		"insights", insightsSvc != nil,
+		"lifecycle", lifecycle != nil,
+		"export", exportSvc != nil,
 		"push", pushSender != nil,
 		"mailer", mailer != nil,
 	}, billingEnvLogAttrs(cfg.Instance.SelfHosted, cfg.Paddle.Env)...)...)
@@ -561,7 +590,11 @@ func run() error {
 		Crm: crmSvc,
 		// M2.8 Task 17: time insights over the local mirror.
 		Insights: insightsSvc,
-		Instance: instance,
+		// Piece 3: account deletion (secret-authed internal route) + export.
+		Lifecycle:      lifecycle,
+		Export:         exportSvc,
+		InternalSecret: cfg.Crypto.InternalAPISecret,
+		Instance:       instance,
 		// Explicit origins are always reflected: CORS_ALLOWED_ORIGINS plus the
 		// web app's own public origins (spec: Origins), so a production web
 		// tier keeps working with ALLOW_DEV_ORIGINS off. Blank entries are
