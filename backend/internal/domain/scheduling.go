@@ -149,12 +149,18 @@ type TimeProposal struct {
 }
 
 // UserSettings carries per-user scheduling preferences (working hours in
-// TimeZone, displayed location). Zero-value WorkingHours = no constraint.
+// TimeZone, displayed location) and the background-AI switch. Zero-value
+// WorkingHours = no constraint.
 type UserSettings struct {
 	UserID          string               `json:"-"`
 	TimeZone        string               `json:"timeZone"`
 	WorkingHours    []AvailabilityWindow `json:"workingHours"`
 	WorkingLocation string               `json:"workingLocation"` // "", "office", "home", or free text
+	// AIBackground gates every background AI enqueue for this user (voice
+	// profile, thread summaries, instant replies, auto drafts, classifiers,
+	// reminder detection). Default true. On-demand /v1/ai/* calls are never
+	// gated by it. Written only through UserSettingsRepo.SetAIBackground.
+	AIBackground bool `json:"aiBackground"`
 }
 
 // BusyInterval is one busy span from a provider free/busy query.

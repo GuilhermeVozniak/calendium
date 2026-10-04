@@ -5,6 +5,7 @@ package port
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"calendium/backend/internal/domain"
@@ -527,7 +528,13 @@ type SchedulingService interface {
 // SettingsService reads/writes per-user scheduling settings.
 type SettingsService interface {
 	Get(ctx context.Context, userID string) (domain.UserSettings, error)
+	// Update replaces time zone, working hours and location. It never
+	// touches AIBackground (older clients PUT the document without the
+	// field); the returned document carries the stored value.
 	Update(ctx context.Context, userID string, s domain.UserSettings) (domain.UserSettings, error)
+	// SetAIBackground flips the background-AI switch and returns the
+	// resulting document.
+	SetAIBackground(ctx context.Context, userID string, on bool) (domain.UserSettings, error)
 }
 
 // TeamInput is the create/rename team payload.
@@ -698,3 +705,35 @@ type CalendarSubscriptionPatch struct {
 }
 
 // --- Travel (M2.8 Task 12) ---------------------------------------------------
+
+// --- Account lifecycle (production-readiness piece 3) ------------------------
+
+// PurgeReport summarises what Purge removed beyond the users-row cascade.
+type PurgeReport struct {
+	TeamsDeleted         int
+	SubscriptionCanceled bool
+}
+
+// UserLifecycleService deletes accounts (DELETE /v1/internal/users/{id},
+// called by Better Auth's beforeDelete hook).
+type UserLifecycleService interface {
+	// Purge removes every row owned by userID. Idempotent: an unknown user
+	// is not an error. Returns domain.ErrOwnsTeams (as *domain.OwnsTeamsError),
+	// domain.ErrBillingUnavailable or a repo error; the DB work is
+	// transactional, the payment-provider cancel is not.
+	Purge(ctx context.Context, userID string) (PurgeReport, error)
+}
+
+// ExportSink receives the files of a data export, one writer per file.
+// *zip.Writer satisfies it.
+type ExportSink interface {
+	Create(name string) (io.Writer, error)
+}
+
+// ExportService streams the user's data (GET /v1/me/export).
+type ExportService interface {
+	// Export claims the hourly export slot (domain.ErrExportThrottled, as
+	// *domain.ExportThrottledError, when taken), then writes every export
+	// file into sink in a fixed order. It never reads provider tokens.
+	Export(ctx context.Context, userID string, sink ExportSink) error
+}

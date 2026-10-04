@@ -49,6 +49,9 @@ type UserRepo interface {
 	// Upsert inserts the user or refreshes email/name/avatar on conflict.
 	Upsert(ctx context.Context, u domain.User) (domain.User, error)
 	GetByID(ctx context.Context, id string) (domain.User, error)
+	// Delete removes the users row; every owned table cascades (migration
+	// 0029 audit). domain.ErrNotFound when absent.
+	Delete(ctx context.Context, id string) error
 }
 
 // SubscriptionRepo persists the one-row-per-user billing mirror
@@ -150,6 +153,9 @@ type ThreadRepo interface {
 	// SetReminderIfUnset arms remind_at only when currently null, so an AI
 	// auto-reminder never overwrites a user-chosen reminder.
 	SetReminderIfUnset(ctx context.Context, threadID string, remindAt time.Time) error
+	// ListByAccountPage pages one account's threads by id (keyset: id >
+	// afterID, ascending, at most limit) for the data export.
+	ListByAccountPage(ctx context.Context, accountID, afterID string, limit int) ([]domain.Thread, error)
 }
 
 // OpensQuery pages the Recent Opens feed (keyset on opened_at DESC, id DESC).
@@ -275,6 +281,9 @@ type EventRepo interface {
 	// provider syncs cannot wipe them — a deliberate clear (location edited
 	// without a fresh autocomplete pick) therefore needs this targeted write.
 	ClearGeo(ctx context.Context, id string) error
+	// ListByUserPage pages every event on the user's calendars by id
+	// (keyset: id > afterID, ascending, at most limit) for the data export.
+	ListByUserPage(ctx context.Context, userID, afterID string, limit int) ([]domain.Event, error)
 }
 
 // --- Tasks (M2.8) ---
@@ -316,6 +325,8 @@ type EventNoteRepo interface {
 	// Upsert replaces the note for (eventID); empty BodyMD+Links deletes it.
 	Upsert(ctx context.Context, n domain.EventNote) (domain.EventNote, error)
 	GetByEventID(ctx context.Context, eventID string) (domain.EventNote, error)
+	// ListByUser returns every note the user wrote, ordered by event id.
+	ListByUser(ctx context.Context, userID string) ([]domain.EventNote, error)
 }
 
 // EventTemplateRepo persists per-user saved event defaults.
@@ -519,10 +530,26 @@ type TimeProposalRepo interface {
 }
 
 // UserSettingsRepo persists per-user scheduling settings; Get returns a
-// zero-value UserSettings (TimeZone "UTC") when no row exists.
+// zero-value UserSettings (TimeZone "UTC", AIBackground true) when no row
+// exists.
 type UserSettingsRepo interface {
 	Get(ctx context.Context, userID string) (domain.UserSettings, error)
+	// Upsert writes time zone, working hours and location. It NEVER writes
+	// ai_background (new rows take the column default true; existing rows
+	// keep their value) so a client that omits the field cannot flip it.
 	Upsert(ctx context.Context, s domain.UserSettings) error
+	// SetAIBackground writes only ai_background, creating the row with
+	// defaults when absent.
+	SetAIBackground(ctx context.Context, userID string, on bool) error
+}
+
+// UserExportRepo enforces the one-export-per-hour throttle (table
+// user_exports).
+type UserExportRepo interface {
+	// Claim is one atomic upsert: ok=true (re)stamps the slot with now;
+	// ok=false reports the earliest retry time when the user exported less
+	// than window ago.
+	Claim(ctx context.Context, userID string, now time.Time, window time.Duration) (ok bool, retryAt time.Time, err error)
 }
 
 // --- Collaboration (M2.7) ---
@@ -544,6 +571,9 @@ type TeamRepo interface {
 	RemoveMember(ctx context.Context, teamID, userID string) error
 	// CountByRole supports the last-owner invariant.
 	CountByRole(ctx context.Context, teamID string, role domain.TeamRole) (int, error)
+	// ListMemberships returns every team_members row for userID (the
+	// account-deletion team-ownership check).
+	ListMemberships(ctx context.Context, userID string) ([]domain.TeamMember, error)
 }
 
 // TeamInvitationRepo persists email invitations (token stored hashed).
