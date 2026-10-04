@@ -174,11 +174,11 @@ func build(deps Deps) (*server, http.Handler) {
 	mux.HandleFunc("GET /v1/integrations/callback/{vendor}", s.handleIntegrationCallback)
 	// Account deletion, server-to-server from the web app (shared secret,
 	// never a JWT). Outside authed(...) like the webhook, with no public or
-	// user rate limit and a 1 KiB body cap; the CORS layer skips
-	// /v1/internal/* and the self-hosting proxy must block it. No method in
-	// the pattern: the handler answers anything but DELETE with the mux's
-	// own 404 (a 405 would reveal the route).
-	mux.HandleFunc("/v1/internal/users/{id}", s.handleInternalPurgeUser)
+	// user rate limit, a 1 KiB body cap and its own 120 s deadline; the
+	// CORS layer skips /v1/internal/* and the self-hosting proxy must block
+	// it. No method in the pattern: the handler answers anything but DELETE
+	// with the mux's own 404 (a 405 would reveal the route).
+	mux.HandleFunc("/v1/internal/users/{id}", s.withDeadline(internalPurgeDeadline, s.handleInternalPurgeUser))
 
 	// Public scheduling surface (unauthenticated, rate limited): booking
 	// pages/slots/bookings and meeting-poll view/vote. Two buckets — reads

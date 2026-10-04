@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -21,7 +23,11 @@ const (
 	internalPathPrefix = "/v1/internal/"
 	// internalBodyLimit caps internal request bodies (the purge has none).
 	internalBodyLimit = 1 << 10
-	exportTimeout     = 10 * time.Minute
+	// internalPurgeDeadline is the purge's own handler deadline (not the
+	// 60 s default): a large account must finish in one transaction, and the
+	// web caller waits 90 s.
+	internalPurgeDeadline = 120 * time.Second
+	exportTimeout         = 10 * time.Minute
 )
 
 // internalSecretMatches compares the hex header to the configured secret in
@@ -57,7 +63,17 @@ func (s *server) handleInternalPurgeUser(w http.ResponseWriter, r *http.Request)
 		s.writeError(w, r, errPayloadTooLarge)
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, internalBodyLimit)
+	// Drain the (unused) body under the cap so it also binds chunked
+	// requests that declare no Content-Length.
+	if _, err := io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, internalBodyLimit)); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			s.writeError(w, r, errPayloadTooLarge)
+			return
+		}
+		s.writeError(w, r, fmt.Errorf("%w: unreadable body", domain.ErrValidation))
+		return
+	}
 	if _, err := s.deps.Lifecycle.Purge(r.Context(), r.PathValue("id")); err != nil {
 		s.writeError(w, r, err)
 		return
