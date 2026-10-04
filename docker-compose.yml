@@ -177,7 +177,9 @@ services:
       - "443:443/udp"
     environment:
       DOMAIN: ${DOMAIN:-localhost}
-      ACME_EMAIL: ${ACME_EMAIL:-}
+      # The Caddyfile reads the whole directive line: `email <address>` when
+      # ACME_EMAIL is set, nothing when it is blank.
+      ACME_EMAIL_LINE: ${ACME_EMAIL:+email ${ACME_EMAIL}}
     volumes:
       - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

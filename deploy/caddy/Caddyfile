@@ -7,8 +7,10 @@
 # Encrypt certificate automatically over HTTP/TLS-ALPN.
 
 {
-	# ACME account email (blank is fine for local/internal certs).
-	email {$ACME_EMAIL}
+	# ACME account email. docker-compose.yml turns ACME_EMAIL into the whole
+	# `email <address>` line, or an empty line when ACME_EMAIL is blank (an
+	# empty `email` directive is a Caddyfile syntax error).
+	{$ACME_EMAIL_LINE}
 }
 
 {$DOMAIN} {

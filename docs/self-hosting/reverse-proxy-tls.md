@@ -69,8 +69,10 @@ bring your own proxy instead — then the `caddy` service never starts.
 
 ```caddyfile
 {
-	# ACME account email (blank is fine for local/internal certs).
-	email {$ACME_EMAIL}
+	# ACME account email. docker-compose.yml turns ACME_EMAIL into the whole
+	# `email <address>` line, or an empty line when ACME_EMAIL is blank (an
+	# empty `email` directive is a Caddyfile syntax error).
+	{$ACME_EMAIL_LINE}
 }
 
 {$DOMAIN} {
@@ -93,9 +95,11 @@ bring your own proxy instead — then the `caddy` service never starts.
 }
 ```
 
-- `{$DOMAIN}` and `{$ACME_EMAIL}` are read from the environment — the `caddy`
-  service in `docker-compose.yml` passes them through from your `.env`
-  (`DOMAIN`, `ACME_EMAIL`).
+- `{$DOMAIN}` and `{$ACME_EMAIL_LINE}` are read from the environment. The
+  `caddy` service in `docker-compose.yml` passes `DOMAIN` through from your
+  `.env` and builds `ACME_EMAIL_LINE` from `ACME_EMAIL` (`email <address>`, or
+  nothing when `ACME_EMAIL` is blank). If you run Caddy outside Compose, set
+  `ACME_EMAIL_LINE="email you@example.com"` yourself or leave it unset.
 - With a **real domain**, Caddy provisions a Let's Encrypt certificate
   automatically over HTTP/TLS-ALPN and renews it forever.
 - With `DOMAIN=localhost`, Caddy serves a **locally-trusted internal cert** —
