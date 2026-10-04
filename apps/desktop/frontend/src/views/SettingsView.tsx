@@ -5,6 +5,7 @@ import type {
   InboxSplit,
   Provider,
   SubscriptionStatus,
+  UserSettings,
 } from '@calendium/shared';
 import { hasBillingSubscription } from '@calendium/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -34,10 +35,12 @@ import {
   deleteMockClassifier,
   listMockClassifiers,
   mockAccounts,
+  mockSettings,
   mockSubscription,
   mockUser,
   updateMockAutoBcc,
   updateMockClassifier,
+  updateMockSettings,
   updateMockSignature,
 } from '@/lib/mock';
 import { billingWebOrigin, useServerConfig } from '@/lib/server-config';
@@ -66,6 +69,7 @@ import {
   THEME_SWATCHES,
   type ThemeName,
 } from '@/lib/named-theme';
+import { AccountControls } from '@/views/AccountControls';
 
 const SPLIT_OPTIONS: InboxSplit[] = ['important', 'vip', 'team', 'calendar', 'news', 'social', 'other'];
 const MAX_CLASSIFIERS = 20;
@@ -471,6 +475,53 @@ const STATUS_BADGE: Record<SubscriptionStatus, { label: string; variant: 'defaul
   none: { label: 'No subscription', variant: 'outline' },
 };
 
+/** Settings → AI → "Background AI processing" (account lifecycle): one field of /v1/settings. */
+function BackgroundAiSection() {
+  const queryClient = useQueryClient();
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: () =>
+      orMock(
+        () => api.getSettings(),
+        () => mockSettings()
+      ),
+  });
+  const toggle = useMutation({
+    mutationFn: (aiBackground: boolean) => {
+      const next: UserSettings = { ...(settings as UserSettings), aiBackground };
+      return orMock(
+        () => api.updateSettings(next),
+        () => updateMockSettings(next)
+      );
+    },
+    onSuccess: (s) => queryClient.setQueryData(['settings'], s),
+    onError: (e) =>
+      toast({ title: 'Could not update background AI', description: errorMessage(e), variant: 'destructive' }),
+  });
+  return (
+    <Section title="Background AI">
+      <div className="flex items-center gap-3 p-3">
+        <div className="min-w-0 flex-1">
+          <label className="text-sm font-medium" htmlFor="background-ai-toggle">
+            Background AI processing
+          </label>
+          <p className="text-xs text-muted-foreground">
+            Summaries, quick replies, auto drafts, classifiers and your writing profile run automatically when mail
+            arrives.
+          </p>
+        </div>
+        <input
+          id="background-ai-toggle"
+          type="checkbox"
+          checked={settings?.aiBackground ?? true}
+          disabled={!settings || toggle.isPending}
+          onChange={(e) => toggle.mutate(e.target.checked)}
+        />
+      </div>
+    </Section>
+  );
+}
+
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-2">
@@ -639,6 +690,7 @@ export function SettingsView() {
               <LogOut /> {demoMode ? 'Exit demo' : 'Sign out'}
             </Button>
           </div>
+          <AccountControls />
         </Section>
         <AppearanceSection />
 
@@ -703,6 +755,7 @@ export function SettingsView() {
           </div>
         </Section>
 
+        {config?.features?.ai && <BackgroundAiSection />}
         {config?.features?.ai && <ClassifiersSection />}
 
         <MeetingsSection />
