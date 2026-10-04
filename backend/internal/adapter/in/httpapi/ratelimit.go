@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"container/list"
 	"math"
 	"net/http"
 	"strconv"
@@ -9,10 +10,11 @@ import (
 )
 
 // RateLimits is the per-class budget (requests per minute); burst equals
-// the per-minute value except publicRead (half). A zero value for the whole
-// struct means DefaultRateLimits; a zero for ONE class disables that class
-// (tests only). Limits are per process: a multi-replica deployment
-// multiplies them by replica count (upgrades.md assumes one api replica).
+// the per-minute value except publicRead (half). A zero for a class
+// disables that class, so the zero value disables API rate limiting (the
+// config package resolves unset RATE_LIMIT_* to the defaults). Limits are
+// per process: a multi-replica deployment multiplies them by replica count
+// (upgrades.md assumes one api replica).
 type RateLimits struct {
 	PublicReadPerMin  int // per IP: public GETs + share routes
 	PublicWritePerMin int // per IP: public POSTs
@@ -37,24 +39,39 @@ const (
 // refilled at `perMin` tokens/minute. Keys are "ip:<s.clientIP>" for the
 // public routes (proxy-aware, see proxy.go) and "user:<actor id>" for the
 // authed routes.
+//
+// Buckets live in a map plus an LRU list (front = most recently used): idle
+// buckets (> 10 min) are pruned from the back, and the map is hard-capped
+// at maxKeys — beyond it the least recently used bucket is evicted, so a
+// client rotating source addresses (an IPv6 /64) cannot grow memory
+// without bound.
 type rateLimiter struct {
 	mu      sync.Mutex
 	perMin  float64
 	burst   float64
 	now     func() time.Time
-	buckets map[string]*bucket
-	lastGC  time.Time
+	maxKeys int
+	buckets map[string]*list.Element // Value is *bucket
+	lru     *list.List
 }
 
+// maxRateLimiterKeys caps each limiter's bucket map.
+const maxRateLimiterKeys = 100_000
+
+// idleBucketTTL is how long an untouched bucket is kept; by then it has
+// refilled to burst anyway, so dropping it changes nothing.
+const idleBucketTTL = 10 * time.Minute
+
 type bucket struct {
+	key    string
 	tokens float64
 	last   time.Time
 }
 
 func newRateLimiter(perMin, burst int, now func() time.Time) *rateLimiter {
 	return &rateLimiter{
-		perMin: float64(perMin), burst: float64(burst),
-		now: now, buckets: make(map[string]*bucket),
+		perMin: float64(perMin), burst: float64(burst), now: now,
+		maxKeys: maxRateLimiterKeys, buckets: make(map[string]*list.Element), lru: list.New(),
 	}
 }
 
@@ -77,19 +94,20 @@ func (l *rateLimiter) allow(key string) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	t := l.now()
-	// Opportunistic GC: drop buckets idle > 10 minutes, at most once a minute.
-	if t.Sub(l.lastGC) > time.Minute {
-		for k, b := range l.buckets {
-			if t.Sub(b.last) > 10*time.Minute {
-				delete(l.buckets, k)
-			}
-		}
-		l.lastGC = t
+	// GC from the LRU end: the back is the longest idle bucket.
+	for e := l.lru.Back(); e != nil && t.Sub(e.Value.(*bucket).last) > idleBucketTTL; e = l.lru.Back() {
+		l.remove(e)
 	}
-	b, ok := l.buckets[key]
-	if !ok {
-		b = &bucket{tokens: l.burst, last: t}
-		l.buckets[key] = b
+	var b *bucket
+	if e, ok := l.buckets[key]; ok {
+		l.lru.MoveToFront(e)
+		b = e.Value.(*bucket)
+	} else {
+		b = &bucket{key: key, tokens: l.burst, last: t}
+		l.buckets[key] = l.lru.PushFront(b)
+		for l.lru.Len() > l.maxKeys {
+			l.remove(l.lru.Back())
+		}
 	}
 	b.tokens = min(l.burst, b.tokens+t.Sub(b.last).Minutes()*l.perMin)
 	b.last = t
@@ -99,6 +117,11 @@ func (l *rateLimiter) allow(key string) (bool, time.Duration) {
 	}
 	seconds := max(math.Ceil((1-b.tokens)/l.perMin*60), 1)
 	return false, time.Duration(seconds) * time.Second
+}
+
+func (l *rateLimiter) remove(e *list.Element) {
+	delete(l.buckets, e.Value.(*bucket).key)
+	l.lru.Remove(e)
 }
 
 // writeRateLimited renders the 429 envelope with Retry-After in whole seconds.

@@ -105,6 +105,48 @@ func TestRateLimiterGCPrunesIdleBuckets(t *testing.T) {
 	}
 }
 
+func TestRateLimiterKeyCapEvictsLeastRecentlyUsed(t *testing.T) {
+	now := time.Now()
+	clock := func() time.Time { return now }
+	l := newRateLimiter(5, 1, clock)
+	if l.maxKeys != maxRateLimiterKeys || maxRateLimiterKeys != 100_000 {
+		t.Fatalf("maxKeys = %d (const %d), want 100000", l.maxKeys, maxRateLimiterKeys)
+	}
+	l.maxKeys = 3
+
+	for _, k := range []string{"a", "b", "c"} {
+		l.allow(k)
+		now = now.Add(time.Second)
+	}
+	l.allow("a") // a is now the most recently used; b is the oldest
+	now = now.Add(time.Second)
+	l.allow("d")
+
+	if len(l.buckets) != 3 || l.lru.Len() != 3 {
+		t.Fatalf("buckets = %d, lru = %d, want both capped at 3", len(l.buckets), l.lru.Len())
+	}
+	if _, ok := l.buckets["b"]; ok {
+		t.Fatal("b (least recently used) should have been evicted")
+	}
+	for _, k := range []string{"a", "c", "d"} {
+		if _, ok := l.buckets[k]; !ok {
+			t.Fatalf("%s should survive the eviction", k)
+		}
+	}
+	// a kept its (empty) bucket: still refused.
+	if ok, _ := l.allow("a"); ok {
+		t.Fatal("a's bucket was reset; only the LRU key may be evicted")
+	}
+
+	// A flood of fresh keys never grows the map past the cap.
+	for i := 0; i < 1000; i++ {
+		l.allow("flood-" + time.Duration(i).String())
+	}
+	if len(l.buckets) != 3 || l.lru.Len() != 3 {
+		t.Fatalf("after flood: buckets = %d, lru = %d", len(l.buckets), l.lru.Len())
+	}
+}
+
 func TestRateLimitedHandler(t *testing.T) {
 	now := time.Now()
 	clock := func() time.Time { return now }

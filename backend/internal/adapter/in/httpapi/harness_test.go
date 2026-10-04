@@ -1339,6 +1339,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	h.scheduling = h.sched
 	h.deps = Deps{
+		RateLimits: DefaultRateLimits(),
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Verifier:   ver,
 		Users:      users,
