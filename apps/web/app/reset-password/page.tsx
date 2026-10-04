@@ -107,14 +107,14 @@ export default function ResetPasswordPage() {
       <form onSubmit={submit} className="flex flex-col gap-3">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="new-password">New password</Label>
-          <Input id="new-password" type="password" autoComplete="new-password" required minLength={PASSWORD_MIN_LENGTH} value={next} onChange={(e) => setNext(e.target.value)} disabled={pending} />
+          <Input id="new-password" type="password" autoComplete="new-password" required minLength={PASSWORD_MIN_LENGTH} aria-invalid={formError ? true : undefined} aria-describedby={formError ? 'reset-error' : undefined} value={next} onChange={(e) => setNext(e.target.value)} disabled={pending} />
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="confirm-password">Confirm new password</Label>
           <Input id="confirm-password" type="password" autoComplete="new-password" required minLength={PASSWORD_MIN_LENGTH} value={confirm} onChange={(e) => setConfirm(e.target.value)} disabled={pending} />
         </div>
         {formError && (
-          <p className="text-destructive text-sm" role="alert">
+          <p id="reset-error" className="text-destructive text-sm" role="alert">
             {formError}
           </p>
         )}

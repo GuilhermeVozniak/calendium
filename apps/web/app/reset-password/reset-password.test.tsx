@@ -50,6 +50,7 @@ describe('ResetPasswordPage', () => {
     render(<ResetPasswordPage />);
     await fill(user, 'correct-horse-battery', 'correct-horse-batterx');
     expect(await screen.findByText("Passwords don't match.")).toBeInTheDocument();
+    expect(screen.getByLabelText('New password')).toHaveAccessibleDescription("Passwords don't match.");
     await user.clear(screen.getByLabelText('New password'));
     await user.clear(screen.getByLabelText('Confirm new password'));
     await fill(user, 'short');
