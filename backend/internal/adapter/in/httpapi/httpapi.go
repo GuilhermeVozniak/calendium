@@ -396,6 +396,7 @@ func build(deps Deps) (*server, http.Handler) {
 	h = corsMiddleware(h, deps.CORSAllowedOrigins, deps.AllowDevOrigins)
 	h = s.logRequests(h)
 	h = s.requestID(h)
+	h = s.securityHeaders(h)
 	h = s.recoverPanics(h)
 	return s, h
 }

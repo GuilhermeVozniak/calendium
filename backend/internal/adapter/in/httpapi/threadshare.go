@@ -119,7 +119,7 @@ func (s *server) handleSharedThreadStream(w http.ResponseWriter, r *http.Request
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
-	h.Set("Cache-Control", "no-cache")
+	h.Set("Cache-Control", "no-store")
 	h.Set("X-Accel-Buffering", "no") // defeat reverse-proxy buffering
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, ": connected\n\n")
