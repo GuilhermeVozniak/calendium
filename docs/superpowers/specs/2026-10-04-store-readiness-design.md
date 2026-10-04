@@ -1,0 +1,381 @@
+# Store and release readiness — design
+
+Date: 2026-10-04. Status: draft for review. Program context: piece 5 of 6 in
+the production-readiness program. Consumes `webUrl` from `GET /v1/instance`
+once piece 1 adds it; store submission is blocked on piece 3 (account deletion).
+
+## Goal
+
+Make a `vX.Y.Z` tag produce store-submittable mobile builds and installable,
+version-stamped desktop artifacts carrying the product's real identity (name,
+icon, bundle ids, repository, copyright), with CI refusing to ship what
+`expo-doctor` or the macOS signing gate would reject.
+
+## Findings being fixed (verified 2026-10-04)
+
+Mobile (Expo SDK 54, `apps/mobile`):
+
+- F1 `app.json:3` display name is lowercase `"calendium"`.
+- F2 `app.json:17-20` `ios` has no `infoPlist` (no `ITSAppUsesNonExempt
+  Encryption`) and no `privacyManifests`; `:21-28` `android` has no
+  permission policy.
+- F3 `eas.json:13,16` `build.production` and `submit.production` are `{}`;
+  `cli.version ">= 5.9.0"` (`:3`) predates `appVersionSource`; no
+  `autoIncrement`, so every store upload collides on build number 1.
+- F4 Template art: `assets/images/icon.png`, `splash.png`, `adaptive-icon.png`
+  are the react-native-reusables atom logo (inspected); `react-native-
+  reusables-{dark,light}.png` are unreferenced; `favicon.png` is 34x30.
+  `app.json:36-41` uses `adaptive-icon.png` as the Android notification icon,
+  which must be a white-on-transparent glyph.
+- F5 `bunx expo-doctor` fails 2/18: duplicate `react`/`react-dom` (`19.1.0`
+  nested in `apps/mobile`, `19.2.7` hoisted, `bun.lock:2008,2012`; root
+  `package.json:37-39` overrides only `@types/react`) and patch mismatches
+  `expo 54.0.35`→`~54.0.37`, `expo-constants 18.0.13`→`~18.0.14`, `jest-expo
+  54.0.17`→`~54.0.18` (`apps/mobile/package.json:28-29,61`). `jest.config.js:
+  1-16` documents the nested-react workaround this removes.
+- F6 `backend/internal/adapter/out/push/apns.go:24-25` default topic
+  `app.calendium` vs bundle id `app.calendium.mobile` (`app.json:19,23`);
+  `.env.example:111-113` repeats the wrong default; only
+  `apps/mobile/docs/push.md` (§iOS) has the right value.
+
+Desktop (Wails v2.12.0, `apps/desktop`):
+
+- F7 `build/darwin/Info.plist:11` bundle id `com.wails.{{.Name}}`; `:51` URL
+  name `com.wails.{{.Scheme}}`.
+- F8 Version hardcoded: `app.go:11-13` `const appVersion = "0.1.0"`,
+  `wails.json:15`, `frontend/package.json:3`.
+- F9 No update mechanism; `frontend/src/views/SettingsView.tsx:527-530` only
+  displays the version.
+- F10 `main.go:39-45` wires `calendium://` via `mac.Options.OnUrlOpen` only;
+  no `SingleInstanceLock` (the Windows/Linux delivery path), no Linux
+  `.desktop`, no Windows installer (`release.yml:142-147` zips a bare exe).
+- F11 `build/appicon.png` is the Wails "W" placeholder (inspected);
+  `appicon-tray.png` is already a calendar glyph and stays.
+
+Release workflow (`.github/workflows/release.yml`):
+
+- F12 `:58-60,96-99,163-170`: with `MACOS_CERT_P12` empty, signing steps are
+  skipped and a tag still publishes an unsigned DMG.
+- F13 `:89-95` no `-ldflags`/`-nsis`; `:79-88` computes a version that never
+  reaches the binary or `wails.json`; `workflow_dispatch` (`:7`) has no inputs.
+
+Versions and identity:
+
+- F14 API `0.1.0` (`backend/internal/adapter/in/httpapi/instance.go:5-6`,
+  served at `backend/cmd/api/main.go:412`), desktop `0.1.0`, mobile `1.0.0`
+  (`app.json:5`, `package.json:4`); `backend/Dockerfile:19-20` has no version
+  ldflag.
+- F15 `apps/web/components/marketing/links.ts:17` `github.com/calendium/
+  calendium` (real: `GuilhermeVozniak/calendium`; used by pricing, terms,
+  docs/self-hosting, `self-hosting.tsx`); `:13` hardcoded `support@calendium.
+  app` (footer, pricing, privacy, terms); `site-footer.tsx:64` "Calendium, Inc.".
+- F16 `apps/mobile/lib/server-config.ts:21-23,53-55`, `apps/desktop/frontend/
+  src/lib/server-config.ts:27-29` hardcode `api.`/`demo.calendium.app`;
+  `docs/self-hosting/clients.md:56,109,153` present them as fixed.
+
+## Decisions (restated)
+
+1. Identifiers: mobile `app.calendium.mobile` (keep); desktop `app.calendium.
+   desktop`; APNs default topic `app.calendium.mobile` (`APNS_TOPIC` override
+   stays); scheme `calendium` everywhere.
+2. Versioning: the tag `vX.Y.Z` is the single source of truth. Desktop:
+   `-ldflags "-X main.version=X.Y.Z"` plus a build-time stamp of `wails.json`
+   (templates `Info.plist`); `app.go` exposes it. Mobile: `scripts/set-version.
+   mjs <x.y.z>` writes `app.json` `expo.version` (committed before tagging;
+   `release.yml` runs `--check`); EAS `autoIncrement` owns build numbers. API
+   `httpapi.Version` becomes a `var` defaulting to `"dev"`, set by ldflags.
+3. EAS: real `development`/`preview`/`production` build profiles and
+   `submit.production`; no credentials in the repo.
+4. `app.json`: name `Calendium`, slug/scheme `calendium`, `ios.infoPlist` with
+   only what the code needs, `ios.privacyManifests`, minimal Android
+   permissions, adaptive icon.
+5. Assets generated by `scripts/gen-mobile-assets.mjs` from `apps/web/public/
+   icon.svg` with `sharp`; template files deleted.
+6. Root `react`/`react-dom` overrides pinned to `19.1.0`; patch bumps applied;
+   `expo-doctor` 18/18, run in CI as `mobile-doctor`.
+7. Desktop update v1 = notification only; Windows NSIS installer; Linux
+   `.desktop` registers the scheme; a tag fails without signing secrets unless
+   `workflow_dispatch` `allow_unsigned=true`.
+8. Identity: real GitHub URL, "© 2026 Calendium", support email and cloud
+   hosts configurable with today's values as defaults; clients prefer
+   `webUrl`/`apiUrl` from `/v1/instance` once present.
+9. `docs/release/store-readiness.md` lists operator prerequisites.
+
+## Non-goals
+
+- Procuring Apple Developer ID / Windows Authenticode certificates; Windows
+  stays unsigned (SmartScreen warning documented).
+- An in-place auto-updater (download, verify, replace, relaunch).
+- Performing App Store / Play submissions, screenshots, review.
+- Account deletion (piece 3): Apple 5.1.1(v) and Google Play require it before
+  submission; `store-readiness.md` lists it as a hard prerequisite.
+- Mobile builds in GitHub Actions: `eas build`/`eas submit` are operator-run
+  from the tag.
+
+## Architecture
+
+### A. Mobile config (`apps/mobile/app.json`)
+
+- `name: "Calendium"`, `slug: "calendium"`, `scheme: "calendium"`; `version`
+  managed by `set-version.mjs`. Replace the top-level `splash` block (`:11-15`)
+  with the `expo-splash-screen` plugin: `{image: "./assets/images/
+  splash-icon.png", imageWidth: 200, resizeMode: "contain", backgroundColor:
+  "#ffffff", dark: {image: "./assets/images/splash-icon-dark.png",
+  backgroundColor: "#0a0a0a"}}`. `expo-notifications` plugin: `icon:
+  "./assets/images/notification-icon.png"`, `color: "#0a0a0a"`.
+- `ios.infoPlist`: `ITSAppUsesNonExemptEncryption: false` only. No camera /
+  photo / calendars / contacts / location strings: `package.json:13-49` has no
+  `expo-camera`, `expo-image-picker`, `expo-calendar`, `expo-contacts`,
+  `expo-location` or `expo-local-authentication`, and a grep of `apps/mobile`
+  finds no such import; an unused usage string is itself a review flag.
+- `ios.privacyManifests`: `NSPrivacyTracking: false`, `NSPrivacyCollected
+  DataTypes: []`, `NSPrivacyAccessedAPITypes` = UserDefaults `CA92.1`,
+  FileTimestamp `C617.1`, SystemBootTime `35F9.1`, DiskSpace `E174.1` (SDK 54
+  default set for RN/Expo core).
+- `android`: keep `package`, `edgeToEdgeEnabled`; `adaptiveIcon.background
+  Color: "#0a0a0a"`; `permissions: ["android.permission.POST_NOTIFICATIONS"]`;
+  `blockedPermissions` = `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`,
+  `SYSTEM_ALERT_WINDOW`, `SCHEDULE_EXACT_ALARM` (no local scheduling anywhere;
+  `use-push-registration.ts` only registers the device token).
+- `app.config.js` is unchanged.
+
+### B. Assets pipeline (`scripts/gen-mobile-assets.mjs`)
+
+Source: `apps/web/public/icon.svg` (512 viewBox; `#0a0a0a` rounded square
+`rx=96`, `#fafafa` calendar glyph; already the web favicon, `app/layout.tsx:
+23`). `sharp` becomes a root `devDependency` (`sharp@0.34.5` is already in
+`bun.lock` via Next); run with `node` (native binding); root script
+`assets:gen`. The script derives two SVG string variants, `square` (first
+`<rect>` `rx` forced to `0`) and `glyph` (background rect removed, recolored
+per output), and writes deterministic PNGs (`png({compressionLevel: 9,
+adaptiveFiltering: false})`):
+
+| file | px | content |
+|---|---|---|
+| `apps/mobile/assets/images/icon.png` | 1024 | `square`, flattened (App Store rejects alpha) |
+| `apps/mobile/assets/images/adaptive-icon.png` | 1024 | `glyph` at 60% on transparent (inside Android's 66% safe zone) |
+| `apps/mobile/assets/images/splash-icon.png` | 1024 | `glyph` `#0a0a0a` on transparent |
+| `apps/mobile/assets/images/splash-icon-dark.png` | 1024 | `glyph` `#fafafa` on transparent |
+| `apps/mobile/assets/images/notification-icon.png` | 96 | `glyph` `#ffffff` on transparent |
+| `apps/mobile/assets/images/favicon.png` | 48 | original SVG (rounded) |
+| `apps/desktop/build/appicon.png` | 1024 | original SVG (rounded, transparent corners; Wails derives `.icns`/`.ico`) |
+
+Deleted: `splash.png`, `react-native-reusables-{dark,light}.png`. Outputs are
+committed (builds never run the script); the script test guards drift.
+
+### C. Dependency dedupe
+
+Root `package.json` `overrides`: `{"react": "19.1.0", "react-dom": "19.1.0",
+"@types/react": "~19.1.10"}`. `apps/web` (`^19.1.0`, Next 15.5) and
+`apps/desktop/frontend` (`^19.1.0`) accept it, so one hoisted copy remains and
+`apps/mobile/node_modules/react` disappears. Bump `expo ~54.0.37`,
+`expo-constants ~18.0.14`, `jest-expo ~54.0.18` and refresh `bun.lock`. The
+`react` entries in `jest.config.js` `moduleNameMapper` stay (now resolving to
+the same copy); its comment shrinks to "belt-and-braces".
+
+### D. EAS (`apps/mobile/eas.json`)
+
+```json
+{ "cli": { "version": ">= 16.0.0", "appVersionSource": "remote" },
+  "build": {
+    "development": { "developmentClient": true, "distribution": "internal", "channel": "development" },
+    "preview":     { "distribution": "internal", "channel": "preview" },
+    "production":  { "distribution": "store", "channel": "production", "autoIncrement": true } },
+  "submit": { "production": {
+    "ios":     { "appleTeamId": "CT22R575UG" },
+    "android": { "track": "internal", "releaseStatus": "draft" } } } }
+```
+
+`appVersionSource: remote` makes EAS own `buildNumber`/`versionCode` (no
+commit per build; `autoIncrement` requires it). `channel` keys are inert until
+`expo-updates` is adopted. `appleTeamId` is the Team ID already in the tree
+(`apps/mobile/docs/apple/README.md:17`); `ascAppId` (an identifier, not a
+secret) is written by the first interactive `eas submit` once the App Store
+Connect record exists. Android uses EAS-managed credentials (service-account
+JSON uploaded once via `eas credentials`), so `serviceAccountKeyPath` is
+omitted. Firebase config stays the `GOOGLE_SERVICES_JSON` EAS file secret
+`app.config.js` already expects.
+
+### E. Desktop
+
+Versioning. `app.go`: `var version = "dev"` replaces the const; `GetAppVersion`
+returns it. `wails.json` gains `info.companyName: "Calendium"` and
+`info.copyright: "© 2026 Calendium"` (templated into NSIS and `Info.plist`).
+`Info.plist:11` → `app.calendium.desktop`; `:51` →
+`app.calendium.desktop.{{.Scheme}}`. `set-version.mjs` stamps
+`info.productVersion` too, so `CFBundleShortVersionString` and the NSIS
+`VIProductVersion` (numeric `X.Y.Z` required, template `project.nsi:38`)
+always equal the tag.
+
+Update check (`apps/desktop/update.go`, stdlib only):
+
+- `updateChecker{version, url string; hc *http.Client; cachePath string; now
+  func() time.Time}`; `url` defaults to `https://api.github.com/repos/
+  GuilhermeVozniak/calendium/releases/latest`, `CALENDIUM_UPDATE_URL`
+  overrides (`off` disables). Disabled unless `version` is a plain release
+  semver, so `dev` / `0.0.0-dev.<sha>` builds never nag.
+- `check(ctx)`: GET with `Accept: application/vnd.github+json`, `User-Agent:
+  Calendium-Desktop/<version>`, `If-None-Match` from `os.UserConfigDir()/
+  Calendium/update-check.json` (`{etag, tagName, htmlUrl, checkedAt}`); 5 s
+  `http.Client.Timeout` plus ctx. `304` → cached result; `200` → `tag_name`,
+  `html_url`, `draft`, `prerelease` (drafts/prereleases ignored). No query
+  params or identifiers: nothing beyond a UA reaches GitHub.
+- `parseSemver` / `newer` (release > prerelease, numeric compare), ~25 lines.
+- `startUpdateChecks(ctx)` from `OnStartup`: first run after 10 s (never
+  delays launch), then a 24 h `time.Ticker`, stopped on shutdown. A newer
+  release emits `update-available` with `UpdateInfo{Available, Current,
+  Latest, URL}`, also served by the `GetUpdateStatus() UpdateInfo` binding
+  (late-mounted UI, Settings About row).
+
+Frontend: `lib/wails.ts` adds `GetUpdateStatus` to `DesktopBindings` (browser
+fallback `{available: false}`), `UPDATE_EVENT`, `onUpdateAvailable`; new
+`views/UpdateBanner.tsx` mounted in `App.tsx` between titlebar and body: a
+one-line bar "Calendium X.Y.Z is available" with **Download**
+(`desktop.OpenExternal(url)`) and **Later** (localStorage `calendium.update.
+dismissed=<version>`; a newer version re-shows). No modal, no toast.
+
+Deep links on every platform (`main.go`):
+
+- `SingleInstanceLock{UniqueId: "app.calendium.desktop",
+  OnSecondInstanceLaunch: app.onSecondInstance}` (Wails `options.go:190-199`);
+  `onSecondInstance` takes the first `calendium://` value in `Args` → existing
+  `handleURL` + `WindowShow`. Cold launch: `main()` calls `app.consumeArgs(
+  os.Args[1:])` before `wails.Run`; the existing `pendingURL` buffer delivers
+  once the WebView is up. macOS keeps `OnUrlOpen` (argv never carries it).
+- Windows: `wails build -nsis` with the stock template already registers every
+  `wails.json` `info.protocols` entry (`wails_tools.nsh:236-241`,
+  `project.nsi:94-95`) as `"$INSTDIR\Calendium.exe" "%1"`; no custom NSIS
+  file is committed.
+- Linux: new `build/linux/calendium.desktop` (`Exec=Calendium %u`, `MimeType=
+  x-scheme-handler/calendium;`, `Icon=calendium`, `StartupWMClass=Calendium`)
+  and `build/linux/README.txt` (`install -Dm755`, `install -Dm644 …
+  ~/.local/share/applications/`, `xdg-mime default calendium.desktop
+  x-scheme-handler/calendium`); both plus a 512 px `calendium.png` ship in the
+  tarball.
+
+### F. Release workflow (`.github/workflows/release.yml`)
+
+- `workflow_dispatch.inputs`: `allow_unsigned` (boolean, default false),
+  `version` (string, optional, `^\d+\.\d+\.\d+$` or empty).
+- New job `preflight` (ubuntu, `needs: test`, gates `build-desktop`): computes
+  `version` (tag → `X.Y.Z`; dispatch → input or `0.0.0`) and `build_version`
+  (`X.Y.Z` or `0.0.0-dev.<sha7>`); on tags runs `node scripts/set-version.mjs
+  --check <version>` (fails on `app.json`/`wails.json` drift); fails with an
+  explicit message when `secrets.MACOS_CERT_P12 == ''` unless the run is a
+  dispatch with `allow_unsigned=true`. A tag can never publish unsigned.
+- `build-desktop`: `node scripts/set-version.mjs <version>` (uncommitted
+  stamp) → `wails build -platform … -ldflags "-X main.version=<build_version>"`,
+  plus `-nsis` on Windows (guard: `choco install nsis -y` if `makensis` is
+  absent). Windows artifacts: `calendium_<v>_windows_amd64-setup.exe` (renamed
+  from `build/bin/Calendium-amd64-installer.exe`, `project.nsi:74`) plus the
+  portable zip. Linux tarball gains the `.desktop`, icon and README. macOS
+  steps unchanged. Assertions: macOS `plutil -extract CFBundleShortVersion
+  String raw …/Info.plist` equals `<version>`; Windows `(Get-Item setup.exe).
+  VersionInfo.ProductVersion` starts with `<version>`.
+- `softprops/action-gh-release@v2` gains `generate_release_notes: true`;
+  dispatch runs still only upload artifacts.
+
+### G. Backend version and APNs
+
+`instance.go`: `var Version = "dev"`. `backend/Dockerfile`: `ARG VERSION=dev`
+and `-ldflags="-s -w -X calendium/backend/internal/adapter/in/httpapi.Version=
+${VERSION}"` for both binaries; `docker-compose.yml` passes `VERSION:
+${VERSION:-dev}`. `release.yml` does not build the API image (piece 4 owns
+that); the hook is ready. `apns.go:25` → `app.calendium.mobile`; `.env.example:
+111-113` and `docs/self-hosting/providers.md` state the new default. First tag
+after this piece: `v1.0.0` (mobile is already 1.0.0; store versions cannot go
+backwards).
+
+### H. Identity / copy
+
+- `links.ts`: `GITHUB_URL = 'https://github.com/GuilhermeVozniak/calendium'`;
+  `SUPPORT_EMAIL = env.supportEmail`, where `apps/web/lib/env.ts` gains a
+  `supportEmail` getter reading `NEXT_PUBLIC_SUPPORT_EMAIL` (default
+  `support@calendium.app`; same getter pattern as `apiUrl`, `env.ts:11-20`).
+  `apps/web/Dockerfile`, `docker-compose.yml` and `.env.example` carry the new
+  build arg.
+- `site-footer.tsx:64` renders `© {new Date().getFullYear()} Calendium`
+  ("© 2026 Calendium" today, never stale).
+- Clients: `CLOUD_PRESET.serverUrl = process.env.EXPO_PUBLIC_CLOUD_API_URL ??
+  'https://api.calendium.app'` (mobile) / `import.meta.env.VITE_CLOUD_API_URL
+  ?? …` (desktop); `DEMO_CONFIG` URLs from `EXPO_PUBLIC_DEMO_SERVER_URL ??
+  'https://demo.calendium.app'` (demo never dials out — `lib/mock` — so this is
+  a label, kept configurable for white-label hosts). The preset is only the
+  bootstrap URL; after discovery clients use `authBaseUrl` today and `webUrl`/
+  `apiUrl` from `InstanceInfo` (`packages/shared/src/types.ts:868`) once piece 1
+  adds them, typed optional. `docs/self-hosting/clients.md` documents this.
+
+### I. Operator doc (`docs/release/store-readiness.md`)
+
+(1) Prerequisites with owner: account deletion (piece 3, blocks both stores),
+privacy policy URL (`/privacy` exists), support URL. (2) App Store Connect:
+app record for `app.calendium.mobile`; first `eas submit --platform ios
+--profile production` run interactively, commit the `ascAppId` it writes;
+nutrition labels derived from `/privacy` (mail/calendar content processed, not
+sold; no tracking; contact info for the account); export compliance "none".
+(3) Google Play: app record, data-safety form from the same source, internal
+track, service-account JSON via `eas credentials`. (4) EAS: project,
+`EAS_PROJECT_ID`, `GOOGLE_SERVICES_JSON` file secret, APNs key via `eas
+credentials`. (5) Desktop: the five notarization GitHub secrets, the unsigned-
+Windows SmartScreen caveat, Linux install lines. (6) Procedure: `bun run
+version:set X.Y.Z` → commit → `git tag vX.Y.Z` → push → `eas build -p all
+--profile production --auto-submit` from the tag. (7) Hygiene: `apps/mobile/
+docs/apple/secret-gem.rb:3` and `README.md:16` hardcode a local path; the
+`.p8` is untracked and gitignored (`.gitignore:39,44`) and stays out.
+
+## Configuration
+
+| Where | Key | Purpose |
+|---|---|---|
+| GitHub secrets | `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | existing; `MACOS_CERT_P12` now gates tags |
+| GitHub dispatch inputs | `allow_unsigned`, `version` | dry runs |
+| EAS secrets / env | `EAS_PROJECT_ID`, `GOOGLE_SERVICES_JSON` (file) | consumed by `app.config.js` |
+| EAS-managed credentials | Apple distribution cert + APNs key, Play service account | `eas credentials`; never in repo |
+| Backend env | `APNS_TOPIC` (default `app.calendium.mobile`) | override for custom bundle ids |
+| Backend build arg | `VERSION` | ldflags into `httpapi.Version` |
+| Web build env | `NEXT_PUBLIC_SUPPORT_EMAIL` | default `support@calendium.app` |
+| Mobile env | `EXPO_PUBLIC_CLOUD_API_URL`, `EXPO_PUBLIC_DEMO_SERVER_URL` | defaults as today |
+| Desktop build env | `VITE_CLOUD_API_URL` | default as today |
+| Desktop runtime env | `CALENDIUM_UPDATE_URL` | override / `off` |
+
+Root `package.json` scripts: `version:set` → `node scripts/set-version.mjs`,
+`assets:gen` → `node scripts/gen-mobile-assets.mjs`, `test:scripts` →
+`vitest run --root scripts` (added to `test` and lefthook `pre-push`).
+`biome.json` `files.includes` gains `**/*.mjs`.
+
+## Testing & verification
+
+- `mobile-doctor` job in `test.yml` (same triggers/concurrency): `bun install
+  --frozen-lockfile`, then in `apps/mobile`: `bunx expo-doctor`, `bunx expo
+  install --check`, `bunx expo config --type public > /dev/null`. Acceptance:
+  18/18 (today 16/18).
+- `apps/mobile/app-config.test.ts` (jest): loads `app.config.js` over the
+  static config; asserts name/slug/scheme/bundle ids, `ITSAppUsesNonExempt
+  Encryption === false`, the four privacy API categories, no `*UsageDescription`
+  key, every referenced asset at its expected pixel size, no
+  `react-native-reusables*` file.
+- `apps/desktop/update_test.go` (`httptest.Server`): newer tag emits; equal/
+  older/prerelease/draft do not; `ETag` round-trip yields `304` + cached
+  result; timeout errors without emitting; `dev` never requests;
+  `parseSemver`/`newer` table; `consumeArgs`/`onSecondInstance` extract
+  `calendium://` from mixed argv; `TestGetAppVersion` sets `version="1.2.3"`.
+- `apps/desktop/frontend/src/views/UpdateBanner.test.tsx` (vitest + RTL,
+  `@/lib/wails` mocked): hidden when `{available:false}`; shows the version
+  and calls `OpenExternal` with the release URL; Later hides and persists; a
+  newer version re-shows. `wails.test.ts` covers the `GetUpdateStatus` fallback.
+- `scripts/set-version.test.mjs`: temp copies of `app.json`/`wails.json`, key
+  order and 2-space formatting preserved, non-semver rejected, `--check` exits
+  1 on drift. `scripts/gen-mobile-assets.test.mjs`: generates into a temp dir,
+  asserts dimensions and alpha (icon opaque, adaptive/splash transparent
+  corners, notification icon pure white), and that regenerating over the
+  committed assets is byte-identical.
+- Backend: `httpapi` instance test asserts `/v1/instance` echoes `Version`
+  (set to `9.9.9`); the `backend` CI job adds `go build -ldflags "-X …
+  Version=ci"` so the symbol path cannot silently break.
+- `release.yml` dry run: dispatch with `allow_unsigned=true`, `version=0.0.0`
+  → three artifacts plus the `.plist`/`VersionInfo` assertions; a dispatch
+  with `allow_unsigned=false` and no `MACOS_CERT_P12` must fail at `preflight`
+  with the documented message.
+- Manual per release: install the NSIS build on Windows and open
+  `calendium://accounts/connected?status=ok` from a browser; same on Linux
+  after the `xdg-mime` line.
