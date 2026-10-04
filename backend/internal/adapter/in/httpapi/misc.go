@@ -125,7 +125,10 @@ func (s *server) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	var fc fieldCheck
 	fc.title("platform", in.Platform)
-	fc.title("token", in.Token)
+	// A Web Push token is the whole PushSubscription JSON, whose endpoint is
+	// an opaque push-service URL (Edge/WNS channel URIs run to several
+	// hundred %-escaped characters): opaque text, not a title.
+	fc.text("token", in.Token)
 	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return

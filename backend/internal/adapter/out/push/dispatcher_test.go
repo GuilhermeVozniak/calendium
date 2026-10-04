@@ -78,7 +78,9 @@ func TestDispatcherRouting(t *testing.T) {
 		defer srv.Close()
 
 		cfg := config.Push{VAPID: generateVAPIDConfig(t)}
-		d := NewDispatcher(cfg, srv.Client())
+		// newDispatcher: the production Web Push client refuses loopback
+		// (webpush_ssrf_test.go), so inject the httptest client here.
+		d := newDispatcher(cfg, srv.Client(), srv.Client())
 
 		dev := domain.NotificationDevice{Platform: domain.PlatformWeb, Token: subscriptionToken(t, srv.URL)}
 		if err := d.Send(context.Background(), dev, "t", "b", nil); err != nil {

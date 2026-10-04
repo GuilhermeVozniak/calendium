@@ -193,7 +193,7 @@ default; the compose file only overrides `TRUST_PROXY`.
 | `RATE_LIMIT_USER_PER_MIN` | api | `600` | Per user: every authenticated route not in a class below. `0` disables the class. |
 | `RATE_LIMIT_MUTATE_HEAVY_PER_MIN` | api | `30` | Per user: sends, bulk actions, inbox zero, subscriptions, invitations, booking links, polls, thread shares, AI calls. |
 | `RATE_LIMIT_SEARCH_PER_MIN` | api | `120` | Per user: search, attachment search, place autocomplete. |
-| `SHUTDOWN_TIMEOUT` | api, worker | `30s` | Go duration. In-flight requests / loop passes get this long after SIGTERM; the worker exits 1 if a loop overruns it. |
+| `SHUTDOWN_TIMEOUT` | api, worker | `30s` | Go duration. In-flight requests / loop passes get this long after SIGTERM; the worker exits 1 if a loop overruns it. Keep `SHUTDOWN_DRAIN_DELAY + SHUTDOWN_TIMEOUT` + 5 s below the compose `stop_grace_period` (40 s). |
 | `SHUTDOWN_DRAIN_DELAY` | api | `0s` | How long `/readyz` answers `503 draining` before listeners close (set `2s`–`5s` behind a load balancer that polls readiness). |
 | `LOG_FORMAT` | api, worker | `json` | `json` for log shippers, `text` for a terminal. Request lines carry `request_id` (also sent as `X-Request-Id`), method, route pattern, status, duration, bytes, client IP, user id and actor id; tokens and query strings are never logged. |
 | `LOG_LEVEL` | api, worker | `info` | `debug`, `info`, `warn` or `error`. |

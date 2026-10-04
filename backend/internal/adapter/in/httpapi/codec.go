@@ -12,11 +12,14 @@ import (
 )
 
 // Body caps. The default covers every JSON route; drafts (inline images)
-// get decodeJSONLimit with maxDraftBodyBytes; the public scheduling POSTs
-// use publicBodyLimit (scheduling.go) and the webhook its own 1 MiB.
+// get decodeJSONLimit with maxDraftBodyBytes; POST /v1/crm/log takes a
+// whole synced email body up to maxCrmLogBodyBytes (its bodyText is bounded
+// by that cap, not the 64 KiB long-text field limit); the public scheduling
+// POSTs use publicBodyLimit (scheduling.go) and the webhook its own 1 MiB.
 const (
-	maxBodyBytes      = 1 << 20
-	maxDraftBodyBytes = 10 << 20
+	maxBodyBytes       = 1 << 20
+	maxDraftBodyBytes  = 10 << 20
+	maxCrmLogBodyBytes = 1 << 20
 )
 
 // errPayloadTooLarge marks a body over its route cap; statusFor maps it to

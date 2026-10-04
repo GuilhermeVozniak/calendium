@@ -51,6 +51,10 @@ services:
       # TRUST_PROXY=false in .env only when clients reach api:8080 directly
       # (API_BIND=0.0.0.0 with no proxy in front).
       TRUST_PROXY: ${TRUST_PROXY:-true}
+    # SIGKILL deadline after SIGTERM. Must exceed SHUTDOWN_DRAIN_DELAY +
+    # SHUTDOWN_TIMEOUT (30s default) + the 5s event-listener wait, or the
+    # graceful drain is cut short; raise it if you raise those.
+    stop_grace_period: 40s
     depends_on:
       db:
         condition: service_healthy
@@ -101,6 +105,8 @@ services:
     # The worker serves no HTTP; the image's /healthz check does not apply.
     healthcheck:
       disable: true
+    # Loops get SHUTDOWN_TIMEOUT to finish a pass; keep this above it.
+    stop_grace_period: 40s
     deploy:
       resources:
         limits:
@@ -141,6 +147,8 @@ services:
         condition: service_healthy
       api:
         condition: service_started
+    # Next.js finishes in-flight requests on SIGTERM; 15s before SIGKILL.
+    stop_grace_period: 15s
     # Loopback by default, like api above. LAN without a proxy: WEB_BIND=0.0.0.0.
     # The image's HEALTHCHECK (GET /api/health) applies as-is.
     ports:

@@ -328,6 +328,7 @@ func run() error {
 	// degrades to nil (mention pushes silently disabled).
 	var pushSender port.PushSender
 	if cfg.Push != (config.Push{}) {
+		// hc serves APNs/FCM; Web Push dials through its own netguard client.
 		pushSender = push.NewDispatcher(cfg.Push, hc)
 	}
 

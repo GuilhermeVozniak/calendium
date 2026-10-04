@@ -121,7 +121,7 @@ func TestFieldLimitsViaHandlersMailAccountsMisc(t *testing.T) {
 		{"integration redirectUrl 2049", http.MethodPost, "/v1/integrations/connect/todoist", `{"redirectUrl":"` + long(2049) + `"}`, "redirectUrl", 2048},
 		{"ai compose prompt 64KiB+1", http.MethodPost, "/v1/ai/compose", `{"action":"write","prompt":"` + long((64<<10)+1) + `"}`, "prompt", 65536},
 		{"ai ask question 64KiB+1", http.MethodPost, "/v1/ai/ask", `{"question":"` + long((64<<10)+1) + `"}`, "question", 65536},
-		{"device token 501", http.MethodPost, "/v1/devices", `{"platform":"web","token":"` + long(501) + `"}`, "token", 500},
+		{"device token 64KiB+1", http.MethodPost, "/v1/devices", `{"platform":"web","token":"` + long((64<<10)+1) + `"}`, "token", 65536},
 		{"comment body 64KiB+1", http.MethodPost, "/v1/mail/threads/t1/comments", `{"teamId":"team_1","body":"` + long((64<<10)+1) + `"}`, "body", 65536},
 		{"comment edit body 64KiB+1", http.MethodPatch, "/v1/comments/c1", `{"body":"` + long((64<<10)+1) + `"}`, "body", 65536},
 		{"crm log contactEmail 321", http.MethodPost, "/v1/crm/log", `{"contactEmail":"` + long(321) + `","subject":"s"}`, "contactEmail", 320},

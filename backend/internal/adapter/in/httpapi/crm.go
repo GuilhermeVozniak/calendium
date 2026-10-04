@@ -56,14 +56,16 @@ func (s *server) handleCrmLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in domain.CrmEmailLog
-	if err := decodeJSON(w, r, &in); err != nil {
+	if err := decodeJSONLimit(w, r, &in, maxCrmLogBodyBytes); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
 	var fc fieldCheck
 	fc.email("contactEmail", in.ContactEmail)
 	fc.title("subject", in.Subject)
-	fc.text("bodyText", in.BodyText)
+	// The client sends the full synced message body; the CRM adapter trims
+	// it to what the vendor stores.
+	fc.textUpTo("bodyText", in.BodyText, maxCrmLogBodyBytes)
 	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return

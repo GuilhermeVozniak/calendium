@@ -17,7 +17,11 @@
 	# API + health checks → Go backend.
 	@api path /v1/* /healthz
 	handle @api {
-		reverse_proxy api:8080
+		# The api honours X-Request-Id from this (trusted) proxy, so never
+		# relay a client-chosen one; the api generates a fresh id.
+		reverse_proxy api:8080 {
+			header_up -X-Request-Id
+		}
 	}
 
 	# Everything else → Next.js web app.

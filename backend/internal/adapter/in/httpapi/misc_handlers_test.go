@@ -350,6 +350,24 @@ func TestHandleRegisterDevice(t *testing.T) {
 		}
 	})
 
+	// Web Push tokens are the whole PushSubscription JSON; Edge on Windows
+	// subscribes through WNS with long, %-escaped channel URIs, so the token
+	// is opaque text (64 KiB), not a 500-rune title.
+	t.Run("600-char Edge WNS endpoint passes the field limit", func(t *testing.T) {
+		h := newHarness(t)
+		h.devices.registerRet = domain.NotificationDevice{ID: "dev1"}
+		endpoint := edgeWNSEndpoint(600)
+		token := `{"endpoint":"` + endpoint + `","expirationTime":null,"keys":{"p256dh":"` +
+			strings.Repeat("B", 87) + `","auth":"` + strings.Repeat("A", 22) + `"}}`
+		rec := h.authed(http.MethodPost, "/v1/devices", jsonBody(t, map[string]string{"platform": "web", "token": token}))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		if h.devices.gotToken != token {
+			t.Fatalf("token not forwarded verbatim (len %d, want %d)", len(h.devices.gotToken), len(token))
+		}
+	})
+
 	t.Run("malformed JSON rejected", func(t *testing.T) {
 		h := newHarness(t)
 		rec := h.authed(http.MethodPost, "/v1/devices", strings.NewReader("{"))
@@ -379,4 +397,11 @@ func TestHandleUnregisterDevice(t *testing.T) {
 			t.Fatalf("status = %d, want 404", rec.Code)
 		}
 	})
+}
+
+// edgeWNSEndpoint returns an Edge-on-Windows style Web Push endpoint (a WNS
+// channel URI with a %-escaped token) of exactly n characters.
+func edgeWNSEndpoint(n int) string {
+	const prefix = "https://wns2-bl2p.notify.windows.com/w/?token=BQYAAAD"
+	return prefix + strings.Repeat("%2b", (n-len(prefix))/3) + strings.Repeat("x", (n-len(prefix))%3)
 }

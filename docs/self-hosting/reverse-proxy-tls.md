@@ -35,7 +35,10 @@ honour `X-Forwarded-For` (and, on the API, `X-Forwarded-Proto` and
 `X-Forwarded-For` hop that is *not* a trusted proxy. Caddy replaces
 client-supplied `X-Forwarded-*`; nginx must either append with
 `$proxy_add_x_forwarded_for` or overwrite with `$remote_addr` (the sample does
-the former for the API, the latter for the web app). Never set
+the former for the API, the latter for the web app). Appending lets a client
+whose own address is inside `TRUSTED_PROXY_CIDRS` (a LAN/VPN client of the
+proxy host) choose the API's rate-limit key by sending its own
+`X-Forwarded-For`; overwrite on the API block too if such clients exist. Never set
 `TRUST_PROXY=true` when clients can reach port 8080 or 3000 directly — that is
 why the compose file publishes both on `127.0.0.1` only
 (`API_BIND`/`WEB_BIND`). Full rule:
@@ -76,7 +79,11 @@ bring your own proxy instead — then the `caddy` service never starts.
 	# API + health checks → Go backend.
 	@api path /v1/* /healthz
 	handle @api {
-		reverse_proxy api:8080
+		# The api honours X-Request-Id from this (trusted) proxy, so never
+		# relay a client-chosen one; the api generates a fresh id.
+		reverse_proxy api:8080 {
+			header_up -X-Request-Id
+		}
 	}
 
 	# Everything else → Next.js web app.
@@ -103,6 +110,9 @@ bring your own proxy instead — then the `caddy` service never starts.
   own bucket, LAN clients included
   ([why](./security.md#client-ip-trust_proxy-and-trusted_proxy_cidrs)). Do not
   set `TRUST_PROXY=false` with this profile.
+- Caddy drops any client-sent `X-Request-Id` on the API route, so the API
+  always generates the id (it honours an inbound one only from a trusted
+  proxy). The nginx sample sends nginx's own `$request_id` instead.
 
 ### Before you `up`: DNS + ports
 
@@ -172,7 +182,9 @@ location /         { proxy_pass http://calendium_web; ... }
 > the right-most `X-Forwarded-For` entry that is not inside `TRUSTED_PROXY_CIDRS`.
 > Overwriting the header (`proxy_set_header X-Forwarded-For $remote_addr;`, which
 > the sample does for `location /`) and appending it (`$proxy_add_x_forwarded_for`,
-> AWS ALB, Google Cloud Load Balancing) both work. Every proxy hop must be inside
+> AWS ALB, Google Cloud Load Balancing) both work for internet clients; with
+> appending, a client that is itself inside `TRUSTED_PROXY_CIDRS` can pick its
+> own key, so overwrite when LAN/VPN clients use the proxy. Every proxy hop must be inside
 > `TRUSTED_PROXY_CIDRS`: the default covers loopback and private ranges, so add
 > any public CDN ranges yourself. With `TRUST_PROXY=false` every client shares
 > the proxy's bucket on all auth endpoints, including JWT minting, so one

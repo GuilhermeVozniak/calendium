@@ -343,6 +343,14 @@ func TestDeviceServiceRegister(t *testing.T) {
 		{"unknown platform", domain.DevicePlatform("blackberry"), "tok", domain.ErrValidation},
 		{"empty platform", domain.DevicePlatform(""), "tok", domain.ErrValidation},
 		{"empty token", domain.PlatformAndroid, "", domain.ErrValidation},
+		{"600-char Edge WNS endpoint", domain.PlatformWeb, webPushToken("https://wns2-bl2p.notify.windows.com/w/?token=" + strings.Repeat("%2b", 184) + "BQ"), nil},
+		{"web push http endpoint", domain.PlatformWeb, webPushToken("http://push.example/x"), domain.ErrValidation},
+		{"windows web push http loopback endpoint", domain.PlatformWindows, webPushToken("http://127.0.0.1:3000/api"), domain.ErrValidation},
+		{"linux web push file endpoint", domain.PlatformLinux, webPushToken("file:///etc/passwd"), domain.ErrValidation},
+		{"web push token without endpoint", domain.PlatformWeb, `{"keys":{}}`, domain.ErrValidation},
+		{"web push token that is not JSON", domain.PlatformWeb, "tok", domain.ErrValidation},
+		{"web push endpoint without host", domain.PlatformWeb, webPushToken("https:///x"), domain.ErrValidation},
+		{"android token is opaque, not JSON", domain.PlatformAndroid, "fcm:not-json", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -387,6 +395,11 @@ func TestDeviceServiceRegister(t *testing.T) {
 			}
 		})
 	}
+}
+
+// webPushToken is a browser PushSubscription JSON pointed at endpoint.
+func webPushToken(endpoint string) string {
+	return `{"endpoint":"` + endpoint + `","expirationTime":null,"keys":{"p256dh":"BPk","auth":"QQ"}}`
 }
 
 // --- DeviceService.Unregister ------------------------------------------------

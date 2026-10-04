@@ -217,7 +217,10 @@ This is exactly why step 1 (`make db-backup`) is non-negotiable.
   so two replicas double every budget. On stop the API answers `503` on
   `/readyz`, waits `SHUTDOWN_DRAIN_DELAY`, then gives in-flight requests up to
   `SHUTDOWN_TIMEOUT` (default 30 s) before closing; SSE clients reconnect on
-  their own.
+  their own. Compose sends SIGKILL after `stop_grace_period` (40 s for `api`
+  and `worker`, 15 s for `web`), so keep `SHUTDOWN_DRAIN_DELAY +
+  SHUTDOWN_TIMEOUT` plus about 5 s below 40 s, or raise `stop_grace_period`
+  in a `docker-compose.override.yml` when you raise them.
 - **Watch the drain in the logs** during `make self-host-up`:
   `api: shutdown requested; draining` … `api: shut down cleanly`. A
   `worker: shutdown timed out` line means a loop ignored its cancelled
