@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"testing"
+
+	"github.com/wailsapp/wails/v2/pkg/options"
 )
 
 // handleURL / startup implement a small pre-startup deep-link buffer: a
@@ -87,9 +89,115 @@ func TestStartup_SetsContextAndSkipsEmitWhenNothingIsPending(t *testing.T) {
 	}
 }
 
-func TestGetAppVersion(t *testing.T) {
+func TestGetAppVersion_ReturnsTheLinkerStampedVariable(t *testing.T) {
+	prev := version
+	version = "1.2.3"
+	t.Cleanup(func() { version = prev })
 	a := NewApp()
-	if got := a.GetAppVersion(); got != appVersion {
-		t.Fatalf("GetAppVersion() = %q, want %q", got, appVersion)
+	if got := a.GetAppVersion(); got != "1.2.3" {
+		t.Fatalf("GetAppVersion() = %q, want %q", got, "1.2.3")
+	}
+}
+
+func TestVersion_DefaultsToDevForSourceBuilds(t *testing.T) {
+	if version != "dev" {
+		t.Fatalf("version = %q, want \"dev\" (release.yml stamps it with -ldflags \"-X main.version=X.Y.Z\")", version)
+	}
+}
+
+func TestGetUpdateStatus_DefaultBeforeAnyCheck(t *testing.T) {
+	a := NewApp()
+	got := a.GetUpdateStatus()
+	want := UpdateInfo{Available: false, Current: version}
+	if got != want {
+		t.Fatalf("GetUpdateStatus() = %+v, want %+v", got, want)
+	}
+}
+
+func TestStartStopUpdateChecks_DevBuildIsInertAndStoppable(t *testing.T) {
+	// version is "dev" under `go test`, so the loop must exit without ever
+	// touching the network or emitting; stop must be safe to call twice.
+	a := NewApp()
+	a.startUpdateChecks(context.Background())
+	a.mu.Lock()
+	cancel := a.updateCancel
+	a.mu.Unlock()
+	if cancel == nil {
+		t.Fatal("startUpdateChecks did not record a cancel func")
+	}
+	a.stopUpdateChecks()
+	a.stopUpdateChecks()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.updateCancel != nil {
+		t.Fatal("stopUpdateChecks must clear the cancel func")
+	}
+}
+
+func TestSetUpdateChecksEnabled_GatesTheChecker(t *testing.T) {
+	// The host cannot read the frontend's demo-mode flag (localStorage), so
+	// update checks stay paused until the frontend opts in outside demo mode.
+	a := NewApp()
+	if !a.updates.isPaused() {
+		t.Fatal("a fresh App must hold update checks until the frontend opts in")
+	}
+	a.SetUpdateChecksEnabled(true)
+	if a.updates.isPaused() {
+		t.Fatal("SetUpdateChecksEnabled(true) must resume update checks")
+	}
+	a.SetUpdateChecksEnabled(false)
+	if !a.updates.isPaused() {
+		t.Fatal("SetUpdateChecksEnabled(false) (demo mode) must pause update checks")
+	}
+}
+
+func TestDeepLinkFromArgs_PicksTheFirstCalendiumURLFromMixedArgv(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"url after flags", []string{"--no-sandbox", "calendium://auth/callback?ott=abc123"}, "calendium://auth/callback?ott=abc123"},
+		{"first of two", []string{"calendium://first", "calendium://second"}, "calendium://first"},
+		{"scheme is case-insensitive", []string{"CALENDIUM://accounts/connected?status=ok"}, "CALENDIUM://accounts/connected?status=ok"},
+		{"no link", []string{"https://example.com", "-x"}, ""},
+		{"embedded, not a bare arg", []string{"--url=calendium://x"}, ""},
+		{"nil", nil, ""},
+	}
+	for _, tc := range cases {
+		if got := deepLinkFromArgs(tc.args); got != tc.want {
+			t.Errorf("%s: deepLinkFromArgs(%q) = %q, want %q", tc.name, tc.args, got, tc.want)
+		}
+	}
+}
+
+func TestConsumeArgs_BuffersAColdLaunchURLBeforeStartup(t *testing.T) {
+	a := NewApp()
+	a.consumeArgs([]string{"--flag", "calendium://auth/callback?ott=abc123"})
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pendingURL != "calendium://auth/callback?ott=abc123" {
+		t.Fatalf("pendingURL = %q", a.pendingURL)
+	}
+}
+
+func TestOnSecondInstance_ForwardsTheLinkAndIgnoresPlainRelaunches(t *testing.T) {
+	// Pre-startup (ctx nil) so handleURL buffers instead of reaching
+	// runtime.EventsEmit, and WindowShow is skipped (no Wails context).
+	a := NewApp()
+	a.onSecondInstance(options.SecondInstanceData{Args: []string{"Calendium.exe", "calendium://accounts/connected?status=ok"}, WorkingDirectory: "C:\\"})
+	a.mu.Lock()
+	got := a.pendingURL
+	a.mu.Unlock()
+	if got != "calendium://accounts/connected?status=ok" {
+		t.Fatalf("pendingURL = %q", got)
+	}
+
+	b := NewApp()
+	b.onSecondInstance(options.SecondInstanceData{Args: []string{"Calendium.exe"}})
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.pendingURL != "" {
+		t.Fatalf("a relaunch without a link must not buffer anything, got %q", b.pendingURL)
 	}
 }

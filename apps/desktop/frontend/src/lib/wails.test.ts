@@ -31,6 +31,29 @@ describe('wails.ts — browser fallback (no window.go/window.runtime)', () => {
     await expect(desktop.GetAppVersion()).resolves.toBe('dev (browser)');
   });
 
+  it('GetUpdateStatus resolves to "no update" in the browser', async () => {
+    const { desktop } = await import('./wails');
+    await expect(desktop.GetUpdateStatus()).resolves.toEqual({
+      available: false,
+      current: 'dev (browser)',
+      latest: '',
+      url: '',
+    });
+  });
+
+  it('SetUpdateChecksEnabled is a safe no-op in the browser', async () => {
+    const { desktop } = await import('./wails');
+    await expect(desktop.SetUpdateChecksEnabled(true)).resolves.toBeUndefined();
+  });
+
+  it('onUpdateAvailable no-ops gracefully and returns an unsubscribe', async () => {
+    const { onUpdateAvailable } = await import('./wails');
+    const handler = vi.fn();
+    const unsubscribe = onUpdateAvailable(handler);
+    expect(() => unsubscribe()).not.toThrow();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it('wailsRuntime.WindowSetTitle sets document.title', async () => {
     const { wailsRuntime } = await import('./wails');
     wailsRuntime.WindowSetTitle('Calendium — Inbox');
@@ -89,6 +112,10 @@ describe('wails.ts — inside the Wails WebView (window.go/window.runtime presen
   function installBridge() {
     const OpenExternal = vi.fn().mockResolvedValue(undefined);
     const GetAppVersion = vi.fn().mockResolvedValue('1.2.3');
+    const GetUpdateStatus = vi
+      .fn()
+      .mockResolvedValue({ available: false, current: '1.2.3', latest: '', url: '' });
+    const SetUpdateChecksEnabled = vi.fn().mockResolvedValue(undefined);
     const SetGlobalShortcutsEnabled = vi.fn().mockResolvedValue(undefined);
     const EventsOn = vi.fn((_eventName: string, _cb: (...data: unknown[]) => void) => vi.fn());
     const EventsEmit = vi.fn();
@@ -96,7 +123,15 @@ describe('wails.ts — inside the Wails WebView (window.go/window.runtime presen
     const WindowShow = vi.fn();
     const BrowserOpenURL = vi.fn();
     (window as unknown as { go: unknown }).go = {
-      main: { App: { OpenExternal, GetAppVersion, SetGlobalShortcutsEnabled } },
+      main: {
+        App: {
+          OpenExternal,
+          GetAppVersion,
+          GetUpdateStatus,
+          SetUpdateChecksEnabled,
+          SetGlobalShortcutsEnabled,
+        },
+      },
     };
     (window as unknown as { runtime: unknown }).runtime = {
       EventsOn,
@@ -108,6 +143,8 @@ describe('wails.ts — inside the Wails WebView (window.go/window.runtime presen
     return {
       OpenExternal,
       GetAppVersion,
+      GetUpdateStatus,
+      SetUpdateChecksEnabled,
       SetGlobalShortcutsEnabled,
       EventsOn,
       EventsEmit,
@@ -246,6 +283,60 @@ describe('wails.ts — inside the Wails WebView (window.go/window.runtime presen
       expect(bridge.SetGlobalShortcutsEnabled).toHaveBeenCalledWith(true);
       expect(globalShortcutsEnabled()).toBe(true);
       localStorage.removeItem('calendium.global-shortcuts');
+    });
+  });
+
+  describe('update notifications', () => {
+    const NEWER = {
+      available: true,
+      current: '1.2.3',
+      latest: '1.3.0',
+      url: 'https://github.com/GuilhermeVozniak/calendium/releases/tag/v1.3.0',
+    };
+
+    it('exposes the bound GetUpdateStatus and SetUpdateChecksEnabled', async () => {
+      const bridge = installBridge();
+      vi.resetModules();
+      const { desktop } = await import('./wails');
+      expect(desktop.GetUpdateStatus).toBe(bridge.GetUpdateStatus);
+      expect(desktop.SetUpdateChecksEnabled).toBe(bridge.SetUpdateChecksEnabled);
+    });
+
+    it('onUpdateAvailable subscribes on the update-available event name', async () => {
+      const bridge = installBridge();
+      vi.resetModules();
+      const { onUpdateAvailable, UPDATE_EVENT } = await import('./wails');
+      onUpdateAvailable(vi.fn());
+      expect(bridge.EventsOn).toHaveBeenCalledTimes(1);
+      expect(bridge.EventsOn.mock.calls[0]?.[0]).toBe(UPDATE_EVENT);
+      expect(UPDATE_EVENT).toBe('update-available');
+    });
+
+    it('forwards a well-formed newer-release payload', async () => {
+      const bridge = installBridge();
+      vi.resetModules();
+      const { onUpdateAvailable } = await import('./wails');
+      const handler = vi.fn();
+      onUpdateAvailable(handler);
+      const cb = bridge.EventsOn.mock.calls[0]?.[1] as (...data: unknown[]) => void;
+      cb(NEWER);
+      expect(handler).toHaveBeenCalledWith(NEWER);
+    });
+
+    it('ignores not-available and malformed payloads', async () => {
+      const bridge = installBridge();
+      vi.resetModules();
+      const { onUpdateAvailable } = await import('./wails');
+      const handler = vi.fn();
+      onUpdateAvailable(handler);
+      const cb = bridge.EventsOn.mock.calls[0]?.[1] as (...data: unknown[]) => void;
+      cb({ ...NEWER, available: false });
+      cb({ available: true, latest: 42, url: 'x' });
+      cb({ available: true, latest: '1.3.0' });
+      cb('1.3.0');
+      cb(null);
+      cb();
+      expect(handler).not.toHaveBeenCalled();
     });
   });
 });

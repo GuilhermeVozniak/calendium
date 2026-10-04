@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"log"
+	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -16,6 +17,9 @@ var assets embed.FS
 
 func main() {
 	app := NewApp()
+	// Cold launch via URL on Windows/Linux: the OS passes the calendium:// link
+	// as an argument; buffer it before the WebView exists (macOS uses OnUrlOpen).
+	app.consumeArgs(os.Args[1:])
 
 	err := wails.Run(&options.App{
 		Title:     "Calendium",
@@ -32,10 +36,20 @@ func main() {
 			// rather than inside startup so unit tests exercising startup never
 			// touch the native systray loop.
 			app.startDesktopExtras(ctx)
+			// Daily GitHub release check (update.go); inert on dev builds and
+			// paused until the frontend opts in outside demo mode.
+			app.startUpdateChecks(ctx)
 		},
 		OnShutdown: app.shutdown,
 		Bind: []interface{}{
 			app,
+		},
+		// One running instance per user: a second launch (how Windows/Linux
+		// deliver calendium:// links to an already-open app) forwards its argv
+		// to onSecondInstance instead of opening a second window.
+		SingleInstanceLock: &options.SingleInstanceLock{
+			UniqueId:               "app.calendium.desktop",
+			OnSecondInstanceLaunch: app.onSecondInstance,
 		},
 		Mac: &mac.Options{
 			TitleBar:   mac.TitleBarHiddenInset(),

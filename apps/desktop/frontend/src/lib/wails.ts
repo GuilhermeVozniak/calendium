@@ -6,11 +6,29 @@
  * sensible web behavior) so the frontend runs standalone.
  */
 
+/**
+ * Result of the host's daily GitHub release check (apps/desktop/update.go):
+ * the update-available event payload and the GetUpdateStatus return value.
+ */
+export interface UpdateInfo {
+  available: boolean;
+  current: string;
+  latest: string;
+  url: string;
+}
+
 /** Bound methods of the Go `App` struct (apps/desktop/app.go). */
 export interface DesktopBindings {
   /** Opens a URL in the system default browser (web billing et al.). */
   OpenExternal(url: string): Promise<void>;
   GetAppVersion(): Promise<string>;
+  /** Last update-check result; safe to call before any check ran. */
+  GetUpdateStatus(): Promise<UpdateInfo>;
+  /**
+   * Resumes (true) or pauses (false) the host's update check. The host starts
+   * paused because it cannot read the demo flag; App.tsx passes !demoMode.
+   */
+  SetUpdateChecksEnabled(enabled: boolean): Promise<void>;
   /** Registers/unregisters the system-wide hotkeys in the Go host (Task 9). */
   SetGlobalShortcutsEnabled(enabled: boolean): Promise<void>;
   /** Pushes the upcoming-events tray feed (JSON TrayEvent[]; lib/tray.ts). */
@@ -44,6 +62,12 @@ const browserFallback: DesktopBindings = {
   },
   async GetAppVersion() {
     return 'dev (browser)';
+  },
+  async GetUpdateStatus() {
+    return { available: false, current: 'dev (browser)', latest: '', url: '' };
+  },
+  async SetUpdateChecksEnabled() {
+    // No host update check in a plain browser.
   },
   async SetGlobalShortcutsEnabled() {
     // No host to register system-wide hotkeys in a plain browser.
@@ -86,6 +110,30 @@ export function onDeepLink(handler: (url: string) => void): () => void {
   return wailsRuntime.EventsOn(DEEP_LINK_EVENT, (...data: unknown[]) => {
     const url = data[0];
     if (typeof url === 'string') handler(url);
+  });
+}
+
+/** Event the Go host emits (apps/desktop/update.go) when a newer release exists. */
+export const UPDATE_EVENT = 'update-available';
+
+/**
+ * Subscribe to newer-release notifications. Only well-formed, available
+ * payloads reach the handler. Returns an unsubscribe; no-ops in a browser.
+ */
+export function onUpdateAvailable(handler: (info: UpdateInfo) => void): () => void {
+  return wailsRuntime.EventsOn(UPDATE_EVENT, (...data: unknown[]) => {
+    const payload = data[0];
+    if (typeof payload !== 'object' || payload === null) return;
+    const info = payload as Partial<UpdateInfo>;
+    if (info.available !== true || typeof info.latest !== 'string' || typeof info.url !== 'string') {
+      return;
+    }
+    handler({
+      available: true,
+      current: typeof info.current === 'string' ? info.current : '',
+      latest: info.latest,
+      url: info.url,
+    });
   });
 }
 

@@ -37,6 +37,7 @@ import { openCompose } from '@/lib/compose';
 import { mockSearch, mockSubscription } from '@/lib/mock';
 import { useServerConfig } from '@/lib/server-config';
 import {
+  desktop,
   globalShortcutsEnabled,
   isDesktop,
   onGlobalShortcut,
@@ -55,6 +56,7 @@ import { ComposeHost } from '@/views/ComposeView';
 import { emitFocusThread, emitMailAction, InboxView } from '@/views/InboxView';
 import { PaywallView } from '@/views/PaywallView';
 import { SettingsView } from '@/views/SettingsView';
+import { UpdateBanner } from '@/views/UpdateBanner';
 
 type View = 'inbox' | 'calendar' | 'settings';
 
@@ -190,7 +192,15 @@ export default function App() {
       ),
   });
 
-  const { config } = useServerConfig();
+  const { config, demoMode } = useServerConfig();
+
+  // The Go host's daily release check starts paused (it cannot read the demo
+  // flag in localStorage); resume it here outside demo mode and keep it
+  // paused in demo, which never dials out (apps/desktop/update.go).
+  useEffect(() => {
+    void desktop.SetUpdateChecksEnabled(!demoMode);
+  }, [demoMode]);
+
   const billingEnabled = config?.features?.billing ?? false;
   const subscriptionQuery = useQuery({
     queryKey: ['subscription'],
@@ -247,6 +257,9 @@ export default function App() {
           </Button>
         </div>
       </header>
+
+      {/* Above the body so it shows on the paywall screen too; hidden in demo. */}
+      {!demoMode && <UpdateBanner />}
 
       <div className="flex min-h-0 flex-1">
         {/* Left rail: splits, calendar, settings. */}
