@@ -423,6 +423,24 @@ func (r threadRepo) ListInboxBefore(ctx context.Context, userID string, before t
 	return collectThreads(rows)
 }
 
+// ListByAccountPage is the export pager: one account's threads in id order,
+// keyset on id so a 10-minute export never re-reads or skips a row.
+func (r threadRepo) ListByAccountPage(ctx context.Context, accountID, afterID string, limit int) ([]domain.Thread, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := r.q(ctx).QueryContext(ctx, `
+		SELECT `+threadCols+`
+		FROM threads t
+		WHERE t.account_id = $1 AND t.id > $2
+		ORDER BY t.id LIMIT $3`, accountID, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return collectThreads(rows)
+}
+
 func collectThreads(rows *sql.Rows) ([]domain.Thread, error) {
 	threads := []domain.Thread{}
 	for rows.Next() {

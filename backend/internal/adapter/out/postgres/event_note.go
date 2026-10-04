@@ -61,3 +61,31 @@ func (r eventNoteRepo) GetByEventID(ctx context.Context, eventID string) (domain
 	}
 	return n, nil
 }
+
+// ListByUser returns every note the user wrote, ordered by event id (the
+// data export's event-notes.json).
+func (r eventNoteRepo) ListByUser(ctx context.Context, userID string) ([]domain.EventNote, error) {
+	rows, err := r.q(ctx).QueryContext(ctx, `
+		SELECT event_id, user_id, body_md, links, updated_at
+		FROM event_notes WHERE user_id = $1 ORDER BY event_id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	notes := []domain.EventNote{}
+	for rows.Next() {
+		var n domain.EventNote
+		var linksJSON []byte
+		if err := rows.Scan(&n.EventID, &n.UserID, &n.BodyMD, &linksJSON, &n.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if err := unmarshalInto(linksJSON, &n.Links); err != nil {
+			return nil, err
+		}
+		if n.Links == nil {
+			n.Links = []string{}
+		}
+		notes = append(notes, n)
+	}
+	return notes, rows.Err()
+}
