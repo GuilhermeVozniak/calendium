@@ -17,6 +17,7 @@ vi.mock('@calendium/shared', () => ({
 }));
 
 import {
+  billingWebOrigin,
   CLOUD_PRESET,
   clearStoredServerConfig,
   DEMO_CONFIG,
@@ -91,6 +92,25 @@ describe('webOrigin', () => {
   });
 });
 
+describe('billingWebOrigin', () => {
+  it('prefers the server-advertised webUrl, trimming trailing slashes', () => {
+    expect(billingWebOrigin({ ...DEMO_CONFIG, webUrl: 'https://app.example.com/' })).toBe(
+      'https://app.example.com'
+    );
+  });
+
+  it('falls back to the auth origin when webUrl is empty (pre-webUrl servers)', () => {
+    expect(
+      billingWebOrigin({ ...DEMO_CONFIG, authBaseUrl: 'https://auth.example.com/api/auth' })
+    ).toBe('https://auth.example.com');
+  });
+
+  it('returns null when neither a webUrl nor an auth origin is known', () => {
+    expect(billingWebOrigin(null)).toBeNull();
+    expect(billingWebOrigin(DEMO_CONFIG)).toBeNull();
+  });
+});
+
 describe('getActiveServerConfig / isDemoMode — persistence', () => {
   it('starts with no active config and demo mode off', () => {
     expect(getActiveServerConfig()).toBeNull();
@@ -106,6 +126,7 @@ describe('getActiveServerConfig / isDemoMode — persistence', () => {
       name: 'Calendium Cloud',
       features: { billing: true, google: true, microsoft: true, ai: false, push: false },
       undoSendSeconds: 15,
+      webUrl: 'https://app.calendium.app',
     };
     setStoredServerConfig(config);
     expect(getActiveServerConfig()).toEqual(config);
@@ -140,6 +161,7 @@ describe('getActiveServerConfig / isDemoMode — reads persisted state at module
       name: 'Acme Calendium',
       features: { billing: false, google: true, microsoft: false, ai: false, push: false },
       undoSendSeconds: 10,
+      webUrl: 'https://self-host.example.com',
     };
     localStorage.setItem('calendium.serverConfig', JSON.stringify(config));
     vi.resetModules();
@@ -154,7 +176,7 @@ describe('getActiveServerConfig / isDemoMode — reads persisted state at module
     expect(fresh.isDemoMode()).toBe(true);
   });
 
-  it('backfills authProviders/features/undoSendSeconds missing from an older persisted config', async () => {
+  it('backfills authProviders/features/undoSendSeconds/webUrl missing from an older persisted config', async () => {
     localStorage.setItem(
       'calendium.serverConfig',
       JSON.stringify({ serverUrl: 'https://old.example.com' })
@@ -165,6 +187,7 @@ describe('getActiveServerConfig / isDemoMode — reads persisted state at module
     expect(config?.serverUrl).toBe('https://old.example.com');
     expect(config?.authProviders).toEqual([]);
     expect(config?.undoSendSeconds).toBe(15);
+    expect(config?.webUrl).toBe('');
     expect(config?.features).toEqual({
       billing: false,
       google: false,
@@ -190,6 +213,7 @@ describe('discoverServer', () => {
     authBaseUrl: 'https://acme.example.com/api/auth',
     authProviders: ['email', 'google'],
     undoSendSeconds: 12,
+    webUrl: 'https://acme.example.com',
     features: { billing: false, google: true, microsoft: false, ai: true, push: false },
   };
 
@@ -210,6 +234,7 @@ describe('discoverServer', () => {
       name: INFO.name,
       features: INFO.features,
       undoSendSeconds: INFO.undoSendSeconds,
+      webUrl: INFO.webUrl,
     });
   });
 

@@ -8,7 +8,7 @@
 
 /** Bound methods of the Go `App` struct (apps/desktop/app.go). */
 export interface DesktopBindings {
-  /** Opens a URL in the system default browser (Stripe checkout et al.). */
+  /** Opens a URL in the system default browser (web billing et al.). */
   OpenExternal(url: string): Promise<void>;
   GetAppVersion(): Promise<string>;
   /** Registers/unregisters the system-wide hotkeys in the Go host (Task 9). */

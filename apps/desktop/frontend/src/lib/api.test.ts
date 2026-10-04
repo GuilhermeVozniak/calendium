@@ -30,6 +30,7 @@ function configWithUrl(serverUrl: string): ServerConfig {
     name: 'Test',
     features: { billing: false, google: false, microsoft: false, ai: false, push: false },
     undoSendSeconds: 15,
+    webUrl: '',
   };
 }
 
