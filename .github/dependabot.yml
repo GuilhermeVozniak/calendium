@@ -1,0 +1,16 @@
+# Weekly digest bumps for every pinned base image. Compose's own images
+# (postgres, caddy) live in docker-compose.yml at the repo root.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /backend
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /apps/web
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
