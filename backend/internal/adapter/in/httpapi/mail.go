@@ -246,7 +246,7 @@ func (s *server) handleListDrafts(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleCreateDraft(w http.ResponseWriter, r *http.Request) {
 	var in port.DraftInput
-	if err := decodeJSON(w, r, &in); err != nil {
+	if err := decodeJSONLimit(w, r, &in, maxDraftBodyBytes); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -269,7 +269,7 @@ func (s *server) handleGetDraft(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleUpdateDraft(w http.ResponseWriter, r *http.Request) {
 	var in port.DraftInput
-	if err := decodeJSON(w, r, &in); err != nil {
+	if err := decodeJSONLimit(w, r, &in, maxDraftBodyBytes); err != nil {
 		s.writeError(w, r, err)
 		return
 	}

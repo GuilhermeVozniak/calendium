@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -53,6 +55,11 @@ func (s *server) handleCreatePortal(w http.ResponseWriter, r *http.Request) {
 func (s *server) handlePaddleWebhook(w http.ResponseWriter, r *http.Request) {
 	payload, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			s.writeError(w, r, fmt.Errorf("%w: webhook body exceeds 1 MiB", errPayloadTooLarge))
+			return
+		}
 		s.writeError(w, r, domain.ErrValidation)
 		return
 	}

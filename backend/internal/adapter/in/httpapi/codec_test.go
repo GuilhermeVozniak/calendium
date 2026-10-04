@@ -18,6 +18,7 @@ func TestStatusFor(t *testing.T) {
 		wantCode   string
 	}{
 		{"validation", fmt.Errorf("x: %w", domain.ErrValidation), http.StatusBadRequest, "validation_failed"},
+		{"payload too large", fmt.Errorf("x: %w", errPayloadTooLarge), http.StatusRequestEntityTooLarge, "payload_too_large"},
 		{"unauthorized", fmt.Errorf("x: %w", domain.ErrUnauthorized), http.StatusUnauthorized, "unauthorized"},
 		{"forbidden", fmt.Errorf("x: %w", domain.ErrForbidden), http.StatusForbidden, "forbidden"},
 		{"payment required", fmt.Errorf("x: %w", domain.ErrPaymentRequired), http.StatusPaymentRequired, "payment_required"},
@@ -46,6 +47,7 @@ func TestSafeMessage(t *testing.T) {
 	}{
 		{"validation_failed", "The request was invalid."},
 		{"timeout", "The request took too long to complete. Please try again."},
+		{"payload_too_large", "The request body is too large."},
 		{"unauthorized", "Authentication is required or has failed."},
 		{"forbidden", "You do not have permission to perform this action."},
 		{"payment_required", "An active subscription is required."},

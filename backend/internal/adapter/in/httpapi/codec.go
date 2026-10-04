@@ -11,8 +11,17 @@ import (
 	"calendium/backend/internal/domain"
 )
 
-// maxBodyBytes bounds request bodies (drafts with inline images included).
-const maxBodyBytes = 10 << 20
+// Body caps. The default covers every JSON route; drafts (inline images)
+// get decodeJSONLimit with maxDraftBodyBytes; the public scheduling POSTs
+// use publicBodyLimit (scheduling.go) and the webhook its own 1 MiB.
+const (
+	maxBodyBytes      = 1 << 20
+	maxDraftBodyBytes = 10 << 20
+)
+
+// errPayloadTooLarge marks a body over its route cap; statusFor maps it to
+// 413 payload_too_large everywhere (JSON, public, webhook).
+var errPayloadTooLarge = errors.New("payload too large")
 
 type errorBody struct {
 	Error errorDetail `json:"error"`
@@ -44,10 +53,19 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // decodeJSON reads a bounded JSON body into dst; malformed input becomes a
-// domain validation error (HTTP 400).
+// domain validation error (HTTP 400), an oversized body errPayloadTooLarge.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	return decodeJSONLimit(w, r, dst, maxBodyBytes)
+}
+
+// decodeJSONLimit is decodeJSON with an explicit cap.
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, n int64) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, n))
 	if err := dec.Decode(dst); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return fmt.Errorf("%w: body exceeds %d bytes", errPayloadTooLarge, n)
+		}
 		return fmt.Errorf("%w: invalid JSON body: %v", domain.ErrValidation, err)
 	}
 	return nil
@@ -74,6 +92,8 @@ func optionalField[T any](raw map[string]json.RawMessage, key string) (**T, erro
 // machine-readable error codes.
 func statusFor(err error) (int, string) {
 	switch {
+	case errors.Is(err, errPayloadTooLarge):
+		return http.StatusRequestEntityTooLarge, "payload_too_large"
 	case errors.Is(err, domain.ErrValidation):
 		return http.StatusBadRequest, "validation_failed"
 	case errors.Is(err, domain.ErrUnauthorized):
@@ -144,6 +164,8 @@ func safeMessage(code string) string {
 		return "You have exceeded the usage limit. Please try again later."
 	case "timeout":
 		return "The request took too long to complete. Please try again."
+	case "payload_too_large":
+		return "The request body is too large."
 	case "already_subscribed":
 		return "You already have an active subscription. Manage it from billing."
 	case "no_billing_profile":

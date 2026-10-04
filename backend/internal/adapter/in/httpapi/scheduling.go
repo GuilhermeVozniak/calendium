@@ -1,8 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -22,22 +20,12 @@ const publicBodyLimit = 16 << 10
 const maxPublicSlotsSpan = 31 * 24 * time.Hour
 
 // decodePublicJSON decodes a public (unauthenticated) POST body capped at
-// publicBodyLimit. An oversized body is rejected with 413 directly, rather
-// than folded into the generic 400 validation mapping, so clients get an
-// accurate signal. Reports whether decoding succeeded; on failure the error
-// response has already been written.
+// publicBodyLimit: oversized → 413 payload_too_large, malformed → 400.
+// Reports whether decoding succeeded; on failure the error response has
+// already been written.
 func (s *server) decodePublicJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, publicBodyLimit)
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeJSON(w, http.StatusRequestEntityTooLarge, errorBody{Error: errorDetail{
-				Code:    "request_too_large",
-				Message: "request body too large",
-			}})
-			return false
-		}
-		s.writeError(w, r, fmt.Errorf("%w: invalid JSON body: %v", domain.ErrValidation, err))
+	if err := decodeJSONLimit(w, r, dst, publicBodyLimit); err != nil {
+		s.writeError(w, r, err)
 		return false
 	}
 	return true

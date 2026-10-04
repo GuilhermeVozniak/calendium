@@ -413,11 +413,11 @@ func TestDecodeJSONLimits(t *testing.T) {
 		h := newHarness(t)
 		body := `{"subject":"` + strings.Repeat("a", 11<<20) + `"}`
 		rec := h.authed(http.MethodPost, "/v1/mail/drafts", strings.NewReader(body))
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413 (body=%s)", rec.Code, rec.Body.String())
 		}
-		if got := decodeErr(t, rec); got.Code != "validation_failed" {
-			t.Fatalf("code = %q, want validation_failed", got.Code)
+		if got := decodeErr(t, rec); got.Code != "payload_too_large" {
+			t.Fatalf("code = %q, want payload_too_large", got.Code)
 		}
 		if h.mail.gotCreateDraft.AccountID != "" {
 			t.Fatalf("CreateDraft called unexpectedly: %+v", h.mail.gotCreateDraft)

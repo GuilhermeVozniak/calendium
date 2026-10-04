@@ -200,8 +200,8 @@ func TestPublicBook_BodyTooLarge_413(t *testing.T) {
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected 413, got %d (body=%s)", rec.Code, rec.Body.String())
 	}
-	if e := decodeErr(t, rec); e.Code != "request_too_large" {
-		t.Fatalf("expected code request_too_large, got %q", e.Code)
+	if e := decodeErr(t, rec); e.Code != "payload_too_large" {
+		t.Fatalf("expected code payload_too_large, got %q", e.Code)
 	}
 	if h.scheduling.gotBookSlug != "" {
 		t.Fatal("expected the service not to be called for an oversized body")
