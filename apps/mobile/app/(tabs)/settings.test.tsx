@@ -59,10 +59,12 @@ import SettingsScreen from './settings';
 
 const AI_ENABLED_CONFIG = {
   mode: 'cloud',
+  webUrl: 'https://web.example',
   features: { billing: true, google: false, microsoft: false, ai: true, push: false },
 };
 const AI_DISABLED_CONFIG = {
   mode: 'cloud',
+  webUrl: 'https://web.example',
   features: { billing: true, google: false, microsoft: false, ai: false, push: false },
 };
 
