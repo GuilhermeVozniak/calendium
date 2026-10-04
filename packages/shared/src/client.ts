@@ -12,6 +12,7 @@ import type {
   DelegationList,
   DelegationScope,
   AvailabilitySlot,
+  BillingPortalUrls,
   Booking,
   BookingLink,
   BookingLinkInput,
@@ -57,6 +58,7 @@ import type {
   NotificationDevice,
   OpenEvent,
   Page,
+  PaymentRequiredDetails,
   Place,
   PollBallot,
   PollInput,
@@ -110,7 +112,7 @@ export async function fetchInstance(
   if (!res.ok) {
     const code = json?.error?.code ?? 'unknown';
     const message = json?.error?.message ?? `Request failed with status ${res.status}`;
-    throw new ApiRequestError(res.status, code, message);
+    throw new ApiRequestError(res.status, code, message, json?.error?.details);
   }
   return json as InstanceInfo;
 }
@@ -126,10 +128,19 @@ export class ApiRequestError extends Error {
   constructor(
     public readonly status: number,
     public readonly code: string,
-    message: string
+    message: string,
+    /** Raw `error.details` from the response envelope, when present. */
+    public readonly details?: unknown
   ) {
     super(message);
     this.name = 'ApiRequestError';
+  }
+
+  /** Typed 402 payload, or null for any other error or a malformed body. */
+  get paymentRequired(): PaymentRequiredDetails | null {
+    if (this.status !== 402 || !this.details || typeof this.details !== 'object') return null;
+    const d = this.details as Partial<PaymentRequiredDetails>;
+    return typeof d.reason === 'string' ? (d as PaymentRequiredDetails) : null;
   }
 }
 
@@ -156,7 +167,7 @@ export class ApiClient {
     if (!res.ok) {
       const code = json?.error?.code ?? 'unknown';
       const message = json?.error?.message ?? `Request failed with status ${res.status}`;
-      throw new ApiRequestError(res.status, code, message);
+      throw new ApiRequestError(res.status, code, message, json?.error?.details);
     }
     return json as T;
   }
@@ -174,16 +185,21 @@ export class ApiClient {
   getSubscription() {
     return this.request<Subscription>('GET', '/v1/billing/subscription');
   }
-  /** Creates a Stripe Checkout session; redirect the browser to the returned URL. */
-  createCheckoutSession(successUrl: string, cancelUrl: string) {
-    return this.request<{ url: string }>('POST', '/v1/billing/checkout', {
-      successUrl,
-      cancelUrl,
-    });
+  /**
+   * Starts a Paddle overlay checkout; navigate the browser to the returned
+   * URL (the web /checkout page). No arguments: redirect targets are never
+   * client-supplied. Throws ApiRequestError(409, 'already_subscribed') when a
+   * live subscription exists — open the portal instead.
+   */
+  createCheckoutSession() {
+    return this.request<{ url: string }>('POST', '/v1/billing/checkout');
   }
-  /** Creates a Stripe billing-portal session for managing/canceling the plan. */
-  createBillingPortalSession(returnUrl: string) {
-    return this.request<{ url: string }>('POST', '/v1/billing/portal', { returnUrl });
+  /**
+   * Temporary Paddle customer-portal links. Throws
+   * ApiRequestError(400, 'no_billing_profile') before any checkout happened.
+   */
+  createBillingPortalSession() {
+    return this.request<BillingPortalUrls>('POST', '/v1/billing/portal');
   }
 
   // --- Connected accounts ---
