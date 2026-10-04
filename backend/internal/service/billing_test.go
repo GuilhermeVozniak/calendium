@@ -1,11 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ type billingHarness struct {
 	payments *fakePayments
 	clock    *fakeClock
 	tx       *fakeTxRunner
+	logs     *bytes.Buffer
 	svc      *BillingService
 }
 
@@ -34,11 +36,12 @@ func newBillingHarness(now time.Time) *billingHarness {
 		payments: newPayments(),
 		clock:    newClock(now),
 		tx:       newTxRunner(),
+		logs:     &bytes.Buffer{},
 	}
 	h.svc = NewBillingService(BillingServiceDeps{
 		Users: h.users, Subs: h.subs, Events: h.events, Payments: h.payments,
 		Clock: h.clock, Tx: h.tx, SelfHosted: false,
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger: slog.New(slog.NewTextHandler(h.logs, nil)),
 	})
 	return h
 }
@@ -628,6 +631,146 @@ func TestHandleWebhookResolvesUserByCustomerID(t *testing.T) {
 			t.Fatalf("store mutated: %v", h.subs.byUser)
 		}
 	})
+}
+
+// Review C1: custom_data.user_id is client-settable (Paddle.js customData),
+// so it never beats the stored customer mapping. The event's customer id is
+// resolved first; custom data is used only for a customer no row owns, and
+// only when the target user has no customer of their own (or this one).
+func TestHandleWebhookUserResolutionIsAnchoredToTheCustomer(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	victimRow := domain.Subscription{
+		UserID: "victim", Status: domain.SubscriptionActive, BillingCustomerID: "ctm_victim", BillingSubscriptionID: "sub_victim",
+		CurrentPeriodEnd: tptr(now.Add(300 * 24 * time.Hour)), LastEventAt: tptr(now.Add(-time.Hour)),
+	}
+	assertRefused := func(t *testing.T, h *billingHarness, ntf string) {
+		t.Helper()
+		if err := h.svc.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+			t.Fatalf("a mismatched event must be acknowledged (200), got %v", err)
+		}
+		if h.subs.upsertCalls != 0 {
+			t.Fatalf("a mismatched event must not write (upserts=%d)", h.subs.upsertCalls)
+		}
+		logs := h.logs.String()
+		if !strings.Contains(logs, "level=WARN") || !strings.Contains(logs, "notification_id="+ntf) {
+			t.Fatalf("want a warning naming the notification id, logs=%q", logs)
+		}
+		if strings.Contains(logs, "@") {
+			t.Fatalf("logs must not carry emails: %q", logs)
+		}
+	}
+
+	t.Run("crafted custom data for a victim with another customer leaves the victim untouched", func(t *testing.T) {
+		h := newBillingHarness(now)
+		h.seedUser(t, "victim", now.Add(-30*24*time.Hour))
+		h.seedSub(t, victimRow)
+		ev := subEvent("ntf_atk", "evt_atk", now, domain.SubscriptionCanceled)
+		ev.Type = "subscription.created"
+		ev.CustomerID, ev.SubscriptionID, ev.UserID = "ctm_attacker", "sub_attacker", "victim"
+		h.payments.webhookEvent = ev
+
+		assertRefused(t, h, "ntf_atk")
+		got, _ := h.subs.GetByUserID(ctx, "victim")
+		if got.Status != domain.SubscriptionActive || got.BillingCustomerID != "ctm_victim" || got.BillingSubscriptionID != "sub_victim" {
+			t.Fatalf("victim row changed: %+v", got)
+		}
+		if _, err := h.subs.GetByBillingCustomerID(ctx, "ctm_attacker"); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("attacker customer must not be attached to anyone, err=%v", err)
+		}
+	})
+	t.Run("custom data naming a different user than the customer's owner is refused", func(t *testing.T) {
+		h := newBillingHarness(now)
+		h.seedUser(t, "victim", now.Add(-30*24*time.Hour))
+		h.seedUser(t, "attacker", now.Add(-30*24*time.Hour))
+		h.seedSub(t, victimRow)
+		h.seedSub(t, domain.Subscription{UserID: "attacker", Status: domain.SubscriptionTrialing, BillingCustomerID: "ctm_attacker"})
+		ev := subEvent("ntf_mix", "evt_mix", now, domain.SubscriptionCanceled)
+		ev.CustomerID, ev.SubscriptionID, ev.UserID = "ctm_attacker", "sub_attacker", "victim"
+		h.payments.webhookEvent = ev
+
+		assertRefused(t, h, "ntf_mix")
+		if got, _ := h.subs.GetByUserID(ctx, "victim"); got.Status != domain.SubscriptionActive || got.BillingCustomerID != "ctm_victim" {
+			t.Fatalf("victim row changed: %+v", got)
+		}
+		if got, _ := h.subs.GetByUserID(ctx, "attacker"); got.Status != domain.SubscriptionTrialing || got.BillingSubscriptionID != "" {
+			t.Fatalf("attacker row changed: %+v", got)
+		}
+	})
+	t.Run("first-time checkout: unknown customer with custom data attaches to that user", func(t *testing.T) {
+		h := newBillingHarness(now)
+		h.seedUser(t, "u1", now.Add(-2*24*time.Hour))
+		periodEnd := now.Add(365 * 24 * time.Hour)
+		ev := subEvent("ntf_new", "evt_new", now, domain.SubscriptionActive)
+		ev.Type = "subscription.created"
+		ev.CustomerID, ev.SubscriptionID = "ctm_new", "sub_new"
+		ev.CurrentPeriodEnd = &periodEnd
+		h.payments.webhookEvent = ev
+
+		if err := h.svc.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+			t.Fatal(err)
+		}
+		got, err := h.subs.GetByUserID(ctx, "u1")
+		if err != nil || got.Status != domain.SubscriptionActive || got.BillingCustomerID != "ctm_new" || got.BillingSubscriptionID != "sub_new" {
+			t.Fatalf("row = %+v err=%v", got, err)
+		}
+	})
+	t.Run("custom data for a user whose row has no customer yet attaches the customer", func(t *testing.T) {
+		h := newBillingHarness(now)
+		h.seedUser(t, "u1", now.Add(-2*24*time.Hour))
+		h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionTrialing, TrialEndsAt: tptr(now.Add(12 * 24 * time.Hour))})
+		ev := subEvent("ntf_att", "evt_att", now, domain.SubscriptionActive)
+		ev.CustomerID, ev.SubscriptionID = "ctm_new", "sub_new"
+		h.payments.webhookEvent = ev
+
+		if err := h.svc.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := h.subs.GetByUserID(ctx, "u1")
+		if got.Status != domain.SubscriptionActive || got.BillingCustomerID != "ctm_new" || got.TrialEndsAt != nil {
+			t.Fatalf("row = %+v", got)
+		}
+	})
+	t.Run("same customer with matching custom data is applied", func(t *testing.T) {
+		h := newBillingHarness(now)
+		h.seedUser(t, "victim", now.Add(-30*24*time.Hour))
+		h.seedSub(t, victimRow)
+		ev := subEvent("ntf_ok", "evt_ok", now, domain.SubscriptionPastDue)
+		ev.CustomerID, ev.SubscriptionID, ev.UserID = "ctm_victim", "sub_victim", "victim"
+		h.payments.webhookEvent = ev
+
+		if err := h.svc.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := h.subs.GetByUserID(ctx, "victim"); got.Status != domain.SubscriptionPastDue {
+			t.Fatalf("status = %q, want past_due", got.Status)
+		}
+	})
+}
+
+// Review I2: custom data naming a user with no users row (local DB reset,
+// deleted account) must be acknowledged, not written (the subscriptions FK
+// would fail the tx -> 500 -> three days of Paddle retries).
+func TestHandleWebhookUnknownCustomDataUserIsAcknowledged(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	ev := subEvent("ntf_gone", "evt_gone", now, domain.SubscriptionCanceled)
+	ev.CustomerID, ev.UserID = "ctm_gone", "deleted_user"
+	h.payments.webhookEvent = ev
+
+	if err := h.svc.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+		t.Fatalf("unknown user must be a 200 no-op, got %v", err)
+	}
+	if h.subs.upsertCalls != 0 || len(h.subs.byUser) != 0 {
+		t.Fatalf("store mutated: upserts=%d rows=%v", h.subs.upsertCalls, h.subs.byUser)
+	}
+	if logs := h.logs.String(); !strings.Contains(logs, "level=WARN") || !strings.Contains(logs, "notification_id=ntf_gone") {
+		t.Fatalf("want a warning naming the notification id, logs=%q", logs)
+	}
+	if _, ok := h.events.seen["ntf_gone"]; !ok {
+		t.Fatal("the acknowledged notification must be recorded so a retry is a no-op")
+	}
 }
 
 // Controller ruling (Track A review): ListForReconciliation exempts rows
