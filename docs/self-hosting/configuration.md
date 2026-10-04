@@ -285,7 +285,7 @@ shape:
 | `version` | The running API build: `dev` for source builds, the release tag (e.g. `1.0.0`) for images built with `VERSION` (`docker compose build` passes `${VERSION:-dev}`). |
 | `authBaseUrl` | `${PUBLIC_WEB_URL\|\|APP_URL}/api/auth` — the Better Auth base clients build their auth client against. |
 | `authProviders` | Sign-in methods: `["email"]`, plus `"google"` when `GOOGLE_CLIENT_ID` is set and `"apple"` when `APPLE_CLIENT_ID` is set. |
-| `webUrl` | `PUBLIC_WEB_URL` — mobile and desktop build billing links from it. |
+| `webUrl` | `PUBLIC_WEB_URL` — desktop builds its billing links and the browser sign-in / password-reset pages from it. The mobile app shows no billing links (billing is on the web). |
 | `undoSendSeconds` | Undo-send grace window in seconds (`UNDO_SEND_SECONDS`, default `15`); clients show a post-send **Undo** toast for this long. |
 | `vapidPublicKey` | Web Push VAPID public key (`VAPID_PUBLIC_KEY`), **present only when web push is configured** (the web client subscribes with it). Omitted otherwise. |
 | `features.billing` | `!SELF_HOSTED` — `false` on self-host. |

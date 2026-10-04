@@ -10,9 +10,9 @@ couple of properties worth understanding.
 ## Versioning
 
 The backend reports its version via the public `GET /v1/instance` endpoint
-(`httpapi.Version`: `dev` for source builds, the tag for release images). Clients read it to gate features and show
-an "update available" hint. Use it as a quick sanity check that a new build is
-live:
+(`httpapi.Version`: `dev` for source builds, the tag for release images).
+Clients read it to gate features and show an "update available" hint. Use it
+as a quick sanity check that a new build is live:
 
 ```bash
 curl -s https://your-domain/v1/instance | jq .version
