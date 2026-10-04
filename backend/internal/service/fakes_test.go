@@ -79,6 +79,9 @@ type fakeSubscriptionRepo struct {
 	byCustomer       map[string]domain.Subscription
 	ensureTrialCalls int
 	upsertCalls      int
+	// beforeWrite, when set, runs at the start of every Upsert /
+	// UpsertIfNewer (simulates a concurrent writer committing first).
+	beforeWrite func()
 }
 
 func newSubscriptionRepo() *fakeSubscriptionRepo {
@@ -104,7 +107,27 @@ func (r *fakeSubscriptionRepo) GetByBillingCustomerID(_ context.Context, custome
 	return s, nil
 }
 
+// UpsertIfNewer mirrors the Postgres guard: an existing row is replaced
+// only when its LastEventAt is nil or not after s.LastEventAt.
+func (r *fakeSubscriptionRepo) UpsertIfNewer(_ context.Context, s domain.Subscription) (bool, error) {
+	if r.beforeWrite != nil {
+		r.beforeWrite()
+	}
+	if prev, ok := r.byUser[s.UserID]; ok && prev.LastEventAt != nil &&
+		(s.LastEventAt == nil || s.LastEventAt.Before(*prev.LastEventAt)) {
+		return false, nil
+	}
+	return true, r.write(s)
+}
+
 func (r *fakeSubscriptionRepo) Upsert(_ context.Context, s domain.Subscription) error {
+	if r.beforeWrite != nil {
+		r.beforeWrite()
+	}
+	return r.write(s)
+}
+
+func (r *fakeSubscriptionRepo) write(s domain.Subscription) error {
 	r.upsertCalls++
 	if prev, ok := r.byUser[s.UserID]; ok {
 		if s.BillingCustomerID == "" {

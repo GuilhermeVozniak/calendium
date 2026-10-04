@@ -294,3 +294,85 @@ func TestSubscriptionRepoListForReconciliation(t *testing.T) {
 		}
 	}
 }
+
+// TestSubscriptionRepoUpsertIfNewerOrderingGuard pins the SQL-level ordering
+// guard: the DO UPDATE only applies when the stored last_event_at is NULL or
+// <= the incoming one, so two concurrent webhooks cannot regress the row by
+// committing in the wrong order. Upsert is the forced variant.
+func TestSubscriptionRepoUpsertIfNewerOrderingGuard(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	t1 := time.Date(2026, 10, 4, 10, 0, 0, 0, time.UTC)
+	t2 := t1.Add(time.Hour)
+	t3 := t2.Add(time.Hour)
+	row := func(status domain.SubscriptionStatus, at time.Time) domain.Subscription {
+		return domain.Subscription{UserID: "u1", Status: status, BillingCustomerID: "ctm_1", BillingSubscriptionID: "sub_1", LastEventAt: &at}
+	}
+	get := func() domain.Subscription {
+		t.Helper()
+		got, err := st.Subscriptions().GetByUserID(ctx, "u1")
+		if err != nil {
+			t.Fatalf("GetByUserID: %v", err)
+		}
+		return got
+	}
+
+	// No row yet: the insert always applies.
+	applied, err := st.Subscriptions().UpsertIfNewer(ctx, row(domain.SubscriptionActive, t2))
+	if err != nil || !applied {
+		t.Fatalf("first write: applied=%v err=%v, want applied", applied, err)
+	}
+
+	// An older event must not overwrite the newer stored one.
+	applied, err = st.Subscriptions().UpsertIfNewer(ctx, row(domain.SubscriptionCanceled, t1))
+	if err != nil {
+		t.Fatalf("older write: %v", err)
+	}
+	if applied {
+		t.Fatal("older event reported applied")
+	}
+	if got := get(); got.Status != domain.SubscriptionActive || !got.LastEventAt.Equal(t2) {
+		t.Fatalf("older event overwrote the row: %+v", got)
+	}
+
+	// Same instant applies (replays are idempotent), newer applies.
+	if applied, err = st.Subscriptions().UpsertIfNewer(ctx, row(domain.SubscriptionPastDue, t2)); err != nil || !applied {
+		t.Fatalf("same-instant write: applied=%v err=%v, want applied", applied, err)
+	}
+	if applied, err = st.Subscriptions().UpsertIfNewer(ctx, row(domain.SubscriptionPaused, t3)); err != nil || !applied {
+		t.Fatalf("newer write: applied=%v err=%v, want applied", applied, err)
+	}
+	if got := get(); got.Status != domain.SubscriptionPaused || !got.LastEventAt.Equal(t3) {
+		t.Fatalf("newer event not stored: %+v", got)
+	}
+
+	// The forced variant (reconciliation) overwrites regardless of order.
+	if err := st.Subscriptions().Upsert(ctx, row(domain.SubscriptionCanceled, t1)); err != nil {
+		t.Fatalf("forced write: %v", err)
+	}
+	if got := get(); got.Status != domain.SubscriptionCanceled || !got.LastEventAt.Equal(t1) {
+		t.Fatalf("forced write did not apply: %+v", got)
+	}
+}
+
+func TestSubscriptionRepoUpsertIfNewerAppliesOverNullLastEventAt(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	if err := st.Subscriptions().EnsureTrial(ctx, "u1", time.Now().Add(domain.TrialLength)); err != nil {
+		t.Fatalf("EnsureTrial: %v", err)
+	}
+	at := time.Date(2026, 10, 4, 10, 0, 0, 0, time.UTC)
+	applied, err := st.Subscriptions().UpsertIfNewer(ctx, domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive, BillingSubscriptionID: "sub_1", LastEventAt: &at})
+	if err != nil || !applied {
+		t.Fatalf("applied=%v err=%v, want applied over a NULL last_event_at", applied, err)
+	}
+	got, err := st.Subscriptions().GetByUserID(ctx, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.SubscriptionActive || got.LastEventAt == nil || !got.LastEventAt.Equal(at) {
+		t.Fatalf("row = %+v", got)
+	}
+}

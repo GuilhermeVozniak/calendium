@@ -511,6 +511,35 @@ func TestHandleWebhookOlderEventIsDroppedButRecorded(t *testing.T) {
 	}
 }
 
+// The ordering guard lives in the repo write, not in a read-then-compare:
+// a newer event committed between applyEvent's read and its upsert (two
+// notifications in flight at once) must not be overwritten by the older one.
+func TestHandleWebhookStaleEventLosesToConcurrentNewerWrite(t *testing.T) {
+	ctx := context.Background()
+	t1 := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
+	t2, t3 := t1.Add(time.Hour), t1.Add(2*time.Hour)
+	h := newBillingHarness(t3)
+	h.seedSub(t, domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive, BillingCustomerID: "ctm_1", BillingSubscriptionID: "sub_1", LastEventAt: tptr(t1)})
+	h.payments.webhookEvent = subEvent("ntf_t2", "evt_t2", t2, domain.SubscriptionCanceled)
+	h.subs.beforeWrite = func() {
+		h.subs.beforeWrite = nil
+		newer := h.subs.byUser["u1"]
+		newer.Status, newer.LastEventAt = domain.SubscriptionPaused, tptr(t3)
+		h.subs.byUser["u1"] = newer
+	}
+
+	if err := h.svc.HandleWebhook(ctx, []byte("{}"), "sig"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := h.subs.GetByUserID(ctx, "u1")
+	if got.Status != domain.SubscriptionPaused || !got.LastEventAt.Equal(t3) {
+		t.Fatalf("stale event overwrote the concurrent newer write: %+v", got)
+	}
+	if _, ok := h.events.seen["ntf_t2"]; !ok {
+		t.Fatal("the not-applied notification must still be recorded")
+	}
+}
+
 func TestHandleWebhookResolvesUserByCustomerID(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)

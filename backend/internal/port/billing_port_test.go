@@ -35,7 +35,10 @@ func (stubSubs) GetByUserID(context.Context, string) (domain.Subscription, error
 func (stubSubs) GetByBillingCustomerID(context.Context, string) (domain.Subscription, error) {
 	return domain.Subscription{}, nil
 }
-func (stubSubs) Upsert(context.Context, domain.Subscription) error    { return nil }
+func (stubSubs) Upsert(context.Context, domain.Subscription) error { return nil }
+func (stubSubs) UpsertIfNewer(context.Context, domain.Subscription) (bool, error) {
+	return true, nil
+}
 func (stubSubs) EnsureTrial(context.Context, string, time.Time) error { return nil }
 func (stubSubs) ListForReconciliation(context.Context, time.Time) ([]domain.Subscription, error) {
 	return nil, nil

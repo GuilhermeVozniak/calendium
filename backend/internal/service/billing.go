@@ -152,7 +152,9 @@ func (s *BillingService) CreateCheckout(ctx context.Context, userID string) (str
 			now := s.clock.Now()
 			sub.LastEventAt = &now
 		}
-		if err := s.subs.Upsert(ctx, sub); err != nil {
+		// Guarded write: if a webhook landed since the read, its newer row
+		// (which carries the customer id) wins and this write is skipped.
+		if _, err := s.subs.UpsertIfNewer(ctx, sub); err != nil {
 			return "", err
 		}
 	}
@@ -223,8 +225,10 @@ func (s *BillingService) HandleWebhook(ctx context.Context, payload []byte, sigH
 }
 
 // applyEvent resolves the user (custom_data.user_id, else the stored
-// customer id), drops events older than the mirrored LastEventAt unless
-// force (reconciliation), and upserts the mirror. A provider subscription
+// customer id) and upserts the mirror. Unless force (reconciliation), the
+// write goes through UpsertIfNewer, whose SQL guard drops an event older
+// than the stored last_event_at atomically; the read here only resolves
+// the user and passes the stored trial / ids through. A provider subscription
 // existing clears trial_ends_at; otherwise the stored trial end is passed
 // through, because the Postgres Upsert writes trial_ends_at verbatim. An
 // event without occurred_at is stamped with now so last_event_at is never
@@ -262,12 +266,6 @@ func (s *BillingService) applyEvent(ctx context.Context, ev port.SubscriptionEve
 		occurred = s.clock.Now()
 	}
 
-	// Paddle does not guarantee delivery order: an event older than the
-	// newest applied one is dropped (strict <, so same-instant replays apply).
-	if !force && existing.LastEventAt != nil && occurred.Before(*existing.LastEventAt) {
-		return nil
-	}
-
 	sub := domain.Subscription{
 		UserID:                userID,
 		Status:                ev.Status,
@@ -289,7 +287,19 @@ func (s *BillingService) applyEvent(ctx context.Context, ev port.SubscriptionEve
 	if sub.Status == "" {
 		sub.Status = domain.SubscriptionNone
 	}
-	return s.subs.Upsert(ctx, sub)
+	if force {
+		return s.subs.Upsert(ctx, sub)
+	}
+	// Paddle does not guarantee delivery order: an event older than the
+	// newest stored one is skipped by the repo (same-instant replays apply).
+	applied, err := s.subs.UpsertIfNewer(ctx, sub)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		s.logger.Info("billing: stale event not applied", "event_id", ev.EventID, "type", ev.Type, "user_id", userID)
+	}
+	return nil
 }
 
 // ReconcileSubscriptions re-reads every stale row from Paddle and applies

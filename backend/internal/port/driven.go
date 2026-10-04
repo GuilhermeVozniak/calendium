@@ -56,8 +56,14 @@ type UserRepo interface {
 type SubscriptionRepo interface {
 	GetByUserID(ctx context.Context, userID string) (domain.Subscription, error)
 	GetByBillingCustomerID(ctx context.Context, customerID string) (domain.Subscription, error)
-	// Upsert replaces the row; empty billing ids never clobber stored ones.
+	// Upsert replaces the row unconditionally (the forced write used by
+	// reconciliation); empty billing ids never clobber stored ones.
 	Upsert(ctx context.Context, s domain.Subscription) error
+	// UpsertIfNewer is Upsert guarded by event order, checked atomically in
+	// the write: an existing row is replaced only when its last_event_at is
+	// NULL or <= s.LastEventAt. applied is false when a newer event is
+	// already stored (the write was skipped).
+	UpsertIfNewer(ctx context.Context, s domain.Subscription) (applied bool, err error)
 	// EnsureTrial inserts a trialing row ending at trialEndsAt when the user
 	// has no row yet; it is a no-op otherwise (ON CONFLICT DO NOTHING), so
 	// concurrent first calls are safe.
