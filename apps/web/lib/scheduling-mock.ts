@@ -135,6 +135,7 @@ function seed(): SchedulingStore {
       { weekday: 5, start: '09:00', end: '17:00' },
     ],
     workingLocation: '',
+    aiBackground: true,
   };
 
   return { links, bookings, polls, settings };

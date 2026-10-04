@@ -702,6 +702,13 @@ export interface UserSettings {
   timeZone: string;
   workingHours: AvailabilityWindow[];
   workingLocation: string;
+  /**
+   * Settings → AI → "Background AI processing". Off skips every automatic
+   * AI job at sync (summaries, quick replies, auto drafts, classifiers,
+   * writing-style profile, reminder detection); on-demand actions are
+   * unaffected. Default true. Omitting it on PUT keeps the stored value.
+   */
+  aiBackground: boolean;
 }
 
 // ---------------------------------------------------------------------------

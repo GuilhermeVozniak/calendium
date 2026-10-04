@@ -5,6 +5,7 @@
  * variable named instead of failing on the first sign-up. Mirrors
  * config.FromEnv + ValidateCloudEmail on the Go side. The edge runtime never
  * hosts Better Auth, and the build phase (Docker build stage) is secret-free.
+ * Production (non-demo) also requires INTERNAL_API_SECRET for account deletion.
  */
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return;
@@ -20,6 +21,11 @@ export async function register(): Promise<void> {
   // A weak Better Auth root secret (signs sessions, encrypts the JWKS keys)
   // stops the boot in every mode; a copied example placeholder in production.
   assertBetterAuthSecret(process.env);
+  // Account deletion reaches the Go API's internal purge route with
+  // INTERNAL_API_SECRET: a production, non-demo server refuses to start
+  // without a well-formed one (lib/runtime-env.ts).
+  const { assertRuntimeEnv } = await import('@/lib/runtime-env');
+  assertRuntimeEnv(process.env);
   const mail = assertMailConfigForMode(process.env);
   if (!mail.configured) {
     console.warn('email: disabled (no SMTP_HOST); verification off, invitations fall back to links');

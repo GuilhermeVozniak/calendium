@@ -7,6 +7,7 @@ import { Pool } from 'pg';
 import { CLIENT_IP_HEADER, buildTrustedOrigins } from '@/lib/auth-env';
 import { assertBetterAuthSecret } from '@/lib/auth-secret';
 import { readMailConfig } from '@/lib/email/config';
+import { deleteVerificationRows, purgeOnApi } from '@/lib/internal-api';
 import { verificationLink } from '@/lib/email/verification-link';
 import { resetPasswordEmail } from '@/lib/email/templates/reset-password';
 import { verifyEmail } from '@/lib/email/templates/verify-email';
@@ -113,6 +114,27 @@ export const auth = betterAuth({
   advanced: { ipAddress: { ipAddressHeaders: [CLIENT_IP_HEADER] } },
   hooks: { before: passwordPolicyHook },
   socialProviders: socialProviders(),
+  // Account deletion (production-readiness piece 3). beforeDelete purges the
+  // Go side first (throwing aborts the deletion and keeps the auth rows);
+  // afterDelete drops the email-keyed "verification" rows Better Auth would
+  // otherwise leave behind. No email confirmation: credential accounts prove
+  // possession with their password, social-only accounts with a fresh
+  // (<= freshAge) session.
+  user: {
+    deleteUser: {
+      enabled: true,
+      beforeDelete: async (user) => {
+        await purgeOnApi(user.id);
+      },
+      afterDelete: async (user) => {
+        await deleteVerificationRows(db(), user.email);
+      },
+    },
+  },
+  // 5 minutes: the freshness window for deleteUser without a password (and
+  // for Better Auth's other fresh-session routes: list-sessions,
+  // unlink-account — neither is used by any Calendium client).
+  session: { freshAge: 300 },
   plugins: [
     // Asymmetric EdDSA (Ed25519) JWTs + JWKS at /api/auth/jwks. The token
     // carries sub=userId and iss=BETTER_AUTH_URL by default; add email/name so
