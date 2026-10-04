@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
-        with: { bun-version: latest }
+        with: { bun-version: 1.3.14 } # same Bun as the web image
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
@@ -61,7 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
-        with: { bun-version: latest }
+        with: { bun-version: 1.3.14 } # same Bun as the web image
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"

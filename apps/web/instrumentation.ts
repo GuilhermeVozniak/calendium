@@ -18,7 +18,7 @@ export async function register(): Promise<void> {
   // CSP_REPORT_ONLY (middleware.ts) uses the same grammar; blank = default.
   envBool(process.env, 'CSP_REPORT_ONLY');
   // A weak Better Auth root secret (signs sessions, encrypts the JWKS keys)
-  // stops the boot in every mode.
+  // stops the boot in every mode; a copied example placeholder in production.
   assertBetterAuthSecret(process.env);
   const mail = assertMailConfigForMode(process.env);
   if (!mail.configured) {

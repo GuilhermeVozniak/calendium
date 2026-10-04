@@ -28,6 +28,7 @@ docker compose logs --tail=100 api worker web caddy
 | `SMTP_*` startup error, "We couldn't send the email" | [Email not sending / SMTP errors](#email-not-sending--smtp-errors) |
 | "Too many attempts, try again in N s" / `429` on sign-in | [Sign-in rate limits](#too-many-attempts-try-again-in-n-s-http-429) |
 | `403 Invalid origin` on sign-in, CORS errors from a new origin | [Invalid origin](#invalid-origin-403-on-sign-in) |
+| `api`/`worker`/`web` restart in a loop, exit code `137` | [Out of memory (512m limit)](#out-of-memory-512m-limit) |
 
 ---
 
@@ -379,6 +380,34 @@ that localhost rule in every environment, including development.
 `CORS_ALLOWED_ORIGINS`, and restart `web` and `api`. For a local dev web app
 pointed at a production server, `ALLOW_DEV_ORIGINS=true` works (and logs a
 warning).
+
+---
+
+## Out of memory (512m limit)
+
+**Symptom:** `api`, `worker` or `web` keeps restarting; `docker compose ps`
+shows `Restarting`, and `docker inspect --format '{{.State.OOMKilled}} {{.State.ExitCode}}' <container>`
+prints `true 137`. There is usually no error line in the service's own log.
+
+**Cause:** `docker-compose.yml` caps each app container at **512 MiB**
+(`deploy.resources.limits.memory: 512m`) so one runaway service cannot take the
+host down. Very large mailboxes or many concurrent syncs can exceed it.
+
+**Fix:** raise the limit for that service in a `docker-compose.override.yml`
+next to `docker-compose.yml` (Compose merges it automatically), then
+`docker compose up -d`:
+
+```yaml
+services:
+  worker:
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+```
+
+Check usage first with `docker stats --no-stream`. `db` and `caddy` have no
+limit.
 
 ---
 

@@ -136,8 +136,8 @@ tuning. The repo ships a sample at
 
 Run the stack **without** the caddy profile so nginx (on the host) can reach the
 published ports — `docker-compose.yml` publishes `web` on
-`127.0.0.1:${WEB_PORT:-3000}` and `api` on `127.0.0.1:${API_PORT:-8080}` by
-default, which the sample proxies as `127.0.0.1:3000` / `127.0.0.1:8080`. No
+`${WEB_BIND:-127.0.0.1}:${WEB_PORT:-3000}` and `api` on
+`${API_BIND:-127.0.0.1}:${API_PORT:-8080}` by default, which the sample proxies as `127.0.0.1:3000` / `127.0.0.1:8080`. No
 `.env` change is needed for a same-host nginx.
 
 ```bash
@@ -235,7 +235,10 @@ clients — or skip the proxy entirely and reach `web` on `:3000` and `api` on
 `:8080` directly over the LAN (no TLS). Without a proxy, set
 `API_BIND=0.0.0.0`, `WEB_BIND=0.0.0.0` **and** `TRUST_PROXY=false` in `.env`:
 the compose file publishes both on loopback only by default, and with
-`TRUST_PROXY=true` a LAN client could spoof `X-Forwarded-For`. Note that native mobile apps generally
+`TRUST_PROXY=true` a LAN client could spoof `X-Forwarded-For`. (The default
+`TRUSTED_PROXY_CIDRS` includes Docker's `172.16.0.0/12` bridge gateway, which
+Docker can NAT direct LAN clients to; if a proxy must stay trusted, narrow
+`TRUSTED_PROXY_CIDRS` to its address instead.) Note that native mobile apps generally
 require HTTPS, so an internal cert (trusted on-device) is the better LAN path.
 
 ---

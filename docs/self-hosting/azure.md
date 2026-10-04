@@ -73,7 +73,7 @@ curl https://<your-domain>/v1/instance      # mode: self_host
 
 Set the remaining `.env` values (`SELF_HOSTED=true`, `TOKEN_ENCRYPTION_KEY`,
 `DOMAIN`, `ACME_EMAIL`, Better Auth (`BETTER_AUTH_SECRET`/`BETTER_AUTH_URL`),
-provider OAuth, loopback `API_PORT`/`WEB_PORT`) exactly as in the
+provider OAuth, loopback `API_BIND`/`WEB_BIND` defaults) exactly as in the
 [VPS guide](./vps.md#step-6--clone-and-configure). Updating,
 backups, and pointing apps at your server are identical.
 
