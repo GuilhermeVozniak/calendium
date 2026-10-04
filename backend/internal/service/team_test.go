@@ -991,3 +991,49 @@ func TestHeaderSafeCollapsesControlRuns(t *testing.T) {
 		}
 	}
 }
+
+// ctxAwareInvitationRepo fails Update on a done context, like a real
+// database driver, and records the rollback context's deadline.
+type ctxAwareInvitationRepo struct {
+	*fakeTeamInvitationRepo
+	updateDeadline time.Duration // time left on the Update ctx; 0 = no deadline
+}
+
+func (r *ctxAwareInvitationRepo) Update(ctx context.Context, inv domain.TeamInvitation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		r.updateDeadline = time.Until(dl)
+	}
+	return r.fakeTeamInvitationRepo.Update(ctx, inv)
+}
+
+// A cancelled request (client gone mid-SMTP) must still revoke the pending
+// row, or the pending-unique index blocks every retry for that address.
+func TestTeamInviteRollbackSurvivesCancelledContext(t *testing.T) {
+	mailer := newMailer()
+	mailer.sendErr = context.Canceled
+	f := newTeamFixtureWithMailer(t, true, mailer)
+	repo := &ctxAwareInvitationRepo{fakeTeamInvitationRepo: f.invites}
+	f.svc.invitations = repo
+	f.seedTeam(t, "t1", "owner")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := f.svc.Invite(ctx, "owner", "t1", "x@example.com", domain.TeamRoleMember); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want wrapped context.Canceled", err)
+	}
+	invs, _ := f.invites.ListByTeam(context.Background(), "t1")
+	if len(invs) != 1 || invs[0].Status != domain.InviteRevoked {
+		t.Fatalf("stored = %+v, want one revoked invitation despite the cancelled request", invs)
+	}
+	if repo.updateDeadline <= 0 || repo.updateDeadline > inviteRollbackTimeout {
+		t.Fatalf("rollback deadline = %v, want a short bound (0 < d <= %v)", repo.updateDeadline, inviteRollbackTimeout)
+	}
+	// The address is free again: a retry with a live context succeeds.
+	mailer.sendErr = nil
+	if _, err := f.svc.Invite(context.Background(), "owner", "t1", "x@example.com", domain.TeamRoleMember); err != nil {
+		t.Fatalf("retry after rollback: %v", err)
+	}
+}

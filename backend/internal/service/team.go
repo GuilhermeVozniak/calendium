@@ -20,6 +20,11 @@ import (
 // inviteTTL is how long an emailed team invitation stays redeemable.
 const inviteTTL = 14 * 24 * time.Hour
 
+// inviteRollbackTimeout bounds the best-effort revoke after a failed send. It
+// runs detached from the request context, so a cancelled request still frees
+// the pending-unique index for a retry.
+const inviteRollbackTimeout = 5 * time.Second
+
 // TeamServiceDeps wires a TeamService.
 type TeamServiceDeps struct {
 	Teams       port.TeamRepo
@@ -403,9 +408,12 @@ func (s *TeamService) Invite(ctx context.Context, userID, teamID, email string, 
 	}
 	if err != nil {
 		// Best-effort rollback so the pending-unique index does not block
-		// a retry after a transient send failure.
+		// a retry after a transient send failure. Detached from ctx: the
+		// send most often fails BECAUSE the request was cancelled.
+		rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), inviteRollbackTimeout)
 		inv.Status = domain.InviteRevoked
-		_ = s.invitations.Update(ctx, inv)
+		_ = s.invitations.Update(rbCtx, inv)
+		cancel()
 		return domain.TeamInvitation{}, fmt.Errorf("sending invitation email: %w", err)
 	}
 	inv.Delivery = delivery
