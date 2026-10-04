@@ -11,6 +11,7 @@ import (
 	"strings"
 	texttemplate "text/template"
 	"time"
+	"unicode"
 
 	"calendium/backend/internal/domain"
 	"calendium/backend/internal/port"
@@ -359,6 +360,13 @@ func (s *TeamService) Invite(ctx context.Context, userID, teamID, email string, 
 	}
 	now := s.clock.Now()
 	raw := randomToken(32)
+	link := s.appBaseURL + "/invite/" + raw
+	inviter, replyTo := s.inviterIdentity(ctx, userID, acct)
+	// Render before persisting so a render failure never strands a pending row.
+	subject, htmlBody, textBody, err := renderInviteEmail(inviter, team.Name, link)
+	if err != nil {
+		return domain.TeamInvitation{}, err
+	}
 	inv, err := s.invitations.Create(ctx, domain.TeamInvitation{
 		ID:        newID(),
 		TeamID:    teamID,
@@ -370,12 +378,6 @@ func (s *TeamService) Invite(ctx context.Context, userID, teamID, email string, 
 		ExpiresAt: now.Add(inviteTTL),
 		CreatedAt: now,
 	})
-	if err != nil {
-		return domain.TeamInvitation{}, err
-	}
-	link := s.appBaseURL + "/invite/" + raw
-	inviter, replyTo := s.inviterIdentity(ctx, userID, acct)
-	subject, htmlBody, textBody, err := renderInviteEmail(inviter, team.Name, link)
 	if err != nil {
 		return domain.TeamInvitation{}, err
 	}
@@ -571,8 +573,15 @@ func (s *TeamService) inviterIdentity(ctx context.Context, inviterID string, acc
 }
 
 // renderInviteEmail renders the subject and both bodies from the shared
-// templates.
+// templates. Both names are user-controlled (ValidateTeamName only trims;
+// Better Auth names are unchecked), so they pass through headerSafe first: a
+// line break would otherwise make the mail builder reject the Subject and
+// fail every invitation from that team or inviter.
 func renderInviteEmail(inviter, team, link string) (subject, htmlBody, textBody string, err error) {
+	inviter, team = headerSafe(inviter), headerSafe(team)
+	if inviter == "" {
+		inviter = "A teammate"
+	}
 	data := inviteEmailData{Inviter: inviter, Team: team, Link: link}
 	var textOut, htmlOut strings.Builder
 	if err := inviteTextTmpl.Execute(&textOut, data); err != nil {
@@ -582,4 +591,13 @@ func renderInviteEmail(inviter, team, link string) (subject, htmlBody, textBody 
 		return "", "", "", fmt.Errorf("rendering invitation html: %w", err)
 	}
 	return fmt.Sprintf("%s invited you to %s on Calendium", inviter, team), htmlOut.String(), textOut.String(), nil
+}
+
+// headerSafe collapses every run of control characters and whitespace
+// (CR, LF, TAB, NUL, DEL, U+2028/U+2029, …) to a single space and trims the
+// ends, so a user-controlled name can be placed in a one-line header.
+func headerSafe(s string) string {
+	return strings.Join(strings.FieldsFunc(s, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}), " ")
 }

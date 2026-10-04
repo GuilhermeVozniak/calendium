@@ -944,3 +944,50 @@ func TestTeamServiceSelfHostBypassesBilling(t *testing.T) {
 		t.Fatalf("Create on self-host without subscription: %v", err)
 	}
 }
+
+// A team or inviter name carrying CR/LF (ValidateTeamName only trims; Better
+// Auth names are unchecked) must not make every SMTP invite fail and revoke:
+// control characters collapse to one space before any header is built.
+func TestTeamInviteCollapsesControlCharsInNames(t *testing.T) {
+	mailer := newMailer()
+	f := newTeamFixtureWithMailer(t, true, mailer)
+	team := f.seedTeam(t, "t1", "owner")
+	team.Name = "Ops\r\nBcc: evil@example.com"
+	if err := f.teams.Update(context.Background(), team); err != nil {
+		t.Fatal(err)
+	}
+	name := "Olive\n\n\tOwner\x00"
+	if _, err := f.users.Upsert(context.Background(), domain.User{ID: "owner", Email: "olive@acme.com", Name: &name}); err != nil {
+		t.Fatal(err)
+	}
+
+	inv, err := f.svc.Invite(context.Background(), "owner", "t1", "x@example.com", domain.TeamRoleMember)
+	if err != nil {
+		t.Fatalf("Invite: %v", err)
+	}
+	if inv.Status != domain.InvitePending || inv.Delivery != domain.DeliverySMTP {
+		t.Fatalf("inv = %+v, want a pending smtp invitation", inv)
+	}
+	got := mailer.sent[0]
+	if want := "Olive Owner invited you to Ops Bcc: evil@example.com on Calendium"; got.Subject != want {
+		t.Fatalf("Subject = %q, want %q", got.Subject, want)
+	}
+	if !strings.Contains(got.Text, `Olive Owner has invited you to join the team "Ops Bcc: evil@example.com"`) {
+		t.Fatalf("Text = %q, want collapsed names", got.Text)
+	}
+}
+
+func TestHeaderSafeCollapsesControlRuns(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain":            "plain",
+		"a\r\nb":           "a b",
+		"  a \r\n\t b  ":   "a b",
+		"x y z\x7f":        "x y z",
+		"\r\n":             "",
+		"Zoë Ünïcode — ok": "Zoë Ünïcode — ok",
+	} {
+		if got := headerSafe(in); got != want {
+			t.Errorf("headerSafe(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
