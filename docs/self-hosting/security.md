@@ -68,7 +68,7 @@ be public and some is a signing secret — don't mix them up:
 | `BETTER_AUTH_URL` | **Public** | Public web origin; also the JWT issuer (`iss`) the backend pins. |
 | `${BETTER_AUTH_URL}/api/auth/jwks` (JWKS) | **Public** | Public Ed25519 verification keys the backend fetches. Meant to be reachable — expected to be public, fine to expose. |
 | `BETTER_AUTH_SECRET` | **SECRET** | Better Auth's root secret. Anyone with it can forge sessions and mint valid tokens. Never serve it, never log it, never put it in `NEXT_PUBLIC_*`. |
-| `GOOGLE_CLIENT_SECRET`, `APPLE_CLIENT_SECRET`, `MS_CLIENT_SECRET`, `PADDLE_*` | **SECRET** | Backend / server-only. |
+| `GOOGLE_CLIENT_SECRET`, `APPLE_CLIENT_SECRET`, `MS_CLIENT_SECRET`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET` | **SECRET** | Backend / server-only. |
 
 The Go backend is a pure resource server: it fetches the public JWKS from
 `AUTH_JWKS_URL` (default `${BETTER_AUTH_URL}/api/auth/jwks`), verifies the

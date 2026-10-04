@@ -3,7 +3,7 @@
 Operator steps outside the codebase (docs/payments.md has the flows). Do each block in **sandbox** first, then repeat for **live**. The cross-vendor launch checklist (Google, Apple, Microsoft, email, hosting) lives in [release/go-live-external-checklist.md](./release/go-live-external-checklist.md); its section 3 is the short form of this page.
 
 ## 1. Website and default payment link
-- Paddle → Checkout → Website approval: submit the public web origin (`PUBLIC_WEB_URL`, e.g. `https://app.calendium.app`). Localhost is allowed in sandbox only.
+- Paddle > My account > Settings > Website approval: submit the public web origin (`PUBLIC_WEB_URL`, e.g. `https://app.calendium.app`). Localhost is allowed in sandbox only.
 - Paddle → Checkout → Checkout settings → **Default payment link** = `<PUBLIC_WEB_URL>/checkout` (sandbox: `http://localhost:3000/checkout`). The page includes Paddle.js and opens the overlay from `_ptxn`.
 
 ## 2. Catalog
@@ -12,7 +12,7 @@ Operator steps outside the codebase (docs/payments.md has the flows). Do each bl
 
 ## 3. API key and client token
 - Developer tools → Authentication → API key with customers, transactions, subscriptions and portal-session scopes → `PADDLE_API_KEY`.
-- Client-side token → `NEXT_PUBLIC_PADDLE_CLIENT_TOKEN` (web build arg). Set `NEXT_PUBLIC_PADDLE_ENV=sandbox|production` to match `PADDLE_ENV`.
+- Client-side token → `NEXT_PUBLIC_PADDLE_CLIENT_TOKEN` (web build arg). Set `NEXT_PUBLIC_PADDLE_ENV=sandbox|production`: `sandbox` while `PADDLE_ENV=sandbox`, `production` when `PADDLE_ENV=live` (Paddle.js uses `production`, the API uses `live`).
 
 ## 4. Notification destination (webhook)
 - Developer tools → Notifications → New destination: URL `<PUBLIC_API_URL>/v1/webhooks/paddle`, type webhook, version latest.

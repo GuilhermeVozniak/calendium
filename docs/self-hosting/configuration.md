@@ -136,7 +136,7 @@ adapter stays unwired and the checkout/portal/webhook endpoints return
 | `PADDLE_PRICE_ID_ANNUAL` | **Yes (cloud)** | — | Paddle price id (`pri_…`) for the $50/yr plan (see [`../payments.md`](../payments.md)). |
 | `BILLING_RECONCILE_INTERVAL` | No | `6h` | Worker loop that re-reads stale subscriptions from Paddle. |
 | `NEXT_PUBLIC_PADDLE_CLIENT_TOKEN` | **Yes (cloud, web build)** | — | Paddle.js client token, inlined at web build time. |
-| `NEXT_PUBLIC_PADDLE_ENV` | No | `sandbox` | `sandbox` or `production`, inlined at web build time; must match `PADDLE_ENV`. |
+| `NEXT_PUBLIC_PADDLE_ENV` | No | `sandbox` | `sandbox` or `production`, inlined at web build time; `sandbox` while `PADDLE_ENV=sandbox`, `production` when `PADDLE_ENV=live` (Paddle.js uses `production`, the API uses `live`). |
 
 ---
 
