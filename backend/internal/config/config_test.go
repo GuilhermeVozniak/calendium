@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -19,7 +20,7 @@ var configEnvKeys = []string{
 	"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",
 	"APPLE_CLIENT_ID", "APPLE_CLIENT_SECRET",
 	"MS_CLIENT_ID", "MS_CLIENT_SECRET",
-	"STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PRICE_ID_ANNUAL",
+	"PADDLE_ENV", "PADDLE_API_KEY", "PADDLE_WEBHOOK_SECRET", "PADDLE_PRICE_ID_ANNUAL", "BILLING_RECONCILE_INTERVAL",
 	"APNS_KEY_ID", "APNS_TEAM_ID", "APNS_KEY_P8",
 	"FCM_SERVICE_ACCOUNT_JSON", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY",
 	"OPENROUTER_API_KEY", "OPENROUTER_MODEL", "AI_DAILY_LIMIT",
@@ -494,5 +495,100 @@ func assertInt(t *testing.T, field string, got, want int) {
 	t.Helper()
 	if got != want {
 		t.Errorf("%s = %d, want %d", field, got, want)
+	}
+}
+
+// TestPaddleFromEnv covers the Paddle knobs: env default/validation, key
+// passthrough, and the reconcile interval default/override/validation.
+func TestPaddleFromEnv(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		wantErr bool
+		check   func(t *testing.T, c Config)
+	}{
+		{
+			name: "PADDLE_ENV defaults to sandbox and interval to 6h",
+			env:  withBase(nil),
+			check: func(t *testing.T, c Config) {
+				assertEq(t, "Paddle.Env", c.Paddle.Env, PaddleEnvSandbox)
+				assertDur(t, "Billing.ReconcileInterval", c.Billing.ReconcileInterval, 6*time.Hour)
+			},
+		},
+		{
+			name: "keys and live env pass through",
+			env: withBase(map[string]string{
+				"PADDLE_ENV": "live", "PADDLE_API_KEY": "pdl_live_k", "PADDLE_WEBHOOK_SECRET": "pdl_ntfset_s", "PADDLE_PRICE_ID_ANNUAL": "pri_1",
+			}),
+			check: func(t *testing.T, c Config) {
+				assertEq(t, "Paddle.Env", c.Paddle.Env, PaddleEnvLive)
+				assertEq(t, "Paddle.APIKey", c.Paddle.APIKey, "pdl_live_k")
+				assertEq(t, "Paddle.WebhookSecret", c.Paddle.WebhookSecret, "pdl_ntfset_s")
+				assertEq(t, "Paddle.AnnualPriceID", c.Paddle.AnnualPriceID, "pri_1")
+			},
+		},
+		{name: "PADDLE_ENV invalid errors", env: withBase(map[string]string{"PADDLE_ENV": "prod"}), wantErr: true},
+		{
+			name: "BILLING_RECONCILE_INTERVAL override",
+			env:  withBase(map[string]string{"BILLING_RECONCILE_INTERVAL": "30m"}),
+			check: func(t *testing.T, c Config) {
+				assertDur(t, "Billing.ReconcileInterval", c.Billing.ReconcileInterval, 30*time.Minute)
+			},
+		},
+		{name: "BILLING_RECONCILE_INTERVAL zero errors", env: withBase(map[string]string{"BILLING_RECONCILE_INTERVAL": "0s"}), wantErr: true},
+		{name: "BILLING_RECONCILE_INTERVAL garbage errors", env: withBase(map[string]string{"BILLING_RECONCILE_INTERVAL": "soon"}), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearEnv(t)
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			c, err := FromEnv()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("FromEnv() error = nil, want non-nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FromEnv() unexpected error: %v", err)
+			}
+			tt.check(t, c)
+		})
+	}
+}
+
+// TestValidateCloudBilling pins the startup rule: cloud mode refuses to run
+// without every Paddle credential; self-host never needs them.
+func TestValidateCloudBilling(t *testing.T) {
+	full := Paddle{Env: PaddleEnvSandbox, APIKey: "k", WebhookSecret: "s", AnnualPriceID: "p"}
+	tests := []struct {
+		name       string
+		selfHosted bool
+		paddle     Paddle
+		wantErr    string // substring; "" = nil error
+	}{
+		{"self-host with nothing set is fine", true, Paddle{}, ""},
+		{"cloud with all keys is fine", false, full, ""},
+		{"cloud missing api key", false, Paddle{WebhookSecret: "s", AnnualPriceID: "p"}, "PADDLE_API_KEY"},
+		{"cloud missing webhook secret", false, Paddle{APIKey: "k", AnnualPriceID: "p"}, "PADDLE_WEBHOOK_SECRET"},
+		{"cloud missing price id", false, Paddle{APIKey: "k", WebhookSecret: "s"}, "PADDLE_PRICE_ID_ANNUAL"},
+		{"cloud missing everything names all three", false, Paddle{}, "PADDLE_API_KEY, PADDLE_WEBHOOK_SECRET, PADDLE_PRICE_ID_ANNUAL"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := Config{Instance: Instance{SelfHosted: tt.selfHosted}, Paddle: tt.paddle}
+			err := c.ValidateCloudBilling()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateCloudBilling() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ValidateCloudBilling() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }
