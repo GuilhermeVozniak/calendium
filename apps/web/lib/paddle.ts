@@ -8,6 +8,8 @@ export const PADDLE_JS_SRC = 'https://cdn.paddle.com/paddle/v2/paddle.js';
 export interface PaddleCheckoutSettings {
   successUrl?: string;
   displayMode?: 'overlay' | 'inline';
+  /** false hides the overlay's "change email" control, pinning the transaction's customer. */
+  allowLogout?: boolean;
 }
 
 export interface PaddleInitializeOptions {
@@ -59,6 +61,9 @@ export function initPaddle(
   paddle.Initialize({
     token: opts.token,
     eventCallback: opts.eventCallback,
-    checkout: { settings: { successUrl: opts.successUrl, displayMode: 'overlay' } },
+    // allowLogout:false locks the overlay to the customer our backend attached to
+    // the transaction; a buyer switching email there would be billed as a
+    // customer no Calendium account owns, and the webhook would drop it.
+    checkout: { settings: { successUrl: opts.successUrl, displayMode: 'overlay', allowLogout: false } },
   });
 }
