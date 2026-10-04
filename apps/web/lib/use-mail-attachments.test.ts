@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 // parseContentDispositionFilename (a pure function) is exercised here.
 vi.mock('@/lib/demo', () => ({ DEMO_MODE: false }));
 vi.mock('@/lib/api', () => ({ getApiClient: () => ({}) }));
-vi.mock('@/lib/auth-client', () => ({ getAccessToken: async () => null }));
+vi.mock('@/lib/auth-client', () => ({ getAccessToken: async () => null, accessTokens: undefined }));
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 import { parseContentDispositionFilename } from '@/lib/use-mail';

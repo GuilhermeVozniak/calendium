@@ -57,6 +57,7 @@ vi.mock('@/components/theme-provider', () => ({
 const signOutMock = vi.fn();
 vi.mock('@/lib/auth-client', () => ({
   signOut: (...args: unknown[]) => signOutMock(...args),
+  invalidateAccessToken: () => {},
 }));
 
 // The palette signs out through the shared performSignOut routine; its leaf
