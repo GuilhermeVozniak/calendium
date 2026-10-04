@@ -65,6 +65,10 @@ export default defineConfig({
       // and fall back to demo data, regardless of what else is running
       // locally (e.g. a developer's own `bun run dev:api` on :8080).
       NEXT_PUBLIC_API_URL: 'http://127.0.0.1:58080',
+      // instrumentation.ts (piece 2) refuses to boot cloud mode without SMTP;
+      // the e2e suite runs as a self-host without email (Better Auth is
+      // stubbed at the network layer anyway, see fixtures.ts).
+      SELF_HOSTED: 'true',
       BETTER_AUTH_SECRET: 'e2e-playwright-not-a-real-secret-0123456789ab',
       BETTER_AUTH_URL: BASE_URL,
       // Never actually queried: the auth route handler that would construct
