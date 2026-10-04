@@ -158,3 +158,39 @@ func TestExportPagerIndexes(t *testing.T) {
 		t.Fatalf("thread pager plan does not use (account_id, id) without a sort:\n%s", plan.String())
 	}
 }
+
+// UserSettingsRepo.Save writes the document and the switch in one statement;
+// a nil switch inserts the default (true) and keeps an existing value.
+func TestUserSettingsSaveWritesSwitchWithDocument(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	off, on := false, true
+	repo := st.UserSettings()
+	if err := repo.Save(ctx, domain.UserSettings{UserID: "u1", TimeZone: "Europe/Lisbon", WorkingHours: []domain.AvailabilityWindow{}}, &off); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.Get(ctx, "u1")
+	if err != nil || got.TimeZone != "Europe/Lisbon" || got.AIBackground {
+		t.Fatalf("after Save(off) = %+v err=%v, want Lisbon + off", got, err)
+	}
+	if err := repo.Save(ctx, domain.UserSettings{UserID: "u1", TimeZone: "UTC", WorkingHours: []domain.AvailabilityWindow{}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := repo.Get(ctx, "u1"); got.TimeZone != "UTC" || got.AIBackground {
+		t.Fatalf("Save(nil) = %+v, want UTC and the switch kept off", got)
+	}
+	if err := repo.Save(ctx, domain.UserSettings{UserID: "u1", TimeZone: "Asia/Tokyo", WorkingHours: []domain.AvailabilityWindow{}}, &on); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := repo.Get(ctx, "u1"); got.TimeZone != "Asia/Tokyo" || !got.AIBackground {
+		t.Fatalf("Save(on) = %+v, want Tokyo + on", got)
+	}
+	seedUser(t, st, "u2")
+	if err := repo.Save(ctx, domain.UserSettings{UserID: "u2", TimeZone: "UTC", WorkingHours: []domain.AvailabilityWindow{}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := repo.Get(ctx, "u2"); !got.AIBackground {
+		t.Fatal("a new row saved with a nil switch must default to on")
+	}
+}

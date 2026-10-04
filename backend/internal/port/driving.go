@@ -528,13 +528,11 @@ type SchedulingService interface {
 // SettingsService reads/writes per-user scheduling settings.
 type SettingsService interface {
 	Get(ctx context.Context, userID string) (domain.UserSettings, error)
-	// Update replaces time zone, working hours and location. It never
-	// touches AIBackground (older clients PUT the document without the
-	// field); the returned document carries the stored value.
-	Update(ctx context.Context, userID string, s domain.UserSettings) (domain.UserSettings, error)
-	// SetAIBackground flips the background-AI switch and returns the
-	// resulting document.
-	SetAIBackground(ctx context.Context, userID string, on bool) (domain.UserSettings, error)
+	// Update replaces time zone, working hours and location and, when
+	// aiBackground is non-nil, the background-AI switch — all in one atomic
+	// write. s.AIBackground is ignored (older clients PUT the document
+	// without the field); the returned document carries the stored value.
+	Update(ctx context.Context, userID string, s domain.UserSettings, aiBackground *bool) (domain.UserSettings, error)
 }
 
 // TeamInput is the create/rename team payload.

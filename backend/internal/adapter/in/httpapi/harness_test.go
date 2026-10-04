@@ -1066,26 +1066,19 @@ type fakeSettingsService struct {
 
 	updateRet       domain.UserSettings
 	updateErr       error
+	updateCalls     int
 	gotUpdateUserID string
 	gotUpdateIn     domain.UserSettings
-
-	setAIRet   domain.UserSettings
-	setAIErr   error
-	setAICalls int
-	gotSetAI   bool
+	gotUpdateAI     *bool
 }
 
 func (f *fakeSettingsService) Get(ctx context.Context, userID string) (domain.UserSettings, error) {
 	return f.getRet, f.getErr
 }
-func (f *fakeSettingsService) Update(ctx context.Context, userID string, s domain.UserSettings) (domain.UserSettings, error) {
-	f.gotUpdateUserID, f.gotUpdateIn = userID, s
+func (f *fakeSettingsService) Update(ctx context.Context, userID string, s domain.UserSettings, aiBackground *bool) (domain.UserSettings, error) {
+	f.updateCalls++
+	f.gotUpdateUserID, f.gotUpdateIn, f.gotUpdateAI = userID, s, aiBackground
 	return f.updateRet, f.updateErr
-}
-func (f *fakeSettingsService) SetAIBackground(ctx context.Context, userID string, on bool) (domain.UserSettings, error) {
-	f.setAICalls++
-	f.gotSetAI = on
-	return f.setAIRet, f.setAIErr
 }
 
 // --- EventBus ----------------------------------------------------------------

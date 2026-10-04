@@ -2589,8 +2589,10 @@ var _ port.TimeProposalRepo = (*fakeProposalRepo)(nil)
 // Upsert never writes AIBackground (new rows default true, existing rows keep
 // theirs); SetAIBackground writes only the switch.
 type fakeUserSettingsRepo struct {
-	byUser map[string]domain.UserSettings
-	getErr error
+	byUser    map[string]domain.UserSettings
+	getErr    error
+	saveCalls int
+	saveErr   error
 }
 
 func newUserSettingsRepo() *fakeUserSettingsRepo {
@@ -2613,6 +2615,23 @@ func (r *fakeUserSettingsRepo) Upsert(_ context.Context, s domain.UserSettings) 
 		s.AIBackground = prev.AIBackground
 	} else {
 		s.AIBackground = true
+	}
+	r.byUser[s.UserID] = s
+	return nil
+}
+
+func (r *fakeUserSettingsRepo) Save(_ context.Context, s domain.UserSettings, aiBackground *bool) error {
+	r.saveCalls++
+	if r.saveErr != nil {
+		return r.saveErr // nothing applied: one statement
+	}
+	if prev, ok := r.byUser[s.UserID]; ok {
+		s.AIBackground = prev.AIBackground
+	} else {
+		s.AIBackground = true
+	}
+	if aiBackground != nil {
+		s.AIBackground = *aiBackground
 	}
 	r.byUser[s.UserID] = s
 	return nil

@@ -549,6 +549,9 @@ type UserSettingsRepo interface {
 	// ai_background (new rows take the column default true; existing rows
 	// keep their value) so a client that omits the field cannot flip it.
 	Upsert(ctx context.Context, s domain.UserSettings) error
+	// Save is Upsert plus, when aiBackground is non-nil, ai_background — in
+	// a single statement, so the document and the switch commit together.
+	Save(ctx context.Context, s domain.UserSettings, aiBackground *bool) error
 	// SetAIBackground writes only ai_background, creating the row with
 	// defaults when absent.
 	SetAIBackground(ctx context.Context, userID string, on bool) error
