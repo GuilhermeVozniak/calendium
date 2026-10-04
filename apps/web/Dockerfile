@@ -71,4 +71,6 @@ COPY --from=build --chown=nextjs:nodejs /app/apps/web/scripts ./apps/web/scripts
 
 USER nextjs
 EXPOSE 3000
-CMD ["node", "apps/web/server.js"]
+# The preload appends the socket peer to X-Forwarded-For (Next only fills it
+# when absent), so auth rate limits key on the real immediate peer.
+CMD ["node", "--require", "./apps/web/scripts/forwarded-for-peer.cjs", "apps/web/server.js"]

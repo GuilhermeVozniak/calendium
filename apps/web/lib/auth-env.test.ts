@@ -2,15 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   APPLE_FORM_POST_ORIGIN,
-  CLIENT_IP_HEADER,
   buildTrustedOrigins,
-  clientIpFor,
   devOriginsAllowed,
   isAllowedOrigin,
   passwordPolicyError,
   rateLimitRules,
   startupWarnings,
-  withClientIp,
 } from '@/lib/auth-env';
 
 const WAILS = ['wails://wails', 'wails://wails.localhost', 'http://wails.localhost', 'https://wails.localhost'];
@@ -105,47 +102,6 @@ describe('rateLimitRules', () => {
       '/send-verification-email': { window: 600, max: 3 },
       '/token': { window: 60, max: 60 },
     });
-  });
-});
-
-describe('clientIpFor', () => {
-  const headers = (xff?: string) => new Headers(xff === undefined ? {} : { 'x-forwarded-for': xff });
-
-  it('returns empty when the header is absent or blank', () => {
-    expect(clientIpFor(headers(), true)).toBe('');
-    expect(clientIpFor(headers(''), false)).toBe('');
-    expect(clientIpFor(headers(' , '), true)).toBe('');
-  });
-
-  it('TRUST_PROXY=false: trusts only a single-valued header (the socket fill)', () => {
-    expect(clientIpFor(headers('203.0.113.9'), false)).toBe('203.0.113.9');
-    expect(clientIpFor(headers('203.0.113.9, 10.0.0.1'), false)).toBe('');
-  });
-
-  it('TRUST_PROXY=true: takes the first hop and tolerates whitespace and a trailing comma', () => {
-    expect(clientIpFor(headers(' 203.0.113.9 , 10.0.0.1,'), true)).toBe('203.0.113.9');
-    expect(clientIpFor(headers(' 203.0.113.9 , 10.0.0.1,'), false)).toBe('');
-  });
-});
-
-describe('withClientIp', () => {
-  it('overwrites a forged x-calendium-client-ip and preserves method, URL and body', async () => {
-    const original = new Request('https://mail.example.com/api/auth/sign-in/email', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', [CLIENT_IP_HEADER]: '1.2.3.4', 'x-forwarded-for': '203.0.113.9, 10.0.0.1' },
-      body: JSON.stringify({ email: 'a@b.test' }),
-    });
-    const stamped = withClientIp(original, false);
-    expect(stamped.headers.get(CLIENT_IP_HEADER)).toBe('');
-    expect(stamped.method).toBe('POST');
-    expect(stamped.url).toBe(original.url);
-    expect(stamped.headers.get('content-type')).toBe('application/json');
-    expect(await stamped.text()).toBe(JSON.stringify({ email: 'a@b.test' }));
-  });
-
-  it('stamps the first hop when the proxy is trusted', () => {
-    const req = new Request('https://mail.example.com/api/auth/token', { headers: { 'x-forwarded-for': '203.0.113.9, 10.0.0.1' } });
-    expect(withClientIp(req, true).headers.get(CLIENT_IP_HEADER)).toBe('203.0.113.9');
   });
 });
 
