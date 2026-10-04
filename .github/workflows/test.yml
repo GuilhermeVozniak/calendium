@@ -42,7 +42,16 @@ jobs:
         # passing CI with zero postgres coverage.
         env:
           REQUIRE_DOCKER: "1"
-        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+        run: |
+          (while sleep 2; do echo "== $(date +%T) mem: $(free -m | awk '/Mem/{print $3"/"$2}')"; docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' 2>/dev/null; done) > /tmp/mon.log 2>&1 &
+          docker events --filter type=container > /tmp/events.log 2>&1 &
+          set +e
+          go test -race -covermode=atomic -coverprofile=coverage.out ./...
+          rc=$?
+          echo "::group::container events"; cat /tmp/events.log | grep -vE 'exec_' | tail -60; echo "::endgroup::"
+          echo "::group::memory"; tail -80 /tmp/mon.log; echo "::endgroup::"
+          echo "::group::dmesg"; sudo dmesg | grep -iE 'oom|killed process|out of memory' | tail -20; echo "::endgroup::"
+          exit $rc
 
       - name: Coverage summary
         run: go tool cover -func=coverage.out | tail -n 1
