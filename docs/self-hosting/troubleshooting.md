@@ -347,9 +347,18 @@ production: …` at startup. With `TRUST_PROXY=true` the same happens when a
 proxy hop is outside `TRUSTED_PROXY_CIDRS`, for example a CDN with public
 addresses.
 
+The Go API answers its own `429`s with a `Retry-After` header: per client IP
+on public booking/poll/share pages, per user on signed-in routes
+([Configuration → Platform hardening](./configuration.md#platform-hardening)).
+It finds the client IP with the same `TRUST_PROXY` / `TRUSTED_PROXY_CIDRS`
+rule, so if every visitor of a public page is limited at once the cause is the
+same.
+
 **Fix:** behind a proxy, remove `TRUST_PROXY=false` from `.env` (or set it to
-`true`), add any public proxy ranges to `TRUSTED_PROXY_CIDRS`, and restart `web`. To clear the counters (for example after a
+`true`), add any public proxy ranges to `TRUSTED_PROXY_CIDRS`, and restart `web`
+and `api`. To clear the web counters (for example after a
 load test): `docker compose exec db psql -U calendium -d calendium -c 'DELETE FROM "rateLimit";'`.
+The API's counters live in memory and reset when `api` restarts.
 
 ---
 
