@@ -59,13 +59,19 @@ services:
       # (Docker published ports bypass UFW). LAN without a proxy: API_BIND=0.0.0.0.
       - "${API_BIND:-127.0.0.1}:${API_PORT:-8080}:8080"
     # Readiness instead of the image's /healthz liveness: 503 while the DB is
-    # unreachable or the process is draining, so the proxy stops routing early.
+    # unreachable or the process is draining. Docker health only gates startup
+    # ordering (caddy waits for api to be healthy) and shows up in
+    # `docker compose ps`; neither Caddy nor nginx reads it, so it does not
+    # take a draining api out of rotation.
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
       interval: 10s
       timeout: 3s
       start_period: 20s
       retries: 3
+    # 512m hard cap per app container (api, worker, web). An OOM kill shows as
+    # a restart loop with exit code 137; raise it for a service in a
+    # docker-compose.override.yml (docs/self-hosting/troubleshooting.md).
     deploy:
       resources:
         limits:
