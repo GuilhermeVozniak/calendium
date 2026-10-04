@@ -69,8 +69,9 @@ is `NEXT_PUBLIC_API_URL`.
 | --- | --- | --- | --- |
 | `NEXT_PUBLIC_API_URL` | No | `http://localhost:8080` | Where the browser reaches the Go API. **Inlined at build time** (Docker build arg) — rebuild the `web` image to change it. Behind the bundled proxy set it to your domain, or **leave blank** to use same-origin relative `/v1/…` requests. |
 | `CORS_ALLOWED_ORIGINS` | No | — | Comma-separated extra browser origins trusted by **both** the Go API (CORS) and Better Auth (trusted origins). Always trusted without listing them: `BETTER_AUTH_URL`, `PUBLIC_WEB_URL`, the desktop app's WebView origins (`wails://wails`, `wails://wails.localhost`, `http(s)://wails.localhost`), `calendium://` and `https://appleid.apple.com` (Apple's sign-in `form_post`; trusted, never reflected in CORS). |
-| `ALLOW_DEV_ORIGINS` | No | `false` | Also trust `http://localhost:*` / `http://127.0.0.1:*` (and `::1` on the API). `bun run dev` / `next dev` trusts them anyway; in production keep it blank — `true` logs a startup warning. Read by `web` and `api`. |
-| `TRUST_PROXY` | No | `false` | How the web app finds the client IP for its sign-in rate limits. `true`: the first `X-Forwarded-For` hop — only behind a proxy that **overwrites** the header (bundled Caddy; nginx with `X-Forwarded-For $remote_addr`). `false`: the header only when single-valued; production logs a warning. See [Security → Sign-in protection](./security.md#10-sign-in-protection). |
+| `ALLOW_DEV_ORIGINS` | No | `false` | Also allow `http://localhost:*` / `http://127.0.0.1:*` (and `[::1]` in CORS). The Go API allows these origins **only** when this is `true`, in every environment. Better Auth (`web`) also trusts them under `next dev`. The desktop WebView origins, `CORS_ALLOWED_ORIGINS`, `PUBLIC_WEB_URL` and `BETTER_AUTH_URL` are always allowed, whatever this is set to. In production keep it blank: `true` makes `web` log a startup warning. Read by `web` and `api`. |
+| `TRUST_PROXY` | No | `false` | How the web app finds the client IP for its sign-in rate limits: the right-most `X-Forwarded-For` entry that is not a trusted proxy. `false`: no proxy is trusted, so only the immediate peer counts and a client-supplied `X-Forwarded-For` is never used. Behind a proxy every client then shares the proxy's bucket, and production logs a warning. `true`: entries in `TRUSTED_PROXY_CIDRS` are skipped from the right. Read by `web` only. The Go API keys its own limits on the TCP peer. See [Security → Client IP](./security.md#client-ip-trust_proxy-and-trusted_proxy_cidrs). |
+| `TRUSTED_PROXY_CIDRS` | No | `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7` | Comma-separated proxy ranges skipped from the right of `X-Forwarded-For` when `TRUST_PROXY=true`; ignored when it is `false`. The default covers loopback and private networks, including the bundled Caddy on the Compose network. Add your CDN or load balancer ranges if they are public. Narrow it to your proxy's own address if untrusted clients can reach `web` from a private range. Read by `web`. |
 
 ## Transactional email (SMTP)
 
@@ -81,7 +82,7 @@ Provider setup and DNS: [Providers → Transactional email](./providers.md#1d-tr
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `SMTP_HOST` | Cloud: **yes**. Self-host: no | — | SMTP server hostname. Required together with `SMTP_FROM` whenever any `SMTP_*` value is set. Blank on self-host = email off. |
+| `SMTP_HOST` | Cloud: **yes**. Self-host: no | — | SMTP server hostname. Required together with `SMTP_FROM` as soon as any of `SMTP_HOST`, `SMTP_FROM`, `SMTP_USER` or `SMTP_PASS` is set. `SMTP_PORT` and `SMTP_SECURE` alone never trigger it, and the env templates pre-fill both. Blank on self-host = email off. |
 | `SMTP_PORT` | No | `587` | Integer 1–65535 (`465` for implicit TLS). |
 | `SMTP_USER` / `SMTP_PASS` | No | — | Login; set both or neither. **`SMTP_PASS` is a secret.** |
 | `SMTP_FROM` | With `SMTP_HOST` | — | `addr` or `Name <addr>`, e.g. `Calendium <no-reply@mail.example.com>`. |
@@ -96,7 +97,7 @@ Provider setup and DNS: [Providers → Transactional email](./providers.md#1d-tr
 
 Startup: with `SELF_HOSTED=false` and no SMTP, `api`, `worker` and `web` exit
 with `SMTP_HOST and SMTP_FROM are required when SELF_HOSTED=false (cloud mode); set them or run with SELF_HOSTED=true`;
-a half-configured block exits with `SMTP_* is partially configured: <missing>`.
+a half-configured block exits with `SMTP_* is partially configured: <missing>`. A block is half-configured when any of `SMTP_HOST`, `SMTP_FROM`, `SMTP_USER` or `SMTP_PASS` is set but `SMTP_HOST` or `SMTP_FROM` is missing, or when only one of `SMTP_USER` and `SMTP_PASS` is set.
 Self-host without SMTP boots and logs
 `email: disabled (no SMTP_HOST); verification off, invitations fall back to links`.
 

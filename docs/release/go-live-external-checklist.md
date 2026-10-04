@@ -92,10 +92,11 @@ Services ID `com.calendium.app.service`, Key ID `8MX6Q9WW35`, the `.p8`
 - [ ] SPF, DKIM and DMARC records for the sending domain.
 - [ ] From the production domain, sign up with a real inbox: the verification
       mail arrives (not in spam) and its link opens `https://<DOMAIN>/verify-email`.
-- [ ] The proxy overwrites `X-Forwarded-For` (bundled Caddy does; nginx:
-      `proxy_set_header X-Forwarded-For $remote_addr;` in the web `location /`)
-      and `TRUST_PROXY=true` is set for `web` — otherwise every client shares
-      one sign-in rate-limit bucket.
+- [ ] `TRUST_PROXY=true` is set for `web`, and every proxy hop in front of it
+      is inside `TRUSTED_PROXY_CIDRS` (the default covers loopback and private
+      ranges, so the bundled Caddy is covered). With `TRUST_PROXY=false` only
+      the immediate peer, the proxy, is used, so every client shares one
+      sign-in rate-limit bucket.
 - [ ] `ALLOW_DEV_ORIGINS` blank in the production `.env`.
 - Code dependency: piece 2 makes `api`, `worker` and `web` refuse to start
   with `SELF_HOSTED=false` and no `SMTP_HOST`/`SMTP_FROM`.
