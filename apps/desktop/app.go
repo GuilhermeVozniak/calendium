@@ -73,6 +73,10 @@ func (a *App) startup(ctx context.Context) {
 // event, buffering it when the WebView context isn't ready yet. Unexported so
 // it isn't bound into the JS surface — the OS invokes it, not the frontend.
 func (a *App) handleURL(url string) {
+	url, ok := normalizeDeepLink(url)
+	if !ok {
+		return // only the calendium scheme is ours to forward
+	}
 	a.mu.Lock()
 	ctx := a.ctx
 	if ctx == nil {
@@ -87,13 +91,26 @@ func (a *App) handleURL(url string) {
 // deepLinkScheme prefixes every URL the OS hands us for the calendium scheme.
 const deepLinkScheme = "calendium://"
 
-// deepLinkFromArgs returns the first bare calendium:// argument. Windows (NSIS
-// registers "Calendium.exe" "%1") and Linux (.desktop Exec=Calendium %u) pass
-// the opened URL as argv; macOS delivers it via OnUrlOpen and never does.
+// normalizeDeepLink accepts a calendium:// URL in any case (URL schemes are
+// case-insensitive, and Windows/Linux argv may carry CALENDIUM://) and returns
+// it with the scheme lower-cased so the frontend's calendium://auth and
+// calendium://accounts routes match. The rest is forwarded verbatim (OTTs are
+// case-sensitive). Any other scheme is rejected.
+func normalizeDeepLink(raw string) (string, bool) {
+	if len(raw) < len(deepLinkScheme) || !strings.EqualFold(raw[:len(deepLinkScheme)], deepLinkScheme) {
+		return "", false
+	}
+	return deepLinkScheme + raw[len(deepLinkScheme):], true
+}
+
+// deepLinkFromArgs returns the first bare calendium:// argument, scheme
+// normalized. Windows (NSIS registers "Calendium.exe" "%1") and Linux
+// (.desktop Exec=Calendium %u) pass the opened URL as argv; macOS delivers it
+// via OnUrlOpen and never does.
 func deepLinkFromArgs(args []string) string {
 	for _, arg := range args {
-		if strings.HasPrefix(strings.ToLower(arg), deepLinkScheme) {
-			return arg
+		if u, ok := normalizeDeepLink(arg); ok {
+			return u
 		}
 	}
 	return ""
