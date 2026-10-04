@@ -1435,6 +1435,23 @@ func (p *fakeMailProvider) FetchAttachment(_ context.Context, accessToken, provi
 
 var _ port.MailProvider = (*fakeMailProvider)(nil)
 
+// --- instance mailer (piece 2) -----------------------------------------------
+
+// fakeMailer records every port.Mailer.Send and returns a programmable error.
+type fakeMailer struct {
+	sent    []port.Email
+	sendErr error
+}
+
+func newMailer() *fakeMailer { return &fakeMailer{} }
+
+func (m *fakeMailer) Send(_ context.Context, msg port.Email) error {
+	m.sent = append(m.sent, msg)
+	return m.sendErr
+}
+
+var _ port.Mailer = (*fakeMailer)(nil)
+
 // --- calendar provider -------------------------------------------------------
 
 // fakeCalendarProvider serves programmable calendars/sync-page/created/updated
