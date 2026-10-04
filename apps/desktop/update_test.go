@@ -338,7 +338,9 @@ func TestUpdateRun_WaitsWhilePausedAndChecksOnResume(t *testing.T) {
 	}
 	c.setPaused(false)
 	deadline := time.Now().Add(2 * time.Second)
-	for hits.Load() == 0 && time.Now().Before(deadline) {
+	// Wait for the check to finish (request, fsync'd cache write, apply), not
+	// just for the request to land.
+	for !c.status().Available && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if n := hits.Load(); n != 1 {
