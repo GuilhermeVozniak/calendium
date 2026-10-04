@@ -50,6 +50,9 @@ it runs from any working directory once the `.p8` is in place.
       secret (max 180 days). Set `APPLE_CLIENT_ID=com.calendium.app.service`
       and `APPLE_CLIENT_SECRET=<jwt>` on web and api.
 - [ ] Calendar a rotation reminder 170 days out; the secret expires.
+- [ ] Store submissions: whenever Google sign-in is enabled on Cloud, Apple
+      must be too (App Store Guideline 4.8); the mobile app shows Apple only
+      when `APPLE_CLIENT_ID` is set. See `store-readiness.md` §1.
 - Code dependency: piece 2 adds `https://appleid.apple.com` to the trusted
   origins so Apple's form-post callback is accepted.
 

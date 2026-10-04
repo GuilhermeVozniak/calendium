@@ -18,7 +18,8 @@ var assets embed.FS
 func main() {
 	app := NewApp()
 	// Cold launch via URL on Windows/Linux: the OS passes the calendium:// link
-	// as an argument; buffer it before the WebView exists (macOS uses OnUrlOpen).
+	// as an argument; buffer it until a view takes it with TakePendingDeepLink
+	// (macOS uses OnUrlOpen, which buffers the same way).
 	app.consumeArgs(os.Args[1:])
 
 	err := wails.Run(&options.App{

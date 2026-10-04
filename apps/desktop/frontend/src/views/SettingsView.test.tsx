@@ -26,7 +26,11 @@ const getMeMock = vi.hoisted(() => vi.fn());
 const getSettingsMock = vi.hoisted(() => vi.fn());
 const updateSettingsMock = vi.hoisted(() => vi.fn());
 const toastMock = vi.hoisted(() => vi.fn());
-const deepLink = vi.hoisted(() => ({ handlers: [] as Array<(url: string) => void> }));
+const deepLink = vi.hoisted(() => ({
+  handlers: [] as Array<(url: string) => void>,
+  pending: '',
+  take: [] as string[],
+}));
 
 const setSignatureMock = vi.fn();
 const setAutoBccMock = vi.fn();
@@ -117,7 +121,16 @@ vi.mock('@/lib/offline', () => ({ clearOfflineState: vi.fn(async () => undefined
 const setGlobalShortcutsEnabledMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 
 vi.mock('@/lib/wails', () => ({
-  desktop: { GetAppVersion: () => Promise.resolve('0.1.0'), OpenExternal: (...args: unknown[]) => openExternalMock(...args) },
+  desktop: {
+    GetAppVersion: () => Promise.resolve('0.1.0'),
+    OpenExternal: (...args: unknown[]) => openExternalMock(...args),
+    TakePendingDeepLink: (route: string) => {
+      deepLink.take.push(route);
+      const pending = deepLink.pending;
+      deepLink.pending = '';
+      return Promise.resolve(pending);
+    },
+  },
   isDesktop: false,
   onDeepLink: (handler: (url: string) => void) => {
     deepLink.handlers.push(handler);
@@ -178,7 +191,16 @@ function renderSettings() {
 describe('SettingsView — mailbox-connect deep link', () => {
   beforeEach(() => {
     deepLink.handlers = [];
+    deepLink.pending = '';
+    deepLink.take = [];
     toastMock.mockReset();
+  });
+
+  it('processes a cold-start connect link the host buffered before the view mounted', async () => {
+    deepLink.pending = 'calendium://accounts/connected?status=ok';
+    renderSettings();
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ title: 'Mailbox connected' })));
+    expect(deepLink.take).toContain('accounts');
   });
 
   it('handles calendium://accounts in any scheme case', async () => {

@@ -29,6 +29,11 @@ export interface DesktopBindings {
    * paused because it cannot read the demo flag; App.tsx passes !demoMode.
    */
   SetUpdateChecksEnabled(enabled: boolean): Promise<void>;
+  /**
+   * Returns and clears the calendium://<route> link that cold-started the app
+   * (buffered before any view subscribed), or ''. See lib/deep-link.ts.
+   */
+  TakePendingDeepLink(route: string): Promise<string>;
   /** Registers/unregisters the system-wide hotkeys in the Go host (Task 9). */
   SetGlobalShortcutsEnabled(enabled: boolean): Promise<void>;
   /** Pushes the upcoming-events tray feed (JSON TrayEvent[]; lib/tray.ts). */
@@ -68,6 +73,9 @@ const browserFallback: DesktopBindings = {
   },
   async SetUpdateChecksEnabled() {
     // No host update check in a plain browser.
+  },
+  async TakePendingDeepLink() {
+    return ''; // No OS deep links reach a plain browser.
   },
   async SetGlobalShortcutsEnabled() {
     // No host to register system-wide hotkeys in a plain browser.
