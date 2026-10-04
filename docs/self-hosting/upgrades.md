@@ -134,11 +134,17 @@ bunx @better-auth/cli generate
   served from `http://localhost:<port>` talks to a production server, add that
   origin to `CORS_ALLOWED_ORIGINS`, or set `ALLOW_DEV_ORIGINS=true` (which logs a
   warning). The desktop app is unaffected.
-- **Behind a proxy, set `TRUST_PROXY=true`** and keep the proxy's address inside
-  `TRUSTED_PROXY_CIDRS` (the default covers loopback and private ranges; see
+- **`TRUST_PROXY` defaults to `true` under Compose.** The `web` service sets
+  `TRUST_PROXY: ${TRUST_PROXY:-true}`, so behind the bundled Caddy each client
+  gets its own auth rate-limit bucket without touching `.env`. Keep the proxy's
+  address inside `TRUSTED_PROXY_CIDRS` (the default covers loopback and private
+  ranges; see
   [Security → Client IP](./security.md#client-ip-trust_proxy-and-trusted_proxy_cidrs)).
-  With `TRUST_PROXY=false` only the immediate peer, the proxy, is used, so every
-  client shares one sign-in rate-limit bucket.
+  If you run `web` outside Compose behind a proxy, set `TRUST_PROXY=true`
+  yourself: with `false` only the immediate peer, the proxy, is used, so every
+  client shares one bucket on all auth endpoints, including JWT minting. Set
+  `TRUST_PROXY=false` only if `web:3000` is exposed directly to a LAN with no
+  proxy in front.
 
 ---
 

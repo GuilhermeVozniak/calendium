@@ -161,7 +161,7 @@ export function startupWarnings(env: EnvLike): string[] {
   if (env.NODE_ENV !== 'production') return out;
   if (env.TRUST_PROXY !== 'true') {
     out.push(
-      'TRUST_PROXY is not true in production: auth rate limits key on the immediate peer, so behind a reverse proxy every client shares the proxy\'s bucket. Behind the bundled Caddy profile (or any proxy in TRUSTED_PROXY_CIDRS) set TRUST_PROXY=true — see docs/self-hosting/security.md.'
+      'TRUST_PROXY is not true in production: auth rate limits key on the immediate peer, so behind a reverse proxy every client shares the proxy\'s bucket on every /api/auth endpoint (sign-in, session reads, JWT minting). Behind the bundled Caddy profile (or any proxy in TRUSTED_PROXY_CIDRS) set TRUST_PROXY=true (the docker compose default) — see docs/self-hosting/security.md.'
     );
   }
   if (env.ALLOW_DEV_ORIGINS === 'true') {
