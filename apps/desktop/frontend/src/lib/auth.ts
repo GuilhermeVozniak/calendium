@@ -1,5 +1,5 @@
 import { createAuthClient } from 'better-auth/react';
-import { createAccessTokenCache } from '@calendium/shared';
+import { type AccessTokenCache, createAccessTokenCache } from '@calendium/shared';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import { getActiveServerConfig } from './server-config';
@@ -171,6 +171,7 @@ export async function signInEmail(email: string, password: string): Promise<Auth
   const retry = retryAfterCapture();
   const { error } = await c.signIn.email({ email, password }, retry.fetchOptions);
   if (error) return { ok: false, error: describeAuthError(error, 'Could not sign in.', retry.value) };
+  accessTokens.invalidate();
   await refreshSession();
   return { ok: true };
 }
@@ -186,6 +187,7 @@ export async function signUpEmail(name: string, email: string, password: string)
   // With SMTP configured the server never signs a new account in (and answers
   // the same for an existing address): token === null means "check your inbox".
   if (data && data.token === null) return { ok: true, verificationRequired: true };
+  accessTokens.invalidate();
   await refreshSession();
   return { ok: true };
 }
@@ -219,6 +221,7 @@ export async function verifyOtt(token: string): Promise<AuthResult> {
     const sessionToken = res.headers.get('set-auth-token');
     if (!sessionToken) return { ok: false, error: 'Sign-in did not return a session token.' };
     setStoredToken(sessionToken);
+    accessTokens.invalidate();
     await refreshSession();
     return { ok: true };
   } catch {
@@ -260,12 +263,37 @@ async function mintAccessToken(): Promise<string | null> {
   }
 }
 
+const jwtCache = createAccessTokenCache(mintAccessToken);
+
+/** Identity of the server a JWT is minted for; '' when none is configured. */
+function activeServerKey(): string {
+  const cfg = getActiveServerConfig();
+  return cfg ? `${cfg.serverUrl}|${cfg.authBaseUrl}` : '';
+}
+
+let jwtServerKey = activeServerKey();
+
 /**
- * JWT cache shared with lib/api.ts (piece 2): reused until 60 s before `exp`,
- * invalidated on sign-out so a second account on this machine can never ride
- * the first one's token.
+ * JWT cache shared with lib/api.ts (piece 2): reused until 60 s before `exp`.
+ * It is invalidated after every successful sign-in and on sign-out, so a
+ * token minted for one session is never served to the next, and whenever the
+ * active server changes (checked on every get(), so every path that switches
+ * servers — Connect, demo, clear — is covered without lib/server-config
+ * importing this module).
  */
-export const accessTokens = createAccessTokenCache(mintAccessToken);
+export const accessTokens: AccessTokenCache = {
+  get() {
+    const key = activeServerKey();
+    if (key !== jwtServerKey) {
+      jwtServerKey = key;
+      jwtCache.invalidate();
+    }
+    return jwtCache.get();
+  },
+  invalidate() {
+    jwtCache.invalidate();
+  },
+};
 
 /** The Bearer credential for the Go API (cached JWT, minted on demand). */
 export function getAccessToken(): Promise<string | null> {
