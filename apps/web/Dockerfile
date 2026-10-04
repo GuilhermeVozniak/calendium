@@ -54,7 +54,7 @@ RUN bun run --cwd apps/web build
 
 # ── runtime: minimal Node server for the standalone output ──────────────────
 # node:22-alpine resolved 2026-10-04 (docker buildx imagetools inspect)
-FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS runner
+FROM node:26-alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80 AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
