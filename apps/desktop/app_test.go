@@ -87,9 +87,18 @@ func TestStartup_SetsContextAndSkipsEmitWhenNothingIsPending(t *testing.T) {
 	}
 }
 
-func TestGetAppVersion(t *testing.T) {
+func TestGetAppVersion_ReturnsTheLinkerStampedVariable(t *testing.T) {
+	prev := version
+	version = "1.2.3"
+	t.Cleanup(func() { version = prev })
 	a := NewApp()
-	if got := a.GetAppVersion(); got != appVersion {
-		t.Fatalf("GetAppVersion() = %q, want %q", got, appVersion)
+	if got := a.GetAppVersion(); got != "1.2.3" {
+		t.Fatalf("GetAppVersion() = %q, want %q", got, "1.2.3")
+	}
+}
+
+func TestVersion_DefaultsToDevForSourceBuilds(t *testing.T) {
+	if version != "dev" {
+		t.Fatalf("version = %q, want \"dev\" (release.yml stamps it with -ldflags \"-X main.version=X.Y.Z\")", version)
 	}
 }

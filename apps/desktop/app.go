@@ -8,9 +8,11 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// appVersion is stamped here for now; a real release pipeline would inject it
-// via -ldflags.
-const appVersion = "0.1.0"
+// version is the desktop build version. release.yml stamps it with
+// -ldflags "-X main.version=X.Y.Z" (a plain release semver) or
+// 0.0.0-dev.<sha7> for dry runs; source builds report "dev". update.go only
+// checks for updates when this is a plain X.Y.Z.
+var version = "dev"
 
 // deepLinkEvent is emitted to the frontend (runtime.EventsOn) whenever the OS
 // opens a calendium:// URL — the OAuth one-time-token handoff after social
@@ -85,9 +87,9 @@ func (a *App) OpenExternal(url string) {
 	runtime.BrowserOpenURL(a.ctx, url)
 }
 
-// GetAppVersion returns the desktop app version.
+// GetAppVersion returns the desktop app version (see `version`).
 func (a *App) GetAppVersion() string {
-	return appVersion
+	return version
 }
 
 // --- Task 9: global shortcuts (hotkeys.go) ---
