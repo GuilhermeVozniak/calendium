@@ -42,7 +42,7 @@ describe('purgeOnApi', () => {
     expect((init.headers as Record<string, string>)['X-Internal-Secret']).toBe(SECRET);
     expect(init.signal).toBeInstanceOf(AbortSignal);
     expect(timeout).toHaveBeenCalledWith(INTERNAL_API_TIMEOUT_MS);
-    expect(INTERNAL_API_TIMEOUT_MS).toBe(15_000);
+    expect(INTERNAL_API_TIMEOUT_MS).toBe(90_000);
   });
 
   it('maps 409 to APIError CONFLICT carrying the envelope code, message and details', async () => {

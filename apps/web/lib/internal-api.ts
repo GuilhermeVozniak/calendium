@@ -8,7 +8,13 @@ import type { EnvLike } from '@/lib/auth-env';
  * it reads INTERNAL_API_SECRET.
  */
 
-export const INTERNAL_API_TIMEOUT_MS = 15_000;
+/**
+ * The purge runs its cascade delete and the Paddle cancel inside one request,
+ * and Go rolls the transaction back if the request is aborted; a large
+ * mailbox must not hit a timeout that every retry hits too. 90 s stays under
+ * the Go internal route's 120 s deadline so Go never aborts first.
+ */
+export const INTERNAL_API_TIMEOUT_MS = 90_000;
 
 export interface PurgeTeam {
   id: string;
