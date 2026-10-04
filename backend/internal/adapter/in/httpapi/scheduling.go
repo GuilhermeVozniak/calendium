@@ -72,6 +72,15 @@ func (s *server) handlePublicBook(w http.ResponseWriter, r *http.Request) {
 	if !s.decodePublicJSON(w, r, &req) {
 		return
 	}
+	var fc fieldCheck
+	fc.title("inviteeName", req.InviteeName)
+	fc.email("inviteeEmail", req.InviteeEmail)
+	fc.title("inviteeTimeZone", req.InviteeTZ)
+	fc.text("note", req.Note)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	booking, err := s.deps.Scheduling.Book(r.Context(), r.PathValue("slug"), req)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -96,6 +105,14 @@ func (s *server) handlePublicPoll(w http.ResponseWriter, r *http.Request) {
 func (s *server) handlePublicPollVote(w http.ResponseWriter, r *http.Request) {
 	var ballot port.PollBallot
 	if !s.decodePublicJSON(w, r, &ballot) {
+		return
+	}
+	var fc fieldCheck
+	fc.email("voterEmail", ballot.VoterEmail)
+	fc.title("voterName", ballot.VoterName)
+	fc.list("choices", len(ballot.Choices))
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
 		return
 	}
 	poll, err := s.deps.Scheduling.VotePoll(r.Context(), r.PathValue("token"), ballot)
@@ -132,6 +149,17 @@ func (s *server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.title("slug", in.Slug)
+	fc.title("title", in.Title)
+	fc.text("description", in.Description)
+	fc.title("timeZone", in.TimeZone)
+	fc.list("windows", len(in.Windows))
+	fc.list("memberUserIds", len(in.MemberUserIDs))
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	link, err := s.deps.Scheduling.CreateLink(r.Context(), userFrom(r).ID, in)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -143,6 +171,17 @@ func (s *server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleUpdateLink(w http.ResponseWriter, r *http.Request) {
 	var in port.BookingLinkInput
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.title("slug", in.Slug)
+	fc.title("title", in.Title)
+	fc.text("description", in.Description)
+	fc.title("timeZone", in.TimeZone)
+	fc.list("windows", len(in.Windows))
+	fc.list("memberUserIds", len(in.MemberUserIDs))
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -198,6 +237,14 @@ func (s *server) handleCreatePoll(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.title("title", in.Title)
+	fc.text("description", in.Description)
+	fc.list("options", len(in.Options))
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	poll, err := s.deps.Scheduling.CreatePoll(r.Context(), userFrom(r).ID, in)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -211,6 +258,12 @@ func (s *server) handleConfirmPoll(w http.ResponseWriter, r *http.Request) {
 		OptionID string `json:"optionId"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.title("optionId", in.OptionID)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -235,6 +288,12 @@ func (s *server) handleDeletePoll(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleProposeTime(w http.ResponseWriter, r *http.Request) {
 	var in port.TimeProposalInput
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.text("note", in.Note)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -280,6 +339,12 @@ func (s *server) handleGuestFreeBusy(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.emails("emails", req.Emails)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	if len(req.Emails) == 0 || len(req.Emails) > maxFreeBusyEmails {
 		s.writeError(w, r, fmt.Errorf("%w: emails must include between 1 and %d addresses", domain.ErrValidation, maxFreeBusyEmails))
 		return
@@ -314,6 +379,14 @@ func (s *server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var in domain.UserSettings
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.title("timeZone", in.TimeZone)
+	fc.list("workingHours", len(in.WorkingHours))
+	fc.title("workingLocation", in.WorkingLocation)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}

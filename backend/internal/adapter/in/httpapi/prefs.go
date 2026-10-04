@@ -52,6 +52,17 @@ func (s *server) handleUpdateCalendarPrefs(w http.ResponseWriter, r *http.Reques
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.optTitle("timeZone", patch.TimeZone)
+	if patch.WorkDays != nil {
+		fc.list("workDays", len(*patch.WorkDays))
+	}
+	fc.optText("focusDeclineMessage", patch.FocusDeclineMessage)
+	fc.optText("oooDeclineMessage", patch.OOODeclineMessage)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	prefs, err := s.deps.Prefs.UpdateCalendarPrefs(r.Context(), userFrom(r).ID, patch)
 	if err != nil {
 		s.writeError(w, r, err)
