@@ -2,14 +2,37 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  # Dry run: builds, signs, and notarizes exactly like a tag release but
-  # uploads artifacts to the run instead of publishing a GitHub Release.
+  # Dry run: builds exactly like a tag release and uploads the artifacts to the
+  # run, but the publish job never runs, so no GitHub Release is created. Signing secrets are still
+  # required unless allow_unsigned is set on a non-tag ref; a TAG can never
+  # publish unsigned, and a dispatch (any ref) only ever uploads artifacts.
   workflow_dispatch:
+    inputs:
+      allow_unsigned:
+        description: "Build without macOS signing secrets (dry runs only; tags always require them)"
+        type: boolean
+        default: false
+      version:
+        description: "Version to stamp, X.Y.Z (empty = 0.0.0, build_version 0.0.0-dev.<sha7>)"
+        type: string
+        default: ""
 
 permissions:
   contents: write
 
 jobs:
+  # Fails a tag whose committed versions drift from it within seconds, instead
+  # of after the full test job. Runs on every event so jobs can `needs:` it;
+  # the check itself is tag-only (a dispatch stamps its version at build time).
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        if: startsWith(github.ref, 'refs/tags/')
+      - name: Tag matches the committed versions (app.json, wails.json)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node scripts/set-version.mjs --check "${GITHUB_REF_NAME#v}"
+
   # Gate the release on the desktop-facing suites. Full-repo quality is
   # already gated by test.yml on every push to main; this re-checks the
   # pieces a desktop binary embeds before any signing happens.
@@ -39,8 +62,69 @@ jobs:
         # the headless runner (vet doesn't execute code, test does).
         run: cd apps/desktop && go vet ./... && xvfb-run -a go test ./...
 
-  build-desktop:
+  # Single place that decides what version ships and whether shipping is
+  # allowed at all (the tag/committed-version match is version-check's job).
+  # build-desktop never runs if this fails.
+  preflight:
     needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build_version: ${{ steps.version.outputs.build_version }}
+    env:
+      # secrets are not readable in `if:`; surface presence here.
+      HAS_MACOS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' }}
+      # Rule: a tag can never publish unsigned; dispatch only uploads artifacts.
+      # The waiver needs a dispatch on a non-tag ref (a dispatch can select a
+      # tag as its ref, which must still require the signing secrets).
+      ALLOW_UNSIGNED: ${{ github.event_name == 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/') && inputs.allow_unsigned == true }}
+      INPUT_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute version
+        id: version
+        shell: bash
+        # tag vX.Y.Z -> version X.Y.Z, build_version X.Y.Z
+        # dispatch     -> version <input or 0.0.0>, build_version <input or 0.0.0-dev.<sha7>>
+        run: |
+          set -euo pipefail
+          SHA7="${GITHUB_SHA::7}"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            BUILD_VERSION="$VERSION"
+          elif [[ -n "$INPUT_VERSION" ]]; then
+            VERSION="$INPUT_VERSION"
+            BUILD_VERSION="$VERSION"
+          else
+            VERSION="0.0.0"
+            BUILD_VERSION="0.0.0-dev.${SHA7}"
+          fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version '$VERSION' is not X.Y.Z (tag must be vX.Y.Z; dispatch input must be X.Y.Z or empty)"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_version=$BUILD_VERSION" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION build_version=$BUILD_VERSION"
+      - name: Signing secrets present, or explicitly waived for a dry run
+        shell: bash
+        run: |
+          if [[ "$HAS_MACOS_SIGNING" == "true" ]]; then
+            echo "macOS signing secrets present"
+            exit 0
+          fi
+          if [[ "$ALLOW_UNSIGNED" == "true" ]]; then
+            echo "::warning::MACOS_CERT_P12 is empty; building UNSIGNED because allow_unsigned=true (dry run only, never published)"
+            exit 0
+          fi
+          echo "::error::MACOS_CERT_P12 is not set. A tag never publishes an unsigned macOS build. Add the five notarization secrets (MACOS_CERT_P12, MACOS_CERT_PASSWORD, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD; see docs/release/store-readiness.md) or, for a dry run only, dispatch this workflow with allow_unsigned=true."
+          exit 1
+
+  # Builds, signs and packages each platform, then only uploads the artifacts.
+  # Nothing is published here: the publish job does that once, after every
+  # leg is green, so /releases/latest never points at a partial release.
+  build-desktop:
+    needs: [version-check, preflight]
     strategy:
       fail-fast: false
       matrix:
@@ -56,8 +140,9 @@ jobs:
             arch: amd64
     runs-on: ${{ matrix.os }}
     env:
-      # secrets are not readable in step-level `if:`; surface presence here.
       HAS_MACOS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+      BUILD_VERSION: ${{ needs.preflight.outputs.build_version }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -71,29 +156,38 @@ jobs:
         # golang.design/x/hotkey (global hotkey, M2.6) needs X11 headers;
         # energye/systray needs ayatana-appindicator.
         run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libx11-dev libayatana-appindicator3-dev xvfb
+      - name: Ensure NSIS (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        # windows-latest ships makensis; the guard covers a future image change.
+        run: if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) { choco install nsis -y }
       - name: Install Wails CLI
         # Pinned to the wails/v2 library version in apps/desktop/go.mod
         # (reproducible builds; avoids silent CLI/library drift).
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
       - run: bun install --frozen-lockfile
-      - name: Compute version
-        id: version
+      - name: Stamp version into app.json + wails.json (uncommitted; templated into Info.plist / NSIS)
+        run: node scripts/set-version.mjs "$VERSION"
         shell: bash
-        # Tag pushes release as vX.Y.Z; dispatch dry-runs use dev-<sha>.
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          fi
       - name: Build desktop app
         # ubuntu-latest (24.04) ships webkit2gtk-4.1 only; wails needs the
         # webkit2_41 tag to link against it.
         # xvfb on linux: wails' binding generation executes the app briefly,
         # and hotkey's X11 init panics without a display (same as the tests).
-        run: cd apps/desktop && ${{ matrix.platform == 'linux' && 'xvfb-run -a' || '' }} wails build -platform ${{ matrix.platform }}/${{ matrix.arch }} ${{ matrix.platform == 'linux' && '-tags webkit2_41' || '' }}
-      # Signing/notarization steps are skipped when the signing secrets are
-      # absent (e.g. forks), so unsigned releases still build.
+        # -nsis on windows builds build/bin/Calendium-amd64-installer.exe with
+        # the stock template, which registers the calendium:// protocol.
+        run: cd apps/desktop && ${{ matrix.platform == 'linux' && 'xvfb-run -a' || '' }} wails build -platform ${{ matrix.platform }}/${{ matrix.arch }} ${{ matrix.platform == 'linux' && '-tags webkit2_41' || '' }} ${{ matrix.platform == 'windows' && '-nsis' || '' }} -ldflags "-X main.version=${{ needs.preflight.outputs.build_version }}"
+      - name: Assert bundle version and identifier (macOS)
+        if: matrix.platform == 'darwin'
+        run: |
+          PLIST=apps/desktop/build/bin/Calendium.app/Contents/Info.plist
+          GOT="$(plutil -extract CFBundleShortVersionString raw -o - "$PLIST")"
+          test "$GOT" = "$VERSION" || { echo "::error::CFBundleShortVersionString is '$GOT', want '$VERSION'"; exit 1; }
+          ID="$(plutil -extract CFBundleIdentifier raw -o - "$PLIST")"
+          test "$ID" = "app.calendium.desktop" || { echo "::error::CFBundleIdentifier is '$ID'"; exit 1; }
+      # Signing/notarization run whenever the secrets exist; preflight already
+      # refused a tag without them, so a dispatch with allow_unsigned=true is
+      # the only way to reach here unsigned.
       - name: Import signing certificate (macOS)
         if: matrix.platform == 'darwin' && env.HAS_MACOS_SIGNING == 'true'
         env:
@@ -123,7 +217,7 @@ jobs:
         run: |
           cd apps/desktop
           npx --yes appdmg build/darwin/dmg/appdmg.json \
-            "build/bin/calendium_${{ steps.version.outputs.version }}_darwin_${{ matrix.arch }}.dmg"
+            "build/bin/calendium_${BUILD_VERSION}_darwin_${{ matrix.arch }}.dmg"
       - name: Sign, notarize, and staple dmg (macOS)
         if: matrix.platform == 'darwin' && env.HAS_MACOS_SIGNING == 'true'
         env:
@@ -138,32 +232,84 @@ jobs:
           # staple fails if notarization did not fully succeed, failing the job.
           xcrun stapler staple "${DMG[0]}"
           xcrun stapler validate "${DMG[0]}"
-      - name: Package artifact (Windows .zip)
+      - name: Package artifacts (Windows installer + portable zip) and assert VersionInfo
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           cd apps/desktop/build/bin
-          Compress-Archive -Path Calendium.exe -DestinationPath "calendium_${{ steps.version.outputs.version }}_windows_${{ matrix.arch }}.zip"
-      - name: Package artifact (Linux .tar.gz)
+          $setup = "calendium_${env:BUILD_VERSION}_windows_${{ matrix.arch }}-setup.exe"
+          Move-Item "Calendium-${{ matrix.arch }}-installer.exe" $setup
+          $pv = (Get-Item $setup).VersionInfo.ProductVersion
+          if (-not $pv.StartsWith($env:VERSION)) { Write-Error "installer ProductVersion '$pv' does not start with '$env:VERSION'"; exit 1 }
+          Compress-Archive -Path Calendium.exe -DestinationPath "calendium_${env:BUILD_VERSION}_windows_${{ matrix.arch }}.zip"
+          Get-ChildItem
+      - name: Package artifact (Linux .tar.gz with desktop entry, icon, README)
         if: matrix.platform == 'linux'
         run: |
+          set -euo pipefail
+          cp apps/desktop/build/linux/calendium.desktop apps/desktop/build/linux/README.txt apps/desktop/build/bin/
+          cp apps/web/public/icon-512.png apps/desktop/build/bin/calendium.png
           cd apps/desktop/build/bin
-          tar -czf "calendium_${{ steps.version.outputs.version }}_linux_${{ matrix.arch }}.tar.gz" Calendium
-      # Dry runs (workflow_dispatch) upload to the run; tag pushes publish.
-      - name: Upload artifacts (dry run)
-        if: "!startsWith(github.ref, 'refs/tags/')"
+          tar -czf "calendium_${BUILD_VERSION}_linux_${{ matrix.arch }}.tar.gz" Calendium calendium.desktop calendium.png README.txt
+          tar -tzf "calendium_${BUILD_VERSION}_linux_${{ matrix.arch }}.tar.gz"
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: calendium-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
           path: |
             apps/desktop/build/bin/*.dmg
+            apps/desktop/build/bin/*-setup.exe
             apps/desktop/build/bin/*.zip
             apps/desktop/build/bin/*.tar.gz
+
+  # Creates the GitHub Release once, with every platform's artifacts. It
+  # `needs:` every build leg, so one failed leg (e.g. notarization) means no
+  # release at all, and the update banner never points users at a release
+  # without their platform's download.
+  # Rule: a tag can never publish unsigned; dispatch only uploads artifacts.
+  # Gate on the event, not just the ref: a dispatch run with a tag selected
+  # as its ref never publishes.
+  publish:
+    needs: [version-check, preflight, build-desktop]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    env:
+      HAS_MACOS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' }}
+      BUILD_VERSION: ${{ needs.preflight.outputs.build_version }}
+    steps:
+      - name: Signed build only
+        # preflight already refuses a tag without the signing secrets; this
+        # re-checks at the one step that makes a build public.
+        run: |
+          if [[ "$HAS_MACOS_SIGNING" != "true" ]]; then
+            echo "::error::MACOS_CERT_P12 is not set; a tag never publishes an unsigned build."
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: calendium-*
+          merge-multiple: true
+          path: dist
+      - name: Every platform artifact is present
+        run: |
+          set -euo pipefail
+          cd dist
+          for f in \
+            "calendium_${BUILD_VERSION}_darwin_universal.dmg" \
+            "calendium_${BUILD_VERSION}_windows_amd64-setup.exe" \
+            "calendium_${BUILD_VERSION}_windows_amd64.zip" \
+            "calendium_${BUILD_VERSION}_linux_amd64.tar.gz"; do
+            test -s "$f" || { echo "::error::missing release artifact $f"; exit 1; }
+          done
+          ls -l
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          generate_release_notes: true
           files: |
-            apps/desktop/build/bin/*.dmg
-            apps/desktop/build/bin/*.zip
-            apps/desktop/build/bin/*.tar.gz
+            dist/*.dmg
+            dist/*-setup.exe
+            dist/*.zip
+            dist/*.tar.gz

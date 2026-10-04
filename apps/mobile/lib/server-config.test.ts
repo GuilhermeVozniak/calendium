@@ -24,7 +24,9 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  CLOUD_PRESET,
   DEMO_CONFIG,
+  envUrl,
   clearStoredServerConfig,
   discoverServer,
   forgotPasswordUrl,
@@ -195,5 +197,55 @@ describe('forgotPasswordUrl (piece 2)', () => {
 
   it('DEMO_CONFIG advertises features.email=false', () => {
     expect(DEMO_CONFIG.features.email).toBe(false);
+  });
+});
+
+describe('cloud preset and demo hosts', () => {
+  it('CLOUD_PRESET defaults to Calendium Cloud when EXPO_PUBLIC_CLOUD_API_URL is unset', () => {
+    expect(CLOUD_PRESET.serverUrl).toBe('https://api.calendium.app');
+  });
+
+  it('DEMO_CONFIG defaults to demo.calendium.app (a label only; demo never dials out)', () => {
+    expect(DEMO_CONFIG.serverUrl).toBe('https://demo.calendium.app');
+    expect(DEMO_CONFIG.authBaseUrl).toBe('https://demo.calendium.app/api/auth');
+    // Still no advertised web origin: the demo builds no billing link.
+    expect(DEMO_CONFIG.webUrl).toBe('');
+    expect(DEMO_CONFIG.demoMode).toBe(true);
+  });
+
+  it('envUrl normalizes an override (trailing slash, missing scheme) and falls back on blank', () => {
+    expect(envUrl('https://cloud.example.com/', 'x')).toBe('https://cloud.example.com');
+    expect(envUrl('cloud.example.com', 'x')).toBe('https://cloud.example.com');
+    expect(envUrl('   ', 'https://api.calendium.app')).toBe('https://api.calendium.app');
+    expect(envUrl(undefined, 'https://api.calendium.app')).toBe('https://api.calendium.app');
+  });
+
+  // babel-preset-expo's inline-env-vars plugin only runs for production
+  // bundles; under jest the module reads the live process.env, so isolate a
+  // fresh load with the override set.
+  function withEnv(name: string, value: string, run: () => void): void {
+    const prev = process.env[name];
+    process.env[name] = value;
+    try {
+      jest.isolateModules(run);
+    } finally {
+      if (prev === undefined) delete process.env[name];
+      else process.env[name] = prev;
+    }
+  }
+
+  it('honours EXPO_PUBLIC_CLOUD_API_URL at module load', () => {
+    withEnv('EXPO_PUBLIC_CLOUD_API_URL', 'https://cloud.example.com/', () => {
+      const fresh = require('./server-config') as typeof import('./server-config');
+      expect(fresh.CLOUD_PRESET.serverUrl).toBe('https://cloud.example.com');
+    });
+  });
+
+  it('honours EXPO_PUBLIC_DEMO_SERVER_URL at module load', () => {
+    withEnv('EXPO_PUBLIC_DEMO_SERVER_URL', 'demo.example.org', () => {
+      const fresh = require('./server-config') as typeof import('./server-config');
+      expect(fresh.DEMO_CONFIG.serverUrl).toBe('https://demo.example.org');
+      expect(fresh.DEMO_CONFIG.authBaseUrl).toBe('https://demo.example.org/api/auth');
+    });
   });
 });

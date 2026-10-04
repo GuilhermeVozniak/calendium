@@ -35,3 +35,29 @@ describe('env.apiUrl', () => {
     expect(env.apiUrl).toBe('https://api.example.com/v1');
   });
 });
+
+describe('env.supportEmail', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('defaults to the Calendium Cloud address when unset', () => {
+    vi.stubEnv('NEXT_PUBLIC_SUPPORT_EMAIL', undefined);
+    expect(env.supportEmail).toBe('support@calendium.app');
+  });
+
+  it('returns the configured address', () => {
+    vi.stubEnv('NEXT_PUBLIC_SUPPORT_EMAIL', 'help@example.org');
+    expect(env.supportEmail).toBe('help@example.org');
+  });
+
+  // Review Focus 4: a blank value in .env must never render "mailto: ".
+  it('falls back on blank or whitespace and trims padding', () => {
+    vi.stubEnv('NEXT_PUBLIC_SUPPORT_EMAIL', '');
+    expect(env.supportEmail).toBe('support@calendium.app');
+    vi.stubEnv('NEXT_PUBLIC_SUPPORT_EMAIL', '   ');
+    expect(env.supportEmail).toBe('support@calendium.app');
+    vi.stubEnv('NEXT_PUBLIC_SUPPORT_EMAIL', '  help@example.org ');
+    expect(env.supportEmail).toBe('help@example.org');
+  });
+});

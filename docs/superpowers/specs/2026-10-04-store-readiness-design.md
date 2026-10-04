@@ -240,8 +240,10 @@ Deep links on every platform (`main.go`):
   OnSecondInstanceLaunch: app.onSecondInstance}` (Wails `options.go:190-199`);
   `onSecondInstance` takes the first `calendium://` value in `Args` → existing
   `handleURL` + `WindowShow`. Cold launch: `main()` calls `app.consumeArgs(
-  os.Args[1:])` before `wails.Run`; the existing `pendingURL` buffer delivers
-  once the WebView is up. macOS keeps `OnUrlOpen` (argv never carries it).
+  os.Args[1:])` before `wails.Run`; the link waits in `pendingURL` until a
+  view pulls it with the consume-once `TakePendingDeepLink(route)` binding
+  right after subscribing to the event (Wails emits before the page loads, so
+  a push at startup would be lost). macOS keeps `OnUrlOpen` (argv never carries it).
 - Windows: `wails build -nsis` with the stock template already registers every
   `wails.json` `info.protocols` entry (`wails_tools.nsh:236-241`,
   `project.nsi:94-95`) as `"$INSTDIR\Calendium.exe" "%1"`; no custom NSIS

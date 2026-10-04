@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Calendium
+Comment=Email and calendar, at the speed of thought
+Exec=Calendium %u
+Icon=calendium
+Terminal=false
+Categories=Network;Email;Calendar;Office;
+MimeType=x-scheme-handler/calendium;
+StartupWMClass=Calendium

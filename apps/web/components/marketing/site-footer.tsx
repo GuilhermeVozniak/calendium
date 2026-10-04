@@ -28,6 +28,14 @@ const columns: { title: string; links: { label: string; href: string }[] }[] = [
   },
 ];
 
+/**
+ * "© <year> Calendium". The marketing pages are statically prerendered, so the
+ * year is fixed at build time and updates on each build/deploy.
+ */
+export function copyrightLine(year: number = new Date().getFullYear()): string {
+  return `© ${year} Calendium`;
+}
+
 export function SiteFooter() {
   return (
     <footer className="border-t">
@@ -61,7 +69,7 @@ export function SiteFooter() {
           </div>
         </div>
         <div className="mt-12 flex items-center justify-between border-t pt-6">
-          <p className="text-xs text-muted-foreground">© 2026 Calendium, Inc.</p>
+          <p className="text-xs text-muted-foreground">{copyrightLine()}</p>
           <p className="font-mono text-xs text-muted-foreground">42 ms, always.</p>
         </div>
       </div>

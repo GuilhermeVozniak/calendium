@@ -28,6 +28,7 @@ import { type ReactNode, useEffect, useState } from 'react';
 
 import { api, apiConfigured, orMock } from '@/lib/api';
 import { clearStoredToken, signOut } from '@/lib/auth';
+import { subscribeDeepLink } from '@/lib/deep-link';
 import { clearOfflineState } from '@/lib/offline';
 import { htmlToText, toHtml } from '@/lib/compose';
 import {
@@ -49,7 +50,6 @@ import {
   desktop,
   globalShortcutsEnabled,
   isDesktop,
-  onDeepLink,
   setGlobalShortcutsEnabled,
 } from '@/lib/wails';
 import {
@@ -582,14 +582,14 @@ export function SettingsView() {
   });
 
   // Mailbox OAuth returns via a calendium://accounts/connected deep link
-  // (backend callback 302 -> client). Refresh the account list on return.
+  // (backend callback 302 -> client), as an event or, on a cold start, the
+  // host's pending link. Refresh the account list on return.
   useEffect(
     () =>
-      onDeepLink((url) => {
-        if (!url.startsWith('calendium://accounts')) return;
+      subscribeDeepLink('accounts', (link) => {
         let status = '';
         try {
-          status = new URL(url).searchParams.get('status') ?? '';
+          status = new URL(link).searchParams.get('status') ?? '';
         } catch {
           // Ignore malformed deep links.
         }

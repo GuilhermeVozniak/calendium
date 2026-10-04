@@ -22,6 +22,8 @@ import {
   clearStoredServerConfig,
   DEMO_CONFIG,
   discoverServer,
+  envUrl,
+  forgotPasswordUrl,
   getActiveServerConfig,
   isDemoMode,
   normalizeServerUrl,
@@ -258,5 +260,57 @@ describe('forgotPasswordUrl', () => {
   it('DEFAULT_FEATURES and DEMO_CONFIG carry features.email=false', async () => {
     const { DEMO_CONFIG } = await import('./server-config');
     expect(DEMO_CONFIG.features.email).toBe(false);
+  });
+});
+
+describe('CLOUD_PRESET and envUrl', () => {
+  it('defaults to Calendium Cloud', () => {
+    expect(CLOUD_PRESET.serverUrl).toBe('https://api.calendium.app');
+  });
+
+  it('envUrl normalizes an override and falls back on blank', () => {
+    expect(envUrl('https://cloud.example.com/', 'x')).toBe('https://cloud.example.com');
+    expect(envUrl('cloud.example.com', 'x')).toBe('https://cloud.example.com');
+    expect(envUrl('   ', 'https://api.calendium.app')).toBe('https://api.calendium.app');
+    expect(envUrl(undefined, 'https://api.calendium.app')).toBe('https://api.calendium.app');
+  });
+
+  it('honours VITE_CLOUD_API_URL at module load', async () => {
+    vi.stubEnv('VITE_CLOUD_API_URL', 'https://cloud.example.com/');
+    vi.resetModules();
+    try {
+      const fresh = await import('./server-config');
+      expect(fresh.CLOUD_PRESET.serverUrl).toBe('https://cloud.example.com');
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+});
+
+describe('webOrigin prefers the advertised webUrl', () => {
+  const base: ServerConfig = { ...DEMO_CONFIG, authBaseUrl: 'https://api.example.com/api/auth' };
+
+  it('uses webUrl when present', () => {
+    expect(webOrigin({ ...base, webUrl: 'https://mail.example.com/' })).toBe('https://mail.example.com');
+  });
+
+  it('falls back to the authBaseUrl origin when webUrl is empty or invalid', () => {
+    expect(webOrigin(base)).toBe('https://api.example.com');
+    expect(webOrigin({ ...base, webUrl: 'not a url' })).toBe('https://api.example.com');
+  });
+
+  it.each(['javascript:alert(1)', 'mailto:ops@example.com', 'file:///etc/passwd', 'calendium://auth', 'ftp://example.com'])(
+    'ignores the non-http(s) webUrl %j instead of yielding "null"',
+    (webUrl) => {
+      const config = { ...base, webUrl };
+      expect(webOrigin(config)).toBe('https://api.example.com');
+      expect(billingWebOrigin(config)).toBe('https://api.example.com');
+      expect(forgotPasswordUrl(config)).toBe('https://api.example.com/forgot-password');
+    }
+  );
+
+  it('accepts a plain-http webUrl (self-host on a LAN)', () => {
+    expect(webOrigin({ ...base, webUrl: 'http://calendium.lan:3000/' })).toBe('http://calendium.lan:3000');
   });
 });

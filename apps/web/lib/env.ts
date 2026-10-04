@@ -17,4 +17,12 @@ export const env = {
     if (!raw || raw === '/') return '';
     return raw.replace(/\/+$/, '');
   },
+  get supportEmail(): string {
+    // Contact address on the footer, pricing, privacy and terms pages.
+    // Self-hosted / white-label deployments set NEXT_PUBLIC_SUPPORT_EMAIL at
+    // build time; blank falls back to the Calendium Cloud mailbox so the
+    // mailto: links never render empty.
+    const raw = process.env.NEXT_PUBLIC_SUPPORT_EMAIL?.trim();
+    return raw ? raw : 'support@calendium.app';
+  },
 };

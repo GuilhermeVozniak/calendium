@@ -24,9 +24,19 @@ const DEFAULT_FEATURES: InstanceFeatures = {
   email: false,
 };
 
-/** Calendium Cloud — our managed, paid server (docs/payments.md). */
+/** Resolves a build-time VITE_* host override: blank/unset falls back, else normalized. */
+export function envUrl(value: string | undefined, fallback: string): string {
+  const normalized = normalizeServerUrl(value ?? '');
+  return normalized || fallback;
+}
+
+/**
+ * Calendium Cloud — our managed, paid server (docs/payments.md). Bootstrap URL
+ * only: after discovery the client follows `authBaseUrl` / `webUrl` from
+ * /v1/instance. White-label hosts override it at build time.
+ */
 export const CLOUD_PRESET = {
-  serverUrl: 'https://api.calendium.app',
+  serverUrl: envUrl(import.meta.env.VITE_CLOUD_API_URL as string | undefined, 'https://api.calendium.app'),
 } as const;
 
 export interface ServerConfig {
@@ -63,9 +73,33 @@ export const DEMO_CONFIG: ServerConfig = {
   webUrl: '',
 };
 
-/** Web origin (scheme://host) of a server's Better Auth base URL, or null. */
+/**
+ * The advertised `webUrl` (trailing slashes trimmed) when it is an http(s) URL
+ * with a host, else null. Anything else (javascript:, mailto:, file:, a typo)
+ * would give `new URL().origin === "null"` or open a non-web handler, so
+ * callers fall back to the auth origin instead.
+ */
+function httpWebUrl(config: ServerConfig | null): string | null {
+  if (!config?.webUrl) return null;
+  try {
+    const url = new URL(config.webUrl);
+    if ((url.protocol !== 'https:' && url.protocol !== 'http:') || !url.hostname) return null;
+  } catch {
+    return null;
+  }
+  return config.webUrl.replace(/\/+$/, '');
+}
+
+/**
+ * Web origin (scheme://host) for billing / browser sign-in: the server's
+ * advertised http(s) `webUrl` when present, else the Better Auth base URL's
+ * origin.
+ */
 export function webOrigin(config: ServerConfig | null): string | null {
-  if (!config?.authBaseUrl) return null;
+  if (!config) return null;
+  const web = httpWebUrl(config);
+  if (web) return new URL(web).origin;
+  if (!config.authBaseUrl) return null;
   try {
     return new URL(config.authBaseUrl).origin;
   } catch {
@@ -80,14 +114,13 @@ export function webOrigin(config: ServerConfig | null): string | null {
  * handles reset itself.
  */
 export function forgotPasswordUrl(config: ServerConfig | null): string | null {
-  const base = config?.webUrl?.replace(/\/+$/, '') || webOrigin(config);
+  const base = httpWebUrl(config) || webOrigin(config);
   return base ? `${base}/forgot-password` : null;
 }
 
 /** Where billing lives: the server-advertised web origin, else the auth origin. */
 export function billingWebOrigin(config: ServerConfig | null): string | null {
-  if (config?.webUrl) return config.webUrl.replace(/\/+$/, '');
-  return webOrigin(config);
+  return httpWebUrl(config) ?? webOrigin(config);
 }
 
 /** Normalizes user-entered URLs: trims, drops trailing slash, adds https://. */

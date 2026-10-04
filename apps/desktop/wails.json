@@ -11,8 +11,10 @@
     "name": "Calendium"
   },
   "info": {
+    "companyName": "Calendium",
     "productName": "Calendium",
-    "productVersion": "0.1.0",
+    "productVersion": "1.0.0",
+    "copyright": "© 2026 Calendium",
     "protocols": [
       {
         "scheme": "calendium",

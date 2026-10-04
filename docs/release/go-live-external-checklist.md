@@ -39,7 +39,8 @@ connect, plus `openid email profile` for login. One OAuth client serves both.
 Existing material in `apps/mobile/docs/apple/`: Team ID `CT22R575UG`,
 Services ID `com.calendium.app.service`, Key ID `8MX6Q9WW35`, the `.p8`
 (gitignored), and `secret-gem.rb` which mints the client secret. Its
-`key_file` path is stale; point it at `apps/mobile/docs/apple/AuthKey_8MX6Q9WW35.p8`.
+`key_file` is relative to the script (`AuthKey_8MX6Q9WW35.p8` next to it), so
+it runs from any working directory once the `.p8` is in place.
 
 - [ ] On the Services ID, Sign in with Apple → Configure: domain `<DOMAIN>`
       (no scheme), return URL `https://<DOMAIN>/api/auth/callback/apple`.
@@ -49,6 +50,9 @@ Services ID `com.calendium.app.service`, Key ID `8MX6Q9WW35`, the `.p8`
       secret (max 180 days). Set `APPLE_CLIENT_ID=com.calendium.app.service`
       and `APPLE_CLIENT_SECRET=<jwt>` on web and api.
 - [ ] Calendar a rotation reminder 170 days out; the secret expires.
+- [ ] Store submissions: whenever Google sign-in is enabled on Cloud, Apple
+      must be too (App Store Guideline 4.8); the mobile app shows Apple only
+      when `APPLE_CLIENT_ID` is set. See `store-readiness.md` §1.
 - Code dependency: piece 2 adds `https://appleid.apple.com` to the trusted
   origins so Apple's form-post callback is accepted.
 

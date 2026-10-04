@@ -11,6 +11,7 @@
       "**/*.tsx",
       "**/*.js",
       "**/*.jsx",
+      "**/*.mjs",
       "!**/node_modules",
       "!**/.claude",
       "!**/.superpowers",

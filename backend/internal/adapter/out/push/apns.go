@@ -21,8 +21,9 @@ const (
 	// apnsTokenLifetime keeps provider tokens well inside Apple's 20–60
 	// minute validity window.
 	apnsTokenLifetime = 50 * time.Minute
-	// defaultAPNsTopic is the app bundle id; override with APNS_TOPIC.
-	defaultAPNsTopic = "app.calendium"
+	// defaultAPNsTopic is the iOS app bundle id (apps/mobile/app.json
+	// ios.bundleIdentifier); override with APNS_TOPIC for custom builds.
+	defaultAPNsTopic = "app.calendium.mobile"
 )
 
 // apnsSender POSTs alerts to APNs over HTTP/2 (negotiated via ALPN by the
