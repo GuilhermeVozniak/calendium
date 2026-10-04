@@ -91,10 +91,9 @@ func TestEnsureCustomer(t *testing.T) {
 func TestCreateCheckout(t *testing.T) {
 	t.Run("posts the annual item, customer and custom_data and returns checkout.url", func(t *testing.T) {
 		var body map[string]any
+		var gotMethod, gotPath string // recorded here, asserted on the test goroutine
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost || r.URL.Path != "/transactions" {
-				t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
-			}
+			gotMethod, gotPath = r.Method, r.URL.Path
 			raw, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(raw, &body)
 			w.WriteHeader(http.StatusCreated)
@@ -102,6 +101,9 @@ func TestCreateCheckout(t *testing.T) {
 		}))
 		defer srv.Close()
 		url, err := newTestClient(t, srv).CreateCheckout(context.Background(), port.CheckoutParams{UserID: "user-9", CustomerID: "ctm_1"})
+		if gotMethod != http.MethodPost || gotPath != "/transactions" {
+			t.Fatalf("request = %s %s, want POST /transactions", gotMethod, gotPath)
+		}
 		if err != nil {
 			t.Fatal(err)
 		}

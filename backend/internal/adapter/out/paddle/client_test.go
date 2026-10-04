@@ -60,6 +60,52 @@ func TestDoSendsBearerAndDecodesData(t *testing.T) {
 	}
 }
 
+type failingTransport struct{}
+
+func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("dial tcp: connection refused")
+}
+
+// The EnsureCustomer lookup carries the customer email in its query; a
+// transport error must not leak it into logs via the error text.
+func TestTransportErrorTextOmitsCustomerEmail(t *testing.T) {
+	c := NewClient(Config{Env: EnvSandbox, APIKey: "k", BaseURL: "https://paddle.invalid"}, &http.Client{Transport: failingTransport{}})
+	_, err := c.EnsureCustomer(context.Background(), domain.User{ID: "u1", Email: "secret.person@example.com"})
+	if err == nil {
+		t.Fatal("want a transport error")
+	}
+	for _, leak := range []string{"secret.person", "example.com", "email="} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("error text leaks %q: %q", leak, err.Error())
+		}
+	}
+	if !strings.Contains(err.Error(), "/customers") || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("error text lost its diagnostics: %q", err.Error())
+	}
+}
+
+// A non-2xx body that is not Paddle's {error} envelope (proxy HTML, empty
+// 502/504) keeps the status and a truncated raw-body snippet.
+func TestDoNonJSONErrorBodyKeepsStatusAndTruncatedBody(t *testing.T) {
+	html := "<html><body>Bad Gateway " + strings.Repeat("x", 2000) + "</body></html>"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(html))
+	}))
+	defer srv.Close()
+	err := newTestClient(t, srv).do(context.Background(), http.MethodGet, "/subscriptions/sub_1", nil, &struct{}{})
+	var api *APIError
+	if !errors.As(err, &api) {
+		t.Fatalf("err = %v, want *APIError", err)
+	}
+	if api.Status != http.StatusBadGateway || !strings.Contains(err.Error(), "502") {
+		t.Fatalf("status lost: %+v / %q", api, err.Error())
+	}
+	if !strings.HasPrefix(api.Detail, "<html><body>Bad Gateway") || len(api.Detail) > 512 {
+		t.Fatalf("Detail = %d bytes %q, want a <=512-byte prefix of the raw body", len(api.Detail), api.Detail)
+	}
+}
+
 func TestDoMapsErrors(t *testing.T) {
 	tests := []struct {
 		name     string
