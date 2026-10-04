@@ -2,70 +2,47 @@ import { Button } from '@/components/ui/button';
 import { Icon } from '@/components/ui/icon';
 import { Text } from '@/components/ui/text';
 import useAuth from '@/context/auth';
-import type { PaymentRequiredReason } from '@calendium/shared';
-import * as WebBrowser from 'expo-web-browser';
-import { ExternalLinkIcon, LockIcon, LogOutIcon } from 'lucide-react-native';
+import { LockIcon, LogOutIcon, RefreshCwIcon } from 'lucide-react-native';
 import { View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-const COPY: Record<PaymentRequiredReason, { title: string; body: string }> = {
-  trial_ended: {
-    title: 'Your free trial has ended',
-    body: 'Subscribe on the web to keep using Calendium on every device.',
-  },
-  none: {
-    title: 'Subscribe to keep using Calendium',
-    body: 'Calendium is $50/year — one plan for email + calendar everywhere.',
-  },
-  canceled: {
-    title: 'Your subscription has ended',
-    body: 'Resubscribe on the web any time to pick up where you left off.',
-  },
-  past_due: {
-    title: 'Payment failed',
-    body: 'Update your payment method on the web to restore access.',
-  },
-  paused: {
-    title: 'Your subscription is paused',
-    body: 'Resume the plan or update your payment method on the web.',
-  },
-};
-
 /**
- * Read-only paywall (docs/payments.md, Spotify model): the app never sells.
- * It states why access is denied and links to the web app's pricing page
- * built from the server-advertised webUrl — never a hardcoded domain.
+ * Store-compliant paywall (App Store 3.1.1/3.1.3(b), docs/payments.md): the
+ * iOS/Android app shows no price, no purchase call to action and no link to
+ * any purchase or billing page — only neutral status, a re-check and sign-out.
+ * Sync keeps running underneath; only the tabs are replaced.
  */
 export function PaywallScreen({
-  reason,
-  webUrl,
+  onRefresh,
+  refreshing = false,
 }: {
-  reason: PaymentRequiredReason;
-  webUrl: string | null;
+  /** Re-checks the subscription (refetches ['subscription']). */
+  onRefresh: () => void;
+  refreshing?: boolean;
 }) {
   const { signOut } = useAuth();
   const insets = useSafeAreaInsets();
-  const copy = COPY[reason];
   return (
     <View
       className="flex-1 items-center justify-center gap-4 bg-background px-6"
       style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}>
       <Icon as={LockIcon} className="size-8 text-muted-foreground" />
-      <Text className="text-center text-lg font-semibold">{copy.title}</Text>
-      <Text className="text-center text-sm text-muted-foreground">{copy.body}</Text>
-      <Text className="text-center text-xs text-muted-foreground">
-        Calendium is managed on the web — there are no purchases in this app.
+      <Text accessibilityRole="header" className="text-center text-lg font-semibold">
+        This account doesn't have an active subscription.
       </Text>
-      {webUrl ? (
-        <Button
-          variant="outline"
-          size="sm"
-          className="flex-row gap-2"
-          onPress={() => WebBrowser.openBrowserAsync(`${webUrl}/pricing`)}>
-          <Icon as={ExternalLinkIcon} className="size-4" />
-          <Text>Manage on the web</Text>
-        </Button>
-      ) : null}
+      <Text className="text-center text-sm text-muted-foreground">
+        Your mail and calendar keep syncing. Sign in with an account that has an active
+        subscription to continue.
+      </Text>
+      <Button
+        variant="outline"
+        size="sm"
+        className="flex-row gap-2"
+        disabled={refreshing}
+        onPress={onRefresh}>
+        <Icon as={RefreshCwIcon} className="size-4" />
+        <Text>Refresh</Text>
+      </Button>
       <Button variant="ghost" size="sm" className="flex-row gap-2" onPress={() => void signOut()}>
         <Icon as={LogOutIcon} className="size-4" />
         <Text>Sign out</Text>

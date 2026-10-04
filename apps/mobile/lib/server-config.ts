@@ -37,7 +37,11 @@ export interface ServerConfig {
   authProviders: string[];
   /** Feature flags from /v1/instance so the UI hides what the server can't do. */
   features: InstanceFeatures;
-  /** Public web app origin from /v1/instance; billing lives at `${webUrl}/pricing`. Empty on pre-webUrl servers. */
+  /**
+   * Public web app origin from /v1/instance. Empty on pre-webUrl servers. The
+   * iOS/Android app never builds purchase or billing links from it (App Store
+   * 3.1.1/3.1.3).
+   */
   webUrl: string;
   /**
    * Explicit "Try the demo" mode: the app runs on deterministic mock data with
@@ -59,7 +63,7 @@ export const DEMO_CONFIG: ServerConfig = {
   name: 'Calendium Demo',
   authProviders: ['email', 'google', 'apple'],
   features: { billing: true, google: true, microsoft: true, ai: true, push: false },
-  webUrl: 'https://demo.calendium.app',
+  webUrl: '',
   demoMode: true,
 };
 

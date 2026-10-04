@@ -16,38 +16,51 @@ jest.mock('react-native-safe-area-context', () => ({
 import { fireEvent, render, screen } from '@testing-library/react-native';
 import { PaywallScreen } from './paywall-screen';
 
+/** App Store 3.1.1/3.1.3: no price, purchase CTA or purchase/billing link. */
+const STORE_FORBIDDEN = /\$|price|subscribe|pricing|checkout/i;
+
 beforeEach(() => jest.clearAllMocks());
 
-describe('PaywallScreen (mobile, read-only)', () => {
-  it.each([
-    ['trial_ended', 'Your free trial has ended'],
-    ['none', 'Subscribe to keep using Calendium'],
-    ['canceled', 'Your subscription has ended'],
-    ['past_due', 'Payment failed'],
-    ['paused', 'Your subscription is paused'],
-  ] as const)('renders %s copy with no purchase button', async (reason, title) => {
-    await render(<PaywallScreen reason={reason} webUrl="https://web.example" />);
-    expect(screen.getByText(title)).toBeTruthy();
-    // The copy may *say* "Subscribe" (it points at the web), but the app never
-    // sells: the only pressables are the web link and sign-out.
-    expect(screen.queryByRole('button', { name: /subscribe/i })).toBeNull();
-    expect(screen.getAllByRole('button')).toHaveLength(2);
-    expect(screen.getByText('Manage on the web')).toBeTruthy();
+describe('PaywallScreen (mobile, store-compliant)', () => {
+  it('renders the neutral copy with a header-role title', async () => {
+    await render(<PaywallScreen onRefresh={jest.fn()} />);
+    expect(
+      screen.getByRole('header', { name: "This account doesn't have an active subscription." })
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Your mail and calendar keep syncing. Sign in with an account that has an active subscription to continue.'
+      )
+    ).toBeTruthy();
   });
 
-  it('opens <webUrl>/pricing in the browser', async () => {
-    await render(<PaywallScreen reason="trial_ended" webUrl="https://web.example" />);
-    await fireEvent.press(screen.getByText('Manage on the web'));
-    expect(mockOpenBrowser).toHaveBeenCalledWith('https://web.example/pricing');
+  it('offers only Refresh and Sign out', async () => {
+    await render(<PaywallScreen onRefresh={jest.fn()} />);
+    const buttons = screen.getAllByRole('button');
+    expect(buttons).toHaveLength(2);
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeTruthy();
   });
 
-  it('hides the web link when the server advertises no webUrl', async () => {
-    await render(<PaywallScreen reason="none" webUrl={null} />);
-    expect(screen.queryByText('Manage on the web')).toBeNull();
+  it('shows no price, purchase call to action or billing link', async () => {
+    await render(<PaywallScreen onRefresh={jest.fn()} />);
+    expect(screen.queryAllByText(STORE_FORBIDDEN)).toHaveLength(0);
+    expect(screen.queryAllByLabelText(STORE_FORBIDDEN)).toHaveLength(0);
+    expect(screen.queryAllByHintText(STORE_FORBIDDEN)).toHaveLength(0);
+    expect(screen.queryAllByRole('link')).toHaveLength(0);
+    for (const b of screen.getAllByRole('button')) await fireEvent.press(b);
+    expect(mockOpenBrowser).not.toHaveBeenCalled();
+  });
+
+  it('Refresh re-checks the subscription', async () => {
+    const onRefresh = jest.fn();
+    await render(<PaywallScreen onRefresh={onRefresh} />);
+    await fireEvent.press(screen.getByText('Refresh'));
+    expect(onRefresh).toHaveBeenCalledTimes(1);
   });
 
   it('signs out', async () => {
-    await render(<PaywallScreen reason="canceled" webUrl={null} />);
+    await render(<PaywallScreen onRefresh={jest.fn()} />);
     await fireEvent.press(screen.getByText('Sign out'));
     expect(mockSignOut).toHaveBeenCalled();
   });

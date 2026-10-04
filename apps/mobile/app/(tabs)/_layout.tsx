@@ -64,7 +64,12 @@ export default function TabsLayout() {
       ? subscriptionDenialReason(subscriptionQuery.data)
       : null;
   if (paywallReason) {
-    return <PaywallScreen reason={paywallReason} webUrl={config?.webUrl || null} />;
+    return (
+      <PaywallScreen
+        onRefresh={() => void subscriptionQuery.refetch()}
+        refreshing={subscriptionQuery.isFetching}
+      />
+    );
   }
 
   return (
