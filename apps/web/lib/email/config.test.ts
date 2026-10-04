@@ -25,6 +25,10 @@ describe('readMailConfig', () => {
     });
   });
 
+  it('treats a blank SMTP_PORT / SMTP_SECURE as the defaults', () => {
+    expect(readMailConfig({ ...FULL, SMTP_PORT: '', SMTP_SECURE: '' })).toMatchObject({ port: 587, secure: false });
+  });
+
   it('trims whitespace around host and from', () => {
     expect(readMailConfig({ SMTP_HOST: ' smtp.example.test ', SMTP_FROM: ' a@b.test ' })).toMatchObject({
       host: 'smtp.example.test',

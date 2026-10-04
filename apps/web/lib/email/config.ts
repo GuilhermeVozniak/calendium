@@ -47,12 +47,13 @@ export function readMailConfig(env: EnvLike): MailConfig {
   if (user && !pass) missing.push('SMTP_PASS');
   if (missing.length > 0) throw new Error(`SMTP_* is partially configured: ${missing.join(', ')}`);
 
-  const portRaw = env.SMTP_PORT ?? '587';
+  // Blank counts as unset (compose passes `SMTP_PORT=` through as ''), like Go's os.Getenv.
+  const portRaw = env.SMTP_PORT?.trim() || '587';
   const port = /^\d+$/.test(portRaw) ? Number(portRaw) : Number.NaN;
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`SMTP_PORT must be an integer between 1 and 65535, got "${portRaw}"`);
   }
-  const secureRaw = env.SMTP_SECURE ?? 'false';
+  const secureRaw = env.SMTP_SECURE?.trim() || 'false';
   if (secureRaw !== 'true' && secureRaw !== 'false') {
     throw new Error(`SMTP_SECURE must be true or false, got "${secureRaw}"`);
   }
