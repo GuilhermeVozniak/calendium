@@ -31,20 +31,27 @@ cd calendium
 cp .env.example .env`,
   },
   {
-    title: 'Generate the required secret',
+    title: 'Generate the required secrets',
     body: (
       <>
         <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em]">
           TOKEN_ENCRYPTION_KEY
         </code>{' '}
         encrypts provider refresh tokens at rest (AES-256-GCM) and must be exactly 64 hex
-        characters. Back it up and keep it stable — it is never stored in the database.
+        characters. Back it up and keep it stable — it is never stored in the database.{' '}
+        <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em]">
+          INTERNAL_API_SECRET
+        </code>{' '}
+        (also 64 hex characters, a different value) authenticates the web app&rsquo;s
+        server-to-server calls to the API; api, worker and web refuse to start without it.
       </>
     ),
-    code: `make gen-secret        # or: openssl rand -hex 32
+    code: `make gen-secrets       # prints all three secrets as .env lines
 # in .env:
 POSTGRES_PASSWORD=<a strong password>
-TOKEN_ENCRYPTION_KEY=<the 64-hex-char key>`,
+TOKEN_ENCRYPTION_KEY=<64 hex chars>       # or: openssl rand -hex 32
+INTERNAL_API_SECRET=<another 64 hex chars> # or: openssl rand -hex 32
+BETTER_AUTH_SECRET=<from make gen-secrets> # or: openssl rand -base64 32`,
   },
   {
     title: 'Set your instance identity and mode',
@@ -59,7 +66,7 @@ DATABASE_URL=postgres://calendium:<password>@db:5432/calendium?sslmode=disable`,
   {
     title: 'Set up authentication (Better Auth)',
     body: 'Email + password works out of the box; you just need a signing secret and your public URL. The Go API verifies Better Auth JWTs via JWKS automatically.',
-    code: `BETTER_AUTH_SECRET=<openssl rand -base64 32>
+    code: `BETTER_AUTH_SECRET=<from the previous step>
 BETTER_AUTH_URL=https://mail.example.com
 NEXT_PUBLIC_API_URL=https://mail.example.com`,
   },

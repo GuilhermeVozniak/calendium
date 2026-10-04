@@ -176,13 +176,15 @@ Put each secret in Secrets Manager and reference it from the task definition's
 "secrets": [
   { "name": "DATABASE_URL",         "valueFrom": "arn:aws:secretsmanager:...:secret:calendium/DATABASE_URL" },
   { "name": "TOKEN_ENCRYPTION_KEY", "valueFrom": "arn:aws:secretsmanager:...:secret:calendium/TOKEN_ENCRYPTION_KEY" },
+  { "name": "INTERNAL_API_SECRET",  "valueFrom": "arn:aws:secretsmanager:...:secret:calendium/INTERNAL_API_SECRET" },
   { "name": "BETTER_AUTH_SECRET",   "valueFrom": "arn:aws:secretsmanager:...:secret:calendium/BETTER_AUTH_SECRET" }
 ]
 ```
 
 Also set `SELF_HOSTED=true`, `BETTER_AUTH_URL` (public web origin), and provider
 OAuth vars; the `web` task reads `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, and
-`DATABASE_URL` at runtime to run Better Auth.
+`DATABASE_URL` at runtime to run Better Auth. `INTERNAL_API_SECRET` goes to all
+three tasks (api, worker, web) with the same value.
 
 ### B4. Three ECS services on Fargate
 

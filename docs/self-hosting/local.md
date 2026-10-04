@@ -14,8 +14,9 @@ Pick the scenario that fits:
 
 First do the common setup: install Docker (see [VPS Step 3](./vps.md#step-3--install-docker-engine--compose-plugin)),
 `git clone` the repo, `cp .env.example .env`, and fill in the required values
-(`SELF_HOSTED=true`, a `make gen-secret` `TOKEN_ENCRYPTION_KEY`, and Better Auth's
-`BETTER_AUTH_SECRET` + `BETTER_AUTH_URL`; provider OAuth is optional). Reference:
+(`SELF_HOSTED=true`, `TOKEN_ENCRYPTION_KEY`, `INTERNAL_API_SECRET` and Better Auth's
+`BETTER_AUTH_SECRET` — `make gen-secrets` prints all three — plus `BETTER_AUTH_URL`;
+provider OAuth is optional). Reference:
 [Configuration](./configuration.md). Authentication is **built in** — Better Auth
 runs in the web app on your own Postgres, so there's no external auth service and
 email + password works out of the box. See

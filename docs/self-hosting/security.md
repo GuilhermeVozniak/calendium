@@ -33,8 +33,9 @@ secrets, Paddle keys (cloud only), the token-encryption key and the internal API
 `.gitignore` excludes `.env`; keep it that way and distribute secrets out of
 band (a secrets manager, `scp`, your provider's secret store).
 
-- Generate strong values: `make gen-secret` prints a fresh
-  `TOKEN_ENCRYPTION_KEY`; use `openssl rand -base64 24` for `POSTGRES_PASSWORD`.
+- Generate strong values: `make gen-secrets` prints fresh
+  `TOKEN_ENCRYPTION_KEY`, `INTERNAL_API_SECRET` and `BETTER_AUTH_SECRET` lines;
+  use `openssl rand -base64 24` for `POSTGRES_PASSWORD`.
 - **Change every default.** The shipped `.env.example` uses placeholders like
   `POSTGRES_PASSWORD=change-me-please` and an empty `TOKEN_ENCRYPTION_KEY`
   precisely so a copy-paste deploy *fails to boot* rather than running on known

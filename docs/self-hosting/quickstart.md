@@ -35,21 +35,30 @@ cp .env.example .env
 Everything the stack needs comes from this single `.env` file. It is git-ignored
 — keep your secrets there.
 
-## 2. Generate the required secret
+## 2. Generate the required secrets
 
-`TOKEN_ENCRYPTION_KEY` encrypts provider refresh tokens at rest (AES-256-GCM). It
-must be **exactly 64 hex characters** (32 bytes) or the API refuses to boot.
+Three secrets are required; generate a **distinct** value for each:
+
+- `TOKEN_ENCRYPTION_KEY` encrypts provider refresh tokens at rest (AES-256-GCM).
+  It must be **exactly 64 hex characters** (32 bytes) or the API refuses to boot.
+- `INTERNAL_API_SECRET` authenticates the web app's server-to-server calls to the
+  API (account deletion). Also **exactly 64 hex characters**; `api`, `worker` and
+  `web` all refuse to start without it, and all three must share the same value
+  (the single Compose `.env` takes care of that).
+- `BETTER_AUTH_SECRET` signs sign-in sessions (step 4), at least 32 bytes.
 
 ```bash
-make gen-secret        # prints a fresh key — copy it into .env
-# equivalently: openssl rand -hex 32
+make gen-secrets       # prints all three as .env lines — paste them into .env
+# equivalently: openssl rand -hex 32 (twice) and openssl rand -base64 32
 ```
 
 Also set a real database password. In `.env`:
 
 ```dotenv
 POSTGRES_PASSWORD=<a strong password>
-TOKEN_ENCRYPTION_KEY=<paste the 64-hex-char key from make gen-secret>
+TOKEN_ENCRYPTION_KEY=<64 hex chars from make gen-secrets>
+INTERNAL_API_SECRET=<a different 64 hex chars from make gen-secrets>
+BETTER_AUTH_SECRET=<from make gen-secrets>
 ```
 
 > ⚠️ **Back up `TOKEN_ENCRYPTION_KEY` somewhere safe and keep it stable.** It is
@@ -85,7 +94,7 @@ configured. There's **no external auth service** to create. Email + password
 sign-in works out of the box; you just need a secret and your public URL:
 
 ```dotenv
-BETTER_AUTH_SECRET=<openssl rand -base64 32>   # signing secret — keep it stable
+BETTER_AUTH_SECRET=<from step 2>              # signing secret — keep it stable
 BETTER_AUTH_URL=https://mail.example.com       # your public web origin, no trailing slash
 
 # The browser reaches the API same-origin behind Caddy; set explicitly otherwise:
@@ -210,7 +219,8 @@ DOMAIN=localhost
 APP_URL=http://localhost:3000
 PUBLIC_WEB_URL=http://localhost:3000
 NEXT_PUBLIC_API_URL=http://localhost:8080
-TOKEN_ENCRYPTION_KEY=<make gen-secret>
+TOKEN_ENCRYPTION_KEY=<make gen-secrets>
+INTERNAL_API_SECRET=<make gen-secrets>
 POSTGRES_PASSWORD=<anything>
 DATABASE_URL=postgres://calendium:<same>@db:5432/calendium?sslmode=disable
 # plus BETTER_AUTH_SECRET + BETTER_AUTH_URL from step 4

@@ -1,7 +1,9 @@
 # Calendium — self-hosting helpers.
 #
 #   make self-host-up      # build & start the full stack
-#   make gen-secret        # print a fresh TOKEN_ENCRYPTION_KEY
+#   make gen-secrets       # print fresh TOKEN_ENCRYPTION_KEY, INTERNAL_API_SECRET
+#                          # and BETTER_AUTH_SECRET lines to paste into .env
+#   make gen-secret        # print one fresh 32-byte hex secret
 #   make db-backup         # dump the database to backups/
 #
 # Override the reverse proxy: `make self-host-up PROFILE=` to skip Caddy.
@@ -11,7 +13,7 @@ PROFILE ?= caddy
 profile_flag = $(if $(strip $(PROFILE)),--profile $(PROFILE),)
 
 .DEFAULT_GOAL := help
-.PHONY: help self-host-up self-host-down self-host-logs gen-secret db-backup db-restore test-api test-api-cover
+.PHONY: help self-host-up self-host-down self-host-logs gen-secret gen-secrets db-backup db-restore test-api test-api-cover
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -26,8 +28,13 @@ self-host-down: ## Stop the stack (keeps the db volume)
 self-host-logs: ## Tail logs from all services
 	$(COMPOSE) $(profile_flag) logs -f --tail=100
 
-gen-secret: ## Print a fresh 32-byte hex secret (TOKEN_ENCRYPTION_KEY)
+gen-secret: ## Print one fresh 32-byte hex secret (TOKEN_ENCRYPTION_KEY or INTERNAL_API_SECRET)
 	@openssl rand -hex 32
+
+gen-secrets: ## Print every required secret as .env lines (a distinct value each)
+	@echo "TOKEN_ENCRYPTION_KEY=$$(openssl rand -hex 32)"
+	@echo "INTERNAL_API_SECRET=$$(openssl rand -hex 32)"
+	@echo "BETTER_AUTH_SECRET=$$(openssl rand -base64 32)"
 
 db-backup: ## Dump the database to backups/calendium-<timestamp>.sql.gz
 	@mkdir -p backups

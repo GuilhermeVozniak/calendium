@@ -102,7 +102,9 @@ This mirrors the backend layout in [`../architecture.md`](../architecture.md):
 - Auth is **[Better Auth](https://better-auth.com)**, hosted by the web app on the
   same Postgres. Email + password works out of the box; you only set
   `BETTER_AUTH_SECRET` (`openssl rand -base64 32`) and `BETTER_AUTH_URL` (your
-  domain). No Supabase, no external identity provider to run. Social Google/Apple
+  domain), plus `INTERNAL_API_SECRET` (`openssl rand -hex 32`, the same value on
+  `api`, `worker` and `web`) for the web app's server-to-server calls.
+  `make gen-secrets` prints every required secret. No Supabase, no external identity provider to run. Social Google/Apple
   login is optional — see the Quickstart's auth step.
 
 **Optional credentials (unlock their features when set)**
@@ -115,8 +117,9 @@ This mirrors the backend layout in [`../architecture.md`](../architecture.md):
 - **OpenRouter** (`OPENROUTER_API_KEY`) for AI compose/reply/summarize.
 - **Push**: APNs, FCM, and/or Web Push (VAPID) keys.
 
-Everything except `DATABASE_URL`, `TOKEN_ENCRYPTION_KEY`, and the web app's
-`BETTER_AUTH_SECRET`/`BETTER_AUTH_URL` is optional — unwired adapters are simply
+Everything except `DATABASE_URL`, `TOKEN_ENCRYPTION_KEY`, `INTERNAL_API_SECRET`
+(api, worker and web), and the web app's `BETTER_AUTH_SECRET`/`BETTER_AUTH_URL`
+is optional — unwired adapters are simply
 left out, so partial deployments boot fine.
 
 ---
@@ -211,7 +214,8 @@ migrations across one release.
 
 - **Change every default secret.** Never boot with the `.env.example`
   placeholders (`POSTGRES_PASSWORD=change-me-please`, empty
-  `TOKEN_ENCRYPTION_KEY`). Generate real values (`make gen-secret`).
+  `TOKEN_ENCRYPTION_KEY` / `INTERNAL_API_SECRET` / `BETTER_AUTH_SECRET`).
+  Generate real values (`make gen-secrets`).
 - **Keep Postgres off the public network.** The bundled compose never publishes
   `5432` — leave it that way. Never add a `5432:5432` mapping on a public host.
 - **Firewall the box.** Allow only `22` (SSH, from your IP), `80`, and `443`.
