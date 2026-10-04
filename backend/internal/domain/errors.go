@@ -20,6 +20,9 @@ import "errors"
 //	ErrAIUnavailable   → 503
 //	ErrAIOutput        → 502
 //	ErrRateLimited     → 429
+//	ErrAlreadySubscribed  → 409
+//	ErrNoBillingProfile   → 400
+//	ErrBillingUnavailable → 502
 var (
 	ErrNotFound     = errors.New("not found")
 	ErrUnauthorized = errors.New("unauthorized")
@@ -36,7 +39,7 @@ var (
 	// Entity, distinct from ErrValidation's 400.
 	ErrUnprocessable = errors.New("unprocessable")
 	// ErrSelfHosted marks an operation that is unavailable on self-hosted
-	// instances (the Stripe billing endpoints). The HTTP adapter maps it to
+	// instances (the billing endpoints). The HTTP adapter maps it to
 	// 501 Not Implemented.
 	ErrSelfHosted = errors.New("self-hosted")
 	// ErrNotImplemented marks a method that is a temporary stub during M2.5
@@ -56,4 +59,14 @@ var (
 	// ErrRateLimited marks that the caller exhausted a usage budget. The HTTP
 	// adapter maps it to 429 Too Many Requests.
 	ErrRateLimited = errors.New("rate limited")
+	// ErrAlreadySubscribed marks a checkout attempt by a user who already has
+	// a live provider subscription (active, past_due or paused). The HTTP
+	// adapter maps it to 409 "already_subscribed"; clients open the portal.
+	ErrAlreadySubscribed = errors.New("already subscribed")
+	// ErrNoBillingProfile marks a portal request for a user with no provider
+	// customer yet. Mapped to 400 "no_billing_profile".
+	ErrNoBillingProfile = errors.New("no billing profile")
+	// ErrBillingUnavailable wraps any failure talking to the payments
+	// provider. Mapped to 502 "billing_unavailable".
+	ErrBillingUnavailable = errors.New("billing unavailable")
 )
