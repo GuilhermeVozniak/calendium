@@ -231,10 +231,11 @@ func (a *App) startDesktopExtras(ctx context.Context) {
 }
 
 // shutdown is the Wails OnShutdown hook (main.go): stops the tray loop,
-// countdown ticker, and any pending auto-join timer.
+// countdown ticker, any pending auto-join timer, and the update-check loop.
 func (a *App) shutdown(_ context.Context) {
 	a.tray.stop()
 	a.autoJoin.SetConfig(false, 0)
+	a.stopUpdateChecks()
 }
 
 // SetUpcomingEvents is bound to the frontend (window.go.main.App): it receives

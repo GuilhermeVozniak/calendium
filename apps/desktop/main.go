@@ -32,6 +32,9 @@ func main() {
 			// rather than inside startup so unit tests exercising startup never
 			// touch the native systray loop.
 			app.startDesktopExtras(ctx)
+			// Daily GitHub release check (update.go); inert on dev builds and
+			// paused until the frontend opts in outside demo mode.
+			app.startUpdateChecks(ctx)
 		},
 		OnShutdown: app.shutdown,
 		Bind: []interface{}{

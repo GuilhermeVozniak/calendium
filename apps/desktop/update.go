@@ -151,9 +151,18 @@ type updateChecker struct {
 	cachePath string // "" disables the on-disk cache
 	now       func() time.Time
 
+	// wake is signalled when a paused checker resumes so run checks right
+	// away instead of waiting out the 24 h ticker (nil in tests that never run).
+	wake chan struct{}
+
 	mu     sync.Mutex
 	emit   func(UpdateInfo)
 	latest UpdateInfo
+	// paused holds every request. The host cannot read the frontend's
+	// demo-mode flag (localStorage), so production checkers start paused and
+	// the frontend resumes them via SetUpdateChecksEnabled once it knows it
+	// is not in demo mode — demo never dials out.
+	paused bool
 }
 
 func newUpdateChecker(version string) *updateChecker {
@@ -164,7 +173,30 @@ func newUpdateChecker(version string) *updateChecker {
 		cachePath: defaultUpdateCachePath(),
 		now:       time.Now,
 		latest:    UpdateInfo{Current: version},
+		wake:      make(chan struct{}, 1),
+		paused:    true,
 	}
+}
+
+// setPaused holds (true) or resumes (false) network checks; resuming wakes
+// the run loop for an immediate check.
+func (c *updateChecker) setPaused(paused bool) {
+	c.mu.Lock()
+	was := c.paused
+	c.paused = paused
+	c.mu.Unlock()
+	if was && !paused {
+		select {
+		case c.wake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (c *updateChecker) isPaused() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.paused
 }
 
 // setEmit wires the sink that receives a newer release exactly once per
@@ -197,7 +229,7 @@ type githubRelease struct {
 // check performs one conditional GET and returns the resulting status. Errors
 // leave the previous status untouched and never emit.
 func (c *updateChecker) check(ctx context.Context) (UpdateInfo, error) {
-	if !c.enabled() {
+	if !c.enabled() || c.isPaused() {
 		return c.status(), nil
 	}
 	cached := c.readCache()
@@ -298,7 +330,8 @@ func (c *updateChecker) writeCache(cache updateCache) {
 }
 
 // run blocks until ctx is done: first check after `initial`, then every
-// `every`. Errors are logged; the loop never panics the host.
+// `every`, plus once whenever a paused checker resumes (a paused checker's
+// check is a no-op). Errors are logged; the loop never panics the host.
 func (c *updateChecker) run(ctx context.Context, initial, every time.Duration) {
 	if !c.enabled() {
 		return
@@ -310,19 +343,22 @@ func (c *updateChecker) run(ctx context.Context, initial, every time.Duration) {
 		return
 	case <-timer.C:
 	}
-	if _, err := c.check(ctx); err != nil {
-		log.Printf("update check: %v", err)
+	// A resume during the initial delay is covered by the first check below.
+	select {
+	case <-c.wake:
+	default:
 	}
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	for {
+		if _, err := c.check(ctx); err != nil {
+			log.Printf("update check: %v", err)
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if _, err := c.check(ctx); err != nil {
-				log.Printf("update check: %v", err)
-			}
+		case <-c.wake:
 		}
 	}
 }

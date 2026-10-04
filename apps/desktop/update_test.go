@@ -298,3 +298,56 @@ func TestParseSemverAndNewer(t *testing.T) {
 		}
 	}
 }
+
+// Demo mode: the frontend pauses the checker, which must then never dial out.
+func TestUpdateCheck_PausedNeverRequests(t *testing.T) {
+	var hits atomic.Int32
+	srv := releaseServer(t, "v9.9.9", false, false, &hits)
+	c, emitted := newTestChecker(t, "1.2.3", srv.URL)
+	c.setPaused(true)
+	info, err := c.check(context.Background())
+	if err != nil || info.Available || hits.Load() != 0 || len(*emitted) != 0 {
+		t.Fatalf("paused: err=%v info=%+v hits=%d emitted=%+v", err, info, hits.Load(), *emitted)
+	}
+	if !newUpdateChecker("1.2.3").isPaused() {
+		t.Fatal("newUpdateChecker must start paused (the frontend opts in once it knows it is not in demo mode)")
+	}
+}
+
+func TestUpdateRun_WaitsWhilePausedAndChecksOnResume(t *testing.T) {
+	var hits atomic.Int32
+	srv := releaseServer(t, "v1.3.0", false, false, &hits)
+	c, _ := newTestChecker(t, "1.2.3", srv.URL)
+	c.wake = make(chan struct{}, 1)
+	c.setPaused(true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		c.run(ctx, 5*time.Millisecond, time.Hour)
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("paused loop made %d requests, want 0", n)
+	}
+	c.setPaused(false)
+	deadline := time.Now().Add(2 * time.Second)
+	for hits.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := hits.Load(); n != 1 {
+		t.Fatalf("resume should trigger exactly one check, got %d", n)
+	}
+	if !c.status().Available {
+		t.Fatalf("status after resume = %+v, want the v1.3.0 update", c.status())
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not return after its context was cancelled")
+	}
+}

@@ -102,3 +102,49 @@ func TestVersion_DefaultsToDevForSourceBuilds(t *testing.T) {
 		t.Fatalf("version = %q, want \"dev\" (release.yml stamps it with -ldflags \"-X main.version=X.Y.Z\")", version)
 	}
 }
+
+func TestGetUpdateStatus_DefaultBeforeAnyCheck(t *testing.T) {
+	a := NewApp()
+	got := a.GetUpdateStatus()
+	want := UpdateInfo{Available: false, Current: version}
+	if got != want {
+		t.Fatalf("GetUpdateStatus() = %+v, want %+v", got, want)
+	}
+}
+
+func TestStartStopUpdateChecks_DevBuildIsInertAndStoppable(t *testing.T) {
+	// version is "dev" under `go test`, so the loop must exit without ever
+	// touching the network or emitting; stop must be safe to call twice.
+	a := NewApp()
+	a.startUpdateChecks(context.Background())
+	a.mu.Lock()
+	cancel := a.updateCancel
+	a.mu.Unlock()
+	if cancel == nil {
+		t.Fatal("startUpdateChecks did not record a cancel func")
+	}
+	a.stopUpdateChecks()
+	a.stopUpdateChecks()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.updateCancel != nil {
+		t.Fatal("stopUpdateChecks must clear the cancel func")
+	}
+}
+
+func TestSetUpdateChecksEnabled_GatesTheChecker(t *testing.T) {
+	// The host cannot read the frontend's demo-mode flag (localStorage), so
+	// update checks stay paused until the frontend opts in outside demo mode.
+	a := NewApp()
+	if !a.updates.isPaused() {
+		t.Fatal("a fresh App must hold update checks until the frontend opts in")
+	}
+	a.SetUpdateChecksEnabled(true)
+	if a.updates.isPaused() {
+		t.Fatal("SetUpdateChecksEnabled(true) must resume update checks")
+	}
+	a.SetUpdateChecksEnabled(false)
+	if !a.updates.isPaused() {
+		t.Fatal("SetUpdateChecksEnabled(false) (demo mode) must pause update checks")
+	}
+}

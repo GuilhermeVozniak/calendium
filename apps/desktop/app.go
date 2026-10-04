@@ -33,6 +33,10 @@ type App struct {
 	// Menu-bar tray + auto-join (M2.6 Tasks 10-11; tray.go / scheduler.go).
 	tray     *trayManager
 	autoJoin *autoJoinScheduler
+
+	// Update notifications (update.go): background GitHub release check.
+	updates      *updateChecker
+	updateCancel context.CancelFunc
 }
 
 // NewApp creates a new App application struct.
@@ -43,6 +47,7 @@ func NewApp() *App {
 	// nothing touches the OS until Start().
 	a.hotkeys = newHotkeyManager(a.emitGlobalShortcut)
 	// --- end Task 9 ---
+	a.updates = newUpdateChecker(version)
 	a.initDesktopExtras()
 	return a
 }
@@ -90,6 +95,47 @@ func (a *App) OpenExternal(url string) {
 // GetAppVersion returns the desktop app version (see `version`).
 func (a *App) GetAppVersion() string {
 	return version
+}
+
+// GetUpdateStatus returns the last update-check result. A late-mounted UI
+// reads this instead of waiting up to 24 h for the next update-available
+// event; before any check it is {Available: false, Current: version}.
+func (a *App) GetUpdateStatus() UpdateInfo {
+	return a.updates.status()
+}
+
+// SetUpdateChecksEnabled lets the frontend gate the update check: it calls
+// this on boot and whenever demo mode flips, with false in demo mode (demo
+// never dials out). The checker stays paused until the first true, so the
+// host — which cannot read the demo flag in localStorage — never phones home
+// on its own.
+func (a *App) SetUpdateChecksEnabled(enabled bool) {
+	a.updates.setPaused(!enabled)
+}
+
+// startUpdateChecks wires the event sink and starts the background loop
+// (first check after 10 s so launch is never delayed, then every 24 h).
+// Called from OnStartup (main.go); a dev build returns immediately inside run.
+func (a *App) startUpdateChecks(ctx context.Context) {
+	a.updates.setEmit(func(info UpdateInfo) {
+		runtime.EventsEmit(ctx, updateAvailableEvent, info)
+	})
+	runCtx, cancel := context.WithCancel(ctx)
+	a.mu.Lock()
+	a.updateCancel = cancel
+	a.mu.Unlock()
+	go a.updates.run(runCtx, updateInitialDelay, updateInterval)
+}
+
+// stopUpdateChecks ends the loop (OnShutdown). Safe to call repeatedly.
+func (a *App) stopUpdateChecks() {
+	a.mu.Lock()
+	cancel := a.updateCancel
+	a.updateCancel = nil
+	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // --- Task 9: global shortcuts (hotkeys.go) ---
