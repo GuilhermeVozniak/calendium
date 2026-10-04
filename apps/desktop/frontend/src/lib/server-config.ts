@@ -74,18 +74,31 @@ export const DEMO_CONFIG: ServerConfig = {
 };
 
 /**
+ * The advertised `webUrl` (trailing slashes trimmed) when it is an http(s) URL
+ * with a host, else null. Anything else (javascript:, mailto:, file:, a typo)
+ * would give `new URL().origin === "null"` or open a non-web handler, so
+ * callers fall back to the auth origin instead.
+ */
+function httpWebUrl(config: ServerConfig | null): string | null {
+  if (!config?.webUrl) return null;
+  try {
+    const url = new URL(config.webUrl);
+    if ((url.protocol !== 'https:' && url.protocol !== 'http:') || !url.hostname) return null;
+  } catch {
+    return null;
+  }
+  return config.webUrl.replace(/\/+$/, '');
+}
+
+/**
  * Web origin (scheme://host) for billing / browser sign-in: the server's
- * advertised `webUrl` when present, else the Better Auth base URL's origin.
+ * advertised http(s) `webUrl` when present, else the Better Auth base URL's
+ * origin.
  */
 export function webOrigin(config: ServerConfig | null): string | null {
   if (!config) return null;
-  if (config.webUrl) {
-    try {
-      return new URL(config.webUrl).origin;
-    } catch {
-      // Fall through to the authBaseUrl origin.
-    }
-  }
+  const web = httpWebUrl(config);
+  if (web) return new URL(web).origin;
   if (!config.authBaseUrl) return null;
   try {
     return new URL(config.authBaseUrl).origin;
@@ -101,14 +114,13 @@ export function webOrigin(config: ServerConfig | null): string | null {
  * handles reset itself.
  */
 export function forgotPasswordUrl(config: ServerConfig | null): string | null {
-  const base = config?.webUrl?.replace(/\/+$/, '') || webOrigin(config);
+  const base = httpWebUrl(config) || webOrigin(config);
   return base ? `${base}/forgot-password` : null;
 }
 
 /** Where billing lives: the server-advertised web origin, else the auth origin. */
 export function billingWebOrigin(config: ServerConfig | null): string | null {
-  if (config?.webUrl) return config.webUrl.replace(/\/+$/, '');
-  return webOrigin(config);
+  return httpWebUrl(config) ?? webOrigin(config);
 }
 
 /** Normalizes user-entered URLs: trims, drops trailing slash, adds https://. */
