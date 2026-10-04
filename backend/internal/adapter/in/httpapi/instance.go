@@ -22,6 +22,11 @@ type InstanceInfo struct {
 	// AuthProviders lists enabled sign-in methods, always including "email"
 	// plus "google"/"apple" when their credentials are configured.
 	AuthProviders []string `json:"authProviders"`
+	// WebURL is the public web app origin (PUBLIC_WEB_URL, no trailing
+	// slash). Desktop builds its billing link from it
+	// (<webUrl>/settings?tab=billing) instead of a hardcoded domain; the
+	// mobile apps show no billing links (store rules).
+	WebURL string `json:"webUrl"`
 	// UndoSendSeconds is the undo-send grace window (UNDO_SEND_SECONDS,
 	// default 15): clients show a post-send Undo affordance for this long.
 	UndoSendSeconds int `json:"undoSendSeconds"`
@@ -38,6 +43,7 @@ type InstanceInfo struct {
 // InstanceFeatures reports which optional capabilities are wired on this
 // deployment so clients can hide unavailable surfaces.
 type InstanceFeatures struct {
+	// Billing is true exactly when the deployment runs in cloud mode (Paddle wired).
 	Billing   bool `json:"billing"`
 	Google    bool `json:"google"`
 	Microsoft bool `json:"microsoft"`

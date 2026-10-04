@@ -12,7 +12,7 @@ import (
 
 func TestPrefsRoundTripAndValidation(t *testing.T) {
 	ctx := context.Background()
-	svc := NewPrefsService(newPrefsRepo(), newCalendarPrefsRepo(), newSubscriptionRepo(), newClock(time.Now()), true)
+	svc := NewPrefsService(newPrefsRepo(), newCalendarPrefsRepo(), newSubscriptionRepo(), nil, newClock(time.Now()), true)
 
 	// Absent prefs come back as the zero value, not an error.
 	got, err := svc.GetPrefs(ctx, "u1")

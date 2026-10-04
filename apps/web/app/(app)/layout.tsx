@@ -37,6 +37,7 @@ import { CommandPalette } from '@/components/app/command-palette';
 import { ComposeProvider, useCompose } from '@/components/app/compose';
 import { OnboardingTour } from '@/components/app/onboarding-tour';
 import { OutboxIndicator } from '@/components/app/outbox-indicator';
+import { BillingGate, BillingTrialBanner } from '@/components/app/paywall';
 import { useTheme } from '@/components/theme-provider';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -93,34 +94,43 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   if (isPending || !session) return <Splash />;
 
   return (
-    <ActiveAccountProvider>
-      <AttachmentsPaneProvider>
-        <ComposeProvider>
-          <AskSidebarProvider>
-            <TooltipProvider>
-              <div className="bg-background flex h-svh overflow-hidden">
-                <React.Suspense fallback={<div className="w-60 shrink-0 border-r" />}>
-                  <SideRail user={user} />
-                </React.Suspense>
-                <div className="flex min-w-0 flex-1 flex-col">
-                  <ActingBanner />
-                  <OfflineBanner />
-                  <OutboxIndicator />
-                  <main className="min-h-0 flex-1">{children}</main>
-                </div>
-                <AskSidebarPanel />
-              </div>
-              <CommandPalette />
-              {/* Concierge tour: auto-starts on a user's first authenticated
-                  visit; "Restart tour" in the palette re-runs it. */}
-              <OnboardingTour userId={session.user.id} />
-              <GlobalShortcuts />
-              <OutboxReplayLifecycle />
-            </TooltipProvider>
-          </AskSidebarProvider>
-        </ComposeProvider>
-      </AttachmentsPaneProvider>
-    </ActiveAccountProvider>
+    <>
+      {/* Background sync stays OUTSIDE the billing gate: a paywalled user's
+          queued outbox still replays (the server stays authoritative). */}
+      <OutboxReplayLifecycle />
+      {/* Hard paywall: a denied user gets only the paywall — no rail,
+          compose, palette, shortcuts, Ask sidebar or tour. */}
+      <BillingGate>
+        <ActiveAccountProvider>
+          <AttachmentsPaneProvider>
+            <ComposeProvider>
+              <AskSidebarProvider>
+                <TooltipProvider>
+                  <div className="bg-background flex h-svh overflow-hidden">
+                    <React.Suspense fallback={<div className="w-60 shrink-0 border-r" />}>
+                      <SideRail user={user} />
+                    </React.Suspense>
+                    <div className="flex min-w-0 flex-1 flex-col">
+                      <ActingBanner />
+                      <OfflineBanner />
+                      <OutboxIndicator />
+                      <BillingTrialBanner />
+                      <main className="min-h-0 flex-1">{children}</main>
+                    </div>
+                    <AskSidebarPanel />
+                  </div>
+                  <CommandPalette />
+                  {/* Concierge tour: auto-starts on a user's first authenticated
+                      visit; "Restart tour" in the palette re-runs it. */}
+                  <OnboardingTour userId={session.user.id} />
+                  <GlobalShortcuts />
+                </TooltipProvider>
+              </AskSidebarProvider>
+            </ComposeProvider>
+          </AttachmentsPaneProvider>
+        </ActiveAccountProvider>
+      </BillingGate>
+    </>
   );
 }
 

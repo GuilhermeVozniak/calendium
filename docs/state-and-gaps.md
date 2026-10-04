@@ -44,7 +44,7 @@ Configuration reference: `docs/self-hosting/configuration.md`. To take a real in
 1. **Required:** `DATABASE_URL` (Postgres), `TOKEN_ENCRYPTION_KEY` (32-byte hex), `BETTER_AUTH_URL` + `PUBLIC_WEB_URL`.
 2. **Google:** OAuth client in Google Cloud Console (Gmail + Calendar scopes) → `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`; redirect URI `<PUBLIC_API_URL>/v1/accounts/callback/google`.
 3. **Microsoft:** Azure app registration (Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, offline_access) → `MS_CLIENT_ID` / `MS_CLIENT_SECRET`.
-4. **Billing (Cloud mode only):** `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID_ANNUAL`.
+4. **Billing (Cloud mode only):** `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_PRICE_ID_ANNUAL` (+ web `NEXT_PUBLIC_PADDLE_CLIENT_TOKEN`).
 5. **Push (optional):** `APNS_KEY_ID`/`APNS_TEAM_ID`/`APNS_KEY_P8`, `FCM_SERVICE_ACCOUNT_JSON`, `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`.
 6. **AI (optional):** `OPENROUTER_API_KEY` (+ `OPENROUTER_MODEL`).
 7. Run `cmd/api` and `cmd/worker` (both apply migrations), connect a real mailbox from Settings, and watch the first incremental sync land in Postgres.

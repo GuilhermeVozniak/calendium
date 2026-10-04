@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ServerConfig } from './server-config';
 
@@ -19,7 +19,7 @@ vi.mock('./server-config', () => ({
   isDemoMode: isDemoModeMock,
 }));
 
-import { apiConfigured, orMock } from './api';
+import { api, apiConfigured, onPaymentRequired, orMock } from './api';
 
 function configWithUrl(serverUrl: string): ServerConfig {
   return {
@@ -30,6 +30,7 @@ function configWithUrl(serverUrl: string): ServerConfig {
     name: 'Test',
     features: { billing: false, google: false, microsoft: false, ai: false, push: false },
     undoSendSeconds: 15,
+    webUrl: '',
   };
 }
 
@@ -90,5 +91,42 @@ describe('orMock', () => {
     const real = vi.fn().mockRejectedValue(new Error('server unreachable'));
     const mock = vi.fn();
     await expect(orMock(real, mock)).rejects.toThrow('server unreachable');
+  });
+});
+
+// Mid-session lapse (mirrors apps/web/lib/api.ts): every 402 the shared client
+// receives is reported so the App billing gate re-checks the subscription.
+describe('onPaymentRequired', () => {
+  const respond = (status: number, body: unknown = {}) =>
+    vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }));
+  const PAYMENT_REQUIRED = { error: { code: 'payment_required', message: 'x', details: { reason: 'trial_ended' } } };
+
+  beforeEach(() => {
+    getActiveServerConfigMock.mockReturnValue(configWithUrl('https://api.example'));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('notifies listeners on any 402 response', async () => {
+    vi.stubGlobal('fetch', respond(402, PAYMENT_REQUIRED));
+    const listener = vi.fn();
+    const off = onPaymentRequired(listener);
+    await expect(api.listThreads({})).rejects.toMatchObject({ status: 402 });
+    expect(listener).toHaveBeenCalledTimes(1);
+    off();
+  });
+
+  it('stays quiet for other statuses and after unsubscribing', async () => {
+    const listener = vi.fn();
+    const off = onPaymentRequired(listener);
+    vi.stubGlobal('fetch', respond(200, { id: 'u1' }));
+    await api.getMe();
+    vi.stubGlobal('fetch', respond(500, { error: { code: 'internal', message: 'x' } }));
+    await expect(api.getMe()).rejects.toMatchObject({ status: 500 });
+    off();
+    vi.stubGlobal('fetch', respond(402, PAYMENT_REQUIRED));
+    await expect(api.getMe()).rejects.toMatchObject({ status: 402 });
+    expect(listener).not.toHaveBeenCalled();
   });
 });

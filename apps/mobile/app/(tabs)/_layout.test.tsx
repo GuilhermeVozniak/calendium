@@ -14,9 +14,22 @@ jest.mock('@/lib/server-config', () => ({
   useServerConfig: (...args: unknown[]) => mockUseServerConfig(...args),
 }));
 
+// `...requireActual` keeps `cssInterop` (used at import time by components/ui/icon,
+// reached through PaywallScreen) alongside the stubbed colour scheme.
 jest.mock('nativewind', () => ({
+  ...jest.requireActual('nativewind'),
   useColorScheme: () => ({ colorScheme: 'light' }),
 }));
+
+// The layout now runs the billing gate's `useQuery` (Paddle Task 19). These
+// configs carry `billing: false`, so nothing is fetched; the mocks only keep
+// the module graph loadable under Jest.
+jest.mock('@/lib/api', () => ({ api: { getSubscription: jest.fn() }, onPaymentRequired: () => () => {} }));
+jest.mock('@/lib/mock', () => ({
+  withMockFallback: (real: () => unknown) => real(),
+  mockSubscription: { status: 'trialing' },
+}));
+jest.mock('expo-web-browser', () => ({ openBrowserAsync: jest.fn() }));
 
 // lib/theme (named-theme store, M2.6 Task 13) persists to AsyncStorage, whose
 // native module doesn't exist under Jest — same mock as settings.test.tsx.
@@ -53,6 +66,7 @@ jest.mock('expo-router', () => {
 });
 
 import { render, screen } from '@testing-library/react-native';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TabsLayout from './_layout';
 
 const AI_ENABLED_CONFIG = { features: { billing: false, google: false, microsoft: false, ai: true, push: false } };
@@ -77,14 +91,22 @@ beforeEach(() => {
  */
 describe('TabsLayout — Ask AI tab visibility', () => {
   it('shows the Ask AI tab-bar button when the server enables AI', async () => {
-    await render(<TabsLayout />);
+    await render(
+      <QueryClientProvider client={new QueryClient()}>
+        <TabsLayout />
+      </QueryClientProvider>
+    );
 
     expect(screen.getByText('ask-ai')).toBeTruthy();
   });
 
   it('hides the Ask AI tab-bar button when the server disables AI', async () => {
     mockUseServerConfig.mockReturnValue({ config: AI_DISABLED_CONFIG });
-    await render(<TabsLayout />);
+    await render(
+      <QueryClientProvider client={new QueryClient()}>
+        <TabsLayout />
+      </QueryClientProvider>
+    );
 
     expect(screen.queryByText('ask-ai')).toBeNull();
     // The always-present tabs are unaffected by the AI flag.

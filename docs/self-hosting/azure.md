@@ -9,7 +9,7 @@ Two paths:
 - **Path B — Azure Container Apps + Flexible Server + Key Vault** (managed
   containers), with the worker as a single always-on replica.
 
-Both stay in **self-hosted mode** (`SELF_HOSTED=true`, no Stripe, all features
+Both stay in **self-hosted mode** (`SELF_HOSTED=true`, no Paddle, all features
 unlocked). Skim the [Overview](./README.md) and [Configuration](./configuration.md)
 if you're new.
 

@@ -451,7 +451,7 @@ export function mockSearch(query: string): { threads: Thread[]; events: Event[] 
 
 // --- Billing: standalone demo of the Spotify desktop flow -------------------
 // After startMockCheckout() the mock "webhook" lands ~8s later, so polling
-// GET /v1/billing/subscription visibly flips none → active without a backend.
+// GET /v1/billing/subscription visibly flips trialing → active without a backend.
 
 let mockCheckoutStartedAt: number | null = null;
 
@@ -472,12 +472,12 @@ export function mockSubscription(): Subscription {
     };
   }
   return {
-    status: 'none',
+    status: 'trialing',
     plan: 'annual',
     priceUsd: 50,
     currentPeriodEnd: null,
     cancelAtPeriodEnd: false,
-    trialEndsAt: null,
+    trialEndsAt: iso(addDays(now, 9)),
   };
 }
 

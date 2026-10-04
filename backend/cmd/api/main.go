@@ -27,10 +27,10 @@ import (
 	"calendium/backend/internal/adapter/out/nominatim"
 	"calendium/backend/internal/adapter/out/openmeteo"
 	"calendium/backend/internal/adapter/out/openrouter"
+	"calendium/backend/internal/adapter/out/paddle"
 	"calendium/backend/internal/adapter/out/pgbus"
 	"calendium/backend/internal/adapter/out/postgres"
 	"calendium/backend/internal/adapter/out/push"
-	"calendium/backend/internal/adapter/out/stripeapi"
 	"calendium/backend/internal/adapter/out/todoist"
 	"calendium/backend/internal/adapter/out/unsubscribe"
 	"calendium/backend/internal/config"
@@ -66,6 +66,10 @@ func run(logger *slog.Logger) error {
 	if cfg.Instance.PublicWebURL == "" {
 		return errors.New("PUBLIC_WEB_URL (or APP_URL) is required: GET /v1/instance must advertise an absolute Better Auth base URL")
 	}
+	// Cloud mode must never boot without a biller or with a forgeable webhook.
+	if err := cfg.ValidateCloudBilling(); err != nil {
+		return err
+	}
 
 	// --- Postgres + migrations ---
 	db, err := sql.Open("pgx", cfg.DB.URL)
@@ -94,7 +98,12 @@ func run(logger *slog.Logger) error {
 	hc := &http.Client{Timeout: 30 * time.Second}
 
 	verifier := authjwt.NewVerifier(cfg.Auth.JWKSURL, cfg.Auth.Issuer, hc)
-	stripe := stripeapi.NewClient(cfg.Stripe.SecretKey, cfg.Stripe.WebhookSecret, cfg.Stripe.AnnualPriceID, hc)
+	payments := paddle.NewClient(paddle.Config{
+		Env:           cfg.Paddle.Env,
+		APIKey:        cfg.Paddle.APIKey,
+		WebhookSecret: cfg.Paddle.WebhookSecret,
+		AnnualPriceID: cfg.Paddle.AnnualPriceID,
+	}, hc)
 	ai := openrouter.NewClient(cfg.OpenRouter.APIKey, cfg.OpenRouter.Model, hc)
 
 	oauth := map[domain.Provider]port.OAuthGateway{}
@@ -146,7 +155,16 @@ func run(logger *slog.Logger) error {
 	activityRepo := postgres.NewTeamThreadActivityRepo(store)
 
 	users := service.NewUserService(store.Users(), store.UserPreferences(), clock)
-	billing := service.NewBillingService(store.Users(), store.Subscriptions(), store.StripeEvents(), stripe, clock, store, cfg.Instance.SelfHosted)
+	billing := service.NewBillingService(service.BillingServiceDeps{
+		Users:      store.Users(),
+		Subs:       store.Subscriptions(),
+		Events:     store.BillingEvents(),
+		Payments:   payments,
+		Clock:      clock,
+		Tx:         store,
+		SelfHosted: cfg.Instance.SelfHosted,
+		Logger:     logger,
+	})
 	accounts := service.NewAccountService(store.Accounts(), store.OAuthStates(), store.SyncStates(), oauth, cfg.OAuth.AllowedRedirectURIs, cfg.Instance.PublicAPIURL, clock)
 	integrations := service.NewIntegrationService(
 		postgres.NewIntegrationRepo(store), store.OAuthStates(), integrationOAuth,
@@ -159,6 +177,7 @@ func run(logger *slog.Logger) error {
 		clock)
 	mail := service.NewMailService(service.MailServiceDeps{
 		Subscriptions: store.Subscriptions(),
+		Users:         store.Users(),
 		Accounts:      store.Accounts(),
 		Threads:       store.Threads(),
 		Messages:      store.Messages(),
@@ -204,9 +223,10 @@ func run(logger *slog.Logger) error {
 		CalendarSubs: store.CalendarSubscriptions(),
 		IcsFetcher:   icsfeed.New(nil),
 	})
-	search := service.NewSearchService(store.Subscriptions(), store.Threads(), store.Events(), clock, cfg.Instance.SelfHosted)
+	search := service.NewSearchService(store.Subscriptions(), store.Users(), store.Threads(), store.Events(), clock, cfg.Instance.SelfHosted)
 	aiSvc := service.NewAIService(service.AIServiceDeps{
 		Subscriptions: store.Subscriptions(),
+		Users:         store.Users(),
 		Accounts:      store.Accounts(),
 		Threads:       store.Threads(),
 		Messages:      store.Messages(),
@@ -221,7 +241,7 @@ func run(logger *slog.Logger) error {
 		SelfHosted:    cfg.Instance.SelfHosted,
 	})
 	devices := service.NewDeviceService(store.Devices(), clock)
-	prefs := service.NewPrefsService(store.Prefs(), store.CalendarPrefs(), store.Subscriptions(), clock, cfg.Instance.SelfHosted)
+	prefs := service.NewPrefsService(store.Prefs(), store.CalendarPrefs(), store.Subscriptions(), store.Users(), clock, cfg.Instance.SelfHosted)
 	scheduling := service.NewSchedulingService(service.SchedulingServiceDeps{
 		Subscriptions:     store.Subscriptions(),
 		Users:             store.Users(),
@@ -299,6 +319,7 @@ func run(logger *slog.Logger) error {
 	// M2.8: first-class tasks (local todos + mirrored provider todos).
 	tasksSvc := service.NewTaskService(service.TaskServiceDeps{
 		Subscriptions: store.Subscriptions(),
+		Users:         store.Users(),
 		Tasks:         store.Tasks(),
 		Clock:         clock,
 		TodoProviders: todoProviders,
@@ -309,6 +330,7 @@ func run(logger *slog.Logger) error {
 	// M2.7 Task 10: teammate read/reply indicators.
 	teamActivitySvc := service.NewTeamActivityService(service.TeamActivityServiceDeps{
 		Subscriptions: store.Subscriptions(),
+		Users:         store.Users(),
 		Accounts:      store.Accounts(),
 		Threads:       store.Threads(),
 		Teams:         postgres.NewTeamRepo(store),
@@ -325,6 +347,7 @@ func run(logger *slog.Logger) error {
 		weatherSvc = service.NewWeatherService(service.WeatherServiceDeps{
 			Provider:      openmeteo.New(cfg.Weather.BaseURL),
 			Subscriptions: store.Subscriptions(),
+			Users:         store.Users(),
 			Clock:         clock,
 			SelfHosted:    cfg.Instance.SelfHosted,
 		})
@@ -339,6 +362,7 @@ func run(logger *slog.Logger) error {
 	if mapsConfigured {
 		placesSvc = service.NewPlacesService(service.PlacesServiceDeps{
 			Subscriptions: store.Subscriptions(),
+			Users:         store.Users(),
 			Maps:          nominatim.New(cfg.Maps.NominatimBaseURL, cfg.Maps.OSRMBaseURL, hc),
 			Clock:         clock,
 			SelfHosted:    cfg.Instance.SelfHosted,
@@ -353,6 +377,7 @@ func run(logger *slog.Logger) error {
 	if cfg.HubSpot.ClientID != "" {
 		crmSvc = service.NewCrmService(service.CrmServiceDeps{
 			Subscriptions: store.Subscriptions(),
+			Users:         store.Users(),
 			Connections:   crmConnectionStore{repo: postgres.NewIntegrationRepo(store)},
 			Providers: map[domain.IntegrationVendor]port.CrmProvider{
 				domain.IntegrationHubSpot: hubspot.NewClient(hc),
@@ -412,6 +437,7 @@ func run(logger *slog.Logger) error {
 		Version:         httpapi.Version,
 		AuthBaseURL:     authBaseURL,
 		AuthProviders:   authProviders,
+		WebURL:          strings.TrimRight(cfg.Instance.PublicWebURL, "/"),
 		UndoSendSeconds: int(cfg.Mail.UndoSendGrace / time.Second),
 		VapidPublicKey:  vapidPublicKey,
 		Features: httpapi.InstanceFeatures{
@@ -435,7 +461,7 @@ func run(logger *slog.Logger) error {
 	// nil entry means that surface answers 501 / is omitted from discovery,
 	// so a misconfigured deploy is diagnosable at a glance. Log only; no
 	// behavior change.
-	logger.Info("api: optional deps",
+	logger.Info("api: optional deps", append([]any{
 		"teams", teams != nil,
 		"collab", collab != nil,
 		"delegations", delegations != nil,
@@ -447,7 +473,7 @@ func run(logger *slog.Logger) error {
 		"crm", crmSvc != nil,
 		"insights", insightsSvc != nil,
 		"push", pushSender != nil,
-	)
+	}, billingEnvLogAttrs(cfg.Instance.SelfHosted, cfg.Paddle.Env)...)...)
 
 	// --- HTTP server ---
 	handler := httpapi.New(httpapi.Deps{
@@ -467,7 +493,6 @@ func run(logger *slog.Logger) error {
 		Scheduling:     scheduling,
 		Settings:       settingsSvc,
 		Collab:         collab,
-		Payments:       stripe,
 		// M2.7 collaboration: team service + in-process SSE fan-out. The
 		// stream scopes each subscriber to user:<id> plus the caller's real
 		// team:<id> memberships resolved through Teams.
@@ -540,4 +565,13 @@ func (s crmConnectionStore) ListByUser(ctx context.Context, userID string) ([]po
 
 func (s crmConnectionStore) UpdateTokens(ctx context.Context, connectionID string, t port.TokenSet) error {
 	return s.repo.SaveTokens(ctx, connectionID, t)
+}
+
+// billingEnvLogAttrs names the Paddle environment in the startup log only
+// when billing is enabled; a self-hosted instance has no biller.
+func billingEnvLogAttrs(selfHosted bool, env string) []any {
+	if selfHosted {
+		return nil
+	}
+	return []any{"billing_env", env}
 }

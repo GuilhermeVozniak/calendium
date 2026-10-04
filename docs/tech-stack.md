@@ -17,7 +17,7 @@
 | DB | Postgres via `database/sql` + `pgx/v5/stdlib` driver (only external dep); embedded SQL migrations |
 | Auth | Pure resource server: verifies Better Auth JWTs locally with stdlib crypto — EdDSA/Ed25519 (default) via JWKS, RS256/ES256 also supported; `iss` pinned, `sub`→user upsert |
 | Mail/calendar providers | Gmail API + Google Calendar API, Microsoft Graph — raw REST via `net/http` |
-| Billing | Stripe REST via `net/http`; webhook HMAC-SHA256 verification via `crypto/hmac` |
+| Billing | Paddle Billing REST via `net/http`; webhook HMAC-SHA256 verification via `crypto/hmac` |
 | Push | APNs (HTTP/2, ES256 JWT), FCM v1 (service-account JWT), Web Push (VAPID) — all stdlib |
 | AI | OpenRouter chat completions (`net/http`), model configurable |
 | Secrets at rest | Provider refresh tokens AES-256-GCM encrypted |

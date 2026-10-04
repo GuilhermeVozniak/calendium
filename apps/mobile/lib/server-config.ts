@@ -38,6 +38,12 @@ export interface ServerConfig {
   /** Feature flags from /v1/instance so the UI hides what the server can't do. */
   features: InstanceFeatures;
   /**
+   * Public web app origin from /v1/instance. Empty on pre-webUrl servers. The
+   * iOS/Android app never builds purchase or billing links from it (App Store
+   * 3.1.1/3.1.3).
+   */
+  webUrl: string;
+  /**
    * Explicit "Try the demo" mode: the app runs on deterministic mock data with
    * no backend. Only ever set by the demo button on the connect screen; absent
    * for every real self-host / Cloud connection.
@@ -57,6 +63,7 @@ export const DEMO_CONFIG: ServerConfig = {
   name: 'Calendium Demo',
   authProviders: ['email', 'google', 'apple'],
   features: { billing: true, google: true, microsoft: true, ai: true, push: false },
+  webUrl: '',
   demoMode: true,
 };
 
@@ -70,7 +77,9 @@ export function normalizeServerUrl(url: string): string {
 export async function getStoredServerConfig(): Promise<ServerConfig | null> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as ServerConfig) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ServerConfig>;
+    return { webUrl: '', ...parsed } as ServerConfig;
   } catch {
     return null;
   }
@@ -99,6 +108,7 @@ export async function discoverServer(serverUrl: string): Promise<ServerConfig> {
     name: info.name,
     authProviders: info.authProviders,
     features: info.features,
+    webUrl: info.webUrl ?? '',
   };
 }
 

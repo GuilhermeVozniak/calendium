@@ -6,6 +6,7 @@ import type {
   Provider,
   SubscriptionStatus,
 } from '@calendium/shared';
+import { hasBillingSubscription } from '@calendium/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import {
@@ -39,7 +40,7 @@ import {
   updateMockClassifier,
   updateMockSignature,
 } from '@/lib/mock';
-import { useServerConfig, webOrigin } from '@/lib/server-config';
+import { billingWebOrigin, useServerConfig } from '@/lib/server-config';
 import { errorMessage, toast } from '@/lib/toast';
 import {
   desktop,
@@ -465,8 +466,8 @@ const STATUS_BADGE: Record<SubscriptionStatus, { label: string; variant: 'defaul
   active: { label: 'Active', variant: 'default' },
   trialing: { label: 'Trial', variant: 'secondary' },
   past_due: { label: 'Past due', variant: 'destructive' },
+  paused: { label: 'Paused', variant: 'outline' },
   canceled: { label: 'Canceled', variant: 'outline' },
-  expired: { label: 'Expired', variant: 'outline' },
   none: { label: 'No subscription', variant: 'outline' },
 };
 
@@ -592,7 +593,7 @@ export function SettingsView() {
       toast({ title: 'Demo mode', description: 'Billing happens on the web in a real workspace.' });
       return;
     }
-    const origin = webOrigin(config);
+    const origin = billingWebOrigin(config);
     if (!origin) {
       toast({ title: 'Billing unavailable', description: 'No web URL for this server.', variant: 'destructive' });
       return;
@@ -617,7 +618,7 @@ export function SettingsView() {
     clearServer();
   }
 
-  const subscribed = subscription?.status === 'active' || subscription?.status === 'trialing';
+  const subscribed = !!subscription && hasBillingSubscription(subscription);
   const badge = subscription ? STATUS_BADGE[subscription.status] : null;
 
   return (
@@ -735,8 +736,8 @@ export function SettingsView() {
                 {badge && <Badge variant={badge.variant}>{badge.label}</Badge>}
               </div>
               <p className="text-xs text-muted-foreground">
-                One subscription unlocks every platform. Billing always happens on the web via
-                Stripe — there are no in-app purchases.
+                One subscription unlocks every platform. Billing always happens on the web through
+                Paddle, our merchant of record — there are no in-app purchases.
               </p>
               {subscription?.trialEndsAt && subscription.status === 'trialing' && (
                 <p className="text-xs text-muted-foreground">

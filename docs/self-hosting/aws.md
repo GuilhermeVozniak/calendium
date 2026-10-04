@@ -8,7 +8,7 @@ Two paths, from simplest to most managed:
 - **Path B — ECS Fargate + RDS + ALB** (no host to patch). Higher-level; drop
   Caddy and let the ALB terminate TLS.
 
-Both keep Calendium in **self-hosted mode** (`SELF_HOSTED=true`, no Stripe, all
+Both keep Calendium in **self-hosted mode** (`SELF_HOSTED=true`, no Paddle, all
 features unlocked). If you haven't yet, skim the [Overview](./README.md) and
 [Configuration reference](./configuration.md).
 

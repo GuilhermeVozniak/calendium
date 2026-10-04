@@ -3,6 +3,7 @@ package domain
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -84,82 +85,85 @@ func TestParseDevicePlatform(t *testing.T) {
 		[]string{"", "iOS", "macOS", "blackberry", "tvos", "desktop"})
 }
 
-func TestSubscriptionHasAccess(t *testing.T) {
-	// Fixed reference instant; no time.Now() anywhere in the assertions.
-	periodEnd := time.Date(2026, time.July, 7, 12, 0, 0, 0, time.UTC)
-	graceEnd := periodEnd.Add(PastDueGrace) // periodEnd + 7*24h
-
-	ptr := func(tm time.Time) *time.Time { return &tm }
+func TestSubscriptionAccessMatrix(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	ptr := func(v time.Time) *time.Time { return &v }
 
 	tests := []struct {
-		name string
-		sub  Subscription
-		now  time.Time
-		want bool
+		name       string
+		sub        Subscription
+		wantAccess bool
+		wantReason DenialReason
 	}{
-		{
-			name: "trialing always has access",
-			sub:  Subscription{Status: SubscriptionTrialing},
-			now:  periodEnd,
-			want: true,
-		},
-		{
-			name: "active always has access",
-			sub:  Subscription{Status: SubscriptionActive},
-			now:  periodEnd,
-			want: true,
-		},
-		{
-			name: "past_due with nil period end has no access",
-			sub:  Subscription{Status: SubscriptionPastDue, CurrentPeriodEnd: nil},
-			now:  periodEnd,
-			want: false,
-		},
-		{
-			name: "past_due just before end+grace keeps access",
-			sub:  Subscription{Status: SubscriptionPastDue, CurrentPeriodEnd: ptr(periodEnd)},
-			now:  graceEnd.Add(-time.Nanosecond),
-			want: true,
-		},
-		{
-			name: "past_due exactly at end+grace loses access (Before is strict)",
-			sub:  Subscription{Status: SubscriptionPastDue, CurrentPeriodEnd: ptr(periodEnd)},
-			now:  graceEnd,
-			want: false,
-		},
-		{
-			name: "past_due after end+grace loses access",
-			sub:  Subscription{Status: SubscriptionPastDue, CurrentPeriodEnd: ptr(periodEnd)},
-			now:  graceEnd.Add(time.Hour),
-			want: false,
-		},
-		{
-			// Future period end is irrelevant once canceled — status wins.
-			name: "canceled has no access even with future period end",
-			sub:  Subscription{Status: SubscriptionCanceled, CurrentPeriodEnd: ptr(graceEnd.Add(365 * 24 * time.Hour))},
-			now:  periodEnd,
-			want: false,
-		},
-		{
-			name: "expired has no access",
-			sub:  Subscription{Status: SubscriptionExpired},
-			now:  periodEnd,
-			want: false,
-		},
-		{
-			name: "none has no access",
-			sub:  Subscription{Status: SubscriptionNone},
-			now:  periodEnd,
-			want: false,
-		},
+		{"trialing before trial end", Subscription{Status: SubscriptionTrialing, TrialEndsAt: ptr(future)}, true, ""},
+		{"trialing exactly at trial end", Subscription{Status: SubscriptionTrialing, TrialEndsAt: ptr(now)}, false, DenialTrialEnded},
+		{"trialing without a trial end", Subscription{Status: SubscriptionTrialing}, false, DenialTrialEnded},
+		{"active with nil period end", Subscription{Status: SubscriptionActive}, true, ""},
+		{"active inside period", Subscription{Status: SubscriptionActive, CurrentPeriodEnd: ptr(future)}, true, ""},
+		{"active inside 3d grace", Subscription{Status: SubscriptionActive, CurrentPeriodEnd: ptr(now.Add(-ActiveGrace + time.Minute))}, true, ""},
+		{"active exactly at grace end", Subscription{Status: SubscriptionActive, CurrentPeriodEnd: ptr(now.Add(-ActiveGrace))}, false, DenialPastDue},
+		{"past_due inside 7d grace", Subscription{Status: SubscriptionPastDue, CurrentPeriodEnd: ptr(now.Add(-PastDueGrace + time.Minute))}, true, ""},
+		{"past_due exactly at grace end", Subscription{Status: SubscriptionPastDue, CurrentPeriodEnd: ptr(now.Add(-PastDueGrace))}, false, DenialPastDue},
+		{"past_due without period end", Subscription{Status: SubscriptionPastDue}, false, DenialPastDue},
+		{"paused with future period end", Subscription{Status: SubscriptionPaused, CurrentPeriodEnd: ptr(future)}, false, DenialPaused},
+		{"canceled with future period end", Subscription{Status: SubscriptionCanceled, CurrentPeriodEnd: ptr(future)}, false, DenialCanceled},
+		{"none", Subscription{Status: SubscriptionNone}, false, DenialNone},
+		{"unknown status fails closed", Subscription{Status: "weird"}, false, DenialNone},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.sub.HasAccess(tt.now); got != tt.want {
-				t.Fatalf("HasAccess(%v) with status %q = %v, want %v", tt.now, tt.sub.Status, got, tt.want)
+			if got := tt.sub.HasAccess(now); got != tt.wantAccess {
+				t.Fatalf("HasAccess = %v, want %v", got, tt.wantAccess)
+			}
+			if got := tt.sub.DenialReason(now); got != tt.wantReason {
+				t.Fatalf("DenialReason = %q, want %q", got, tt.wantReason)
 			}
 		})
+	}
+}
+
+func TestSubscriptionConstants(t *testing.T) {
+	if TrialLength != 14*24*time.Hour {
+		t.Fatalf("TrialLength = %v, want 14d", TrialLength)
+	}
+	if ActiveGrace != 3*24*time.Hour {
+		t.Fatalf("ActiveGrace = %v, want 3d", ActiveGrace)
+	}
+	if PastDueGrace != 7*24*time.Hour {
+		t.Fatalf("PastDueGrace = %v, want 7d", PastDueGrace)
+	}
+	if PlanAnnual != "annual" || PriceUSDAnnual != 50 {
+		t.Fatalf("plan/price = %q/%d, want annual/50", PlanAnnual, PriceUSDAnnual)
+	}
+}
+
+func TestPaymentRequiredError(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	trialEnd := now.Add(-time.Hour)
+	sub := Subscription{Status: SubscriptionTrialing, TrialEndsAt: &trialEnd}
+
+	err := NewPaymentRequiredError(sub, now)
+	if !errors.Is(err, ErrPaymentRequired) {
+		t.Fatalf("errors.Is(ErrPaymentRequired) = false for %v", err)
+	}
+	var pr *PaymentRequiredError
+	if !errors.As(err, &pr) {
+		t.Fatalf("errors.As(*PaymentRequiredError) = false")
+	}
+	if pr.Reason != DenialTrialEnded {
+		t.Fatalf("Reason = %q, want trial_ended", pr.Reason)
+	}
+	if pr.TrialEndsAt == nil || !pr.TrialEndsAt.Equal(trialEnd) {
+		t.Fatalf("TrialEndsAt = %v, want %v", pr.TrialEndsAt, trialEnd)
+	}
+	if pr.Error() != "payment required: trial_ended" {
+		t.Fatalf("Error() = %q", pr.Error())
+	}
+
+	wrapped := fmt.Errorf("gate: %w", err)
+	if !errors.As(wrapped, &pr) {
+		t.Fatalf("wrapped error lost the typed PaymentRequiredError")
 	}
 }
 

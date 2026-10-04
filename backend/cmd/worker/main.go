@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"calendium/backend/internal/adapter/out/msgraph"
 	"calendium/backend/internal/adapter/out/nominatim"
 	"calendium/backend/internal/adapter/out/openrouter"
+	"calendium/backend/internal/adapter/out/paddle"
 	"calendium/backend/internal/adapter/out/pgbus"
 	"calendium/backend/internal/adapter/out/postgres"
 	"calendium/backend/internal/adapter/out/push"
@@ -74,6 +76,9 @@ func run(logger *slog.Logger) error {
 
 	cfg, err := config.FromEnv()
 	if err != nil {
+		return err
+	}
+	if err := cfg.ValidateCloudBilling(); err != nil {
 		return err
 	}
 
@@ -140,6 +145,28 @@ func run(logger *slog.Logger) error {
 		mapsProvider = nominatim.New(cfg.Maps.NominatimBaseURL, cfg.Maps.OSRMBaseURL, hc)
 	}
 
+	// Billing reconciliation (docs/payments.md): re-reads stale subscription
+	// mirrors from Paddle so a lost webhook never leaves a user entitled or
+	// locked out for long. Cloud only; self-host has no biller.
+	var billingSvc *service.BillingService
+	if !cfg.Instance.SelfHosted {
+		billingSvc = service.NewBillingService(service.BillingServiceDeps{
+			Users:  store.Users(),
+			Subs:   store.Subscriptions(),
+			Events: store.BillingEvents(),
+			Payments: paddle.NewClient(paddle.Config{
+				Env:           cfg.Paddle.Env,
+				APIKey:        cfg.Paddle.APIKey,
+				WebhookSecret: cfg.Paddle.WebhookSecret,
+				AnnualPriceID: cfg.Paddle.AnnualPriceID,
+			}, hc),
+			Clock:      service.SystemClock{},
+			Tx:         store,
+			SelfHosted: false,
+			Logger:     logger,
+		})
+	}
+
 	// --- AI job queue: gated on OPENROUTER_API_KEY, degrades to a
 	// no-op loop-that-never-starts when unset. Pass AiJobs repo only when enabled. ---
 	var aiGateway port.AI
@@ -179,6 +206,7 @@ func run(logger *slog.Logger) error {
 	})
 	calendarSvc := service.NewCalendarService(service.CalendarServiceDeps{
 		Subscriptions:     store.Subscriptions(),
+		Users:             store.Users(),
 		Accounts:          store.Accounts(),
 		Calendars:         store.Calendars(),
 		Events:            store.Events(),
@@ -247,6 +275,7 @@ func run(logger *slog.Logger) error {
 		CalendarSvc: calendarSvc,
 		// Entitlement gate: lapsed cloud users are skipped silently.
 		Subscriptions: store.Subscriptions(),
+		Users:         store.Users(),
 		SelfHosted:    cfg.Instance.SelfHosted,
 		// Travel pass (M2.8 Task 12): managed "Travel to …" blocks + leave
 		// alerts, folded into the automation loop so a single writer owns
@@ -332,6 +361,15 @@ func run(logger *slog.Logger) error {
 			})
 		}()
 	}
+	if billingSvc != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runLoop(ctx, cfg.Billing.ReconcileInterval, func(ctx context.Context) {
+				reconcilePass(ctx, logger, billingSvc)
+			})
+		}()
+	}
 	if aiGateway != nil {
 		wg.Add(1)
 		go func() {
@@ -350,10 +388,20 @@ func run(logger *slog.Logger) error {
 		"ai_jobs_enabled", aiGateway != nil,
 		"travel_enabled", mapsProvider != nil,
 		"todo_sync_enabled", todoSyncSvc != nil,
+		"billing_reconcile_enabled", billingSvc != nil,
+		"billing_reconcile_interval", cfg.Billing.ReconcileInterval.String(),
 		"providers", len(mailProviders))
 	wg.Wait()
 	logger.Info("worker: shut down cleanly")
 	return nil
+}
+
+// reconcilePass runs one billing reconciliation pass. A pass cut short by
+// shutdown (context.Canceled) is expected and not logged as an error.
+func reconcilePass(ctx context.Context, logger *slog.Logger, billing port.BillingService) {
+	if err := billing.ReconcileSubscriptions(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		logger.Error("worker: reconcile subscriptions", "error", err)
+	}
 }
 
 // runLoop invokes fn immediately and then on every tick until ctx ends.

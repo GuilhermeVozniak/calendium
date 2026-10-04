@@ -42,6 +42,8 @@ export interface ServerConfig {
   features: InstanceFeatures;
   /** Undo-send grace window in seconds (post-send Undo affordance duration). */
   undoSendSeconds: number;
+  /** Public web app origin from /v1/instance; billing lives at `${webUrl}/settings?tab=billing`. Empty on pre-webUrl servers. */
+  webUrl: string;
 }
 
 /**
@@ -57,6 +59,7 @@ export const DEMO_CONFIG: ServerConfig = {
   name: 'Calendium Demo',
   features: { billing: true, google: true, microsoft: true, ai: true, push: false },
   undoSendSeconds: 15,
+  webUrl: '',
 };
 
 /** Web origin (scheme://host) of a server's Better Auth base URL, or null. */
@@ -67,6 +70,12 @@ export function webOrigin(config: ServerConfig | null): string | null {
   } catch {
     return null;
   }
+}
+
+/** Where billing lives: the server-advertised web origin, else the auth origin. */
+export function billingWebOrigin(config: ServerConfig | null): string | null {
+  if (config?.webUrl) return config.webUrl.replace(/\/+$/, '');
+  return webOrigin(config);
 }
 
 /** Normalizes user-entered URLs: trims, drops trailing slash, adds https://. */
@@ -86,6 +95,7 @@ function readStored(): ServerConfig | null {
       authProviders: [],
       features: DEFAULT_FEATURES,
       undoSendSeconds: 15,
+      webUrl: '',
       ...parsed,
     } as ServerConfig;
   } catch {
@@ -163,6 +173,7 @@ export async function discoverServer(serverUrl: string): Promise<ServerConfig> {
     name: info.name,
     features: info.features,
     undoSendSeconds: info.undoSendSeconds,
+    webUrl: info.webUrl ?? '',
   };
 }
 

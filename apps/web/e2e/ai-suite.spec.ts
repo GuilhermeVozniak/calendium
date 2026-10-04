@@ -42,6 +42,9 @@ test.describe('AI suite', () => {
 
   test('Ask AI answers a question with a clickable source that opens the thread', async ({ page }) => {
     await page.goto('/mail');
+    // The billing gate mounts the whole shell (palette + shortcuts included)
+    // only once the subscription resolves — wait for the inbox first.
+    await expect(page.getByRole('button', { name: /Postmortem: checkout latency spike/ })).toBeVisible();
     // Open via the command palette (rather than the raw ⌘J shortcut) since a
     // real browser may reserve Ctrl/Cmd+J for its own downloads panel.
     await openCommandPalette(page);

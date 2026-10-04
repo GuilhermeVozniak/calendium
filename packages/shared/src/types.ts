@@ -12,13 +12,8 @@ export interface User {
   createdAt: string;
 }
 
-export type SubscriptionStatus =
-  | 'trialing'
-  | 'active'
-  | 'past_due'
-  | 'canceled'
-  | 'expired'
-  | 'none';
+/** Mirrors backend/internal/domain/subscription.go. Expiry is never a status: it is computed from time. */
+export type SubscriptionStatus = 'trialing' | 'active' | 'past_due' | 'paused' | 'canceled' | 'none';
 
 export interface Subscription {
   status: SubscriptionStatus;
@@ -27,6 +22,27 @@ export interface Subscription {
   currentPeriodEnd: string | null;
   cancelAtPeriodEnd: boolean;
   trialEndsAt: string | null;
+}
+
+/** `details.reason` of a 402 payment_required response (domain.DenialReason). */
+export type PaymentRequiredReason = 'trial_ended' | 'past_due' | 'canceled' | 'paused' | 'none';
+
+/** Structured `error.details` of a 402 response. */
+export interface PaymentRequiredDetails {
+  reason: PaymentRequiredReason;
+  trialEndsAt?: string;
+  currentPeriodEnd?: string;
+}
+
+/**
+ * Temporary Paddle customer-portal links (POST /v1/billing/portal). Never
+ * cache them. cancelUrl/updatePaymentUrl are empty strings when the user has
+ * no provider subscription yet.
+ */
+export interface BillingPortalUrls {
+  overviewUrl: string;
+  cancelUrl: string;
+  updatePaymentUrl: string;
 }
 
 export type AccountStatus = 'active' | 'syncing' | 'reauth_required' | 'disconnected';
@@ -850,7 +866,7 @@ export interface InstanceCapabilities {
 
 /** Capabilities a server advertises so clients can adapt their UI. */
 export interface InstanceFeatures {
-  /** Stripe billing is available (false on self-hosted instances). */
+  /** Paddle billing is wired (true exactly in cloud mode; false on self-hosted instances). */
   billing: boolean;
   google: boolean;
   microsoft: boolean;
@@ -873,6 +889,12 @@ export interface InstanceInfo {
   authBaseUrl: string;
   /** Enabled sign-in methods, e.g. ["email", "google", "apple"]. */
   authProviders: string[];
+  /**
+   * Public web app origin (PUBLIC_WEB_URL, no trailing slash). Desktop builds
+   * its billing link from it (`${webUrl}/settings?tab=billing`); the mobile
+   * apps show no billing links (store rules).
+   */
+  webUrl: string;
   /**
    * Undo-send grace window in seconds (UNDO_SEND_SECONDS, default 15): show a
    * post-send Undo affordance for this long.

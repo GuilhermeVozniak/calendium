@@ -653,19 +653,18 @@ const methodCases: MethodCase[] = [
     method: 'GET',
     path: '/v1/billing/subscription',
   },
+  // Paddle: redirect targets are never client-supplied, so both are body-less.
   {
     name: 'createCheckoutSession',
-    call: (c) => c.createCheckoutSession('https://x.test/success', 'https://x.test/cancel'),
+    call: (c) => c.createCheckoutSession(),
     method: 'POST',
     path: '/v1/billing/checkout',
-    body: { successUrl: 'https://x.test/success', cancelUrl: 'https://x.test/cancel' },
   },
   {
     name: 'createBillingPortalSession',
-    call: (c) => c.createBillingPortalSession('https://x.test/return'),
+    call: (c) => c.createBillingPortalSession(),
     method: 'POST',
     path: '/v1/billing/portal',
-    body: { returnUrl: 'https://x.test/return' },
   },
 
   // --- Connected accounts ---
@@ -2438,5 +2437,88 @@ describe('calendar subscriptions (M2.8 Task 15)', () => {
     await expect(client.deleteCalendarSubscription('sub_1')).resolves.toBeUndefined();
     expect(calls[0]!.method).toBe('DELETE');
     expect(calls[0]!.url).toBe(`${BASE_URL}/v1/calendar-subscriptions/sub_1`);
+  });
+});
+
+describe('billing (Paddle)', () => {
+  // createFakeFetch's vi.fn is narrower than `typeof fetch` (no Request
+  // input) — same cast makeClient uses.
+  const asFetch = (fetchFn: ReturnType<typeof createFakeFetch>['fetchFn']) =>
+    fetchFn as unknown as typeof fetch;
+  const mk = (fetchFn: ReturnType<typeof createFakeFetch>['fetchFn']) =>
+    new ApiClient({ baseUrl: 'https://api.test', getAccessToken: async () => 'tok', fetch: asFetch(fetchFn) });
+
+  it('createCheckoutSession posts with no body and returns the url', async () => {
+    const { fetchFn, calls } = createFakeFetch([{ status: 200, body: { url: 'https://app/checkout?_ptxn=txn_1' } }]);
+    const res = await mk(fetchFn).createCheckoutSession();
+    expect(res.url).toBe('https://app/checkout?_ptxn=txn_1');
+    expect(calls[0]?.url).toBe('https://api.test/v1/billing/checkout');
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.body).toBeUndefined();
+  });
+
+  it('createBillingPortalSession posts with no body and returns the url triple', async () => {
+    const { fetchFn, calls } = createFakeFetch([
+      { status: 200, body: { overviewUrl: 'https://p/o', cancelUrl: '', updatePaymentUrl: 'https://p/u' } },
+    ]);
+    const res = await mk(fetchFn).createBillingPortalSession();
+    expect(res).toEqual({ overviewUrl: 'https://p/o', cancelUrl: '', updatePaymentUrl: 'https://p/u' });
+    expect(calls[0]?.url).toBe('https://api.test/v1/billing/portal');
+    expect(calls[0]?.body).toBeUndefined();
+  });
+
+  it('a 402 exposes typed payment-required details', async () => {
+    const { fetchFn } = createFakeFetch([
+      {
+        status: 402,
+        body: {
+          error: {
+            code: 'payment_required',
+            message: 'An active subscription is required.',
+            details: { reason: 'trial_ended', trialEndsAt: '2026-10-18T09:00:00Z' },
+          },
+        },
+      },
+    ]);
+    let caught: unknown;
+    try {
+      await mk(fetchFn).getSubscription();
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ApiRequestError);
+    const err = caught as ApiRequestError;
+    expect(err.status).toBe(402);
+    expect(err.code).toBe('payment_required');
+    expect(err.paymentRequired).toEqual({ reason: 'trial_ended', trialEndsAt: '2026-10-18T09:00:00Z' });
+  });
+
+  it('non-402 errors and malformed details have null paymentRequired', async () => {
+    const { fetchFn } = createFakeFetch([{ status: 409, body: { error: { code: 'already_subscribed', message: 'x', details: { reason: 'nope' } } } }]);
+    let caught: unknown;
+    try {
+      await mk(fetchFn).createCheckoutSession();
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as ApiRequestError).code).toBe('already_subscribed');
+    expect((caught as ApiRequestError).paymentRequired).toBeNull();
+    const bare = new ApiRequestError(402, 'payment_required', 'x', { nope: true });
+    expect(bare.paymentRequired).toBeNull();
+  });
+
+  it('fetchInstance carries webUrl', async () => {
+    const { fetchFn } = createFakeFetch([
+      {
+        status: 200,
+        body: {
+          name: 'Calendium', mode: 'cloud', version: '0.1.0', authBaseUrl: 'https://web/api/auth',
+          authProviders: ['email'], undoSendSeconds: 15, webUrl: 'https://web',
+          features: { billing: true, google: false, microsoft: false, ai: false, push: false },
+        },
+      },
+    ]);
+    const info = await fetchInstance('https://api.test/', asFetch(fetchFn));
+    expect(info.webUrl).toBe('https://web');
   });
 });

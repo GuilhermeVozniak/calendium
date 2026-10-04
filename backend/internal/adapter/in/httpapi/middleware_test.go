@@ -427,9 +427,9 @@ func TestPublicRoutesReachableWithoutToken(t *testing.T) {
 			t.Fatalf("status = %d, want 200", rec.Code)
 		}
 	})
-	t.Run("stripe webhook does not require a bearer token", func(t *testing.T) {
+	t.Run("paddle webhook does not require a bearer token", func(t *testing.T) {
 		h := newHarness(t)
-		rec := h.anon(http.MethodPost, "/v1/webhooks/stripe", strings.NewReader("{}"))
+		rec := h.anon(http.MethodPost, "/v1/webhooks/paddle", strings.NewReader("{}"))
 		if rec.Code == http.StatusUnauthorized {
 			t.Fatalf("status = 401, want the webhook route reachable without auth")
 		}

@@ -10,26 +10,71 @@ import (
 	"calendium/backend/internal/port"
 )
 
-// --- StripeEventRepo -----------------------------------------------------------
+// --- BillingEventRepo ------------------------------------------------------
 
-func TestStripeEventRepoRecordDedup(t *testing.T) {
+func TestBillingEventRepoRecordDedupByNotificationID(t *testing.T) {
 	st, _ := newTestStore(t)
 	ctx := context.Background()
+	at := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
 
-	firstTime, err := st.StripeEvents().Record(ctx, "evt_1", "invoice.paid")
+	first, err := st.BillingEvents().Record(ctx, port.SubscriptionEvent{NotificationID: "ntf_1", EventID: "evt_1", Type: "subscription.updated", OccurredAt: at})
 	if err != nil {
 		t.Fatalf("Record 1: %v", err)
 	}
-	if !firstTime {
-		t.Fatal("first Record must report firstTime = true")
+	if !first {
+		t.Fatal("first Record must report first = true")
 	}
-
-	secondTime, err := st.StripeEvents().Record(ctx, "evt_1", "customer.subscription.updated")
+	again, err := st.BillingEvents().Record(ctx, port.SubscriptionEvent{NotificationID: "ntf_1", EventID: "evt_1", Type: "subscription.updated", OccurredAt: at})
 	if err != nil {
 		t.Fatalf("Record 2: %v", err)
 	}
-	if secondTime {
-		t.Fatal("second Record of the same id must report firstTime = false")
+	if again {
+		t.Fatal("same notification id must report first = false")
+	}
+	// A Paddle replay: same event id, NEW notification id -> recorded as first
+	// (the service's occurred_at guard decides whether it changes anything).
+	replay, err := st.BillingEvents().Record(ctx, port.SubscriptionEvent{NotificationID: "ntf_2", EventID: "evt_1", Type: "subscription.updated", OccurredAt: at})
+	if err != nil {
+		t.Fatalf("Record 3: %v", err)
+	}
+	if !replay {
+		t.Fatal("a new notification id for a replayed event id must be first = true")
+	}
+}
+
+// The webhook pipeline records the notification and applies it in one tx:
+// when the apply fails, the marker must roll back so Paddle's retry is
+// processed (first = true) instead of being swallowed as a duplicate.
+func TestBillingEventRepoRecordRollsBackWithFailedApply(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+	seedUser(t, st, "u1")
+	at := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	ev := port.SubscriptionEvent{NotificationID: "ntf_rb", EventID: "evt_rb", Type: "subscription.updated", OccurredAt: at}
+	applyErr := errors.New("apply failed")
+
+	err := st.RunInTx(ctx, func(ctx context.Context) error {
+		first, err := st.BillingEvents().Record(ctx, ev)
+		if err != nil || !first {
+			t.Fatalf("Record in tx: first=%v err=%v", first, err)
+		}
+		if _, err := st.Subscriptions().UpsertIfNewer(ctx, domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive, LastEventAt: &at}); err != nil {
+			t.Fatalf("UpsertIfNewer in tx: %v", err)
+		}
+		return applyErr
+	})
+	if !errors.Is(err, applyErr) {
+		t.Fatalf("RunInTx = %v, want the apply error", err)
+	}
+	if _, err := st.Subscriptions().GetByUserID(ctx, "u1"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("apply must roll back, GetByUserID err = %v", err)
+	}
+	retry, err := st.BillingEvents().Record(ctx, ev)
+	if err != nil {
+		t.Fatalf("Record retry: %v", err)
+	}
+	if !retry {
+		t.Fatal("the marker must roll back with the failed apply so the retry is first = true")
 	}
 }
 

@@ -21,9 +21,9 @@ type SearchService struct {
 
 var _ port.SearchService = (*SearchService)(nil)
 
-func NewSearchService(subs port.SubscriptionRepo, threads port.ThreadRepo, events port.EventRepo, clock port.Clock, selfHosted bool) *SearchService {
+func NewSearchService(subs port.SubscriptionRepo, users port.UserRepo, threads port.ThreadRepo, events port.EventRepo, clock port.Clock, selfHosted bool) *SearchService {
 	return &SearchService{
-		ent:     entitlement{subs: subs, clock: clock, selfHost: selfHosted},
+		ent:     entitlement{subs: subs, users: users, clock: clock, selfHost: selfHosted},
 		threads: threads,
 		events:  events,
 	}

@@ -33,4 +33,4 @@ Also deliberately deferred: round-robin team scheduling links (collective all-fr
 
 ## Billing note — team plans are future work
 
-Billing is unchanged: per-user $50/yr via Stripe (Spotify model). Teams have no billing dimension yet — every member needs their own active subscription/trial. A seat-based team plan (seat-quantity subscription, owner-pays, proration on member changes) is flagged as future Stripe work and intentionally not part of M2.7.
+Billing is unchanged: per-user $50/yr via Paddle (Spotify model). Teams have no billing dimension yet — every member needs their own active subscription/trial. A seat-based team plan (seat-quantity subscription, owner-pays, proration on member changes) is flagged as future Paddle work and intentionally not part of M2.7.

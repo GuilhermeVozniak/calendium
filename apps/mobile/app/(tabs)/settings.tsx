@@ -29,7 +29,6 @@ import { useRouter } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import {
   ChevronRightIcon,
-  ExternalLinkIcon,
   LogOutIcon,
   MoonStarIcon,
   PlusIcon,
@@ -482,66 +481,48 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
+const DAY_MS = 86_400_000;
+
 /**
- * Read-only subscription state (docs/payments.md): the app never sells —
- * unsubscribed users get a plain link to manage the plan on the web.
+ * Subscription status text only (App Store 3.1.1/3.1.3(b), docs/payments.md):
+ * no price, no purchase call to action and no link to any purchase or billing
+ * page in the iOS/Android app.
  */
 function SubscriptionCard({ subscription }: { subscription: Subscription | null }) {
   if (!subscription) {
     return <Text className="text-sm text-muted-foreground">Couldn't load subscription.</Text>;
   }
 
-  const { status } = subscription;
-  const unsubscribed = status === 'none' || status === 'expired';
-
   const statusLine = (() => {
-    switch (status) {
-      case 'trialing':
-        return subscription.trialEndsAt
-          ? `Free trial · ends ${formatDate(subscription.trialEndsAt)}`
-          : 'Free trial';
+    switch (subscription.status) {
+      case 'trialing': {
+        if (!subscription.trialEndsAt) return 'Trial';
+        const days = Math.max(
+          0,
+          Math.ceil((Date.parse(subscription.trialEndsAt) - Date.now()) / DAY_MS)
+        );
+        return `Trial — ${days} ${days === 1 ? 'day' : 'days'} left`;
+      }
       case 'active':
-        return subscription.currentPeriodEnd
-          ? `Calendium Pro · ${subscription.cancelAtPeriodEnd ? 'ends' : 'renews'} ${formatDate(subscription.currentPeriodEnd)}`
-          : 'Calendium Pro · active';
+        return subscription.cancelAtPeriodEnd && subscription.currentPeriodEnd
+          ? `Active — ends ${formatDate(subscription.currentPeriodEnd)}`
+          : 'Active';
       case 'past_due':
-        return 'Payment issue — we are retrying your card';
+        return 'Payment issue';
+      case 'paused':
+        return 'Paused';
       case 'canceled':
         return subscription.currentPeriodEnd
-          ? `Canceled · access until ${formatDate(subscription.currentPeriodEnd)}`
-          : 'Canceled';
+          ? `Canceled — access until ${formatDate(subscription.currentPeriodEnd)}`
+          : 'Inactive';
       default:
-        return 'Not subscribed';
+        return 'Inactive';
     }
   })();
 
   return (
-    <>
-      <View>
-        <Text className="text-sm font-medium">{statusLine}</Text>
-        <Text className="text-xs text-muted-foreground">
-          Calendium Annual · ${subscription.priceUsd}/year
-        </Text>
-      </View>
-      {unsubscribed ? (
-        <>
-          <Text className="text-sm text-muted-foreground">
-            Calendium Pro is managed on the web — there are no purchases in this app.
-          </Text>
-          <Button
-            variant="outline"
-            size="sm"
-            className="flex-row gap-2 self-start"
-            onPress={() => WebBrowser.openBrowserAsync('https://calendium.app/pricing')}>
-            <Icon as={ExternalLinkIcon} className="size-4" />
-            <Text>Manage on the web</Text>
-          </Button>
-        </>
-      ) : (
-        <Text className="text-xs text-muted-foreground">
-          Manage your plan anytime at calendium.app
-        </Text>
-      )}
-    </>
+    <View testID="subscription-card">
+      <Text className="text-sm font-medium">{statusLine}</Text>
+    </View>
   );
 }

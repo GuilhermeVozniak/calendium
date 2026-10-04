@@ -49,8 +49,8 @@ export default function TermsPage() {
       <LegalSection title="Subscriptions and billing">
         <p>
           Calendium Cloud costs <strong>$50 per year</strong> after a 14-day free trial. Billing runs
-          through Stripe; when your trial ends, your payment method is charged and the plan renews
-          annually until you cancel. You can cancel anytime from Settings → Billing, and your access
+          through Paddle, our merchant of record; once you subscribe, the plan renews annually until
+          you cancel. You can cancel anytime from Settings → Billing, and your access
           continues through the end of the period you paid for. There are no in-app purchases — the
           mobile and desktop apps unlock automatically once you subscribe on the web. Fees are
           non-refundable except where required by law.

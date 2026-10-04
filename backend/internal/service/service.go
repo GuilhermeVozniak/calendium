@@ -76,10 +76,16 @@ type SystemClock struct{}
 func (SystemClock) Now() time.Time { return time.Now().UTC() }
 
 // entitlement enforces the subscription paywall shared by all gated
-// use-cases (docs/payments.md): access requires trialing, active, or
-// past_due within the 7-day grace window; anything else is 402.
+// use-cases (docs/payments.md): access is decided by
+// domain.Subscription.HasAccess at the current time; a denial is a
+// *domain.PaymentRequiredError carrying the 402 details.
 type entitlement struct {
-	subs  port.SubscriptionRepo
+	subs port.SubscriptionRepo
+	// users anchors the lazy signup-trial grant when the user has no
+	// subscription row yet (spec: the gate grants the trial). Every
+	// composition root wires it; nil (some unit tests) skips the grant and
+	// a missing row stays 402 none.
+	users port.UserRepo
 	clock port.Clock
 	// selfHost unlocks every gated use-case for open-core self-hosted
 	// deployments (SELF_HOSTED=true): require always succeeds and never
@@ -92,14 +98,19 @@ func (e entitlement) require(ctx context.Context, userID string) error {
 		return nil
 	}
 	sub, err := e.subs.GetByUserID(ctx, userID)
+	if errors.Is(err, domain.ErrNotFound) && e.users != nil {
+		// A brand-new user's first call may be a gated one, before any
+		// client fetched the subscription: grant the trial here too.
+		sub, err = grantTrial(ctx, e.users, e.subs, userID)
+	}
 	if errors.Is(err, domain.ErrNotFound) {
-		return fmt.Errorf("%w: no subscription", domain.ErrPaymentRequired)
+		return &domain.PaymentRequiredError{Reason: domain.DenialNone}
 	}
 	if err != nil {
 		return err
 	}
-	if !sub.HasAccess(e.clock.Now()) {
-		return fmt.Errorf("%w: subscription status %s", domain.ErrPaymentRequired, sub.Status)
+	if now := e.clock.Now(); !sub.HasAccess(now) {
+		return domain.NewPaymentRequiredError(sub, now)
 	}
 	return nil
 }

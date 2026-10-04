@@ -59,7 +59,7 @@ TOKEN_ENCRYPTION_KEY=<paste the 64-hex-char key from make gen-secret>
 ## 3. Set your instance identity and mode
 
 ```dotenv
-SELF_HOSTED=true                       # unlocks all features, disables Stripe
+SELF_HOSTED=true                       # unlocks all features, disables Paddle billing
 INSTANCE_NAME=Acme Mail                 # shown to clients on the connect screen
 DOMAIN=mail.example.com                 # the domain Caddy will serve
 ACME_EMAIL=you@example.com              # Let's Encrypt expiry notices

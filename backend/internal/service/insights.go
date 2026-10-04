@@ -55,7 +55,7 @@ func NewInsightsService(d InsightsServiceDeps) *InsightsSvc {
 		managed:  d.Managed,
 		tasks:    d.Tasks,
 		prefs:    d.Prefs,
-		ent:      entitlement{subs: d.Subscriptions, clock: d.Clock, selfHost: d.SelfHosted},
+		ent:      entitlement{subs: d.Subscriptions, users: d.Users, clock: d.Clock, selfHost: d.SelfHosted},
 	}
 }
 
