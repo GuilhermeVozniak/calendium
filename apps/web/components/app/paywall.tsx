@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { format } from 'date-fns';
 import { Lock, LogOut, X } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -139,7 +140,7 @@ export function PaywallScreen({ reason, className }: { reason: PaymentRequiredRe
 }
 
 const TRIAL_BANNER_KEY = 'calendium.trial-banner.dismissed';
-const todayKey = () => new Date().toISOString().slice(0, 10);
+const todayKey = () => format(new Date(), 'yyyy-MM-dd'); // local day, resets at local midnight
 
 /** Last-3-days trial reminder, dismissible once per calendar day. */
 export function TrialBanner({ subscription }: { subscription: Subscription | null | undefined }) {
@@ -211,6 +212,7 @@ export function BillingGate({ children }: { children: React.ReactNode }) {
     queryFn: fetchSubscription,
     enabled: billing,
     retry: 1,
+    retryDelay: 300, // short: the gate holds the whole shell's first paint
     staleTime: 60_000,
     refetchInterval: 5 * 60_000,
   });

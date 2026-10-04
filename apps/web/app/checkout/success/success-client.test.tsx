@@ -46,6 +46,19 @@ describe('/checkout/success', () => {
     expect(region).toHaveTextContent(/Annual plan is active/);
   });
 
+  // A session refetch yields a new object for the same user: polling must
+  // not restart (attempts reset / resume after "active").
+  it('does not restart polling when the session object changes for the same user', async () => {
+    getSubscriptionMock.mockResolvedValue(sub('active'));
+    const { rerender } = render(<CheckoutSuccessClient />);
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(getSubscriptionMock).toHaveBeenCalledTimes(1);
+    session.data = { user: { id: 'u1' } };
+    rerender(<CheckoutSuccessClient />);
+    await act(() => vi.advanceTimersByTimeAsync(4000));
+    expect(getSubscriptionMock).toHaveBeenCalledTimes(1);
+  });
+
   it('gives up after maxAttempts and still links to the app', async () => {
     getSubscriptionMock.mockResolvedValue(sub('trialing'));
     render(<CheckoutSuccessClient pollMs={2000} maxAttempts={3} />);

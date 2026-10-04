@@ -3,6 +3,7 @@ import { ApiRequestError } from '@calendium/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { format } from 'date-fns';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fetchSubscriptionMock = vi.fn();
@@ -159,9 +160,26 @@ describe('TrialBanner', () => {
     renderWithQuery(<TrialBanner subscription={sub('trialing', { trialEndsAt: twoDays })} />);
     await userEvent.click(screen.getByRole('button', { name: 'Dismiss for today' }));
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
-    expect(window.localStorage.getItem('calendium.trial-banner.dismissed')).toBe(new Date().toISOString().slice(0, 10));
+    expect(window.localStorage.getItem('calendium.trial-banner.dismissed')).toBe(format(new Date(), 'yyyy-MM-dd'));
     renderWithQuery(<TrialBanner subscription={sub('trialing', { trialEndsAt: twoDays })} />);
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  // The dismissal resets at LOCAL midnight, not UTC midnight.
+  it('keys the dismissal by the local calendar day', async () => {
+    const prevTz = process.env.TZ;
+    process.env.TZ = 'America/Sao_Paulo'; // UTC-3: 23:30 local is already tomorrow in UTC
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 9, 4, 23, 30));
+    try {
+      const ends = new Date(Date.now() + 2 * 24 * 3600_000).toISOString();
+      renderWithQuery(<TrialBanner subscription={sub('trialing', { trialEndsAt: ends })} />);
+      await userEvent.click(screen.getByRole('button', { name: 'Dismiss for today' }));
+      expect(window.localStorage.getItem('calendium.trial-banner.dismissed')).toBe('2026-10-04');
+    } finally {
+      vi.useRealTimers();
+      process.env.TZ = prevTz;
+    }
   });
 
   it('renders nothing for non-trial subscriptions', () => {
@@ -206,8 +224,8 @@ describe('BillingGate', () => {
   it('fails open when the subscription request errors', async () => {
     fetchSubscriptionMock.mockRejectedValue(new Error('network down'));
     renderWithQuery(<BillingGate>{child}</BillingGate>);
-    // The gate retries once (React Query's default ~1s backoff) before
-    // settling into the error state, so allow more than findBy's 1s default.
+    // The gate retries once (300 ms retryDelay) before settling into the
+    // error state; allow headroom over findBy's 1s default.
     expect(await screen.findByTestId('app', {}, { timeout: 4000 })).toBeInTheDocument();
     expect(fetchSubscriptionMock).toHaveBeenCalledTimes(2);
   });

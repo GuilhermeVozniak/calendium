@@ -25,8 +25,11 @@ export function CheckoutSuccessClient({
   const { data: session, isPending } = authClient.useSession();
   const [status, setStatus] = React.useState<Status>('polling');
 
+  // Keyed on the user id, not the session object: a session refetch must
+  // not restart (or resume) polling.
+  const userId = session?.user.id;
   React.useEffect(() => {
-    if (isPending || !session) return;
+    if (isPending || !userId) return;
     let attempts = 0;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -53,7 +56,7 @@ export function CheckoutSuccessClient({
       stopped = true;
       clearTimeout(timer);
     };
-  }, [isPending, session, pollMs, maxAttempts]);
+  }, [isPending, userId, pollMs, maxAttempts]);
 
   const signedOut = !isPending && !session;
 
