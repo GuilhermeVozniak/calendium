@@ -296,7 +296,9 @@ export default function SignInPage() {
                   type="password"
                   autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
                   required
-                  minLength={PASSWORD_MIN_LENGTH}
+                  // The policy applies to NEW passwords only: existing
+                  // accounts may still have 8–9 character ones.
+                  minLength={mode === 'signup' ? PASSWORD_MIN_LENGTH : undefined}
                   placeholder="••••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}

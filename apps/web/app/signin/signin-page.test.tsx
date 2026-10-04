@@ -54,10 +54,26 @@ afterEach(() => {
 });
 
 describe('SignInPage', () => {
-  it('links to /forgot-password and requires a 10-character password', () => {
+  it('links to /forgot-password; only sign-up enforces the 10-character minimum', async () => {
+    const user = userEvent.setup();
     render(<SignInPage />);
     expect(screen.getByRole('link', { name: 'Forgot password?' })).toHaveAttribute('href', '/forgot-password');
+    // Existing accounts may have 8–9 character passwords (the old minimum):
+    // sign-in must not block them client-side.
+    expect(screen.getByLabelText('Password')).not.toHaveAttribute('minlength');
+    await user.click(screen.getByRole('button', { name: "Don't have an account? Sign up" }));
     expect(screen.getByLabelText('Password')).toHaveAttribute('minlength', '10');
+  });
+
+  it('submits a 9-character password in sign-in mode', async () => {
+    const user = userEvent.setup();
+    signInEmail.mockResolvedValue({ data: { token: 'sess' }, error: null });
+    render(<SignInPage />);
+    await user.type(screen.getByLabelText('Email'), 'ada@example.test');
+    await user.type(screen.getByLabelText('Password'), 'nine-char');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(screen.getByLabelText('Password')).toBeValid();
+    await waitFor(() => expect(signInEmail).toHaveBeenCalledWith(expect.objectContaining({ password: 'nine-char' }), expect.anything()));
   });
 
   it('sign-up with token === null shows "Check your inbox" with a 60 s resend cooldown, then resends', async () => {
