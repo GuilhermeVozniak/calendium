@@ -62,15 +62,113 @@ func (c *Client) CreateCheckout(ctx context.Context, p port.CheckoutParams) (str
 	return txn.Checkout.URL, nil
 }
 
-// Implemented in Task 6.
-func (c *Client) CreatePortalSession(context.Context, string, string) (port.PortalURLs, error) {
-	return port.PortalURLs{}, fmt.Errorf("paddle: not implemented")
+// CreatePortalSession opens a temporary customer-portal session. Overview
+// is always present; Cancel/UpdatePayment are filled only for the given
+// subscription id (empty when there is none). Links must not be cached.
+func (c *Client) CreatePortalSession(ctx context.Context, customerID, subscriptionID string) (port.PortalURLs, error) {
+	body := map[string]any{}
+	if subscriptionID != "" {
+		body["subscription_ids"] = []string{subscriptionID}
+	}
+	var session struct {
+		URLs struct {
+			General struct {
+				Overview string `json:"overview"`
+			} `json:"general"`
+			Subscriptions []struct {
+				ID                              string `json:"id"`
+				CancelSubscription              string `json:"cancel_subscription"`
+				UpdateSubscriptionPaymentMethod string `json:"update_subscription_payment_method"`
+			} `json:"subscriptions"`
+		} `json:"urls"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/customers/"+url.PathEscape(customerID)+"/portal-sessions", body, &session); err != nil {
+		return port.PortalURLs{}, err
+	}
+	out := port.PortalURLs{Overview: session.URLs.General.Overview}
+	for _, s := range session.URLs.Subscriptions {
+		if s.ID == subscriptionID {
+			out.Cancel = s.CancelSubscription
+			out.UpdatePayment = s.UpdateSubscriptionPaymentMethod
+		}
+	}
+	return out, nil
 }
-func (c *Client) GetSubscription(context.Context, string) (port.SubscriptionEvent, error) {
-	return port.SubscriptionEvent{}, fmt.Errorf("paddle: not implemented")
+
+// subscription is the subset of Paddle's subscription entity the mirror
+// needs. custom_data, current_billing_period and scheduled_change are
+// nullable in Paddle payloads (canceled subscriptions have no period).
+type subscription struct {
+	ID         string `json:"id"`
+	Status     string `json:"status"`
+	CustomerID string `json:"customer_id"`
+	CustomData *struct {
+		UserID string `json:"user_id"`
+	} `json:"custom_data"`
+	CurrentBillingPeriod *struct {
+		StartsAt time.Time `json:"starts_at"`
+		EndsAt   time.Time `json:"ends_at"`
+	} `json:"current_billing_period"`
+	ScheduledChange *struct {
+		Action      string    `json:"action"`
+		EffectiveAt time.Time `json:"effective_at"`
+	} `json:"scheduled_change"`
 }
-func (c *Client) CancelSubscription(context.Context, string, bool) error {
-	return fmt.Errorf("paddle: not implemented")
+
+// normalizeSubscription copies the entity onto ev (envelope fields already
+// set by the caller) using the docs/payments.md mapping.
+func normalizeSubscription(sub subscription, ev port.SubscriptionEvent) port.SubscriptionEvent {
+	ev.SubscriptionID = sub.ID
+	ev.CustomerID = sub.CustomerID
+	if sub.CustomData != nil {
+		ev.UserID = sub.CustomData.UserID
+	}
+	ev.Status = mapStatus(sub.Status)
+	if sub.CurrentBillingPeriod != nil && !sub.CurrentBillingPeriod.EndsAt.IsZero() {
+		end := sub.CurrentBillingPeriod.EndsAt.UTC()
+		ev.CurrentPeriodEnd = &end
+	}
+	ev.CancelAtPeriodEnd = sub.ScheduledChange != nil && sub.ScheduledChange.Action == "cancel"
+	return ev
+}
+
+// GetSubscription reads the live subscription for reconciliation. The
+// caller stamps OccurredAt (there is no event time on a read).
+func (c *Client) GetSubscription(ctx context.Context, subscriptionID string) (port.SubscriptionEvent, error) {
+	var sub subscription
+	if err := c.do(ctx, http.MethodGet, "/subscriptions/"+url.PathEscape(subscriptionID), nil, &sub); err != nil {
+		return port.SubscriptionEvent{}, err
+	}
+	return normalizeSubscription(sub, port.SubscriptionEvent{Type: "subscription.reconciled"}), nil
+}
+
+// CancelSubscription cancels at the next billing period (Paddle keeps
+// status=active with scheduled_change.action=cancel) or immediately.
+func (c *Client) CancelSubscription(ctx context.Context, subscriptionID string, immediately bool) error {
+	effective := "next_billing_period"
+	if immediately {
+		effective = "immediately"
+	}
+	return c.do(ctx, http.MethodPost, "/subscriptions/"+url.PathEscape(subscriptionID)+"/cancel",
+		map[string]string{"effective_from": effective}, nil)
+}
+
+// mapStatus normalizes Paddle statuses onto the domain set. Paddle trials
+// are never configured, so "trialing" is treated as paid-active
+// defensively; anything unrecognized fails closed to none.
+func mapStatus(s string) domain.SubscriptionStatus {
+	switch s {
+	case "active", "trialing":
+		return domain.SubscriptionActive
+	case "past_due":
+		return domain.SubscriptionPastDue
+	case "paused":
+		return domain.SubscriptionPaused
+	case "canceled":
+		return domain.SubscriptionCanceled
+	default:
+		return domain.SubscriptionNone
+	}
 }
 
 // Implemented in Task 7.
