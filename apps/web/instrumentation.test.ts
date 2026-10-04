@@ -16,10 +16,12 @@ describe('instrumentation.register', () => {
       'ALLOW_DEV_ORIGINS',
       'CSP_REPORT_ONLY',
       'NEXT_PHASE',
+      'NEXT_PUBLIC_DEMO_MODE',
     ])
       vi.stubEnv(k, '');
     vi.stubEnv('NEXT_RUNTIME', 'nodejs');
     vi.stubEnv('BETTER_AUTH_SECRET', 'x'.repeat(32));
+    vi.stubEnv('INTERNAL_API_SECRET', 'ab'.repeat(32));
     warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
@@ -103,6 +105,23 @@ describe('instrumentation.register', () => {
     vi.stubEnv('CSP_REPORT_ONLY', 'enforce');
     await expect(register()).rejects.toThrow('CSP_REPORT_ONLY must be true or false (also 1/0, yes/no), got "enforce"');
     vi.stubEnv('CSP_REPORT_ONLY', '0');
+    await expect(register()).resolves.toBeUndefined();
+  });
+
+  it('refuses a production server without INTERNAL_API_SECRET, except in demo mode', async () => {
+    vi.stubEnv('SELF_HOSTED', 'true');
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('INTERNAL_API_SECRET', '');
+    await expect(register()).rejects.toThrow(/Refusing to start: INTERNAL_API_SECRET is required/);
+    vi.stubEnv('INTERNAL_API_SECRET', 'not-hex');
+    await expect(register()).rejects.toThrow(/INTERNAL_API_SECRET must be exactly 64 hex chars/);
+    vi.stubEnv('NEXT_PUBLIC_DEMO_MODE', 'true');
+    await expect(register()).resolves.toBeUndefined();
+  });
+
+  it('does not require INTERNAL_API_SECRET outside production', async () => {
+    vi.stubEnv('SELF_HOSTED', 'true');
+    vi.stubEnv('INTERNAL_API_SECRET', '');
     await expect(register()).resolves.toBeUndefined();
   });
 
