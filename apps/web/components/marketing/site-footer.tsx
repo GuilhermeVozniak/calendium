@@ -28,7 +28,10 @@ const columns: { title: string; links: { label: string; href: string }[] }[] = [
   },
 ];
 
-/** "© <year> Calendium" — computed at render so it is never stale. */
+/**
+ * "© <year> Calendium". The marketing pages are statically prerendered, so the
+ * year is fixed at build time and updates on each build/deploy.
+ */
 export function copyrightLine(year: number = new Date().getFullYear()): string {
   return `© ${year} Calendium`;
 }

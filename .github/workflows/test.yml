@@ -173,9 +173,11 @@ jobs:
         run: bun install --frozen-lockfile
 
       # Acceptance: 18/18. Duplicate react copies or SDK patch drift fail here
-      # before they fail inside an EAS build.
+      # before they fail inside an EAS build. Pinned (not a dependency, so an
+      # unpinned bunx would pull whatever upstream ships and could turn CI red
+      # with no repo change); bump deliberately after checking it passes.
       - name: expo-doctor
-        run: bunx expo-doctor
+        run: bunx expo-doctor@1.20.4
 
       - name: expo install --check
         run: bunx expo install --check

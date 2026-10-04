@@ -2,7 +2,7 @@ import { cp, mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { checkVersion, main, setVersion, VERSION_FILES } from './set-version.mjs';
 
@@ -73,6 +73,28 @@ describe('set-version', () => {
     expect(await main(['7.8.9'], dir)).toBe(0);
     expect(await main(['7.8.9', '--check'], dir)).toBe(0);
     expect(await main([], dir)).toBe(2);
+  });
+
+  // A typo such as --chek must never fall through to a write.
+  it('rejects unknown flags and extra arguments with exit 2, writing nothing', async () => {
+    const dir = await fixture();
+    const before = Object.fromEntries(
+      await Promise.all(VERSION_FILES.map(async ({ file }) => [file, await readFile(path.join(dir, file), 'utf8')]))
+    );
+    const errors = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((msg) => errors.push(String(msg)));
+    try {
+      for (const argv of [['7.8.9', '--chek'], ['--chek', '7.8.9'], ['--dry-run'], ['7.8.9', '4.5.6'], ['7.8.9', '--check', '--check']]) {
+        errors.length = 0;
+        expect([argv, await main(argv, dir)]).toEqual([argv, 2]);
+        expect(errors.join('\n')).toMatch(/usage: node scripts\/set-version\.mjs X\.Y\.Z \[--check\]/);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+    for (const { file } of VERSION_FILES) {
+      expect(await readFile(path.join(dir, file), 'utf8')).toBe(before[file]);
+    }
   });
 
   it('--check never writes', async () => {

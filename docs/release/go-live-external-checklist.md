@@ -39,7 +39,8 @@ connect, plus `openid email profile` for login. One OAuth client serves both.
 Existing material in `apps/mobile/docs/apple/`: Team ID `CT22R575UG`,
 Services ID `com.calendium.app.service`, Key ID `8MX6Q9WW35`, the `.p8`
 (gitignored), and `secret-gem.rb` which mints the client secret. Its
-`key_file` path is stale; point it at `apps/mobile/docs/apple/AuthKey_8MX6Q9WW35.p8`.
+`key_file` is relative to the script (`AuthKey_8MX6Q9WW35.p8` next to it), so
+it runs from any working directory once the `.p8` is in place.
 
 - [ ] On the Services ID, Sign in with Apple → Configure: domain `<DOMAIN>`
       (no scheme), return URL `https://<DOMAIN>/api/auth/callback/apple`.

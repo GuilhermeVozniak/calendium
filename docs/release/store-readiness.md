@@ -87,6 +87,12 @@ store listing screenshots.
 5. White-label builds only: `EXPO_PUBLIC_CLOUD_API_URL` /
    `EXPO_PUBLIC_DEMO_SERVER_URL` (EAS environment) replace the Calendium Cloud
    preset and demo label; leave them unset for the Calendium store build.
+6. The `development` profile (`developmentClient: true`) needs the dev client
+   first: `cd apps/mobile && bunx expo install expo-dev-client` (it is not a
+   dependency today, so a non-interactive `eas build --profile development`
+   fails without it). The profiles' `channel` values do nothing until
+   `expo-updates` is installed and configured; they only reserve the names for
+   OTA updates.
 
 ## 5. Desktop
 
