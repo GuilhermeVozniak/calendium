@@ -208,6 +208,8 @@ type fakeAccountRepo struct {
 	created *domain.ConnectedAccount
 	updated *domain.ConnectedAccount
 	deleted []string
+	// getTokensCalls counts GetTokens (the export must never read tokens).
+	getTokensCalls int
 }
 
 func newAccountRepo() *fakeAccountRepo {
@@ -272,6 +274,7 @@ func (r *fakeAccountRepo) SaveTokens(_ context.Context, accountID string, t port
 }
 
 func (r *fakeAccountRepo) GetTokens(_ context.Context, accountID string) (port.TokenSet, error) {
+	r.getTokensCalls++
 	t, ok := r.tokens[accountID]
 	if !ok {
 		return port.TokenSet{}, domain.ErrNotFound
