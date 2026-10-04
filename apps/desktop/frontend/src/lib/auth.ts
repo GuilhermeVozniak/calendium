@@ -275,7 +275,8 @@ let jwtServerKey = activeServerKey();
 
 /**
  * JWT cache shared with lib/api.ts (piece 2): reused until 60 s before `exp`.
- * It is invalidated after every successful sign-in and on sign-out, so a
+ * It is invalidated after every successful sign-in and on sign-out (and, on
+ * a 401, only when the failing token is still the cached one), so a
  * token minted for one session is never served to the next, and whenever the
  * active server changes (checked on every get(), so every path that switches
  * servers — Connect, demo, clear — is covered without lib/server-config
@@ -290,8 +291,10 @@ export const accessTokens: AccessTokenCache = {
     }
     return jwtCache.get();
   },
-  invalidate() {
-    jwtCache.invalidate();
+  // Forward the 401's token: the shared cache drops it only while it is still
+  // the cached one, so concurrent 401s on one stale JWT cost a single re-mint.
+  invalidate(failedToken) {
+    jwtCache.invalidate(failedToken);
   },
 };
 
