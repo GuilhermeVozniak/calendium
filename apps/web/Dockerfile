@@ -41,6 +41,9 @@ COPY . .
 # RUNTIME and supplied by docker-compose to the runner stage — never baked here.
 ARG NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+# Support address on the marketing/legal pages (blank = support@calendium.app).
+ARG NEXT_PUBLIC_SUPPORT_EMAIL
+ENV NEXT_PUBLIC_SUPPORT_EMAIL=$NEXT_PUBLIC_SUPPORT_EMAIL
 # Paddle.js overlay checkout (docs/payments.md): public client token + env.
 ARG NEXT_PUBLIC_PADDLE_CLIENT_TOKEN
 ARG NEXT_PUBLIC_PADDLE_ENV=sandbox
