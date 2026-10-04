@@ -82,6 +82,12 @@ describe('PaywallScreen', () => {
     expect(screen.getByRole('button', { name: /Sign out/ })).toBeInTheDocument();
   });
 
+  it('moves focus to the heading on mount and announces the status politely', () => {
+    renderWithQuery(<PaywallScreen reason="canceled" />);
+    expect(screen.getByRole('heading', { name: 'Your subscription has ended' })).toHaveFocus();
+    expect(screen.getByText(/Resubscribe any time/).closest('[aria-live="polite"]')).not.toBeNull();
+  });
+
   it('past_due shows a secondary Manage billing action', () => {
     renderWithQuery(<PaywallScreen reason="past_due" />);
     expect(screen.getByRole('button', { name: 'Manage billing' })).toBeInTheDocument();

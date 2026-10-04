@@ -22,6 +22,8 @@ test.describe('Paywall (demo mode)', () => {
     await page.goto('/mail');
     const heading = page.getByRole('heading', { name: 'Your subscription has ended' });
     await expect(heading).toBeVisible();
+    // Focus lands on the paywall heading so screen readers announce it.
+    await expect(heading).toBeFocused();
     await expect(page.getByRole('button', { name: /Compose/ })).toHaveCount(0);
     await expect(page.getByRole('link', { name: 'Settings' })).toHaveCount(0);
     await openCommandPalette(page);

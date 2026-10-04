@@ -90,6 +90,12 @@ export function PaywallScreen({ reason, className }: { reason: PaymentRequiredRe
   const manage = useBillingPortalMutation('overview');
   const needsPayment = reason === 'past_due' || reason === 'paused';
   const copy = COPY[reason];
+  // The paywall can replace the whole shell mid-session; move focus to its
+  // heading so it is announced instead of focus falling back to <body>.
+  const headingRef = React.useRef<HTMLHeadingElement>(null);
+  React.useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
 
   return (
     <section aria-label="Subscription required" className={cn('flex h-full items-center justify-center p-6', className)}>
@@ -97,8 +103,12 @@ export function PaywallScreen({ reason, className }: { reason: PaymentRequiredRe
         <div className="bg-background flex size-10 items-center justify-center rounded-md border">
           <Lock className="size-5" />
         </div>
-        <h1 className="text-lg font-semibold">{copy.title}</h1>
-        <p className="text-muted-foreground text-sm">{copy.body}</p>
+        <h1 ref={headingRef} tabIndex={-1} className="text-lg font-semibold outline-none">
+          {copy.title}
+        </h1>
+        <p aria-live="polite" className="text-muted-foreground text-sm">
+          {copy.body}
+        </p>
         {needsPayment ? (
           <div className="flex flex-col gap-2 sm:flex-row">
             <Button onClick={() => updatePayment.mutate()} disabled={updatePayment.isPending}>
