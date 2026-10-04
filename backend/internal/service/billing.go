@@ -17,6 +17,10 @@ import (
 // memory, per process).
 const inlineReconcileEvery = 10 * time.Minute
 
+// inlineReconcileTimeout bounds the provider read done inline by
+// GetSubscription, so a hung provider cannot stall the request.
+const inlineReconcileTimeout = 5 * time.Second
+
 // BillingServiceDeps wires BillingService (docs/payments.md).
 type BillingServiceDeps struct {
 	Users    port.UserRepo
@@ -92,7 +96,9 @@ func (s *BillingService) GetSubscription(ctx context.Context, userID string) (do
 	if sub.Status == domain.SubscriptionActive && sub.BillingSubscriptionID != "" &&
 		sub.CurrentPeriodEnd != nil && !now.Before(*sub.CurrentPeriodEnd) &&
 		s.claimInlineReconcile(userID, now) {
-		fresh, err := s.reconcileOne(ctx, sub, now)
+		ictx, cancel := context.WithTimeout(ctx, inlineReconcileTimeout)
+		fresh, err := s.reconcileOne(ictx, sub)
+		cancel()
 		if err != nil {
 			s.logger.Warn("billing: inline reconcile failed", "user_id", userID, "error", err)
 		} else {
@@ -304,14 +310,14 @@ func (s *BillingService) applyEvent(ctx context.Context, ev port.SubscriptionEve
 }
 
 // ReconcileSubscriptions re-reads every stale row from Paddle and applies
-// it as a synthetic event at now (so it always wins). Provider errors are
-// logged and skipped; the loop never fails as a whole.
+// it as a synthetic event stamped at its own apply time (so it always
+// wins). Provider errors are logged and skipped; only a list failure or
+// ctx ending (shutdown) is returned.
 func (s *BillingService) ReconcileSubscriptions(ctx context.Context) error {
 	if s.selfHosted {
 		return nil
 	}
-	now := s.clock.Now()
-	rows, err := s.subs.ListForReconciliation(ctx, now)
+	rows, err := s.subs.ListForReconciliation(ctx, s.clock.Now())
 	if err != nil {
 		return err
 	}
@@ -319,7 +325,7 @@ func (s *BillingService) ReconcileSubscriptions(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if _, err := s.reconcileOne(ctx, sub, now); err != nil {
+		if _, err := s.reconcileOne(ctx, sub); err != nil {
 			s.logger.Warn("billing: reconcile failed", "user_id", sub.UserID, "subscription_id", sub.BillingSubscriptionID, "error", err)
 		}
 	}
@@ -327,16 +333,19 @@ func (s *BillingService) ReconcileSubscriptions(ctx context.Context) error {
 }
 
 // reconcileOne fetches the live subscription and applies it through the
-// webhook upsert path with OccurredAt = now and force = true (the adapter's
+// webhook upsert path with OccurredAt = the clock at apply time (after the
+// provider read, not the pass start) and force = true (the adapter's
 // GetSubscription returns a zero OccurredAt by design, and the read must
-// never be dropped as stale).
-func (s *BillingService) reconcileOne(ctx context.Context, sub domain.Subscription, now time.Time) (domain.Subscription, error) {
+// never be dropped as stale). Known narrow race, accepted: a webhook
+// committed between the provider read and the forced write is overwritten
+// by this slightly older snapshot; the next webhook or pass corrects it.
+func (s *BillingService) reconcileOne(ctx context.Context, sub domain.Subscription) (domain.Subscription, error) {
 	ev, err := s.payments.GetSubscription(ctx, sub.BillingSubscriptionID)
 	if err != nil {
 		return sub, err
 	}
 	ev.UserID = sub.UserID
-	ev.OccurredAt = now
+	ev.OccurredAt = s.clock.Now()
 	if ev.SubscriptionID == "" {
 		ev.SubscriptionID = sub.BillingSubscriptionID
 	}
@@ -347,11 +356,18 @@ func (s *BillingService) reconcileOne(ctx context.Context, sub domain.Subscripti
 }
 
 // claimInlineReconcile reserves the per-user inline slot. It is claimed
-// before the provider call so a failing provider is not hammered.
+// before the provider call so a failing provider is not hammered. Entries
+// older than the window are pruned on every claim, which bounds the map by
+// the users that claimed within the last inlineReconcileEvery.
 func (s *BillingService) claimInlineReconcile(userID string, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if last, ok := s.lastInline[userID]; ok && now.Sub(last) < inlineReconcileEvery {
+	for id, last := range s.lastInline {
+		if now.Sub(last) >= inlineReconcileEvery {
+			delete(s.lastInline, id)
+		}
+	}
+	if _, ok := s.lastInline[userID]; ok {
 		return false
 	}
 	s.lastInline[userID] = now

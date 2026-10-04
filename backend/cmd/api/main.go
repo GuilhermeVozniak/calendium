@@ -461,7 +461,7 @@ func run(logger *slog.Logger) error {
 	// nil entry means that surface answers 501 / is omitted from discovery,
 	// so a misconfigured deploy is diagnosable at a glance. Log only; no
 	// behavior change.
-	logger.Info("api: optional deps",
+	logger.Info("api: optional deps", append([]any{
 		"teams", teams != nil,
 		"collab", collab != nil,
 		"delegations", delegations != nil,
@@ -473,8 +473,7 @@ func run(logger *slog.Logger) error {
 		"crm", crmSvc != nil,
 		"insights", insightsSvc != nil,
 		"push", pushSender != nil,
-		"billing_env", cfg.Paddle.Env,
-	)
+	}, billingEnvLogAttrs(cfg.Instance.SelfHosted, cfg.Paddle.Env)...)...)
 
 	// --- HTTP server ---
 	handler := httpapi.New(httpapi.Deps{
@@ -566,4 +565,13 @@ func (s crmConnectionStore) ListByUser(ctx context.Context, userID string) ([]po
 
 func (s crmConnectionStore) UpdateTokens(ctx context.Context, connectionID string, t port.TokenSet) error {
 	return s.repo.SaveTokens(ctx, connectionID, t)
+}
+
+// billingEnvLogAttrs names the Paddle environment in the startup log only
+// when billing is enabled; a self-hosted instance has no biller.
+func billingEnvLogAttrs(selfHosted bool, env string) []any {
+	if selfHosted {
+		return nil
+	}
+	return []any{"billing_env", env}
 }

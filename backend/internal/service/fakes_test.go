@@ -82,6 +82,7 @@ type fakeSubscriptionRepo struct {
 	// beforeWrite, when set, runs at the start of every Upsert /
 	// UpsertIfNewer (simulates a concurrent writer committing first).
 	beforeWrite func()
+	listErr     error // returned by ListForReconciliation when set
 }
 
 func newSubscriptionRepo() *fakeSubscriptionRepo {
@@ -137,6 +138,9 @@ func (r *fakeSubscriptionRepo) write(s domain.Subscription) error {
 			s.BillingSubscriptionID = prev.BillingSubscriptionID
 		}
 	}
+	if prev, ok := r.byUser[s.UserID]; ok && prev.BillingCustomerID != s.BillingCustomerID {
+		delete(r.byCustomer, prev.BillingCustomerID) // no stale customer index
+	}
 	r.byUser[s.UserID] = s
 	if s.BillingCustomerID != "" {
 		r.byCustomer[s.BillingCustomerID] = s
@@ -161,6 +165,9 @@ func (r *fakeSubscriptionRepo) EnsureTrial(_ context.Context, userID string, tri
 }
 
 func (r *fakeSubscriptionRepo) ListForReconciliation(_ context.Context, now time.Time) ([]domain.Subscription, error) {
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
 	var out []domain.Subscription
 	for _, s := range r.byUser {
 		if s.BillingSubscriptionID == "" {
@@ -1522,6 +1529,7 @@ type fakePayments struct {
 	getSubEvent     port.SubscriptionEvent
 	getSubErr       error
 	cancelErr       error
+	onGetSub        func(ctx context.Context, subscriptionID string) // runs inside GetSubscription
 
 	// recording
 	ensureCustomerCalls      int
@@ -1561,9 +1569,12 @@ func (p *fakePayments) ParseWebhook(_ []byte, _ string, now time.Time) (port.Sub
 	return p.webhookEvent, p.parseWebhookErr
 }
 
-func (p *fakePayments) GetSubscription(_ context.Context, subscriptionID string) (port.SubscriptionEvent, error) {
+func (p *fakePayments) GetSubscription(ctx context.Context, subscriptionID string) (port.SubscriptionEvent, error) {
 	p.getSubCalls++
 	p.lastGetSubID = subscriptionID
+	if p.onGetSub != nil {
+		p.onGetSub(ctx, subscriptionID)
+	}
 	return p.getSubEvent, p.getSubErr
 }
 

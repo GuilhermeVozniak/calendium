@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -365,9 +366,7 @@ func run(logger *slog.Logger) error {
 		go func() {
 			defer wg.Done()
 			runLoop(ctx, cfg.Billing.ReconcileInterval, func(ctx context.Context) {
-				if err := billingSvc.ReconcileSubscriptions(ctx); err != nil {
-					logger.Error("worker: reconcile subscriptions", "error", err)
-				}
+				reconcilePass(ctx, logger, billingSvc)
 			})
 		}()
 	}
@@ -395,6 +394,14 @@ func run(logger *slog.Logger) error {
 	wg.Wait()
 	logger.Info("worker: shut down cleanly")
 	return nil
+}
+
+// reconcilePass runs one billing reconciliation pass. A pass cut short by
+// shutdown (context.Canceled) is expected and not logged as an error.
+func reconcilePass(ctx context.Context, logger *slog.Logger, billing port.BillingService) {
+	if err := billing.ReconcileSubscriptions(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		logger.Error("worker: reconcile subscriptions", "error", err)
+	}
 }
 
 // runLoop invokes fn immediately and then on every tick until ctx ends.

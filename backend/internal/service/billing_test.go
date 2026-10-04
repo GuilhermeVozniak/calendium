@@ -754,7 +754,113 @@ func TestReconcileOverridesTheOrderingGuard(t *testing.T) {
 	}
 }
 
+// Each row is stamped with the clock at its own apply time, not the pass
+// start: a webhook applied mid-pass must not be followed by a forced write
+// that moves last_event_at backwards.
+func TestReconcileStampsEachRowAtApplyTime(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	for _, id := range []string{"a", "b"} {
+		h.seedSub(t, domain.Subscription{UserID: id, Status: domain.SubscriptionActive, BillingCustomerID: "ctm_" + id, BillingSubscriptionID: "sub_" + id,
+			CurrentPeriodEnd: tptr(now.Add(-2 * time.Hour)), LastEventAt: tptr(now.Add(-time.Hour))})
+	}
+	stamp := map[string]time.Time{}
+	h.payments.getSubEvent = port.SubscriptionEvent{Status: domain.SubscriptionCanceled}
+	h.payments.onGetSub = func(_ context.Context, id string) {
+		h.clock.Advance(time.Minute) // the provider read takes time
+		stamp[id] = h.clock.Now()
+	}
+	if err := h.svc.ReconcileSubscriptions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"a", "b"} {
+		got, _ := h.subs.GetByUserID(ctx, id)
+		if want := stamp["sub_"+id]; got.LastEventAt == nil || !got.LastEventAt.Equal(want) {
+			t.Fatalf("%s: LastEventAt = %v, want its own apply time %v (pass started %v)", id, got.LastEventAt, want, now)
+		}
+	}
+}
+
+func TestReconcileSubscriptionsPropagatesListError(t *testing.T) {
+	h := newBillingHarness(time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC))
+	h.subs.listErr = errors.New("db down")
+	if err := h.svc.ReconcileSubscriptions(context.Background()); !errors.Is(err, h.subs.listErr) {
+		t.Fatalf("err = %v, want the list error", err)
+	}
+	if h.payments.getSubCalls != 0 {
+		t.Fatal("no provider call without a row list")
+	}
+}
+
+// Shutdown mid-pass: the pass stops between rows and reports ctx.Err().
+func TestReconcileSubscriptionsStopsWhenContextCanceledMidPass(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	for _, id := range []string{"a", "b", "c"} {
+		h.seedSub(t, domain.Subscription{UserID: id, Status: domain.SubscriptionActive, BillingCustomerID: "ctm_" + id, BillingSubscriptionID: "sub_" + id,
+			CurrentPeriodEnd: tptr(now.Add(-2 * time.Hour)), LastEventAt: tptr(now.Add(-time.Hour))})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.payments.getSubEvent = port.SubscriptionEvent{Status: domain.SubscriptionCanceled}
+	h.payments.onGetSub = func(context.Context, string) { cancel() }
+	if err := h.svc.ReconcileSubscriptions(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if h.payments.getSubCalls != 1 {
+		t.Fatalf("provider calls = %d, want 1 (stop between rows)", h.payments.getSubCalls)
+	}
+}
+
 // --- Inline reconcile in GetSubscription -----------------------------------
+
+// A hung provider must not stall GET /v1/billing/subscription: the inline
+// read runs under its own short deadline.
+func TestGetSubscriptionInlineReconcileHasShortDeadline(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	h.seedSub(t, lapsedActive(now))
+	var remaining time.Duration
+	var hasDeadline bool
+	h.payments.onGetSub = func(ctx context.Context, _ string) {
+		var dl time.Time
+		dl, hasDeadline = ctx.Deadline()
+		remaining = time.Until(dl)
+	}
+	if _, err := h.svc.GetSubscription(context.Background(), "u1"); err != nil {
+		t.Fatal(err)
+	}
+	if !hasDeadline || remaining <= 0 || remaining > inlineReconcileTimeout || inlineReconcileTimeout != 5*time.Second {
+		t.Fatalf("inline reconcile deadline: has=%v remaining=%v, want <= 5s", hasDeadline, remaining)
+	}
+}
+
+// The per-user throttle map is pruned of entries older than the window, so
+// it is bounded by the users seen in the last 10 minutes.
+func TestInlineReconcileThrottleMapIsPruned(t *testing.T) {
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	h := newBillingHarness(now)
+	for i := 0; i < 50; i++ {
+		if !h.svc.claimInlineReconcile(fmt.Sprintf("old-%d", i), now) {
+			t.Fatal("first claim must succeed")
+		}
+	}
+	later := now.Add(inlineReconcileEvery)
+	if !h.svc.claimInlineReconcile("fresh", later) {
+		t.Fatal("claim must succeed")
+	}
+	h.svc.mu.Lock()
+	size := len(h.svc.lastInline)
+	h.svc.mu.Unlock()
+	if size != 1 {
+		t.Fatalf("throttle map size = %d, want 1 (entries older than the window pruned)", size)
+	}
+	// Pruning must not reopen a slot still inside the window.
+	if h.svc.claimInlineReconcile("fresh", later.Add(time.Minute)) {
+		t.Fatal("a slot inside the window must stay claimed")
+	}
+}
 
 func lapsedActive(now time.Time) domain.Subscription {
 	return domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive, BillingCustomerID: "ctm_1", BillingSubscriptionID: "sub_1",
