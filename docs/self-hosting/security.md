@@ -218,8 +218,12 @@ The web app stamps the client IP into a server-only header
 (`x-calendium-client-ip`) and overwrites it on every request, so a value the
 client sends is discarded. The client IP is the **right-most `X-Forwarded-For`
 entry that is not a trusted proxy**. The right-most entry is always the
-immediate peer: the Next.js server appends the address it received the
-connection from.
+immediate peer: the Docker image starts Next.js with a small preload
+(`scripts/forwarded-for-peer.cjs`) that appends the socket address the
+connection came from. If you run the web app outside the image (`next start`
+on a host), start it the same way, `node -r ./scripts/forwarded-for-peer.cjs`,
+or a client could forge the right-most entry; production logs a warning when
+the preload is missing.
 
 - `TRUST_PROXY=false` (default): no proxy is trusted, so only the immediate peer
   is used. A client-supplied `X-Forwarded-For` is never trusted. Behind a reverse
