@@ -273,3 +273,224 @@ func TestEventNoteRepoListByUser(t *testing.T) {
 		t.Fatalf("ListByUser = %+v err=%v, want the one u1 note with its link", notes, err)
 	}
 }
+
+// TestUsersFKDeletePolicy pins the cascade audit structurally: every foreign
+// key that references users(id) must delete-cascade or set-null, and every
+// user-pointing column name from the audit must actually carry such a FK. A
+// future migration that forgets ON DELETE CASCADE fails here, not in prod.
+func TestUsersFKDeletePolicy(t *testing.T) {
+	_, db := newTestStore(t)
+	ctx := context.Background()
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT c.conrelid::regclass::text, a.attname, c.confdeltype
+		FROM pg_constraint c
+		JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+		WHERE c.contype = 'f' AND c.confrelid = 'users'::regclass`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	policy := map[string]string{} // "table.column" -> confdeltype
+	for rows.Next() {
+		var table, column, deltype string
+		if err := rows.Scan(&table, &column, &deltype); err != nil {
+			t.Fatal(err)
+		}
+		policy[table+"."+column] = deltype
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for ref, deltype := range policy {
+		if deltype != "c" && deltype != "n" {
+			t.Errorf("%s references users with delete action %q, want CASCADE (c) or SET NULL (n)", ref, deltype)
+		}
+	}
+	if policy["teams.created_by"] != "n" {
+		t.Errorf("teams.created_by delete action = %q, want SET NULL (n)", policy["teams.created_by"])
+	}
+	if policy["user_preferences.user_id"] != "c" {
+		t.Errorf("user_preferences.user_id delete action = %q, want CASCADE (c)", policy["user_preferences.user_id"])
+	}
+
+	// Every user-pointing column name used anywhere in the schema must be
+	// covered by one of those FKs (the orphan class user_preferences was in).
+	cols, err := db.QueryContext(ctx, `
+		SELECT table_name, column_name FROM information_schema.columns
+		WHERE table_schema = 'public'
+		  AND column_name IN ('user_id', 'principal_id', 'assistant_id', 'grantee_user_id',
+		                      'actor_id', 'author_id', 'created_by', 'invited_by')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cols.Close() }()
+	for cols.Next() {
+		var table, column string
+		if err := cols.Scan(&table, &column); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := policy[table+"."+column]; !ok {
+			t.Errorf("%s.%s names a user but has no foreign key to users(id)", table, column)
+		}
+	}
+	if err := cols.Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPurgeCascadeCoverage seeds u1 across the owned tables (plus u2 sharing
+// a team and a delegation), deletes u1 through the repo, and asserts u1's
+// rows are gone everywhere, the shared team survives with created_by NULL,
+// and u2's rows are intact.
+func TestPurgeCascadeCoverage(t *testing.T) {
+	st, db := newTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	seedUser(t, st, "u1")
+	seedUser(t, st, "u2")
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// --- u1's rows ---
+	must(st.Subscriptions().Upsert(ctx, domain.Subscription{UserID: "u1", Status: domain.SubscriptionActive}))
+	acct := seedAccount(t, st, "u1")
+	must(st.OAuthStates().Create(ctx, port.OAuthState{State: "st1", UserID: "u1", Provider: domain.ProviderGoogle, ExpiresAt: now.Add(time.Hour)}))
+	_, err := st.Labels().Upsert(ctx, domain.Label{AccountID: acct.ID, ProviderLabelID: "L1", Name: "Work", Kind: domain.LabelKindUser})
+	must(err)
+	th := seedThread(t, st, acct.ID, now)
+	_, err = st.Messages().Upsert(ctx, domain.Message{
+		ThreadID: th.ID, AccountID: acct.ID, ProviderMessageID: "pm1",
+		From: domain.EmailAddress{Email: "a@example.com"}, Subject: "hi", SentAt: now,
+	})
+	must(err)
+	_, err = st.Drafts().Create(ctx, domain.Draft{AccountID: acct.ID, Subject: "draft"})
+	must(err)
+	_, err = st.Snippets().Create(ctx, domain.Snippet{UserID: "u1", Name: "s", BodyHTML: "<p>x</p>"})
+	must(err)
+	cal := seedCalendar(t, st, acct.ID)
+	ev, err := st.Events().Upsert(ctx, domain.Event{CalendarID: cal.ID, ProviderEventID: "pe1", Title: "e", Start: now, End: now.Add(time.Hour), Status: domain.EventConfirmed})
+	must(err)
+	_, err = st.Devices().Upsert(ctx, domain.NotificationDevice{UserID: "u1", Platform: domain.PlatformIOS, Token: "tok-u1"})
+	must(err)
+	must(st.Prefs().Save(ctx, "u1", domain.UserPrefs{}))
+	must(st.UserPreferences().Put(ctx, "u1", port.UserPreferences{Theme: "ocean"}))
+	must(st.UserSettings().Upsert(ctx, domain.UserSettings{UserID: "u1", TimeZone: "UTC", WorkingHours: []domain.AvailabilityWindow{}}))
+	_, err = st.EventNotes().Upsert(ctx, domain.EventNote{EventID: ev.ID, UserID: "u1", BodyMD: "note"})
+	must(err)
+	_, err = st.Tasks().Create(ctx, domain.Task{UserID: "u1", Title: "task", Source: domain.TaskSourceLocal})
+	must(err)
+	_, err = st.Classifiers().Create(ctx, domain.AiClassifier{UserID: "u1", Name: "rule", Prompt: "p", LabelName: "L", Enabled: true})
+	must(err)
+	_, err = st.AiUsage().IncrementAndCheck(ctx, "u1", now, 10)
+	must(err)
+	_, err = st.BookingLinks().Create(ctx, domain.BookingLink{UserID: "u1", Slug: "u1-call", Title: "Call", CalendarID: cal.ID, DurationMinutes: 30, TimeZone: "UTC"})
+	must(err)
+	must(st.CalendarPrefs().Upsert(ctx, domain.DefaultCalendarPrefs("u1")))
+	_, err = st.EventTemplates().Create(ctx, "u1", domain.EventTemplate{Name: "t", Title: "t", DurationMinutes: 30})
+	must(err)
+	_, err = st.CalendarSets().Create(ctx, "u1", domain.CalendarSet{Name: "set"})
+	must(err)
+	must(st.SyncStates().Save(ctx, port.SyncState{AccountID: acct.ID, Resource: "mail", Cursor: "c1"}))
+	ok, _, err := st.UserExports().Claim(ctx, "u1", now, time.Hour)
+	must(err)
+	if !ok {
+		t.Fatal("export claim refused on a fresh user")
+	}
+
+	// --- shared with u2 ---
+	teams := NewTeamRepo(st)
+	shared, err := teams.Create(ctx, domain.Team{Name: "Shared", CreatedBy: "u1"}, domain.TeamMember{UserID: "u1", Role: domain.TeamRoleOwner})
+	must(err)
+	must(teams.UpsertMember(ctx, domain.TeamMember{TeamID: shared.ID, UserID: "u2", Role: domain.TeamRoleOwner}))
+	_, err = NewDelegationRepo(st).Create(ctx, domain.Delegation{PrincipalID: "u1", AssistantID: "u2", Scopes: []domain.DelegationScope{domain.ScopeMailRead}, Status: domain.DelegationActive})
+	must(err)
+	// --- u2's own rows (must survive) ---
+	theirAcct := seedAccount(t, st, "u2")
+	_, err = st.Snippets().Create(ctx, domain.Snippet{UserID: "u2", Name: "theirs", BodyHTML: "<p>y</p>"})
+	must(err)
+
+	if err := st.Users().Delete(ctx, "u1"); err != nil {
+		t.Fatalf("Users.Delete: %v", err)
+	}
+
+	owned := []struct{ table, column, value string }{
+		{"users", "id", "u1"}, {"subscriptions", "user_id", "u1"}, {"connected_accounts", "user_id", "u1"},
+		{"oauth_states", "user_id", "u1"}, {"labels", "account_id", acct.ID}, {"threads", "account_id", acct.ID},
+		{"messages", "account_id", acct.ID}, {"drafts", "account_id", acct.ID}, {"snippets", "user_id", "u1"},
+		{"calendars", "account_id", acct.ID}, {"events", "calendar_id", cal.ID}, {"devices", "user_id", "u1"},
+		{"user_prefs", "user_id", "u1"}, {"user_preferences", "user_id", "u1"}, {"user_settings", "user_id", "u1"},
+		{"event_notes", "user_id", "u1"}, {"tasks", "user_id", "u1"}, {"ai_classifiers", "user_id", "u1"},
+		{"ai_usage", "user_id", "u1"}, {"booking_links", "user_id", "u1"}, {"calendar_prefs", "user_id", "u1"},
+		{"event_templates", "user_id", "u1"}, {"calendar_sets", "user_id", "u1"}, {"sync_state", "account_id", acct.ID},
+		{"user_exports", "user_id", "u1"}, {"team_members", "user_id", "u1"}, {"delegations", "principal_id", "u1"},
+	}
+	for _, o := range owned {
+		var n int
+		if err := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s = $1`, o.table, o.column), o.value).Scan(&n); err != nil {
+			t.Fatalf("count %s.%s: %v", o.table, o.column, err)
+		}
+		if n != 0 {
+			t.Errorf("%s still has %d row(s) for the deleted user", o.table, n)
+		}
+	}
+	var createdBy sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT created_by FROM teams WHERE id = $1`, shared.ID).Scan(&createdBy); err != nil {
+		t.Fatalf("shared team must survive: %v", err)
+	}
+	if createdBy.Valid {
+		t.Fatalf("shared team created_by = %q, want NULL", createdBy.String)
+	}
+	if _, err := teams.GetMember(ctx, shared.ID, "u2"); err != nil {
+		t.Fatalf("u2's membership must survive: %v", err)
+	}
+	if _, err := st.Accounts().GetByID(ctx, theirAcct.ID); err != nil {
+		t.Fatalf("u2's account must survive: %v", err)
+	}
+	theirs, err := st.Snippets().ListByUser(ctx, "u2")
+	if err != nil || len(theirs) != 1 {
+		t.Fatalf("u2's snippets = %v err=%v, want 1", theirs, err)
+	}
+}
+
+// TestNonUserScopedTablesStayUnlinked documents why two tables that hold
+// no users(id) reference are deliberately left out of the purge cascade,
+// and pins their columns so adding a user-pointing column forces a revisit:
+//   - billing_events (0027, piece 1): the Paddle webhook idempotency ledger,
+//     keyed by notification/event ids only (spec cascade audit: "retained").
+//     The subscriber link lives in subscriptions, which cascades.
+//   - "rateLimit" (0028, piece 2): Better Auth's per-IP auth counters,
+//     keyed by IP+path, pruned after the longest rule window (600 s).
+func TestNonUserScopedTablesStayUnlinked(t *testing.T) {
+	_, db := newTestStore(t)
+	ctx := context.Background()
+	want := map[string]string{
+		"billing_events": "event_id,event_type,notification_id,occurred_at,received_at",
+		"rateLimit":      "count,id,key,lastRequest",
+	}
+	for table, cols := range want {
+		var got string
+		if err := db.QueryRowContext(ctx, `
+			SELECT coalesce(string_agg(column_name::text, ',' ORDER BY column_name::text), '')
+			FROM information_schema.columns
+			WHERE table_schema = 'public' AND table_name = $1`, table).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != cols {
+			t.Errorf("%s columns = %q, want %q — if it now stores a user reference, add a users FK with ON DELETE CASCADE (and extend TestPurgeCascadeCoverage)", table, got, cols)
+		}
+		var fks int
+		if err := db.QueryRowContext(ctx, `
+			SELECT count(*) FROM pg_constraint
+			WHERE contype = 'f' AND conrelid = format('%I', $1::text)::regclass`, table).Scan(&fks); err != nil {
+			t.Fatal(err)
+		}
+		if fks != 0 {
+			t.Errorf("%s has %d foreign key(s), want 0 (not user-scoped)", table, fks)
+		}
+	}
+}
