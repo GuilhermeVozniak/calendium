@@ -146,3 +146,33 @@ describe('assets', () => {
     expect(files).not.toContain('splash.png');
   });
 });
+
+describe('eas.json', () => {
+  const eas = JSON.parse(fs.readFileSync(path.join(__dirname, 'eas.json'), 'utf8')) as {
+    cli: Record<string, unknown>;
+    build: Record<string, Record<string, unknown> | undefined>;
+    submit: { production: { ios: Record<string, unknown>; android: Record<string, unknown> } };
+  };
+
+  it('pins the CLI and lets EAS own build numbers (appVersionSource remote + autoIncrement)', () => {
+    expect(eas.cli).toEqual({ version: '>= 16.0.0', appVersionSource: 'remote' });
+    expect(eas.build.development).toEqual({
+      developmentClient: true,
+      distribution: 'internal',
+      channel: 'development',
+    });
+    expect(eas.build.preview).toEqual({ distribution: 'internal', channel: 'preview' });
+    expect(eas.build.production).toEqual({
+      distribution: 'store',
+      channel: 'production',
+      autoIncrement: true,
+    });
+    expect(eas.build.internal).toBeUndefined();
+  });
+
+  it('submit.production carries the Apple team id and a draft internal Play track, never credentials', () => {
+    expect(eas.submit.production.ios).toEqual({ appleTeamId: 'CT22R575UG' });
+    expect(eas.submit.production.android).toEqual({ track: 'internal', releaseStatus: 'draft' });
+    expect(JSON.stringify(eas)).not.toMatch(/serviceAccountKeyPath|appleId|ascApiKey|password/i);
+  });
+});
