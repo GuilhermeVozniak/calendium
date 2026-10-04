@@ -51,11 +51,21 @@ type UserRepo interface {
 	GetByID(ctx context.Context, id string) (domain.User, error)
 }
 
-// SubscriptionRepo persists the one-row-per-user Stripe subscription mirror.
+// SubscriptionRepo persists the one-row-per-user billing mirror
+// (docs/payments.md). Provider ids are opaque strings (Paddle ctm_/sub_).
 type SubscriptionRepo interface {
 	GetByUserID(ctx context.Context, userID string) (domain.Subscription, error)
-	GetByStripeCustomerID(ctx context.Context, customerID string) (domain.Subscription, error)
+	GetByBillingCustomerID(ctx context.Context, customerID string) (domain.Subscription, error)
+	// Upsert replaces the row; empty billing ids never clobber stored ones.
 	Upsert(ctx context.Context, s domain.Subscription) error
+	// EnsureTrial inserts a trialing row ending at trialEndsAt when the user
+	// has no row yet; it is a no-op otherwise (ON CONFLICT DO NOTHING), so
+	// concurrent first calls are safe.
+	EnsureTrial(ctx context.Context, userID string, trialEndsAt time.Time) error
+	// ListForReconciliation returns rows with a billing_subscription_id
+	// where (status ∈ {active, past_due, paused} and current_period_end <
+	// now - 1h) or last_event_at < now - 7d, ordered by user_id.
+	ListForReconciliation(ctx context.Context, now time.Time) ([]domain.Subscription, error)
 }
 
 // TokenSet is a provider OAuth token bundle.
@@ -386,11 +396,13 @@ type UserPreferencesRepo interface {
 	Put(ctx context.Context, userID string, prefs UserPreferences) error
 }
 
-// StripeEventRepo records processed Stripe webhook event ids for idempotency.
-type StripeEventRepo interface {
-	// Record inserts the event id; firstTime is false when it was already
+// BillingEventRepo is the webhook idempotency ledger keyed by the provider
+// notification id (a replay reuses event_id with a NEW notification id and
+// is deliberately re-applied through the occurred_at ordering guard).
+type BillingEventRepo interface {
+	// Record inserts the notification id; first is false when it was already
 	// recorded (the webhook must then be skipped).
-	Record(ctx context.Context, eventID, eventType string) (firstTime bool, err error)
+	Record(ctx context.Context, ev SubscriptionEvent) (first bool, err error)
 }
 
 // OAuthState is a pending provider-connect flow (CSRF state + PKCE verifier).
@@ -588,7 +600,7 @@ type IntegrationRepo interface {
 }
 
 // ---------------------------------------------------------------------------
-// Gateways (implemented by internal/adapter/out/{googleapi,msgraph,stripeapi,openrouter,push,authjwt})
+// Gateways (implemented by internal/adapter/out/{googleapi,msgraph,paddle,openrouter,push,authjwt})
 // ---------------------------------------------------------------------------
 
 // OAuthToken is the result of an authorization-code exchange or refresh.
@@ -698,44 +710,58 @@ type CalendarProvider interface {
 	FreeBusy(ctx context.Context, accessToken string, emails []string, from, to time.Time) (map[string][]domain.BusyInterval, error)
 }
 
-// CheckoutParams parameterizes a Stripe Checkout session for the single
-// annual plan (the price id is baked into the adapter).
+// CheckoutParams parameterizes a hosted checkout for the single annual plan
+// (the price id is baked into the adapter). No URLs: the provider decides
+// where checkout lands and the web /checkout page owns the success URL.
 type CheckoutParams struct {
+	UserID     string // bound via custom_data.user_id
 	CustomerID string
-	UserID     string // bound via client_reference_id + metadata.user_id
-	SuccessURL string
-	CancelURL  string
-	// TrialDays is 14 for first-time subscribers, 0 otherwise.
-	TrialDays int
 }
 
-// WebhookEvent is a verified, normalized Stripe webhook event. Fields other
-// than ID/Type are populated only for subscription-bearing events.
-type WebhookEvent struct {
-	ID   string
-	Type string
-	// Created is the Stripe event `created` time; used to drop out-of-order
-	// or re-delivered older customer.subscription.* events.
-	Created           *time.Time
+// PortalURLs are temporary customer-portal links; never cache them.
+// Cancel/UpdatePayment are empty when there is no subscription id.
+type PortalURLs struct {
+	Overview      string
+	Cancel        string
+	UpdatePayment string
+}
+
+// SubscriptionEvent is a verified, normalized provider subscription event —
+// from a webhook or from a reconciliation read (then OccurredAt is "now").
+type SubscriptionEvent struct {
+	NotificationID    string
+	EventID           string
+	Type              string
+	OccurredAt        time.Time
 	CustomerID        string
 	SubscriptionID    string
-	UserID            string // from metadata.user_id / client_reference_id, when present
+	UserID            string // custom_data.user_id when present
 	Status            domain.SubscriptionStatus
 	CurrentPeriodEnd  *time.Time
-	CancelAtPeriodEnd bool
-	TrialEndsAt       *time.Time
+	CancelAtPeriodEnd bool // scheduled_change.action == "cancel"
+	// Ignored marks non-subscription event types (transaction.*, unknown):
+	// acknowledged with 200 and never applied.
+	Ignored bool
 }
 
-// Payments is the Stripe billing surface (docs/payments.md).
+// Payments is the provider-neutral billing surface (docs/payments.md),
+// implemented by internal/adapter/out/paddle.
 type Payments interface {
-	// EnsureCustomer returns the Stripe customer id for the user, creating
-	// the customer if needed.
+	// EnsureCustomer returns the provider customer id for the user, looking
+	// it up by exact email first and creating it otherwise.
 	EnsureCustomer(ctx context.Context, user domain.User) (customerID string, err error)
-	CreateCheckoutSession(ctx context.Context, p CheckoutParams) (url string, err error)
-	CreatePortalSession(ctx context.Context, customerID, returnURL string) (url string, err error)
-	// ParseWebhook verifies the Stripe-Signature header (HMAC-SHA256,
-	// constant-time compare, 5-minute tolerance) and normalizes the event.
-	ParseWebhook(payload []byte, sigHeader string) (WebhookEvent, error)
+	// CreateCheckout returns the hosted checkout URL for the annual plan.
+	CreateCheckout(ctx context.Context, p CheckoutParams) (url string, err error)
+	CreatePortalSession(ctx context.Context, customerID, subscriptionID string) (PortalURLs, error)
+	// ParseWebhook verifies the provider signature header against now
+	// (HMAC, constant-time, 5-minute tolerance, empty secret refused) and
+	// normalizes the envelope. Signature failures must not parse the body.
+	ParseWebhook(payload []byte, sigHeader string, now time.Time) (SubscriptionEvent, error)
+	// GetSubscription reads the live subscription (reconciliation).
+	GetSubscription(ctx context.Context, subscriptionID string) (SubscriptionEvent, error)
+	// CancelSubscription cancels at period end, or immediately (account
+	// deletion, program piece 3).
+	CancelSubscription(ctx context.Context, subscriptionID string, immediately bool) error
 }
 
 // AI is the OpenRouter chat-completions surface.

@@ -25,18 +25,26 @@ type UserService interface {
 	UpdatePreferences(ctx context.Context, userID string, prefs UserPreferences) (UserPreferences, error)
 }
 
-// BillingService implements the $50/yr Stripe flow (docs/payments.md).
+// BillingService implements the $50/yr Paddle flow (docs/payments.md).
 type BillingService interface {
-	// GetSubscription returns the user's subscription, or a status "none"
-	// placeholder when they have never subscribed.
+	// GetSubscription returns the user's subscription, granting the 14-day
+	// trial row (anchored to users.created_at) when none exists yet, and
+	// best-effort reconciling an active row that is past its period end.
 	GetSubscription(ctx context.Context, userID string) (domain.Subscription, error)
-	CreateCheckoutSession(ctx context.Context, userID, successURL, cancelURL string) (url string, err error)
-	CreatePortalSession(ctx context.Context, userID, returnURL string) (url string, err error)
-	// HandleWebhook verifies, deduplicates, and applies a Stripe webhook.
+	// CreateCheckout returns the hosted checkout URL; domain.ErrAlreadySubscribed
+	// when a live provider subscription exists.
+	CreateCheckout(ctx context.Context, userID string) (url string, err error)
+	// CreatePortalSession returns temporary portal links; domain.ErrNoBillingProfile
+	// when the user has no provider customer yet.
+	CreatePortalSession(ctx context.Context, userID string) (PortalURLs, error)
+	// HandleWebhook verifies, deduplicates (notification id), orders
+	// (occurred_at) and applies a provider webhook.
 	HandleWebhook(ctx context.Context, payload []byte, sigHeader string) error
-	// RequireActive returns domain.ErrPaymentRequired unless the
-	// subscription currently grants access (trialing, active, or past_due
-	// within the 7-day grace window).
+	// ReconcileSubscriptions re-reads every stale row from the provider
+	// (worker loop). Provider errors are logged and skipped, never returned.
+	ReconcileSubscriptions(ctx context.Context) error
+	// RequireActive returns a *domain.PaymentRequiredError (wrapping
+	// domain.ErrPaymentRequired) unless HasAccess(now).
 	RequireActive(ctx context.Context, userID string) error
 }
 
