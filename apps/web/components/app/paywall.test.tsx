@@ -26,7 +26,7 @@ vi.mock('@/lib/sign-out', () => ({ performSignOut: () => signOutMock() }));
 const toastError = vi.fn();
 vi.mock('sonner', () => ({ toast: { error: (...a: unknown[]) => toastError(...a), success: vi.fn(), info: vi.fn() } }));
 
-import { BillingGate, PaywallScreen, TrialBanner } from './paywall';
+import { BillingGate, BillingTrialBanner, PaywallScreen, TrialBanner } from './paywall';
 
 const assignMock = vi.fn();
 
@@ -200,7 +200,12 @@ describe('BillingGate', () => {
 
   it('shows the trial banner above children in the last 3 days', async () => {
     fetchSubscriptionMock.mockResolvedValue(sub('trialing', { trialEndsAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString() }));
-    renderWithQuery(<BillingGate>{child}</BillingGate>);
+    renderWithQuery(
+      <BillingGate>
+        <BillingTrialBanner />
+        {child}
+      </BillingGate>
+    );
     expect(await screen.findByTestId('app')).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent(/trial ends/);
   });

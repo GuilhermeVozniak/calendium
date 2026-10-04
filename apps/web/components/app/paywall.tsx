@@ -174,12 +174,22 @@ export function TrialBanner({ subscription }: { subscription: Subscription | nul
   );
 }
 
+/** The granted subscription, published by BillingGate for BillingTrialBanner. */
+const GrantedSubscriptionContext = React.createContext<Subscription | null>(null);
+
+/** TrialBanner fed by the enclosing BillingGate; the shell places it above the page. */
+export function BillingTrialBanner() {
+  return <TrialBanner subscription={React.useContext(GrantedSubscriptionContext)} />;
+}
+
 /**
- * Gate for the authenticated shell: when the server bills, fetch the
- * subscription (which also grants the signup trial server-side) before
- * rendering the page; deny → PaywallScreen; grant → TrialBanner + page.
- * Fails OPEN when discovery or the subscription request errors — an
- * unreachable billing API must never lock a paying user out.
+ * Gate for the WHOLE authenticated shell (rail, compose, palette, shortcuts,
+ * Ask sidebar): when the server bills, fetch the subscription (which also
+ * grants the signup trial server-side) before rendering the shell; deny →
+ * a full-screen PaywallScreen and nothing else; grant → the shell, with the
+ * subscription published for BillingTrialBanner. Fails OPEN when discovery
+ * or the subscription request errors — an unreachable billing API must
+ * never lock a paying user out.
  */
 export function BillingGate({ children }: { children: React.ReactNode }) {
   const instance = useInstance();
@@ -193,24 +203,17 @@ export function BillingGate({ children }: { children: React.ReactNode }) {
     refetchInterval: 5 * 60_000,
   });
 
-  // The (app) layout's <main> is a flex column so the banner can sit above
-  // the page; the page keeps its full-height box through this wrapper.
-  const page = <div className="min-h-0 flex-1">{children}</div>;
-
   if (instance.isPending || (billing && subscription.isPending)) {
     return (
-      <div role="status" aria-label="Loading" className="flex h-full items-center justify-center">
+      <div role="status" aria-label="Loading" className="flex h-svh items-center justify-center">
         <div className="bg-primary size-8 animate-pulse rounded-lg" />
       </div>
     );
   }
-  if (!billing || subscription.isError || !subscription.data) return page;
-  const reason = subscriptionDenialReason(subscription.data);
-  if (reason) return <PaywallScreen reason={reason} />;
-  return (
-    <>
-      <TrialBanner subscription={subscription.data} />
-      {page}
-    </>
-  );
+  const granted = billing && !subscription.isError && subscription.data ? subscription.data : null;
+  const reason = granted ? subscriptionDenialReason(granted) : null;
+  if (reason) return <PaywallScreen reason={reason} className="h-svh" />;
+  // Always the same element type around the shell, so a fail-open → granted
+  // transition never remounts it.
+  return <GrantedSubscriptionContext.Provider value={granted}>{children}</GrantedSubscriptionContext.Provider>;
 }
