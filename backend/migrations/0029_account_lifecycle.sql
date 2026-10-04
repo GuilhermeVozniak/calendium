@@ -29,15 +29,50 @@ CREATE TABLE user_exports (
     started_at timestamptz NOT NULL
 );
 
--- Deleted-user tombstones. Purge inserts the id in the same transaction as
--- the users delete; UserRepo.Upsert (requireAuth provisioning) refuses a
--- tombstoned id, so an access token still valid after the purge answers 401
--- instead of re-creating an empty account. Deliberately NOT FK'd to users
--- (the row outlives it). Holds only the opaque auth subject id.
+-- Deleted-user tombstones. Purge inserts the id first in its transaction
+-- (unconditionally, even with no users row) and then deletes the user; an
+-- access token still valid after the purge answers 401 instead of
+-- re-creating an empty account. Deliberately NOT FK'd to users (the row
+-- outlives it). Holds only the opaque auth subject id.
 CREATE TABLE deleted_users (
     id         text PRIMARY KEY,
     deleted_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- The refusal must hold at insert time, not at statement-snapshot time: an
+-- INSERT ... ON CONFLICT that started while the purge tx was open would
+-- otherwise wait on the users row lock and re-insert after COMMIT. Both
+-- tables' BEFORE INSERT triggers take the same per-id transaction advisory
+-- lock, so a users insert for an id being purged waits for the purge to end
+-- and then (READ COMMITTED: fresh snapshot per plpgsql statement) sees the
+-- committed tombstone. SQLSTATE CU001 is mapped to domain.ErrUserDeleted
+-- (401) by postgres/user.go.
+CREATE FUNCTION calendium_user_lifecycle_lock() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_advisory_xact_lock(29, hashtext(NEW.id));
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER deleted_users_lifecycle_lock
+    BEFORE INSERT ON deleted_users
+    FOR EACH ROW EXECUTE FUNCTION calendium_user_lifecycle_lock();
+
+CREATE FUNCTION calendium_refuse_deleted_user() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_advisory_xact_lock(29, hashtext(NEW.id));
+    IF EXISTS (SELECT 1 FROM deleted_users WHERE id = NEW.id) THEN
+        RAISE EXCEPTION 'calendium: account deleted' USING ERRCODE = 'CU001';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER users_refuse_deleted
+    BEFORE INSERT ON users
+    FOR EACH ROW EXECUTE FUNCTION calendium_refuse_deleted_user();
 
 -- Export keyset pagers (ThreadRepo.ListByAccountPage, EventRepo
 -- .ListByUserPage) order by id within an account/calendar; without these a

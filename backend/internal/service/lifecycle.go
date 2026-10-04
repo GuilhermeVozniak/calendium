@@ -108,7 +108,10 @@ func (s *UserLifecycleService) Purge(ctx context.Context, userID string) (port.P
 	var report port.PurgeReport
 	if _, err := s.d.Users.GetByID(ctx, userID); err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			return report, nil // already purged (or never provisioned): idempotent
+			// Already purged (or never provisioned): idempotent, but still
+			// tombstone so a JWT minted before the auth-side delete can not
+			// provision a fresh row afterwards.
+			return report, s.d.Users.Tombstone(ctx, userID)
 		}
 		return report, err
 	}
@@ -134,6 +137,13 @@ func (s *UserLifecycleService) Purge(ctx context.Context, userID string) (port.P
 		}
 	}
 	err = s.d.Tx.RunInTx(ctx, func(ctx context.Context) error {
+		// Tombstone first, same tx: its insert takes the per-id lock the
+		// users BEFORE INSERT trigger waits on (migration 0029), so a
+		// requireAuth upsert racing this tx blocks and then fails with
+		// ErrUserDeleted instead of re-creating the row after COMMIT.
+		if err := s.d.Users.Tombstone(ctx, userID); err != nil {
+			return err
+		}
 		// Race guard: a co-owner may have left (or someone joined) between
 		// the check and the tx. Lock the teams and their member rows first,
 		// then re-plan, so nothing can change until this tx commits.
@@ -167,11 +177,6 @@ func (s *UserLifecycleService) Purge(ctx context.Context, userID string) (port.P
 				return err
 			}
 			report.TeamsDeleted++
-		}
-		// Tombstone first, same tx: requireAuth's upsert can never
-		// re-create the row from a still-valid access token.
-		if err := s.d.Users.Tombstone(ctx, userID); err != nil {
-			return err
 		}
 		return s.d.Users.Delete(ctx, userID)
 	})
