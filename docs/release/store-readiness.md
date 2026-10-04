@@ -14,7 +14,8 @@ are in [`go-live-external-checklist.md`](./go-live-external-checklist.md).
 | **Account deletion in-app** (Apple Guideline 5.1.1(v), Google Play User Data policy): Settings → Account → **Delete account** on iOS/Android (`apps/mobile/components/account-controls.tsx`), web and desktop, plus **Download my data**. Both stores reject a build without in-app deletion. | piece 3 | done — cite the path in App Review notes |
 | Privacy policy URL: `https://<DOMAIN>/privacy` (exists; documents export and deletion) | operator (hosting, piece 6) | required |
 | Support URL / email: `https://<DOMAIN>` + `NEXT_PUBLIC_SUPPORT_EMAIL` (default `support@calendium.app`) | operator | required |
-| App Review sign-in: a working Cloud account (email + password) for the reviewer, entered in App Store Connect → App Review Information and Play Console → App access | operator | required |
+| App Review sign-in: a Cloud account (email + password) for the reviewer, entered in App Store Connect → App Review Information and Play Console → App access. It must hold a **long-lived active subscription** (subscribe it to the annual plan on the web and keep it renewing), never a trial: the server grants a 14-day trial at signup (`docs/payments.md`), and a reviewer on a lapsed trial lands on the paywall, which has no purchase path in the app and gets the build rejected (2.1 / 3.1.1). Check the account is still entitled before every submission. | operator | required |
+| **Sign in with Apple enabled on Cloud whenever Google sign-in is** (Guideline 4.8): the mobile sign-in screen shows "Continue with Google" whenever Cloud advertises `google`, and shows Apple only when `APPLE_CLIENT_ID` is set. Never submit while Cloud offers Google without Apple. Setup: §2 of [`go-live-external-checklist.md`](./go-live-external-checklist.md). | operator | required |
 | Apple Developer Program membership, Team ID `CT22R575UG` | operator | have |
 | Google Play developer account | operator | required |
 
@@ -44,22 +45,46 @@ store listing screenshots.
    | User Content | Other User Content | calendar events, notes, tasks |
    | Identifiers | Device ID | push notification token |
 
-   No data is sold or shared with data brokers; third parties are only the
-   mail/calendar providers the user connects. Tracking: none
-   (`NSPrivacyTracking false`), so no ATT prompt.
+   No data is sold, used for advertising or shared with data brokers.
+   Tracking: none (`NSPrivacyTracking false`), so no ATT prompt. Data does
+   reach third parties, but only as service providers processing it on our
+   behalf, as `/privacy` lists them: Google and Microsoft (the mailboxes and
+   calendars the user connects), Paddle (billing, on the web), OpenRouter (the
+   AI features receive mail content), Todoist and HubSpot (only if connected),
+   Open-Meteo (coordinates), Nominatim and OSRM (place queries and
+   coordinates), Apple APNs and Google FCM (device token and notification
+   preview) and our email delivery provider (account emails). None of that is
+   "tracking" (Apple) or "sharing" (Play), so the answers above stand; do not
+   copy "no third parties" into any questionnaire.
 4. Export compliance: `ITSAppUsesNonExemptEncryption=false` is in `app.json`
    (only HTTPS); answer **No** to "does your app use encryption" beyond that.
 5. Age rating: 4+. Category: Productivity.
-6. App Review notes: the reviewer signs in with the account from §1; account
-   deletion is at Settings → Account → Delete account; purchases happen
-   outside the app and the app links to none.
+6. App Review notes (App Review Information → Notes). Paste, filling in the
+   account from §1:
+
+   > Sign in with the demo account below (email and password). It has an
+   > active subscription, so every feature is available.
+   >
+   > Calendium is a client for a cross-platform Calendium account that works
+   > the same on the web, desktop, iOS and Android. Like a reader app, the iOS
+   > app lets people use an account they already have: the subscription is
+   > bought on our website, and the app offers no in-app purchase, shows no
+   > prices, and contains no links, buttons or other calls to action for
+   > buying elsewhere. New accounts get a 14-day free trial with full access,
+   > during which the app is fully usable.
+   >
+   > Account deletion: Settings → Account → Delete account. Data export:
+   > Settings → Account → Download my data.
 
 ## 3. Google Play
 
 1. Create the app: package `app.calendium.mobile`, **Calendium**, Productivity.
-2. Data safety form from the same table as §2.3 (collects email address, name,
-   emails, other user content and device id; encrypted in transit; not shared;
-   users can delete their account and data in-app — piece 3). Give
+2. Data safety form from the same table as §2.3, except that calendar data
+   goes under Play's own **Calendar → Calendar events** type (notes and tasks
+   stay in **Other user content**). It collects email address, name, emails,
+   calendar events, other user content and device id; encrypted in transit;
+   **not shared** (the providers in §2.3 are service providers acting for us);
+   users can delete their account and data in-app (piece 3). Give
    `https://<DOMAIN>/privacy` as the deletion URL Google asks for.
 3. Release track: EAS submits to the **internal** track as a **draft**
    (`eas.json` `submit.production.android`). Promote to production from the console.
@@ -72,9 +97,13 @@ store listing screenshots.
 
 ## 4. EAS
 
-1. `eas init` once against the Calendium Expo account; put the id in the EAS
-   project environment as `EAS_PROJECT_ID` (`app.config.js` injects it; it is
-   not committed so self-hosters build against their own project).
+1. `eas init` once against the Calendium Expo account and note the project id.
+   It is not committed (self-hosters build against their own project);
+   `app.config.js` injects it from `EAS_PROJECT_ID`. The local `eas build` /
+   `eas submit` evaluate `app.config.js` before they know the project, so they
+   cannot read it from the EAS project environment: **export it in the shell
+   that runs §6** (`export EAS_PROJECT_ID=<id>`). Also set it in the EAS
+   project environment so the cloud build resolves the same id.
 2. File secret `GOOGLE_SERVICES_JSON` (Firebase Android config, `apps/mobile/docs/push.md`).
 3. `eas credentials --platform ios`: distribution certificate + provisioning
    profile + **APNs key** (EAS-managed). The server side needs the same key as
@@ -117,7 +146,9 @@ and `README.txt`; the README's `install` / `xdg-mime` lines register the scheme.
 **Update banner**: release builds check
 `https://api.github.com/repos/GuilhermeVozniak/calendium/releases/latest` 10 s
 after launch and daily; `CALENDIUM_UPDATE_URL=off` disables it. Drafts and
-prereleases are ignored, so draft the GitHub release freely.
+prereleases are ignored. `release.yml` creates the release in a single
+`publish` job only after every platform's build succeeded, so `latest` never
+points at a release missing a platform's download.
 
 ## 6. Release procedure (every version)
 
@@ -125,15 +156,27 @@ prereleases are ignored, so draft the GitHub release freely.
 bun run version:set X.Y.Z          # stamps apps/mobile/app.json + apps/desktop/wails.json
 git commit -am "release: vX.Y.Z"
 git tag vX.Y.Z && git push origin main vX.Y.Z
-# release.yml: preflight (version check, signing gate) -> desktop artifacts -> GitHub Release
+# release.yml: version-check (seconds) + test -> preflight (signing gate)
+#   -> build legs (upload artifacts) -> publish (one GitHub Release, all platforms)
+export EAS_PROJECT_ID=<id>         # §4.1; the local eas CLI needs it in the shell
 cd apps/mobile && eas build -p all --profile production --auto-submit   # from the tag checkout
 ```
 
 The first tag after this piece is **`v1.0.0`** (mobile already shipped `1.0.0`
-in its config and store versions cannot go backwards). `preflight` refuses a
-tag whose `X.Y.Z` differs from the committed `app.json` / `wails.json`.
-Server images built with `VERSION=X.Y.Z docker compose build` report that
-version from `GET /v1/instance`.
+in its config and store versions cannot go backwards; `wails.json` is stamped
+`1.0.0` too). `version-check` refuses a tag whose `X.Y.Z` differs from the
+committed `app.json` / `wails.json`. Server images built with
+`VERSION=X.Y.Z docker compose build` report that version from
+`GET /v1/instance`.
+
+**A rejected tag** (version drift, the signing gate or a failed build leg)
+publishes nothing. Delete it locally and on the remote before fixing and
+re-tagging the same version, or the new push is refused:
+
+```bash
+git push --delete origin vX.Y.Z && git tag -d vX.Y.Z
+# fix (e.g. bun run version:set X.Y.Z && git commit -am "release: vX.Y.Z"), then tag and push again
+```
 
 ## 7. Hygiene
 
