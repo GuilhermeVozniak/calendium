@@ -55,6 +55,12 @@ type SyncServiceDeps struct {
 	// to UTC for the "at HH:mm" body time.
 	TravelAlerts  port.TravelAlertRepo
 	CalendarPrefs port.CalendarPrefsRepo
+	// UserSettings is optional: when set, the owner's Settings → AI →
+	// "Background AI processing" switch (UserSettings.AIBackground) gates
+	// every ai_jobs enqueue here — sync.go is the only producer, so queued
+	// jobs still complete and on-demand /v1/ai/* is unaffected. Nil (or a
+	// read error) reads as on, mirroring the hasClassifiers fallback.
+	UserSettings port.UserSettingsRepo
 }
 
 // SyncService implements port.SyncService: incremental provider sync (with
@@ -83,6 +89,7 @@ type SyncService struct {
 
 	travelAlerts  port.TravelAlertRepo   // optional (M2.8 Task 12 leave alerts)
 	calendarPrefs port.CalendarPrefsRepo // optional (leave-alert time zone)
+	userSettings  port.UserSettingsRepo  // optional (background-AI switch)
 }
 
 var _ port.SyncService = (*SyncService)(nil)
@@ -111,7 +118,22 @@ func NewSyncService(d SyncServiceDeps) *SyncService {
 
 		travelAlerts:  d.TravelAlerts,
 		calendarPrefs: d.CalendarPrefs,
+		userSettings:  d.UserSettings,
 	}
+}
+
+// backgroundAIAllowed reports the owner's background-AI switch. Fail-open
+// on a missing repo or a repo error: a transient settings read must not
+// change behaviour for everyone (same stance as hasClassifiers).
+func (s *SyncService) backgroundAIAllowed(ctx context.Context, userID string) bool {
+	if s.userSettings == nil {
+		return true
+	}
+	settings, err := s.userSettings.Get(ctx, userID)
+	if err != nil {
+		return true
+	}
+	return settings.AIBackground
 }
 
 // SyncAccount runs one incremental mail + calendar sync pass for an account.
@@ -120,8 +142,11 @@ func (s *SyncService) SyncAccount(ctx context.Context, accountID string) error {
 	if err != nil {
 		return err
 	}
+	// Read the owner's background-AI switch once per pass; it gates the
+	// voice-profile enqueue below and every ingest enqueue in applyMailPage.
+	aiAllowed := s.backgroundAIAllowed(ctx, acct.UserID)
 	// Enqueue voice_profile on first sync of the account.
-	if s.aiJobs != nil && acct.LastSyncedAt == nil {
+	if s.aiJobs != nil && aiAllowed && acct.LastSyncedAt == nil {
 		_ = s.aiJobs.Enqueue(ctx, domain.AiJob{
 			ID:        newID(),
 			UserID:    acct.UserID,
@@ -136,7 +161,7 @@ func (s *SyncService) SyncAccount(ctx context.Context, accountID string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.syncMail(ctx, acct, token); err != nil {
+	if err := s.syncMail(ctx, acct, token, aiAllowed); err != nil {
 		return fmt.Errorf("sync mail for account %s: %w", acct.ID, err)
 	}
 	if err := s.syncCalendars(ctx, acct, token); err != nil {
@@ -148,7 +173,7 @@ func (s *SyncService) SyncAccount(ctx context.Context, accountID string) error {
 	return s.accounts.Update(ctx, acct)
 }
 
-func (s *SyncService) syncMail(ctx context.Context, acct domain.ConnectedAccount, token string) error {
+func (s *SyncService) syncMail(ctx context.Context, acct domain.ConnectedAccount, token string, aiAllowed bool) error {
 	provider, ok := s.mail[acct.Provider]
 	if !ok {
 		return nil
@@ -159,7 +184,7 @@ func (s *SyncService) syncMail(ctx context.Context, acct domain.ConnectedAccount
 		if err != nil {
 			return err
 		}
-		if err := s.applyMailPage(ctx, acct, page); err != nil {
+		if err := s.applyMailPage(ctx, acct, page, aiAllowed); err != nil {
 			return err
 		}
 		cursor = page.NextCursor
@@ -172,7 +197,7 @@ func (s *SyncService) syncMail(ctx context.Context, acct domain.ConnectedAccount
 	}
 }
 
-func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAccount, page port.MailSyncPage) error {
+func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAccount, page port.MailSyncPage, aiAllowed bool) error {
 	// 1. Labels.
 	for _, l := range page.Labels {
 		l.AccountID = acct.ID
@@ -299,7 +324,7 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 		hasReply := hasNewInboundReply(page.Messages, t.ProviderThreadID, acct.Email, since)
 		// Enqueue AI jobs for new inbound replies.
 		if hasReply {
-			s.enqueueIngestAiJobs(ctx, acct, saved, hasClassifiers)
+			s.enqueueIngestAiJobs(ctx, acct, saved, hasClassifiers, aiAllowed)
 		}
 		// Push on newly-synced important/vip mail (a genuinely new inbound
 		// message the owner has not sent). Only worth collecting when push is
@@ -354,9 +379,10 @@ func (s *SyncService) applyMailPage(ctx context.Context, acct domain.ConnectedAc
 
 // enqueueIngestAiJobs queues background AI work for a thread that just
 // received a genuinely new inbound message. Enqueue failures are intentionally
-// discarded — AI enqueueing must never fail sync.
-func (s *SyncService) enqueueIngestAiJobs(ctx context.Context, acct domain.ConnectedAccount, t domain.Thread, hasClassifiers bool) {
-	if s.aiJobs == nil {
+// discarded — AI enqueueing must never fail sync. aiAllowed is the owner's
+// background-AI switch (read once per pass by SyncAccount).
+func (s *SyncService) enqueueIngestAiJobs(ctx context.Context, acct domain.ConnectedAccount, t domain.Thread, hasClassifiers, aiAllowed bool) {
+	if s.aiJobs == nil || !aiAllowed {
 		return
 	}
 	// thread_summary + instant_replies: important|vip|team|calendar splits only
@@ -626,7 +652,7 @@ func (s *SyncService) deliverDraft(ctx context.Context, d domain.Draft) error {
 			return err
 		}
 		// Enqueue reminder_detect for threaded replies: give recipient 24h before judging "awaiting reply".
-		if s.aiJobs != nil {
+		if s.aiJobs != nil && s.backgroundAIAllowed(ctx, acct.UserID) {
 			_ = s.aiJobs.Enqueue(ctx, domain.AiJob{
 				ID:        newID(),
 				UserID:    acct.UserID,

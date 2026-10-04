@@ -76,6 +76,15 @@ type Deps struct {
 	// Insights serves aggregated time analytics computed from the local
 	// mirror (M2.8 Task 17). When nil the insights route answers 501.
 	Insights port.InsightsService
+	// Lifecycle purges accounts (DELETE /v1/internal/users/{id}, called by
+	// Better Auth's beforeDelete hook). When nil, or when InternalSecret is
+	// empty, the internal route answers like an unknown route.
+	Lifecycle port.UserLifecycleService
+	// Export streams a user's data (GET /v1/me/export). When nil → 501.
+	Export port.ExportService
+	// InternalSecret is INTERNAL_API_SECRET decoded (32 bytes). It is the
+	// only credential the /v1/internal/* surface accepts.
+	InternalSecret []byte
 	// Instance is the public self-configuration document served verbatim at
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
@@ -163,6 +172,13 @@ func build(deps Deps) (*server, http.Handler) {
 	// M2.8 Task 9: vendor OAuth redirect target (state-validated, like the
 	// account callback above).
 	mux.HandleFunc("GET /v1/integrations/callback/{vendor}", s.handleIntegrationCallback)
+	// Account deletion, server-to-server from the web app (shared secret,
+	// never a JWT). Outside authed(...) like the webhook, with no public or
+	// user rate limit and a 1 KiB body cap; the CORS layer skips
+	// /v1/internal/* and the self-hosting proxy must block it. No method in
+	// the pattern: the handler answers anything but DELETE with the mux's
+	// own 404 (a 405 would reveal the route).
+	mux.HandleFunc("/v1/internal/users/{id}", s.handleInternalPurgeUser)
 
 	// Public scheduling surface (unauthenticated, rate limited): booking
 	// pages/slots/bookings and meeting-poll view/vote. Two buckets — reads
@@ -202,6 +218,10 @@ func build(deps Deps) (*server, http.Handler) {
 	authed("GET /v1/me", s.handleMe)
 	authed("GET /v1/me/preferences", s.handleGetPreferences)
 	authed("PUT /v1/me/preferences", s.handleUpdatePreferences)
+	// Data export: heavy class, and — like attachments — a long stream that
+	// the 60 s default deadline would cut; the handler sets its own 10-minute
+	// context and write deadline.
+	authed("GET /v1/me/export", s.handleExport, limitClass(classMutateHeavy), deadline(exportTimeout))
 
 	authed("GET /v1/billing/subscription", s.handleGetSubscription)
 	authed("POST /v1/billing/checkout", s.handleCreateCheckout)

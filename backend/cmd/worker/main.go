@@ -217,6 +217,8 @@ func run() error {
 		// Leave-now travel alerts (M2.8 Task 12) ride the 5s due-work loop.
 		TravelAlerts:  store.TravelAlerts(),
 		CalendarPrefs: store.CalendarPrefs(),
+		// Settings → AI → "Background AI processing" gates every enqueue.
+		UserSettings: store.UserSettings(),
 	})
 	calendarSvc := service.NewCalendarService(service.CalendarServiceDeps{
 		Subscriptions:     store.Subscriptions(),

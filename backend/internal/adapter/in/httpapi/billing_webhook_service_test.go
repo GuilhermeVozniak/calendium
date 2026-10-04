@@ -37,6 +37,14 @@ func (r *whUsers) GetByID(_ context.Context, id string) (domain.User, error) {
 	return u, nil
 }
 
+func (r *whUsers) Delete(_ context.Context, id string) error {
+	if _, ok := r.byID[id]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(r.byID, id)
+	return nil
+}
+
 type whSubs struct {
 	users  *whUsers
 	byUser map[string]domain.Subscription
