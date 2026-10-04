@@ -38,3 +38,22 @@ describe('deployment defaults for TRUST_PROXY', () => {
     expect(proxyTrustFromEnv({ TRUST_PROXY: 'true' }).proxies.check('172.18.0.5', 'ipv4')).toBe(true);
   });
 });
+
+describe('compose stop grace periods (whole-branch final review I1)', () => {
+  // Docker's 10 s default SIGKILLs the 30 s SHUTDOWN_TIMEOUT drain.
+  it.each([
+    ['api', '40s'],
+    ['worker', '40s'],
+    ['web', '15s'],
+  ])('%s sets stop_grace_period: %s', (name, grace) => {
+    const svc = composeService(read('docker-compose.yml'), name);
+    expect(svc).toMatch(new RegExp(`^ {4}stop_grace_period: ${grace}$`, 'm'));
+  });
+
+  it('SHUTDOWN_TIMEOUT in .env.example leaves room under the 40s api/worker grace', () => {
+    const line = read('.env.example')
+      .split('\n')
+      .find((l) => l.startsWith('SHUTDOWN_TIMEOUT='));
+    expect(line).toBe('SHUTDOWN_TIMEOUT=30s');
+  });
+});
