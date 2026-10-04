@@ -7,6 +7,7 @@ jest.mock('@/context/auth', () => ({
 const mockUseServerConfig = jest.fn();
 jest.mock('@/lib/server-config', () => ({
   useServerConfig: (...args: unknown[]) => mockUseServerConfig(...args),
+  webOrigin: () => 'https://app.example.com',
 }));
 
 const mockListAccounts = jest.fn();
@@ -14,6 +15,8 @@ const mockGetSubscription = jest.fn();
 const mockSetSignature = jest.fn();
 const mockSetAutoBcc = jest.fn();
 const mockUpdatePreferences = jest.fn();
+const mockGetSettings = jest.fn();
+const mockUpdateSettings = jest.fn();
 jest.mock('@/lib/api', () => ({
   api: {
     listAccounts: (...args: unknown[]) => mockListAccounts(...args),
@@ -22,6 +25,8 @@ jest.mock('@/lib/api', () => ({
     setSignature: (...args: unknown[]) => mockSetSignature(...args),
     setAutoBcc: (...args: unknown[]) => mockSetAutoBcc(...args),
     updatePreferences: (...args: unknown[]) => mockUpdatePreferences(...args),
+    getSettings: (...args: unknown[]) => mockGetSettings(...args),
+    updateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
   },
 }));
 
@@ -35,9 +40,22 @@ jest.mock('expo-router', () => ({
   useRouter: () => ({ push: mockPush, replace: mockReplace }),
 }));
 
+const mockOpenURL = jest.fn();
 jest.mock('expo-linking', () => ({
   createURL: jest.fn(() => 'calendium://settings'),
+  openURL: (...args: unknown[]) => mockOpenURL(...args),
 }));
+
+// Better Auth client surface used by Settings → Account (list-accounts rows
+// carry the provider as `providerId`).
+const mockListAuthAccounts = jest.fn();
+const mockDeleteUser = jest.fn();
+const mockAuthClient = {
+  listAccounts: (...args: unknown[]) => mockListAuthAccounts(...args),
+  deleteUser: (...args: unknown[]) => mockDeleteUser(...args),
+};
+const mockSignOut = jest.fn();
+const mockSignInWithOAuth = jest.fn();
 
 jest.mock('expo-web-browser', () => ({
   openAuthSessionAsync: jest.fn(),
@@ -55,6 +73,7 @@ jest.mock('react-native-safe-area-context', () => ({
 
 import { act, fireEvent, render, screen, within } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Alert } from 'react-native';
 import SettingsScreen from './settings';
 
 const AI_ENABLED_CONFIG = {
@@ -101,13 +120,20 @@ const ACCOUNT = {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
   mockUseAuth.mockReturnValue({
     user: { id: 'u1', name: 'You', email: 'you@example.com', image: null },
-    signOut: jest.fn(),
+    signOut: mockSignOut,
+    signInWithOAuth: mockSignInWithOAuth,
   });
-  mockUseServerConfig.mockReturnValue({ config: AI_ENABLED_CONFIG, clear: jest.fn() });
+  mockUseServerConfig.mockReturnValue({ config: AI_ENABLED_CONFIG, clear: jest.fn(), authClient: mockAuthClient });
   mockListAccounts.mockResolvedValue([]);
   mockGetSubscription.mockResolvedValue({ status: 'none', priceUsd: 50 });
+  mockGetSettings.mockResolvedValue({ timeZone: 'UTC', workingHours: [], workingLocation: '', aiBackground: true });
+  mockUpdateSettings.mockImplementation(async (s: unknown) => s);
+  mockListAuthAccounts.mockResolvedValue({ data: [{ id: 'acc1', providerId: 'credential' }], error: null });
+  mockDeleteUser.mockResolvedValue({ data: { success: true }, error: null });
+  mockSignOut.mockResolvedValue(undefined);
 });
 
 /** App Store 3.1.1/3.1.3: no price, purchase CTA or purchase/billing link. */
@@ -171,7 +197,7 @@ describe('SettingsScreen — AI classifiers row visibility', () => {
   });
 
   it('hides the AI classifiers row when the server disables AI', async () => {
-    mockUseServerConfig.mockReturnValue({ config: AI_DISABLED_CONFIG, clear: jest.fn() });
+    mockUseServerConfig.mockReturnValue({ config: AI_DISABLED_CONFIG, clear: jest.fn(), authClient: mockAuthClient });
     await renderScreen();
     await flush();
 
@@ -259,5 +285,135 @@ describe('SettingsScreen — signature and auto-BCC editors', () => {
         autoBcc: ['archive@example.com', 'cc@example.com'],
       },
     ]);
+  });
+});
+
+/** Presses the destructive button of the most recent Alert.alert call. */
+async function pressAlertConfirm() {
+  const calls = (Alert.alert as jest.Mock).mock.calls;
+  const buttons = calls[calls.length - 1]?.[2] as { style?: string; onPress?: () => void }[] | undefined;
+  const confirm = buttons?.find((b) => b.style === 'destructive');
+  if (!confirm?.onPress) throw new Error('no destructive alert button');
+  await act(async () => {
+    await confirm.onPress?.();
+  });
+}
+
+describe('SettingsScreen — account lifecycle', () => {
+  it('"Download my data" opens the web account page in the browser', async () => {
+    await renderScreen();
+    await flush();
+    await fireEvent.press(screen.getByText('Download my data'));
+    expect(mockOpenURL).toHaveBeenCalledWith('https://app.example.com/settings?tab=account');
+  });
+
+  it('delete: password prompt → deleteUser({password}) → sign-out (clears offline state) → sign-in screen', async () => {
+    await renderScreen();
+    await flush();
+    await fireEvent.press(screen.getByText('Delete account'));
+    await flush();
+    await fireEvent.changeText(screen.getByPlaceholderText('Your password'), 'hunter2');
+    await fireEvent.press(screen.getByText('Delete my account'));
+    await pressAlertConfirm();
+    await flush();
+    expect(mockDeleteUser).toHaveBeenCalledWith({ password: 'hunter2' });
+    expect(mockSignOut).toHaveBeenCalled();
+    expect(mockReplace).toHaveBeenCalledWith('/');
+  });
+
+  it('social-only accounts get no password field and call deleteUser({})', async () => {
+    mockListAuthAccounts.mockResolvedValue({ data: [{ id: 'acc2', providerId: 'google' }], error: null });
+    await renderScreen();
+    await flush();
+    await fireEvent.press(screen.getByText('Delete account'));
+    await flush();
+    expect(screen.queryByPlaceholderText('Your password')).toBeNull();
+    await fireEvent.press(screen.getByText('Delete my account'));
+    await pressAlertConfirm();
+    await flush();
+    expect(mockDeleteUser).toHaveBeenCalledWith({});
+  });
+
+  it('owns_teams lists the blocking teams and keeps the session', async () => {
+    mockDeleteUser.mockResolvedValue({
+      data: null,
+      error: { status: 409, code: 'owns_teams', details: { teams: [{ id: 't1', name: 'Design' }] } },
+    });
+    await renderScreen();
+    await flush();
+    await fireEvent.press(screen.getByText('Delete account'));
+    await flush();
+    await fireEvent.changeText(screen.getByPlaceholderText('Your password'), 'hunter2');
+    await fireEvent.press(screen.getByText('Delete my account'));
+    await pressAlertConfirm();
+    await flush();
+    expect(Alert.alert).toHaveBeenLastCalledWith('Transfer your teams first', expect.stringContaining('Design'));
+    expect(mockSignOut).not.toHaveBeenCalled();
+  });
+
+  it('a wrong password keeps the session and says so', async () => {
+    mockDeleteUser.mockResolvedValue({ data: null, error: { status: 400, code: 'INVALID_PASSWORD' } });
+    await renderScreen();
+    await flush();
+    await fireEvent.press(screen.getByText('Delete account'));
+    await flush();
+    await fireEvent.changeText(screen.getByPlaceholderText('Your password'), 'nope');
+    await fireEvent.press(screen.getByText('Delete my account'));
+    await pressAlertConfirm();
+    await flush();
+    expect(Alert.alert).toHaveBeenLastCalledWith('Incorrect password', expect.any(String));
+    expect(mockSignOut).not.toHaveBeenCalled();
+  });
+
+  it('demo mode renders the rows but never calls deleteUser or opens a URL', async () => {
+    mockUseServerConfig.mockReturnValue({
+      config: { ...AI_ENABLED_CONFIG, demoMode: true },
+      clear: jest.fn(),
+      authClient: mockAuthClient,
+    });
+    await renderScreen();
+    await flush();
+    await fireEvent.press(screen.getByText('Delete account'));
+    await fireEvent.press(screen.getByText('Download my data'));
+    expect(Alert.alert).toHaveBeenCalledWith('Not available in demo');
+    expect(mockDeleteUser).not.toHaveBeenCalled();
+    expect(mockListAuthAccounts).not.toHaveBeenCalled();
+    expect(mockOpenURL).not.toHaveBeenCalled();
+  });
+
+  it('shows no price or purchase wording in the Account section', async () => {
+    await renderScreen();
+    await flush();
+    await fireEvent.press(screen.getByText('Delete account'));
+    await flush();
+    expect(screen.queryAllByText(STORE_FORBIDDEN)).toHaveLength(0);
+  });
+});
+
+describe('SettingsScreen — background AI switch', () => {
+  it('reflects the stored value and PUTs the whole document with aiBackground flipped', async () => {
+    await renderScreen();
+    await flush();
+    const toggle = screen.getByLabelText('Background AI processing');
+    expect(toggle.props.value).toBe(true);
+    await act(async () => {
+      fireEvent(toggle, 'valueChange', false);
+    });
+    await flush();
+    expect(mockUpdateSettings).toHaveBeenCalledWith({
+      timeZone: 'UTC',
+      workingHours: [],
+      workingLocation: '',
+      aiBackground: false,
+    });
+    expect(screen.getByLabelText('Background AI processing').props.value).toBe(false);
+  });
+
+  it('is hidden when the server disables AI', async () => {
+    mockUseServerConfig.mockReturnValue({ config: AI_DISABLED_CONFIG, clear: jest.fn(), authClient: mockAuthClient });
+    await renderScreen();
+    await flush();
+    expect(screen.queryByLabelText('Background AI processing')).toBeNull();
+    expect(mockGetSettings).not.toHaveBeenCalled();
   });
 });

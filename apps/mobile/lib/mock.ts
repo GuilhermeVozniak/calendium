@@ -25,6 +25,7 @@ import {
   type Subscription,
   type Task,
   type Thread,
+  type UserSettings,
 } from '@calendium/shared';
 
 const NOW = Date.now();
@@ -678,4 +679,24 @@ export function mockReactToMessage(
     createdAt: new Date().toISOString(),
   };
   return { reaction, draftId: sendReply ? `draft_reaction_${Date.now()}` : null };
+}
+
+// ---------------------------------------------------------------------------
+// Settings (background-AI switch; demo mode keeps the toggle working offline)
+// ---------------------------------------------------------------------------
+
+let mockSettingsState: UserSettings = {
+  timeZone: 'UTC',
+  workingHours: [],
+  workingLocation: '',
+  aiBackground: true,
+};
+
+export function mockSettings(): UserSettings {
+  return { ...mockSettingsState };
+}
+
+export function updateMockSettings(next: UserSettings): UserSettings {
+  mockSettingsState = { ...next };
+  return mockSettings();
 }
