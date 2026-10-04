@@ -57,27 +57,42 @@ function family(ip: string): 'ipv4' | 'ipv6' {
 }
 
 /**
+ * One TRUSTED_PROXY_CIDRS entry → [address, prefix, family], with the Go
+ * tier's grammar (netip.ParsePrefix, plus a bare IP = single host): no zone,
+ * a decimal prefix without sign or leading zeros, at most 32 (IPv4) / 128
+ * (IPv6). null when the entry is invalid.
+ */
+function parseTrustedCidr(entry: string): [string, number, 'ipv4' | 'ipv6'] | null {
+  const [address = '', prefixText, ...rest] = entry.split('/');
+  if (rest.length > 0 || address.includes('%')) return null;
+  const version = isIP(address);
+  if (version === 0) return null;
+  const max = version === 4 ? 32 : 128;
+  if (prefixText === undefined) return [address, max, family(address)];
+  if (!/^(?:0|[1-9]\d{0,2})$/.test(prefixText)) return null;
+  const prefix = Number(prefixText);
+  return prefix <= max ? [address, prefix, family(address)] : null;
+}
+
+/**
  * TRUST_PROXY / TRUSTED_PROXY_CIDRS → ProxyTrust. Throws on an invalid
  * TRUST_PROXY or CIDR (instrumentation.ts calls this at boot, so a typo stops the server like
- * the Go API's config.FromEnv does).
+ * the Go API's config.FromEnv does). TRUSTED_PROXY_CIDRS is validated even
+ * while TRUST_PROXY is off, as the Go config does: comma-separated, each
+ * entry trimmed, empty entries ignored (no entries at all = the defaults), a
+ * bare IP is /32 or /128, anything else invalid is a boot error.
  */
 export function proxyTrustFromEnv(env: EnvLike): ProxyTrust {
   const proxies = new BlockList();
   const enabled = envBool(env, 'TRUST_PROXY');
-  if (!enabled) return { enabled, proxies };
   const configured = (env.TRUSTED_PROXY_CIDRS ?? '')
     .split(',')
     .map((c) => c.trim())
     .filter(Boolean);
   for (const cidr of configured.length > 0 ? configured : DEFAULT_TRUSTED_PROXY_CIDRS) {
-    const [address = '', prefixText, ...rest] = cidr.split('/');
-    const ip = canonicalIp(address);
-    const prefix = prefixText === undefined ? undefined : Number(prefixText);
-    const max = ip && isIP(ip) === 4 ? 32 : 128;
-    if (!ip || rest.length > 0 || (prefix !== undefined && (!/^\d+$/.test(prefixText ?? '') || prefix > max))) {
-      throw new Error(`TRUSTED_PROXY_CIDRS: "${cidr}" is not a valid IP or CIDR`);
-    }
-    proxies.addSubnet(ip, prefix ?? max, family(ip));
+    const parsed = parseTrustedCidr(cidr);
+    if (!parsed) throw new Error(`TRUSTED_PROXY_CIDRS: "${cidr}" is not a valid IP or CIDR`);
+    proxies.addSubnet(...parsed);
   }
   return { enabled, proxies };
 }

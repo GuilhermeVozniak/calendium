@@ -95,6 +95,67 @@ describe('clientIpFor — TRUST_PROXY=true: right-most hop outside TRUSTED_PROXY
   });
 });
 
+/**
+ * TRUSTED_PROXY_CIDRS grammar — identical on both tiers (Go config.parseHardening):
+ * comma-separated, whitespace trimmed, empty entries ignored, a bare IP is a
+ * single host (/32 or /128), anything else netip.ParsePrefix rejects is a boot error.
+ */
+describe('proxyTrustFromEnv — TRUSTED_PROXY_CIDRS grammar', () => {
+  const trustFor = (cidrs: string) => proxyTrustFromEnv({ TRUST_PROXY: 'true', TRUSTED_PROXY_CIDRS: cidrs });
+  // The resolved client for "<client>, <peer>": the client when the peer is trusted, the peer otherwise.
+  const resolved = (cidrs: string, peer: string) => clientIpFor(xff(`198.51.100.7, ${peer}`), trustFor(cidrs));
+
+  it('a bare IPv4 address trusts exactly that host (/32)', () => {
+    expect(resolved('203.0.113.5', '203.0.113.5')).toBe('198.51.100.7');
+    expect(resolved('203.0.113.5', '203.0.113.6')).toBe('203.0.113.6');
+  });
+
+  it('a bare IPv6 address trusts exactly that host (/128)', () => {
+    expect(resolved('2001:db8::5', '2001:db8::5')).toBe('198.51.100.7');
+    expect(resolved('2001:DB8::5', '2001:db8::6')).toBe('2001:db8::6');
+  });
+
+  it('trims whitespace and ignores empty entries', () => {
+    const cidrs = ' , 203.0.113.0/24 ,, \t2001:db8::/32 , ';
+    expect(resolved(cidrs, '203.0.113.9')).toBe('198.51.100.7');
+    expect(resolved(cidrs, '2001:db8::9')).toBe('198.51.100.7');
+    // Defaults are replaced, not merged.
+    expect(resolved(cidrs, '10.0.0.2')).toBe('10.0.0.2');
+  });
+
+  it('a blank value means the defaults', () => {
+    expect(resolved('', '172.18.0.5')).toBe('198.51.100.7');
+    expect(resolved('   ', '172.18.0.5')).toBe('198.51.100.7');
+  });
+
+  it('a non-network-aligned prefix is accepted as its network (like netip.ParsePrefix)', () => {
+    expect(resolved('203.0.113.77/24', '203.0.113.1')).toBe('198.51.100.7');
+  });
+
+  it.each([
+    ['garbage', 'proxy'],
+    ['a hostname', 'caddy'],
+    ['a prefix over 32 for IPv4', '10.0.0.0/33'],
+    ['a prefix over 128 for IPv6', '::1/129'],
+    ['an empty prefix', '10.0.0.0/'],
+    ['a leading-zero prefix', '10.0.0.0/08'],
+    ['a signed prefix', '10.0.0.0/+8'],
+    ['two slashes', '10.0.0.0/8/8'],
+    ['an IPv6 zone', 'fe80::1%eth0/64'],
+    ['a bare IPv6 address with a zone', 'fe80::1%eth0'],
+    ['an IPv4 address with leading zeros', '010.0.0.1/32'],
+    ['an address with a port', '10.0.0.1:80'],
+    ['an invalid entry next to valid ones', '10.0.0.0/8, nope, ::1'],
+  ])('rejects %s at boot', (_label, cidrs) => {
+    expect(() => trustFor(cidrs)).toThrow(/TRUSTED_PROXY_CIDRS/);
+  });
+
+  it('is validated even while TRUST_PROXY is off (the Go config always parses it)', () => {
+    expect(() => proxyTrustFromEnv({ TRUST_PROXY: 'false', TRUSTED_PROXY_CIDRS: 'nope' })).toThrow(/TRUSTED_PROXY_CIDRS/);
+    expect(() => proxyTrustFromEnv({ TRUSTED_PROXY_CIDRS: '10.0.0.1' })).not.toThrow();
+  });
+});
+
 describe('withClientIp', () => {
   it('overwrites a forged x-calendium-client-ip and preserves method, URL and body', async () => {
     const original = new Request('https://mail.example.com/api/auth/sign-in/email', {
