@@ -66,6 +66,14 @@ func (r *fakeUserRepo) GetByID(_ context.Context, id string) (domain.User, error
 	return u, nil
 }
 
+func (r *fakeUserRepo) Delete(_ context.Context, id string) error {
+	if _, ok := r.byID[id]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(r.byID, id)
+	return nil
+}
+
 var _ port.UserRepo = (*fakeUserRepo)(nil)
 
 // --- subscription repo -------------------------------------------------------
@@ -317,6 +325,22 @@ func newThreadRepo() *fakeThreadRepo { return &fakeThreadRepo{byID: map[string]d
 func (r *fakeThreadRepo) Upsert(_ context.Context, t domain.Thread) (domain.Thread, error) {
 	r.byID[t.ID] = t
 	return t, nil
+}
+
+// ListByAccountPage mirrors the SQL keyset pager: id > afterID, ascending,
+// capped at limit.
+func (r *fakeThreadRepo) ListByAccountPage(_ context.Context, accountID, afterID string, limit int) ([]domain.Thread, error) {
+	out := []domain.Thread{}
+	for _, t := range r.byID {
+		if t.AccountID == accountID && t.ID > afterID {
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (r *fakeThreadRepo) GetByID(_ context.Context, id string) (domain.Thread, error) {
@@ -978,6 +1002,35 @@ func (r *fakeEventRepo) GetByProviderID(_ context.Context, calendarID, providerE
 		}
 	}
 	return domain.Event{}, domain.ErrNotFound
+}
+
+// ListByUserPage mirrors the SQL keyset pager. Ownership is resolved event
+// → calendar → account → user when both calendars and accounts are wired
+// (same convention as ListInRange); otherwise every event is the user's.
+func (r *fakeEventRepo) ListByUserPage(_ context.Context, userID, afterID string, limit int) ([]domain.Event, error) {
+	out := []domain.Event{}
+	for _, id := range r.order {
+		e, ok := r.byID[id]
+		if !ok || e.ID <= afterID {
+			continue
+		}
+		if r.calendars != nil && r.accounts != nil {
+			cal, ok := r.calendars.byID[e.CalendarID]
+			if !ok {
+				continue
+			}
+			acct, ok := r.accounts.byID[cal.AccountID]
+			if !ok || acct.UserID != userID {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (r *fakeEventRepo) ListInRange(_ context.Context, userID string, from, to time.Time, calendarIDs []string) ([]domain.Event, error) {
@@ -2477,10 +2530,13 @@ var _ port.TimeProposalRepo = (*fakeProposalRepo)(nil)
 
 // --- user settings repo ---------------------------------------------------------
 
-// fakeUserSettingsRepo mirrors the real adapter's absent-row default: Get
-// returns a zero-value UserSettings with TimeZone "UTC" when no row exists.
+// fakeUserSettingsRepo mirrors the real adapter: Get returns a zero-value
+// UserSettings with TimeZone "UTC" and AIBackground true when no row exists;
+// Upsert never writes AIBackground (new rows default true, existing rows keep
+// theirs); SetAIBackground writes only the switch.
 type fakeUserSettingsRepo struct {
 	byUser map[string]domain.UserSettings
+	getErr error
 }
 
 func newUserSettingsRepo() *fakeUserSettingsRepo {
@@ -2488,19 +2544,63 @@ func newUserSettingsRepo() *fakeUserSettingsRepo {
 }
 
 func (r *fakeUserSettingsRepo) Get(_ context.Context, userID string) (domain.UserSettings, error) {
+	if r.getErr != nil {
+		return domain.UserSettings{}, r.getErr
+	}
 	s, ok := r.byUser[userID]
 	if !ok {
-		return domain.UserSettings{UserID: userID, TimeZone: "UTC"}, nil
+		return domain.UserSettings{UserID: userID, TimeZone: "UTC", AIBackground: true}, nil
 	}
 	return s, nil
 }
 
 func (r *fakeUserSettingsRepo) Upsert(_ context.Context, s domain.UserSettings) error {
+	if prev, ok := r.byUser[s.UserID]; ok {
+		s.AIBackground = prev.AIBackground
+	} else {
+		s.AIBackground = true
+	}
 	r.byUser[s.UserID] = s
 	return nil
 }
 
+func (r *fakeUserSettingsRepo) SetAIBackground(_ context.Context, userID string, on bool) error {
+	s, ok := r.byUser[userID]
+	if !ok {
+		s = domain.UserSettings{UserID: userID, TimeZone: "UTC", WorkingHours: []domain.AvailabilityWindow{}}
+	}
+	s.AIBackground = on
+	r.byUser[userID] = s
+	return nil
+}
+
 var _ port.UserSettingsRepo = (*fakeUserSettingsRepo)(nil)
+
+// --- user export repo --------------------------------------------------------
+
+// fakeUserExportRepo mirrors the SQL claim: refused inside window with the
+// earliest retry time, otherwise stamped with now.
+type fakeUserExportRepo struct {
+	startedAt map[string]time.Time
+	err       error
+}
+
+func newUserExportRepo() *fakeUserExportRepo {
+	return &fakeUserExportRepo{startedAt: map[string]time.Time{}}
+}
+
+func (r *fakeUserExportRepo) Claim(_ context.Context, userID string, now time.Time, window time.Duration) (bool, time.Time, error) {
+	if r.err != nil {
+		return false, time.Time{}, r.err
+	}
+	if prev, ok := r.startedAt[userID]; ok && now.Before(prev.Add(window)) {
+		return false, prev.Add(window), nil
+	}
+	r.startedAt[userID] = now
+	return true, time.Time{}, nil
+}
+
+var _ port.UserExportRepo = (*fakeUserExportRepo)(nil)
 
 // --- reaction repo -----------------------------------------------------------
 
@@ -2679,6 +2779,17 @@ func (r *fakeTeamRepo) CountByRole(_ context.Context, teamID string, role domain
 		}
 	}
 	return n, nil
+}
+
+func (r *fakeTeamRepo) ListMemberships(_ context.Context, userID string) ([]domain.TeamMember, error) {
+	out := []domain.TeamMember{}
+	for _, members := range r.members {
+		if m, ok := members[userID]; ok {
+			out = append(out, m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TeamID < out[j].TeamID })
+	return out, nil
 }
 
 var _ port.TeamRepo = (*fakeTeamRepo)(nil)

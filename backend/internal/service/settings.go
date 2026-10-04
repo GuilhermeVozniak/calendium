@@ -55,3 +55,12 @@ func (s *SettingsService) Update(ctx context.Context, userID string, in domain.U
 	}
 	return in, nil
 }
+
+// SetAIBackground flips Settings → AI → "Background AI processing" and
+// returns the resulting document. No paywall — it only ever turns work off.
+func (s *SettingsService) SetAIBackground(ctx context.Context, userID string, on bool) (domain.UserSettings, error) {
+	if err := s.settings.SetAIBackground(ctx, userID, on); err != nil {
+		return domain.UserSettings{}, err
+	}
+	return s.Get(ctx, userID)
+}
