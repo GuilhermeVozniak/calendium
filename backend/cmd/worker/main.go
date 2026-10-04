@@ -81,6 +81,12 @@ func run(logger *slog.Logger) error {
 	if err := cfg.ValidateCloudBilling(); err != nil {
 		return err
 	}
+	if err := cfg.ValidateCloudEmail(); err != nil {
+		return err
+	}
+	if !cfg.SMTP.Configured() {
+		logger.Warn("email: disabled (no SMTP_HOST); verification off, invitations fall back to links")
+	}
 
 	// --- Postgres + migrations ---
 	db, err := sql.Open("pgx", cfg.DB.URL)

@@ -79,9 +79,15 @@ type Deps struct {
 	// GET /v1/instance; the composition root fills it from config + which
 	// gateways are wired.
 	Instance InstanceInfo
-	// CORSAllowedOrigins is the extra CORS allowlist (CORS_ALLOWED_ORIGINS)
-	// reflected in addition to the built-in localhost-dev and Wails origins.
+	// CORSAllowedOrigins is the explicit CORS allowlist (CORS_ALLOWED_ORIGINS
+	// plus the web app's PUBLIC_WEB_URL and BETTER_AUTH_URL), reflected in
+	// addition to the built-in Wails origins.
 	CORSAllowedOrigins []string
+	// AllowDevOrigins (ALLOW_DEV_ORIGINS) reflects http(s)://localhost and
+	// 127.0.0.1 origins in CORS; the Wails origins and CORSAllowedOrigins
+	// are reflected regardless. The run-the-binary env template turns it
+	// on; production leaves it off.
+	AllowDevOrigins bool
 }
 
 type server struct {
@@ -89,8 +95,9 @@ type server struct {
 }
 
 // New builds the full v1 REST handler with recovery, request logging, CORS
-// (localhost dev + Wails + CORS_ALLOWED_ORIGINS), and bearer-token auth on
-// every /v1 route except the Paddle webhook and the provider OAuth callback.
+// (Wails + CORS_ALLOWED_ORIGINS always, localhost dev only with
+// ALLOW_DEV_ORIGINS), and bearer-token auth on every /v1 route except the
+// Paddle webhook and the provider OAuth callback.
 func New(deps Deps) http.Handler {
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
@@ -334,7 +341,7 @@ func New(deps Deps) http.Handler {
 	authed("GET /v1/insights/time", s.handleGetTimeInsights)
 
 	var h http.Handler = mux
-	h = corsMiddleware(h, deps.CORSAllowedOrigins)
+	h = corsMiddleware(h, deps.CORSAllowedOrigins, deps.AllowDevOrigins)
 	h = s.logRequests(h)
 	h = s.recoverPanics(h)
 	return h

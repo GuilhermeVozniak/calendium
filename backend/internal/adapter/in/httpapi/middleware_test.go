@@ -163,15 +163,23 @@ func TestCORS(t *testing.T) {
 	tests := []struct {
 		name          string
 		origin        string
+		allowDev      bool
 		wantOriginHdr string // expected Access-Control-Allow-Origin; "" = not set
 	}{
-		{name: "local dev origin (localhost) allowed", origin: "http://localhost:5173", wantOriginHdr: "http://localhost:5173"},
-		{name: "local dev origin (127.0.0.1) allowed", origin: "http://127.0.0.1:3000", wantOriginHdr: "http://127.0.0.1:3000"},
-		{name: "wails origin allowed", origin: "wails://wails.localhost", wantOriginHdr: "wails://wails.localhost"},
-		{name: "explicit allowlist match", origin: "https://app.example.com", wantOriginHdr: "https://app.example.com"},
-		{name: "explicit allowlist trailing slash trimmed for matching", origin: "https://app.example.com/", wantOriginHdr: "https://app.example.com/"},
-		{name: "disallowed origin not reflected", origin: "https://evil.example.com", wantOriginHdr: ""},
-		{name: "no origin header", origin: "", wantOriginHdr: ""},
+		{name: "localhost reflected when ALLOW_DEV_ORIGINS", origin: "http://localhost:5173", allowDev: true, wantOriginHdr: "http://localhost:5173"},
+		{name: "127.0.0.1 reflected when ALLOW_DEV_ORIGINS", origin: "http://127.0.0.1:3000", allowDev: true, wantOriginHdr: "http://127.0.0.1:3000"},
+		{name: "localhost NOT reflected without ALLOW_DEV_ORIGINS", origin: "http://localhost:3000", allowDev: false, wantOriginHdr: ""},
+		{name: "127.0.0.1 NOT reflected without ALLOW_DEV_ORIGINS", origin: "http://127.0.0.1:3000", allowDev: false, wantOriginHdr: ""},
+		{name: "::1 NOT reflected without ALLOW_DEV_ORIGINS", origin: "http://[::1]:3000", allowDev: false, wantOriginHdr: ""},
+		{name: "wails://wails always reflected", origin: "wails://wails", allowDev: false, wantOriginHdr: "wails://wails"},
+		{name: "wails://wails.localhost always reflected", origin: "wails://wails.localhost", allowDev: false, wantOriginHdr: "wails://wails.localhost"},
+		{name: "http://wails.localhost always reflected", origin: "http://wails.localhost", allowDev: false, wantOriginHdr: "http://wails.localhost"},
+		{name: "https://wails.localhost:4567 always reflected", origin: "https://wails.localhost:4567", allowDev: false, wantOriginHdr: "https://wails.localhost:4567"},
+		{name: "explicit allowlist match without dev origins", origin: "https://app.example.com", allowDev: false, wantOriginHdr: "https://app.example.com"},
+		{name: "explicit allowlist trailing slash trimmed for matching", origin: "https://app.example.com/", allowDev: true, wantOriginHdr: "https://app.example.com/"},
+		{name: "disallowed origin not reflected", origin: "https://evil.example.com", allowDev: true, wantOriginHdr: ""},
+		{name: "localhost lookalike not reflected", origin: "http://localhost.evil.example", allowDev: true, wantOriginHdr: ""},
+		{name: "no origin header", origin: "", allowDev: true, wantOriginHdr: ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -180,7 +188,7 @@ func TestCORS(t *testing.T) {
 				probeRan = true
 				w.WriteHeader(http.StatusOK)
 			})
-			handler := corsMiddleware(probe, []string{"https://app.example.com"})
+			handler := corsMiddleware(probe, []string{"https://app.example.com"}, tt.allowDev)
 			req := httptest.NewRequest(http.MethodGet, "/v1/whatever", nil)
 			if tt.origin != "" {
 				req.Header.Set("Origin", tt.origin)
@@ -216,7 +224,7 @@ func TestCORS(t *testing.T) {
 			probeRan = true
 			w.WriteHeader(http.StatusOK)
 		})
-		handler := corsMiddleware(probe, []string{"https://app.example.com"})
+		handler := corsMiddleware(probe, []string{"https://app.example.com"}, true)
 		req := httptest.NewRequest(http.MethodOptions, "/v1/whatever", nil)
 		req.Header.Set("Origin", "http://localhost:5173")
 		req.Header.Set("Access-Control-Request-Method", "POST")
@@ -243,7 +251,7 @@ func TestCORS(t *testing.T) {
 			probeRan = true
 			w.WriteHeader(http.StatusOK)
 		})
-		handler := corsMiddleware(probe, []string{"https://app.example.com"})
+		handler := corsMiddleware(probe, []string{"https://app.example.com"}, true)
 		req := httptest.NewRequest(http.MethodOptions, "/v1/whatever", nil)
 		req.Header.Set("Origin", "https://app.example.com")
 		rec := httptest.NewRecorder()
@@ -256,6 +264,27 @@ func TestCORS(t *testing.T) {
 			t.Fatalf("probe did not run, want fallthrough")
 		}
 	})
+}
+
+// TestCORSDepsAllowDevOrigins proves New() threads Deps.AllowDevOrigins into
+// the CORS layer: the same localhost origin flips between reflected and
+// ignored on the public /healthz route.
+func TestCORSDepsAllowDevOrigins(t *testing.T) {
+	for _, allowDev := range []bool{false, true} {
+		h := newHarness(t)
+		h.deps.AllowDevOrigins = allowDev
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		req.Header.Set("Origin", "http://localhost:3000")
+		rec := httptest.NewRecorder()
+		h.handler().ServeHTTP(rec, req)
+		got := rec.Header().Get("Access-Control-Allow-Origin")
+		if allowDev && got != "http://localhost:3000" {
+			t.Fatalf("AllowDevOrigins=true: ACAO = %q, want the origin reflected", got)
+		}
+		if !allowDev && got != "" {
+			t.Fatalf("AllowDevOrigins=false: ACAO = %q, want unset", got)
+		}
+	}
 }
 
 // --- panic recovery --------------------------------------------------------

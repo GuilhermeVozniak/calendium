@@ -52,6 +52,10 @@ type InstanceFeatures struct {
 	// Maps reports a configured maps provider (location autocomplete +
 	// travel times, M2.8); false hides the affordances client-side.
 	Maps bool `json:"maps"`
+	// Email reports a configured SMTP sender (SMTP_HOST). false means the
+	// web forgot-password page shows the administrator reset instructions
+	// and team invitations fall back to copyable links.
+	Email bool `json:"email"`
 }
 
 // InstanceCapabilities reports which optional vendor integrations are

@@ -27,6 +27,7 @@ func TestHandleInstance(t *testing.T) {
 			Microsoft: false,
 			AI:        true,
 			Push:      false,
+			Email:     true,
 		},
 	}
 	h := New(Deps{
@@ -66,9 +67,30 @@ func TestHandleInstance(t *testing.T) {
 	if err := json.Unmarshal(raw["features"], &features); err != nil {
 		t.Fatalf("decode features: %v", err)
 	}
-	for _, k := range []string{"billing", "google", "microsoft", "ai", "push"} {
+	for _, k := range []string{"billing", "google", "microsoft", "ai", "push", "email"} {
 		if _, ok := features[k]; !ok {
 			t.Fatalf("missing features key %q in %s", k, rec.Body.String())
 		}
+	}
+}
+
+// TestHandleInstanceFeaturesEmailFalseIsExplicit: features.email is a
+// boolean that is always present (clients gate the forgot-password form on
+// `=== false`), so an unconfigured SMTP must serialize as false, not vanish.
+func TestHandleInstanceFeaturesEmailFalseIsExplicit(t *testing.T) {
+	h := New(Deps{Instance: InstanceInfo{Features: InstanceFeatures{Email: false}}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	req := httptest.NewRequest(http.MethodGet, "/v1/instance", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var features map[string]json.RawMessage
+	if err := json.Unmarshal(raw["features"], &features); err != nil {
+		t.Fatalf("decode features: %v", err)
+	}
+	if string(features["email"]) != "false" {
+		t.Fatalf("features.email = %s, want false", features["email"])
 	}
 }
