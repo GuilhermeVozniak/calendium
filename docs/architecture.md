@@ -12,7 +12,7 @@ Calendium is an email + calendar manager (Superhuman-class email UX, deeply inte
                         ┌──────────▼──────────┐
                         │   backend/ (Go API)   │  hexagonal, stdlib-only
                         └─┬─────┬─────┬─────┬─┘
-            Postgres ────┘     │     │     └──── Stripe (billing)
+            Postgres ────┘     │     │     └──── Paddle (billing)
             Google APIs ───────┘     └── OpenRouter (AI), APNs/FCM/WebPush
             Microsoft Graph
 ```
@@ -43,7 +43,7 @@ backend/
 │    ├─ out/postgres/         # database/sql repositories
 │    ├─ out/googleapi/        # Gmail + Google Calendar REST (raw net/http)
 │    ├─ out/msgraph/          # Microsoft Graph mail + calendar REST
-│    ├─ out/stripeapi/        # Stripe REST client + webhook HMAC verification (stdlib)
+│    ├─ out/paddle/           # Paddle Billing REST client + Paddle-Signature HMAC verification (stdlib)
 │    ├─ out/push/             # APNs (HTTP/2 + ES256 JWT), FCM (OAuth2 SA JWT), Web Push (VAPID)
 │    ├─ out/openrouter/       # chat-completions client
 │    └─ out/authjwt/          # Better Auth JWT verification (EdDSA/Ed25519 + RS256/ES256 via JWKS)
@@ -59,12 +59,12 @@ All endpoints JSON, Bearer-authenticated unless noted. Errors: `{ "error": { "co
 
 | Method & path | Purpose |
 | --- | --- |
-| `GET /v1/instance` | Public instance discovery (unauthenticated): `{name, mode: self_host\|cloud, version, authBaseUrl, authProviders, features, capabilities}` for client self-configuration (`capabilities` = `{todoist, hubspot, maps, weather}` — only vendors whose config is present are advertised) |
+| `GET /v1/instance` | Public instance discovery (unauthenticated): `{name, mode: self_host\|cloud, version, authBaseUrl, authProviders, webUrl, features, capabilities}` for client self-configuration (`capabilities` = `{todoist, hubspot, maps, weather}` — only vendors whose config is present are advertised) |
 | `GET /v1/me` | Current user (upserts on first call) |
-| `GET /v1/billing/subscription` | Subscription status ($50/yr annual plan) |
-| `POST /v1/billing/checkout` | Create Stripe Checkout session `{successUrl, cancelUrl} → {url}` (501 `self_hosted` when `SELF_HOSTED`) |
-| `POST /v1/billing/portal` | Stripe billing portal `{returnUrl} → {url}` (501 `self_hosted` when `SELF_HOSTED`) |
-| `POST /v1/webhooks/stripe` | Stripe webhook (signature-verified, unauthenticated) |
+| `GET /v1/billing/subscription` | Subscription status ($50/yr annual plan); grants the 14-day signup trial on first call; `402 {details:{reason}}` elsewhere when lapsed |
+| `POST /v1/billing/checkout` | Create a Paddle overlay checkout (no body) `→ {url}` (409 `already_subscribed`, 502 `billing_unavailable`, 501 `self_hosted` when `SELF_HOSTED`) |
+| `POST /v1/billing/portal` | Paddle customer-portal links (no body) `→ {overviewUrl, cancelUrl, updatePaymentUrl}` (400 `no_billing_profile`, 501 `self_hosted`) |
+| `POST /v1/webhooks/paddle` | Paddle webhook (Paddle-Signature verified, unauthenticated, 1 MB cap) |
 | `GET /v1/accounts` | List connected Google/Microsoft accounts |
 | `POST /v1/accounts/connect/{provider}` | Begin provider OAuth `{redirectUrl} → {url}` |
 | `GET /v1/accounts/callback/{provider}` | OAuth redirect target (state-validated) |
@@ -129,7 +129,7 @@ All endpoints JSON, Bearer-authenticated unless noted. Errors: `{ "error": { "co
 
 ## Environment
 
-Backend env vars (see `backend/.env.example`): `DATABASE_URL` (shared with the web app, which hosts Better Auth against the same Postgres), `SELF_HOSTED` (open-core: `true` unlocks all features and disables Stripe billing; default `false`), `INSTANCE_NAME` (shown to clients, default `Calendium`), `APP_URL`/`PUBLIC_WEB_URL` (public web origin), `BETTER_AUTH_URL` (public web origin hosting Better Auth, no trailing slash), `AUTH_JWKS_URL` (Better Auth JWKS endpoint; default `${BETTER_AUTH_URL}/api/auth/jwks`), `AUTH_ISSUER` (expected JWT `iss`; default `${BETTER_AUTH_URL}`), `OAUTH_ALLOWED_REDIRECT_URIS` (redirect allowlist, added to localhost + `calendium://` defaults), `GOOGLE_CLIENT_ID/SECRET` (shared between login + mailbox connect), `APPLE_CLIENT_ID/SECRET` (Apple login), `MS_CLIENT_ID/SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID_ANNUAL`, `OPENROUTER_API_KEY`, `APNS_KEY_ID/TEAM_ID/KEY_P8`, `FCM_SERVICE_ACCOUNT_JSON`, `VAPID_PUBLIC/PRIVATE_KEY`, `TOKEN_ENCRYPTION_KEY` (32-byte hex for AES-GCM).
+Backend env vars (see `backend/.env.example`): `DATABASE_URL` (shared with the web app, which hosts Better Auth against the same Postgres), `SELF_HOSTED` (open-core: `true` unlocks all features and disables Paddle billing; default `false`), `INSTANCE_NAME` (shown to clients, default `Calendium`), `APP_URL`/`PUBLIC_WEB_URL` (public web origin), `BETTER_AUTH_URL` (public web origin hosting Better Auth, no trailing slash), `AUTH_JWKS_URL` (Better Auth JWKS endpoint; default `${BETTER_AUTH_URL}/api/auth/jwks`), `AUTH_ISSUER` (expected JWT `iss`; default `${BETTER_AUTH_URL}`), `OAUTH_ALLOWED_REDIRECT_URIS` (redirect allowlist, added to localhost + `calendium://` defaults), `GOOGLE_CLIENT_ID/SECRET` (shared between login + mailbox connect), `APPLE_CLIENT_ID/SECRET` (Apple login), `MS_CLIENT_ID/SECRET`, `PADDLE_ENV`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_PRICE_ID_ANNUAL`, `BILLING_RECONCILE_INTERVAL`, `OPENROUTER_API_KEY`, `APNS_KEY_ID/TEAM_ID/KEY_P8`, `FCM_SERVICE_ACCOUNT_JSON`, `VAPID_PUBLIC/PRIVATE_KEY`, `TOKEN_ENCRYPTION_KEY` (32-byte hex for AES-GCM).
 
 The Next.js web app additionally reads `BETTER_AUTH_SECRET` (`openssl rand -base64 32`), `BETTER_AUTH_URL`, `DATABASE_URL`, and `GOOGLE_*`/`APPLE_*` at **runtime** (not `NEXT_PUBLIC_*`) to run Better Auth. It talks to Better Auth **same-origin** (`/api/auth`), so it needs no `NEXT_PUBLIC` auth var; `NEXT_PUBLIC_API_URL` (default same-origin) still points clients at the Go API. All `SUPABASE_*` / `NEXT_PUBLIC_SUPABASE_*` vars are removed.
 
@@ -138,10 +138,10 @@ The Next.js web app additionally reads `BETTER_AUTH_SECRET` (`openssl rand -base
 Calendium is **open core**: the same binaries run in two modes, selected by the backend
 `SELF_HOSTED` env flag (default `false`).
 
-- **Cloud (`SELF_HOSTED=false`)** — our managed hosting; Stripe billing is live and the
+- **Cloud (`SELF_HOSTED=false`)** — our managed hosting; Paddle billing is live (the api and worker refuse to boot without the Paddle keys) and the
   paywall gates on subscription state (see [payments.md](./payments.md)).
 - **Self-hosted (`SELF_HOSTED=true`)** — the user runs the whole stack; entitlement gating
-  becomes a no-op (all features unlocked) and Stripe is switched off. `GET /v1/billing/subscription`
+  becomes a no-op (all features unlocked) and Paddle is switched off. `GET /v1/billing/subscription`
   reports a synthetic active annual plan (nil period) so clients treat the user as fully
   entitled, and the checkout/portal/webhook endpoints return `501 self_hosted`.
 
@@ -151,14 +151,14 @@ operator guide (Docker Compose, HTTPS, providers, upgrades) lives in
 
 **Instance discovery.** `GET /v1/instance` is unauthenticated so a client that only knows
 the server base URL can self-configure. It returns `{ name, mode, version, authBaseUrl,
-authProviders, undoSendSeconds, vapidPublicKey?, features: { billing, google, microsoft, ai, push } }`
+authProviders, webUrl, undoSendSeconds, vapidPublicKey?, features: { billing, google, microsoft, ai, push } }`
 where `mode` is
 `self_host` when `SELF_HOSTED=true` else `cloud`, `authBaseUrl` is `${PUBLIC_WEB_URL||APP_URL}/api/auth`
 (with `PUBLIC_WEB_URL` winning over `APP_URL` when both are set)
 (where Better Auth is hosted), `authProviders` lists enabled sign-in methods (`["email"]`, plus
 `"google"`/`"apple"` when their credentials are configured), `undoSendSeconds` is the
 undo-send grace window (`UNDO_SEND_SECONDS`, default 15), `vapidPublicKey` is present only
-when web push is configured, `features.billing = !SELF_HOSTED`,
+when web push is configured, `features.billing = !SELF_HOSTED`, and `webUrl` is `PUBLIC_WEB_URL` (mobile/desktop build billing links from it),
 and the remaining feature flags reflect which gateways/credentials are configured. Clients build
 their Better Auth client against `authBaseUrl` and read `features.billing` to decide whether to
 show any billing/paywall UI at all.

@@ -130,9 +130,13 @@ adapter stays unwired and the checkout/portal/webhook endpoints return
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `STRIPE_SECRET_KEY` | No (cloud) | — | Stripe secret key. Managed-cloud only. |
-| `STRIPE_WEBHOOK_SECRET` | No (cloud) | — | Stripe webhook signing secret. |
-| `STRIPE_PRICE_ID_ANNUAL` | No (cloud) | — | Price ID for the $50/yr annual plan (see [`../payments.md`](../payments.md)). |
+| `PADDLE_ENV` | No | `sandbox` | `sandbox` or `live` — selects the Paddle API origin. |
+| `PADDLE_API_KEY` | **Yes (cloud)** | — | Paddle API key. Cloud mode refuses to start without it. |
+| `PADDLE_WEBHOOK_SECRET` | **Yes (cloud)** | — | Notification-destination secret for `Paddle-Signature` verification. Cloud mode refuses to start without it. |
+| `PADDLE_PRICE_ID_ANNUAL` | **Yes (cloud)** | — | Paddle price id (`pri_…`) for the $50/yr plan (see [`../payments.md`](../payments.md)). |
+| `BILLING_RECONCILE_INTERVAL` | No | `6h` | Worker loop that re-reads stale subscriptions from Paddle. |
+| `NEXT_PUBLIC_PADDLE_CLIENT_TOKEN` | **Yes (cloud, web build)** | — | Paddle.js client token, inlined at web build time. |
+| `NEXT_PUBLIC_PADDLE_ENV` | No | `sandbox` | `sandbox` or `production`, inlined at web build time; must match `PADDLE_ENV`. |
 
 ---
 
@@ -168,7 +172,7 @@ Setting `SELF_HOSTED=true` flips the instance into open-core self-host mode:
   annual`, `priceUsd: 50`, all period fields `null`) so clients treat the user
   as fully entitled. The `SubscriptionStatus` type is unchanged from Cloud.
 - **`POST /v1/billing/checkout`, `POST /v1/billing/portal`, and
-  `POST /v1/webhooks/stripe`** return **HTTP 501** with the stable envelope:
+  `POST /v1/webhooks/paddle`** return **HTTP 501** with the stable envelope:
 
   ```json
   { "error": { "code": "self_hosted", "message": "Billing is disabled on self-hosted instances." } }
@@ -192,6 +196,7 @@ shape:
   "version": "0.1.0",
   "authBaseUrl": "https://mail.example.com/api/auth",
   "authProviders": ["email", "google", "apple"],
+  "webUrl": "https://mail.example.com",
   "undoSendSeconds": 15,
   "features": {
     "billing": false,
@@ -210,6 +215,7 @@ shape:
 | `version` | The running API build constant (currently `0.1.0`). |
 | `authBaseUrl` | `${PUBLIC_WEB_URL\|\|APP_URL}/api/auth` — the Better Auth base clients build their auth client against. |
 | `authProviders` | Sign-in methods: `["email"]`, plus `"google"` when `GOOGLE_CLIENT_ID` is set and `"apple"` when `APPLE_CLIENT_ID` is set. |
+| `webUrl` | `PUBLIC_WEB_URL` — mobile and desktop build billing links from it. |
 | `undoSendSeconds` | Undo-send grace window in seconds (`UNDO_SEND_SECONDS`, default `15`); clients show a post-send **Undo** toast for this long. |
 | `vapidPublicKey` | Web Push VAPID public key (`VAPID_PUBLIC_KEY`), **present only when web push is configured** (the web client subscribes with it). Omitted otherwise. |
 | `features.billing` | `!SELF_HOSTED` — `false` on self-host. |

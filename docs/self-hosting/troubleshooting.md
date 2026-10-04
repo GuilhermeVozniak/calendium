@@ -281,7 +281,7 @@ This is the single most common self-host support ticket.
 `POST /v1/billing/checkout` returns `501`.
 
 **This is expected.** With `SELF_HOSTED=true`, billing is disabled: checkout,
-portal, and the Stripe webhook return
+portal, and the Paddle webhook return
 `501 {"error":{"code":"self_hosted","message":"Billing is disabled on self-hosted instances."}}`,
 and `GET /v1/billing/subscription` reports an active annual plan so clients treat
 the user as fully entitled. `GET /v1/instance` advertises `features.billing:

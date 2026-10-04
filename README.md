@@ -10,7 +10,7 @@ Calendium is **open core** (like Supabase, Cal.com, Plausible, n8n): the softwar
 
 ### Self-hosting (free)
 
-Run Calendium yourself in minutes with Docker Compose — the Go backend, Postgres, and the web app on your own VPS, home server, or cloud — then point the desktop & mobile clients at **your** server. Every feature is unlocked, no Stripe, no license keys.
+Run Calendium yourself in minutes with Docker Compose — the Go backend, Postgres, and the web app on your own VPS, home server, or cloud — then point the desktop & mobile clients at **your** server. Every feature is unlocked, no Paddle, no license keys.
 
 ```bash
 cp .env.example .env   # fill in Better Auth secrets + a token key
@@ -21,7 +21,7 @@ Full guide (HTTPS, providers, upgrades): **[docs/self-hosting/](docs/self-hostin
 
 ### Calendium Cloud (paid)
 
-Prefer we run it? **Calendium Cloud** is our managed hosting — patched, backed up, and supported — for **$50/year** via Stripe. The billing flow lives in [docs/payments.md](docs/payments.md), and entitlement (`SELF_HOSTED` toggles the paywall) is explained in [docs/pricing-model.md](docs/pricing-model.md).
+Prefer we run it? **Calendium Cloud** is our managed hosting — patched, backed up, and supported — for **$50/year** via Paddle (merchant of record). The billing flow lives in [docs/payments.md](docs/payments.md), and entitlement (`SELF_HOSTED` toggles the paywall) is explained in [docs/pricing-model.md](docs/pricing-model.md).
 
 ## Monorepo layout (bun workspaces)
 
@@ -44,7 +44,7 @@ bun run dev:mobile     # Expo dev server
 bun run dev:desktop    # Wails dev (requires wails CLI)
 ```
 
-See `docs/architecture.md` for the full system design, `docs/tech-stack.md` for the stack map, `docs/feature-map.md` for the Superhuman/calendar feature parity plan, `docs/pricing-model.md` for the open-core Cloud-vs-self-hosted model, `docs/payments.md` for the Stripe subscription flow, and `docs/self-hosting/` for running Calendium yourself.
+See `docs/architecture.md` for the full system design, `docs/tech-stack.md` for the stack map, `docs/feature-map.md` for the Superhuman/calendar feature parity plan, `docs/pricing-model.md` for the open-core Cloud-vs-self-hosted model, `docs/payments.md` for the Paddle subscription flow, `docs/paddle-go-live.md` for the operator checklist, and `docs/self-hosting/` for running Calendium yourself.
 
 ## License
 

@@ -23,7 +23,7 @@ worked top to bottom.
 ## 1. Secrets management
 
 **Never commit `.env`.** It holds your `BETTER_AUTH_SECRET`, provider client
-secrets, Stripe keys (cloud only), and the token-encryption key. The repo's
+secrets, Paddle keys (cloud only), and the token-encryption key. The repo's
 `.gitignore` excludes `.env`; keep it that way and distribute secrets out of
 band (a secrets manager, `scp`, your provider's secret store).
 
@@ -68,7 +68,7 @@ be public and some is a signing secret — don't mix them up:
 | `BETTER_AUTH_URL` | **Public** | Public web origin; also the JWT issuer (`iss`) the backend pins. |
 | `${BETTER_AUTH_URL}/api/auth/jwks` (JWKS) | **Public** | Public Ed25519 verification keys the backend fetches. Meant to be reachable — expected to be public, fine to expose. |
 | `BETTER_AUTH_SECRET` | **SECRET** | Better Auth's root secret. Anyone with it can forge sessions and mint valid tokens. Never serve it, never log it, never put it in `NEXT_PUBLIC_*`. |
-| `GOOGLE_CLIENT_SECRET`, `APPLE_CLIENT_SECRET`, `MS_CLIENT_SECRET`, `STRIPE_*` | **SECRET** | Backend / server-only. |
+| `GOOGLE_CLIENT_SECRET`, `APPLE_CLIENT_SECRET`, `MS_CLIENT_SECRET`, `PADDLE_*` | **SECRET** | Backend / server-only. |
 
 The Go backend is a pure resource server: it fetches the public JWKS from
 `AUTH_JWKS_URL` (default `${BETTER_AUTH_URL}/api/auth/jwks`), verifies the
@@ -180,9 +180,9 @@ See [Backups & Restore](./backups.md#encrypting-backups).
 ## 9. Billing is off on self-host (by design)
 
 With `SELF_HOSTED=true`, the billing endpoints (`/v1/billing/checkout`,
-`/v1/billing/portal`, `/v1/webhooks/stripe`) return `501` with a stable
-`self_hosted` error, and all features are unlocked without Stripe. Leave the
-`STRIPE_*` vars blank — there's no paywall to secure and no webhook secret to
+`/v1/billing/portal`, `/v1/webhooks/paddle`) return `501` with a stable
+`self_hosted` error, and all features are unlocked without Paddle. Leave the
+`PADDLE_*` vars blank — there's no paywall to secure and no webhook secret to
 protect on a self-hosted box.
 
 ---

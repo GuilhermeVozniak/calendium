@@ -8,7 +8,7 @@ Two paths:
 - **Path B — Cloud Run (api + web) + Cloud SQL** (serverless, mostly managed),
   with the **worker on a small always-on instance**.
 
-Both stay in **self-hosted mode** (`SELF_HOSTED=true`, no Stripe, all features
+Both stay in **self-hosted mode** (`SELF_HOSTED=true`, no Paddle, all features
 unlocked). See the [Overview](./README.md) and [Configuration](./configuration.md)
 first if you're new.
 

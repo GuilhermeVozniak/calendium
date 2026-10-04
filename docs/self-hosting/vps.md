@@ -31,7 +31,7 @@ Caddy serves a **single domain**: it routes `/v1/*` and `/healthz` to the API
 (`api:8080`) and everything else to the web app (`web:3000`). So you only need
 **one DNS record**, and the browser talks to the API on the same origin as the site.
 
-> **Self-hosted = every feature unlocked, no Stripe.** With `SELF_HOSTED=true`
+> **Self-hosted = every feature unlocked, no Paddle.** With `SELF_HOSTED=true`
 > the billing endpoints return `501 self_hosted`, `GET /v1/billing/subscription`
 > reports a permanent active annual plan, and clients treat every user as fully
 > entitled. See [Configuration](./configuration.md).
