@@ -76,7 +76,11 @@ bring your own proxy instead — then the `caddy` service never starts.
 	# API + health checks → Go backend.
 	@api path /v1/* /healthz
 	handle @api {
-		reverse_proxy api:8080
+		# The api honours X-Request-Id from this (trusted) proxy, so never
+		# relay a client-chosen one; the api generates a fresh id.
+		reverse_proxy api:8080 {
+			header_up -X-Request-Id
+		}
 	}
 
 	# Everything else → Next.js web app.
@@ -103,6 +107,9 @@ bring your own proxy instead — then the `caddy` service never starts.
   own bucket, LAN clients included
   ([why](./security.md#client-ip-trust_proxy-and-trusted_proxy_cidrs)). Do not
   set `TRUST_PROXY=false` with this profile.
+- Caddy drops any client-sent `X-Request-Id` on the API route, so the API
+  always generates the id (it honours an inbound one only from a trusted
+  proxy). The nginx sample sends nginx's own `$request_id` instead.
 
 ### Before you `up`: DNS + ports
 

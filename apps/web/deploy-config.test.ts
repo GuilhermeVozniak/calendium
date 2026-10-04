@@ -57,3 +57,20 @@ describe('compose stop grace periods (whole-branch final review I1)', () => {
     expect(line).toBe('SHUTDOWN_TIMEOUT=30s');
   });
 });
+
+describe('shipped proxies never relay a client X-Request-Id (whole-branch final review M2)', () => {
+  // The API honours X-Request-Id from a trusted proxy, so the proxy must not
+  // pass through whatever the client sent.
+  it('the Caddyfile strips X-Request-Id on the api upstream', () => {
+    expect(read('deploy/caddy/Caddyfile')).toMatch(/reverse_proxy api:8080 \{\s*header_up -X-Request-Id\s*\}/);
+  });
+
+  it('every nginx api location sets X-Request-Id to $request_id', () => {
+    const conf = read('deploy/nginx/calendium.conf');
+    const apiBlocks = conf.split(/location \/v1\/ \{/).slice(1);
+    expect(apiBlocks).toHaveLength(2);
+    for (const block of apiBlocks) {
+      expect(block.slice(0, block.indexOf('}'))).toMatch(/proxy_set_header X-Request-Id \$request_id;/);
+    }
+  });
+});
