@@ -107,7 +107,9 @@ func run(logger *slog.Logger) error {
 	// links and GET /v1/instance advertises features.email=false.
 	var mailer port.Mailer
 	if cfg.SMTP.Configured() {
-		mailer = smtp.New(cfg.SMTP)
+		sc := smtp.New(cfg.SMTP)
+		sc.Logger = logger
+		mailer = sc
 		logger.Info("api: email enabled", "host", cfg.SMTP.Host, "port", cfg.SMTP.Port, "secure", cfg.SMTP.Secure)
 	} else {
 		logger.Warn("email: disabled (no SMTP_HOST); verification off, invitations fall back to links")

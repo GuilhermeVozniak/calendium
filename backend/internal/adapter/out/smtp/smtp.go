@@ -5,9 +5,11 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	netmail "net/mail"
 	gosmtp "net/smtp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -32,7 +34,10 @@ type Client struct {
 	// TLSConfig serves implicit TLS and STARTTLS; ServerName defaults to
 	// cfg.Host so the server certificate is verified against system roots.
 	TLSConfig *tls.Config
-	now       func() time.Time
+	// Logger receives non-fatal session warnings (a failed QUIT after the
+	// message was accepted). New defaults it to slog.Default().
+	Logger *slog.Logger
+	now    func() time.Time
 }
 
 var _ port.Mailer = (*Client)(nil)
@@ -44,6 +49,7 @@ func New(cfg config.SMTP) *Client {
 		cfg:         cfg,
 		DialContext: d.DialContext,
 		TLSConfig:   &tls.Config{ServerName: cfg.Host, MinVersion: tls.VersionTLS12},
+		Logger:      slog.Default(),
 		now:         time.Now,
 	}
 }
@@ -77,7 +83,9 @@ func (c *Client) Send(ctx context.Context, msg port.Email) error {
 		_ = conn.SetDeadline(dl)
 	}
 	// Cancellation mid-dialogue closes the socket, which unblocks net/smtp.
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	// Capture the raw socket: conn is reassigned to the TLS wrapper below.
+	raw := conn
+	stop := context.AfterFunc(ctx, func() { _ = raw.Close() })
 	defer stop()
 
 	if c.cfg.Secure {
@@ -129,19 +137,29 @@ func (c *Client) Send(ctx context.Context, msg port.Email) error {
 	if err := w.Close(); err != nil {
 		return fmt.Errorf("smtp: end of data: %w", err)
 	}
+	// The server accepted DATA, so the message is queued: a failed QUIT (or
+	// close) no longer means "not delivered". Reporting it would make the
+	// caller roll back a delivered invitation and retry into a duplicate.
 	if err := cl.Quit(); err != nil {
-		return fmt.Errorf("smtp: QUIT: %w", err)
+		c.logger().Warn("smtp: QUIT failed after the message was accepted; treating as delivered", "host", c.cfg.Host, "error", err)
 	}
 	return nil
+}
+
+func (c *Client) logger() *slog.Logger {
+	if c.Logger == nil {
+		return slog.Default()
+	}
+	return c.Logger
 }
 
 // pickAuth prefers PLAIN, falls back to LOGIN, and refuses anything else.
 // net/smtp's PlainAuth itself refuses an unencrypted non-localhost session.
 func pickAuth(mechs string, cfg config.SMTP) (gosmtp.Auth, error) {
 	switch {
-	case strings.Contains(mechs, "PLAIN"):
+	case slices.Contains(strings.Fields(mechs), "PLAIN"):
 		return gosmtp.PlainAuth("", cfg.User, cfg.Pass, cfg.Host), nil
-	case strings.Contains(mechs, "LOGIN"):
+	case slices.Contains(strings.Fields(mechs), "LOGIN"):
 		return loginAuth{user: cfg.User, pass: cfg.Pass}, nil
 	}
 	return nil, fmt.Errorf("smtp: server offers no supported AUTH mechanism (%q)", mechs)
