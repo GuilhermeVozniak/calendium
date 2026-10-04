@@ -3,7 +3,13 @@ package httpapi
 import "net/http"
 
 // Version is the running API build, surfaced to clients via GET /v1/instance.
-const Version = "0.1.0"
+// Release images stamp it at link time:
+//
+//	go build -ldflags "-X calendium/backend/internal/adapter/in/httpapi.Version=X.Y.Z"
+//
+// (backend/Dockerfile ARG VERSION, passed by docker-compose.yml). Source
+// builds and `go run` report "dev".
+var Version = "dev"
 
 // InstanceInfo is the public self-configuration document served at
 // GET /v1/instance (unauthenticated). A client that only knows the server base
