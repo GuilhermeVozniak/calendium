@@ -119,6 +119,9 @@ describe('SignInPage', () => {
     render(<SignInPage />);
     await fillAndSubmit(user);
     expect(await screen.findByText('Verify your email first — we sent a new link.')).toBeInTheDocument();
+    // The swapped-in state is announced: focus on its heading, polite status.
+    expect(screen.getByRole('heading', { name: 'Check your inbox' })).toHaveFocus();
+    expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');
     expect(screen.getByRole('button', { name: /Resend in 60 s/ })).toBeDisabled();
     expect(replaceMock).not.toHaveBeenCalled();
   });

@@ -18,6 +18,9 @@ test.describe('Auth recovery', () => {
     await page.route('**/api/auth/reset-password', (route) => route.fulfill({ json: { status: true } }));
     await page.goto('/reset-password?token=e2e-token');
     // exact: 'New password' is also a substring of 'Confirm new password'.
+    await expect(page.getByLabel('New password', { exact: true })).toBeVisible();
+    // The token leaves the address bar as soon as the page has read it.
+    await expect(page).toHaveURL(/\/reset-password$/);
     await page.getByLabel('New password', { exact: true }).fill('correct-horse-battery');
     await page.getByLabel('Confirm new password').fill('correct-horse-battery');
     await page.getByRole('button', { name: 'Update password' }).click();

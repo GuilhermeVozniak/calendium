@@ -32,9 +32,9 @@ beforeEach(() => {
 });
 
 describe('VerifyEmailPage', () => {
-  it('with a session: Verified + Continue to /mail', async () => {
+  it('the verification callback signed in a verified user: Verified + Continue to /mail', async () => {
     window.history.replaceState(null, '', '/verify-email');
-    sessionState.value = { data: { user: { id: 'u1' } }, isPending: false };
+    sessionState.value = { data: { user: { id: 'u1', emailVerified: true } }, isPending: false };
     const user = userEvent.setup();
     render(<VerifyEmailPage />);
     expect(await screen.findByText('Email verified')).toBeInTheDocument();
@@ -42,11 +42,34 @@ describe('VerifyEmailPage', () => {
     expect(replaceMock).toHaveBeenCalledWith('/mail');
   });
 
-  it('without a session: Verified + sign in link', async () => {
+  it('a session whose email is NOT verified never claims success', async () => {
+    window.history.replaceState(null, '', '/verify-email');
+    sessionState.value = { data: { user: { id: 'u1', emailVerified: false } }, isPending: false };
+    render(<VerifyEmailPage />);
+    expect(await screen.findByText("Your email isn't verified yet")).toBeInTheDocument();
+    expect(screen.queryByText('Email verified')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeInTheDocument();
+  });
+
+  it('no session and no error (link already used, or a direct visit): no success claim, sign-in link', async () => {
     window.history.replaceState(null, '', '/verify-email');
     render(<VerifyEmailPage />);
-    expect(await screen.findByText('Email verified')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Sign in to continue' })).toHaveAttribute('href', '/signin');
+    expect(await screen.findByRole('heading', { name: 'Sign in to continue' })).toBeInTheDocument();
+    expect(screen.queryByText('Email verified')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/signin');
+  });
+
+  it('the resent state moves focus to the heading and announces the status politely', async () => {
+    window.history.replaceState(null, '', '/verify-email?error=TOKEN_EXPIRED');
+    sendVerificationEmail.mockResolvedValue({ data: { status: true }, error: null });
+    const user = userEvent.setup();
+    render(<VerifyEmailPage />);
+    await user.type(await screen.findByLabelText('Email'), 'ada@example.test');
+    await user.click(screen.getByRole('button', { name: 'Send a new link' }));
+    const status = await screen.findByRole('status');
+    expect(status).toHaveAttribute('aria-live', 'polite');
+    expect(status).toHaveTextContent('If an account exists for that address, we sent a new link.');
+    expect(screen.getByRole('heading', { name: 'This link has expired or was already used' })).toHaveFocus();
   });
 
   it.each(['TOKEN_EXPIRED', 'INVALID_TOKEN'])('with ?error=%s: expired copy and a resend form that calls sendVerificationEmail', async (code) => {

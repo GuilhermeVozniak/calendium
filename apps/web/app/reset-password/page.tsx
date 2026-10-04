@@ -31,9 +31,20 @@ export default function ResetPasswordPage() {
   const [pending, setPending] = React.useState(false);
   const [invalid, setInvalid] = React.useState(false);
 
+  // Read the link once (StrictMode re-runs effects), then drop the token from
+  // the address bar and history so it is not left lying around.
+  const linkRead = React.useRef(false);
   React.useEffect(() => {
+    if (linkRead.current) return;
+    linkRead.current = true;
     const sp = new URLSearchParams(window.location.search);
-    setParams({ token: sp.get('token'), error: sp.get('error') });
+    const token = sp.get('token');
+    setParams({ token, error: sp.get('error') });
+    if (token !== null) {
+      sp.delete('token');
+      const query = sp.toString();
+      window.history.replaceState(window.history.state, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
+    }
   }, []);
 
   async function submit(e: React.FormEvent) {
@@ -73,7 +84,7 @@ export default function ResetPasswordPage() {
   if (!params) {
     return (
       <AuthShell title="Reset your password">
-        <Loader2 className="text-muted-foreground mx-auto size-5 animate-spin" aria-label="Loading" />
+        <Loader2 className="text-muted-foreground mx-auto size-5 animate-spin" role="img" aria-label="Loading" />
       </AuthShell>
     );
   }

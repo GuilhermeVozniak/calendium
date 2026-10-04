@@ -1,3 +1,4 @@
+import * as React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -78,5 +79,32 @@ describe('ResetPasswordPage', () => {
     await fill(user, 'correct-horse-battery');
     await waitFor(() => expect(toastError).toHaveBeenCalledWith('This link is invalid or has expired. Request a new one.'));
     expect(await screen.findByRole('link', { name: 'Request a new link' })).toBeInTheDocument();
+    // The new state is announced: focus moves to its heading.
+    expect(screen.getByRole('heading', { name: 'This link is invalid or has expired' })).toHaveFocus();
+  });
+
+  it('removes the token from the address bar right after reading it, keeping other params', async () => {
+    window.history.replaceState(null, '', '/reset-password?token=tok-123&utm=mail#top');
+    resetPassword.mockResolvedValue({ data: { status: true }, error: null });
+    const user = userEvent.setup();
+    render(<ResetPasswordPage />);
+    expect(await screen.findByLabelText('New password')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/reset-password');
+    expect(window.location.search).toBe('?utm=mail');
+    expect(window.location.hash).toBe('#top');
+    // The token still drives the submission.
+    await fill(user, 'correct-horse-battery');
+    expect(resetPassword).toHaveBeenCalledWith({ newPassword: 'correct-horse-battery', token: 'tok-123' }, expect.anything());
+  });
+
+  it('keeps the token when React re-runs the mount effect (StrictMode)', async () => {
+    window.history.replaceState(null, '', '/reset-password?token=tok-strict');
+    render(
+      <React.StrictMode>
+        <ResetPasswordPage />
+      </React.StrictMode>
+    );
+    expect(await screen.findByLabelText('New password')).toBeInTheDocument();
+    expect(window.location.search).toBe('');
   });
 });
