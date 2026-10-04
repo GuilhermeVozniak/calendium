@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -80,7 +81,7 @@ func parseSemver(s string) (semver, bool) {
 	}
 	var nums [3]int
 	for i, p := range parts {
-		if p == "" || (len(p) > 1 && p[0] == '0') {
+		if p == "" || (len(p) > 1 && p[0] == '0') || strings.Trim(p, "0123456789") != "" {
 			return semver{}, false
 		}
 		n, err := strconv.Atoi(p)
@@ -95,7 +96,8 @@ func parseSemver(s string) (semver, bool) {
 
 // newer reports whether latest is strictly newer than current: numeric
 // major.minor.patch compare; at equal numbers a release beats a prerelease
-// and two prereleases compare lexically.
+// and two prereleases compare lexically (not SemVer §11; unreachable today,
+// since only release builds check and only release tags are offered).
 func newer(latest, current semver) bool {
 	if latest.major != current.major {
 		return latest.major > current.major
@@ -122,18 +124,27 @@ func isReleaseVersion(v string) bool {
 	return ok && parsed.pre == ""
 }
 
-// resolveUpdateURL applies CALENDIUM_UPDATE_URL: empty → GitHub, "off" →
-// disabled (empty string), anything else → that URL.
+// resolveUpdateURL applies CALENDIUM_UPDATE_URL: empty → GitHub, "off" (any
+// case) → disabled (empty string), anything else → that URL.
 func resolveUpdateURL(env string) string {
 	env = strings.TrimSpace(env)
-	switch env {
-	case "":
+	switch {
+	case env == "":
 		return defaultUpdateURL
-	case "off":
+	case strings.EqualFold(env, "off"):
 		return ""
 	default:
 		return env
 	}
+}
+
+// safeReleaseURL gates the Download URL, which ends up in OpenExternal: only
+// https with a host. Anything else (http from a plaintext mirror, javascript:,
+// a custom protocol handler, a host-less path) is never cached, emitted or
+// opened.
+func safeReleaseURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != ""
 }
 
 func defaultUpdateCachePath() string {
@@ -273,6 +284,9 @@ func (c *updateChecker) check(ctx context.Context) (UpdateInfo, error) {
 			// still a prerelease: never offered, never cached.
 			return c.status(), nil
 		}
+		if !safeReleaseURL(rel.HTMLURL) {
+			return c.status(), fmt.Errorf("update check: html_url %q is not an https URL", rel.HTMLURL)
+		}
 		c.writeCache(updateCache{ETag: resp.Header.Get("ETag"), TagName: rel.TagName, HTMLURL: rel.HTMLURL, CheckedAt: c.now()})
 	default:
 		return c.status(), fmt.Errorf("update check: unexpected status %d", resp.StatusCode)
@@ -287,6 +301,10 @@ func (c *updateChecker) apply(rel githubRelease) UpdateInfo {
 	current, _ := parseSemver(c.version)
 	info := UpdateInfo{Current: c.version, Latest: strings.TrimPrefix(rel.TagName, "v"), URL: rel.HTMLURL}
 	info.Available = ok && latest.pre == "" && newer(latest, current)
+	if !safeReleaseURL(info.URL) {
+		// Defence in depth: check and readCache already refuse these.
+		info.Available, info.URL = false, ""
+	}
 
 	c.mu.Lock()
 	prev := c.latest
@@ -312,6 +330,13 @@ func (c *updateChecker) readCache() updateCache {
 	if err := json.Unmarshal(b, &cached); err != nil {
 		return updateCache{} // corrupt → behave as if there were no cache
 	}
+	// Parseable but incomplete (hand-edited, or written by something else)
+	// is no cache either: a 304 must replay a usable release, and writeCache
+	// only ever stores an etag, a release tag and an https URL.
+	tag, ok := parseSemver(cached.TagName)
+	if cached.ETag == "" || !ok || tag.pre != "" || !safeReleaseURL(cached.HTMLURL) {
+		return updateCache{}
+	}
 	return cached
 }
 
@@ -323,10 +348,41 @@ func (c *updateChecker) writeCache(cache updateCache) {
 	if err != nil {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(c.cachePath), 0o700); err != nil {
-		return
+	if err := writeFileAtomic(c.cachePath, b); err != nil {
+		log.Printf("update check: write cache: %v", err)
 	}
-	_ = os.WriteFile(c.cachePath, b, 0o600)
+}
+
+// writeFileAtomic replaces path with b via a 0600 temp file in the same
+// directory, fsync and rename, so a crash or a failed write never leaves a
+// truncated file behind: readers see the old contents or the new ones.
+func writeFileAtomic(path string, b []byte) (err error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp") // CreateTemp opens 0600
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if _, err = f.Write(b); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // run blocks until ctx is done: first check after `initial`, then every
