@@ -19,6 +19,7 @@ func TestHandleInstance(t *testing.T) {
 		Version:         Version,
 		AuthBaseURL:     "https://app.calendium.com/api/auth",
 		AuthProviders:   []string{"email", "google"},
+		WebURL:          "https://app.calendium.com",
 		UndoSendSeconds: 15,
 		Features: InstanceFeatures{
 			Billing:   false,
@@ -56,7 +57,7 @@ func TestHandleInstance(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
 		t.Fatalf("decode raw: %v", err)
 	}
-	for _, k := range []string{"name", "mode", "version", "authBaseUrl", "authProviders", "undoSendSeconds", "features"} {
+	for _, k := range []string{"name", "mode", "version", "authBaseUrl", "authProviders", "webUrl", "undoSendSeconds", "features"} {
 		if _, ok := raw[k]; !ok {
 			t.Fatalf("missing top-level key %q in %s", k, rec.Body.String())
 		}

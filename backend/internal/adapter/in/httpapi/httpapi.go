@@ -12,8 +12,8 @@ import (
 	"calendium/backend/internal/port"
 )
 
-// Deps wires the adapter to the hexagon: every driving port, the token
-// verifier for the auth middleware, and the raw Payments gateway.
+// Deps wires the adapter to the hexagon: every driving port and the token
+// verifier for the auth middleware.
 type Deps struct {
 	Logger    *slog.Logger // optional; defaults to slog.Default()
 	Verifier  port.TokenVerifier
@@ -36,10 +36,6 @@ type Deps struct {
 	// Settings is per-user scheduling preferences (time zone, working
 	// hours, working location).
 	Settings port.SettingsService
-	// Payments is the raw Stripe gateway. The webhook route verifies and
-	// applies events through Billing; the port is part of Deps so the
-	// composition surface matches the adapter contract.
-	Payments port.Payments
 	// Events fans realtime collaboration events out to SSE subscribers
 	// (GET /v1/collab/stream). When nil the stream endpoint answers 501.
 	Events port.EventBus
@@ -94,7 +90,7 @@ type server struct {
 
 // New builds the full v1 REST handler with recovery, request logging, CORS
 // (localhost dev + Wails + CORS_ALLOWED_ORIGINS), and bearer-token auth on
-// every /v1 route except the Stripe webhook and the provider OAuth callback.
+// every /v1 route except the Paddle webhook and the provider OAuth callback.
 func New(deps Deps) http.Handler {
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
@@ -106,7 +102,7 @@ func New(deps Deps) http.Handler {
 	// Unauthenticated surface.
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /v1/instance", s.handleInstance)
-	mux.HandleFunc("POST /v1/webhooks/stripe", s.handleStripeWebhook)
+	mux.HandleFunc("POST /v1/webhooks/paddle", s.handlePaddleWebhook)
 	mux.HandleFunc("GET /v1/accounts/callback/{provider}", s.handleAccountCallback)
 	// M2.8 Task 9: vendor OAuth redirect target (state-validated, like the
 	// account callback above).
@@ -124,7 +120,7 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("POST /v1/public/polls/{token}/votes", s.rateLimited(publicWrite, s.handlePublicPollVote))
 
 	// M2.7 shared conversations: tokenized share links. Registered OUTSIDE
-	// authed(...) (the Stripe-webhook precedent): external shares are fully
+	// authed(...) (the Paddle-webhook precedent): external shares are fully
 	// public, team shares re-check an optional bearer inside the handler.
 	mux.HandleFunc("GET /v1/shared/threads/{token}", s.rateLimited(publicRead, s.handleGetSharedThread))
 	mux.HandleFunc("GET /v1/shared/threads/{token}/stream", s.rateLimited(publicRead, s.handleSharedThreadStream))

@@ -107,39 +107,45 @@ type fakeBillingService struct {
 	subRet domain.Subscription
 	subErr error
 
-	checkoutURL           string
-	checkoutErr           error
-	gotCheckoutSuccessURL string
-	gotCheckoutCancelURL  string
+	checkoutURL       string
+	checkoutErr       error
+	checkoutCalls     int
+	gotCheckoutUserID string
 
-	portalURL       string
+	portalURLs      port.PortalURLs
 	portalErr       error
-	gotPortalReturn string
+	gotPortalUserID string
 
 	webhookErr        error
 	webhookCalls      int
 	gotWebhookPayload []byte
 	gotWebhookSig     string
 
+	reconcileCalls   int
 	requireActiveErr error
 }
 
 func (f *fakeBillingService) GetSubscription(ctx context.Context, userID string) (domain.Subscription, error) {
 	return f.subRet, f.subErr
 }
-func (f *fakeBillingService) CreateCheckoutSession(ctx context.Context, userID, successURL, cancelURL string) (string, error) {
-	f.gotCheckoutSuccessURL, f.gotCheckoutCancelURL = successURL, cancelURL
+func (f *fakeBillingService) CreateCheckout(ctx context.Context, userID string) (string, error) {
+	f.checkoutCalls++
+	f.gotCheckoutUserID = userID
 	return f.checkoutURL, f.checkoutErr
 }
-func (f *fakeBillingService) CreatePortalSession(ctx context.Context, userID, returnURL string) (string, error) {
-	f.gotPortalReturn = returnURL
-	return f.portalURL, f.portalErr
+func (f *fakeBillingService) CreatePortalSession(ctx context.Context, userID string) (port.PortalURLs, error) {
+	f.gotPortalUserID = userID
+	return f.portalURLs, f.portalErr
 }
 func (f *fakeBillingService) HandleWebhook(ctx context.Context, payload []byte, sigHeader string) error {
 	f.webhookCalls++
 	f.gotWebhookPayload = payload
 	f.gotWebhookSig = sigHeader
 	return f.webhookErr
+}
+func (f *fakeBillingService) ReconcileSubscriptions(ctx context.Context) error {
+	f.reconcileCalls++
+	return nil
 }
 func (f *fakeBillingService) RequireActive(ctx context.Context, userID string) error {
 	return f.requireActiveErr
