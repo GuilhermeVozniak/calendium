@@ -48,6 +48,19 @@ describe('gen-mobile-assets', () => {
     expect(() => deriveVariants(wrongFill)).toThrow(/expected a leading #0a0a0a background <rect/);
   });
 
+  // A recolored glyph would make glyph(color) a silent no-op (white-on-white splash).
+  it('deriveVariants throws when the glyph color is missing from the source', () => {
+    const recolored =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="96" fill="#0a0a0a"/><path d="M0 0" stroke="#ff0000"/></svg>';
+    expect(() => deriveVariants(recolored)).toThrow(/glyph color #fafafa/);
+  });
+
+  it('deriveVariants throws when the background rect is no longer first', () => {
+    const glyphFirst =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect x="10" y="10" width="20" height="20" stroke="#fafafa"/><rect width="512" height="512" rx="96" fill="#0a0a0a"/></svg>';
+    expect(() => deriveVariants(glyphFirst)).toThrow(/expected a leading #0a0a0a background <rect/);
+  });
+
   it('renders every output at its documented size with the right alpha', SLOW, async () => {
     const outDir = await mkdtemp(path.join(os.tmpdir(), 'calendium-assets-'));
     const written = await renderAll({ outDir });

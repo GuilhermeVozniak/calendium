@@ -53,6 +53,11 @@ export function deriveVariants(svg) {
   }
   const square = svg.replace(background, background.replace(/\brx="\d+"/, 'rx="0"'));
   const glyphBase = svg.replace(background, '');
+  if (!glyphBase.includes(GLYPH)) {
+    // glyph(color) recolors by replacing GLYPH; without it every glyph variant
+    // would silently keep the source color (e.g. a white-on-white splash).
+    throw new Error(`${SOURCE_SVG}: expected the glyph color ${GLYPH} after the background <rect .../>`);
+  }
   return {
     original: svg,
     square,
