@@ -433,3 +433,71 @@ func TestPurgeRaceGuardRefusesInsideTx(t *testing.T) {
 		t.Fatalf("user must remain after the tx rolled back: %v", err)
 	}
 }
+
+func (r *loggingUserRepo) Tombstone(ctx context.Context, id string) error {
+	entry := "users.tombstone:" + id
+	if !inFakeTx(ctx) {
+		entry = "users.tombstone-outside-tx:" + id
+	}
+	*r.log = append(*r.log, entry)
+	return r.fakeUserRepo.Tombstone(ctx, id)
+}
+
+// The purge writes the deleted-user tombstone inside the same transaction
+// as the users delete, so a still-valid JWT cannot re-create the row.
+func TestPurgeWritesTombstoneInTx(t *testing.T) {
+	f := newLifecycleFixture(t)
+	ctx := context.Background()
+	if _, err := f.svc.Purge(ctx, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	if !f.users.tombstones["u1"] {
+		t.Fatal("u1 must be tombstoned after purge")
+	}
+	tomb, del := indexOf(f.log, "users.tombstone:u1"), indexOf(f.log, "users.delete:u1")
+	if tomb < 0 || del < 0 {
+		t.Fatalf("log = %v, want tombstone (inside the tx) and delete", f.log)
+	}
+	if f.tx.calls != 1 {
+		t.Fatalf("tx calls = %d, want 1", f.tx.calls)
+	}
+	// A re-provision attempt for the purged subject is refused.
+	users := NewUserService(f.users.fakeUserRepo, newUserPreferencesRepo(), newClock(lifecycleNow))
+	if _, err := users.EnsureUser(ctx, port.Identity{Subject: "u1", Email: "u1@example.com"}); !errors.Is(err, domain.ErrUnauthorized) || !errors.Is(err, domain.ErrUserDeleted) {
+		t.Fatalf("EnsureUser(purged) = %v, want ErrUserDeleted (401)", err)
+	}
+	if _, err := f.users.GetByID(ctx, "u1"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("purged user re-created: %v", err)
+	}
+}
+
+func TestPurgeRefusedWritesNoTombstone(t *testing.T) {
+	f := newLifecycleFixture(t)
+	f.addTeam(t, "design", "Design", owner("u1"), member("u2"))
+	if _, err := f.svc.Purge(context.Background(), "u1"); !errors.Is(err, domain.ErrOwnsTeams) {
+		t.Fatalf("err = %v, want ErrOwnsTeams", err)
+	}
+	if f.users.tombstones["u1"] {
+		t.Fatal("a refused purge must not tombstone the user")
+	}
+}
+
+func TestEnsureUserTombstonedSubjectNotRecreated(t *testing.T) {
+	ctx := context.Background()
+	users := newUserRepo()
+	if err := users.Tombstone(ctx, "gone"); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewUserService(users, newUserPreferencesRepo(), newClock(lifecycleNow))
+	_, err := svc.EnsureUser(ctx, port.Identity{Subject: "gone", Email: "gone@example.com"})
+	if !errors.Is(err, domain.ErrUserDeleted) || !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("EnsureUser = %v, want ErrUserDeleted wrapping ErrUnauthorized", err)
+	}
+	if _, ok := users.byID["gone"]; ok {
+		t.Fatal("tombstoned subject must not get a users row")
+	}
+	// Any other subject still provisions normally.
+	if _, err := svc.EnsureUser(ctx, port.Identity{Subject: "fresh", Email: "f@example.com"}); err != nil {
+		t.Fatalf("EnsureUser(fresh) = %v", err)
+	}
+}

@@ -38,24 +38,45 @@ type fakeTxRunner struct{ calls int }
 
 func newTxRunner() *fakeTxRunner { return &fakeTxRunner{} }
 
+type fakeTxKey struct{}
+
 func (r *fakeTxRunner) RunInTx(ctx context.Context, fn func(context.Context) error) error {
 	r.calls++
-	return fn(ctx)
+	return fn(context.WithValue(ctx, fakeTxKey{}, true))
+}
+
+// inFakeTx reports whether ctx was handed out by fakeTxRunner.RunInTx.
+func inFakeTx(ctx context.Context) bool {
+	in, _ := ctx.Value(fakeTxKey{}).(bool)
+	return in
 }
 
 var _ port.TxRunner = (*fakeTxRunner)(nil)
 
 // --- user repo ---------------------------------------------------------------
 
+// fakeUserRepo mirrors the SQL: Upsert refuses a tombstoned id with
+// domain.ErrUserDeleted (deleted_users is consulted in the same statement).
 type fakeUserRepo struct {
-	byID map[string]domain.User
+	byID       map[string]domain.User
+	tombstones map[string]bool
 }
 
-func newUserRepo() *fakeUserRepo { return &fakeUserRepo{byID: map[string]domain.User{}} }
+func newUserRepo() *fakeUserRepo {
+	return &fakeUserRepo{byID: map[string]domain.User{}, tombstones: map[string]bool{}}
+}
 
 func (r *fakeUserRepo) Upsert(_ context.Context, u domain.User) (domain.User, error) {
+	if r.tombstones[u.ID] {
+		return domain.User{}, domain.ErrUserDeleted
+	}
 	r.byID[u.ID] = u
 	return u, nil
+}
+
+func (r *fakeUserRepo) Tombstone(_ context.Context, id string) error {
+	r.tombstones[id] = true
+	return nil
 }
 
 func (r *fakeUserRepo) GetByID(_ context.Context, id string) (domain.User, error) {

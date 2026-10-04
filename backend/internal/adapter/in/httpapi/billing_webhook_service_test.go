@@ -37,6 +37,8 @@ func (r *whUsers) GetByID(_ context.Context, id string) (domain.User, error) {
 	return u, nil
 }
 
+func (r *whUsers) Tombstone(context.Context, string) error { return nil }
+
 func (r *whUsers) Delete(_ context.Context, id string) error {
 	if _, ok := r.byID[id]; !ok {
 		return domain.ErrNotFound

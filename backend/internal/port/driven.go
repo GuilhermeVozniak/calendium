@@ -47,11 +47,16 @@ type TxRunner interface {
 // UserRepo persists users keyed by the Better Auth subject id.
 type UserRepo interface {
 	// Upsert inserts the user or refreshes email/name/avatar on conflict.
+	// A tombstoned id (see Tombstone) is refused with domain.ErrUserDeleted
+	// in the same statement: a purged account is never re-created.
 	Upsert(ctx context.Context, u domain.User) (domain.User, error)
 	GetByID(ctx context.Context, id string) (domain.User, error)
 	// Delete removes the users row; every owned table cascades (migration
 	// 0029 audit). domain.ErrNotFound when absent.
 	Delete(ctx context.Context, id string) error
+	// Tombstone records id in deleted_users (idempotent, not FK'd to
+	// users). Purge calls it in the same transaction as Delete.
+	Tombstone(ctx context.Context, id string) error
 }
 
 // SubscriptionRepo persists the one-row-per-user billing mirror

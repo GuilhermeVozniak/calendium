@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"calendium/backend/internal/domain"
@@ -24,17 +25,34 @@ func scanUser(r rowScanner) (domain.User, error) {
 	return u, nil
 }
 
+// Upsert is the requireAuth provisioning write. The deleted_users check is
+// part of the same statement (one primary-key probe, no extra round trip):
+// a tombstoned id inserts nothing, RETURNING yields no row, and the caller
+// gets domain.ErrUserDeleted instead of a resurrected account. A live row
+// can never be tombstoned (Purge deletes it in the tombstone's tx).
 func (r userRepo) Upsert(ctx context.Context, u domain.User) (domain.User, error) {
 	row := r.q(ctx).QueryRowContext(ctx, `
 		INSERT INTO users (id, email, name, avatar_url)
-		VALUES ($1, $2, $3, $4)
+		SELECT $1::text, $2::text, $3::text, $4::text
+		WHERE NOT EXISTS (SELECT 1 FROM deleted_users WHERE id = $1::text)
 		ON CONFLICT (id) DO UPDATE SET
 			email      = EXCLUDED.email,
 			name       = COALESCE(EXCLUDED.name, users.name),
 			avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url)
 		RETURNING `+userCols,
 		u.ID, u.Email, nullStrPtr(u.Name), nullStrPtr(u.AvatarURL))
-	return scanUser(row)
+	got, err := scanUser(row)
+	if errors.Is(err, domain.ErrNotFound) {
+		return domain.User{}, domain.ErrUserDeleted
+	}
+	return got, err
+}
+
+// Tombstone records a purged id so Upsert refuses it (idempotent).
+func (r userRepo) Tombstone(ctx context.Context, id string) error {
+	_, err := r.q(ctx).ExecContext(ctx,
+		`INSERT INTO deleted_users (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, id)
+	return err
 }
 
 func (r userRepo) GetByID(ctx context.Context, id string) (domain.User, error) {

@@ -4,7 +4,10 @@
 // import the Go standard library.
 package domain
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // Sentinel errors. Services wrap these with fmt.Errorf("%w: ...") and the
 // HTTP adapter maps them to status codes:
@@ -89,3 +92,8 @@ var (
 	// "export_throttled" plus a Retry-After header.
 	ErrExportThrottled = errors.New("export throttled")
 )
+
+// ErrUserDeleted marks an authenticated subject whose account was purged
+// (deleted_users tombstone): UserRepo.Upsert refuses to re-create the row.
+// It wraps ErrUnauthorized, so the HTTP adapter answers 401.
+var ErrUserDeleted = fmt.Errorf("%w: account deleted", ErrUnauthorized)

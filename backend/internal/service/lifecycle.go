@@ -29,7 +29,9 @@ type UserLifecycleDeps struct {
 // check → payment-provider cancel (not transactional; a failure aborts
 // before anything is deleted; the provider's customer record is retained by
 // the merchant of record) → one transaction that re-checks teams, revokes
-// delegations both ways, deletes sole-member teams and the users row —
+// delegations both ways, deletes sole-member teams, writes the deleted-user
+// tombstone (so requireAuth answers 401 rather than re-provisioning) and
+// deletes the users row —
 // every other owned table cascades (migration 0029 + TestPurgeCascadeCoverage).
 // Provider OAuth tokens die with their rows; there is no provider-side
 // revocation.
@@ -160,6 +162,11 @@ func (s *UserLifecycleService) Purge(ctx context.Context, userID string) (port.P
 				return err
 			}
 			report.TeamsDeleted++
+		}
+		// Tombstone first, same tx: requireAuth's upsert can never
+		// re-create the row from a still-valid access token.
+		if err := s.d.Users.Tombstone(ctx, userID); err != nil {
+			return err
 		}
 		return s.d.Users.Delete(ctx, userID)
 	})
