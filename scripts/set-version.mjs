@@ -77,12 +77,22 @@ export async function setVersion(rootDir, version) {
 
 /** CLI entry: returns the process exit code. */
 export async function main(argv, rootDir) {
-  const check = argv.includes('--check');
-  const [version] = argv.filter((a) => a !== '--check');
-  if (!version) {
+  const usage = (why) => {
+    if (why) console.error(`set-version: ${why}`);
     console.error('usage: node scripts/set-version.mjs X.Y.Z [--check]');
     return 2;
-  }
+  };
+  // Exactly one positional version and at most one --check. Anything else is a
+  // usage error, so a typo like `--chek` can never fall through to a write.
+  const flags = argv.filter((a) => a.startsWith('-'));
+  const positional = argv.filter((a) => !a.startsWith('-'));
+  const unknown = flags.filter((a) => a !== '--check');
+  if (unknown.length) return usage(`unknown option ${unknown.join(', ')}`);
+  if (flags.length > 1) return usage('--check given more than once');
+  if (positional.length > 1) return usage(`expected one version, got ${positional.join(', ')}`);
+  const check = flags.length === 1;
+  const [version] = positional;
+  if (!version) return usage();
   try {
     if (check) {
       const drift = await checkVersion(rootDir, version);
