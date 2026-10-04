@@ -27,7 +27,7 @@ RUN go build -ldflags="-s -w -X calendium/backend/internal/adapter/in/httpapi.Ve
 
 # ── runtime: minimal, non-root image running either binary ──────────────────
 # alpine:3.22 resolved 2026-10-04 (docker buildx imagetools inspect)
-FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 RUN apk add --no-cache ca-certificates wget \
  && addgroup -S calendium && adduser -S -G calendium calendium
 
