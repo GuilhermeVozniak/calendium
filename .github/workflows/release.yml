@@ -2,8 +2,8 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  # Dry run: builds exactly like a tag release but uploads artifacts to the
-  # run instead of publishing a GitHub Release. Signing secrets are still
+  # Dry run: builds exactly like a tag release and uploads the artifacts to the
+  # run, but the publish job never runs, so no GitHub Release is created. Signing secrets are still
   # required unless allow_unsigned is set on a non-tag ref; a TAG can never
   # publish unsigned, and a dispatch (any ref) only ever uploads artifacts.
   workflow_dispatch:
@@ -21,6 +21,18 @@ permissions:
   contents: write
 
 jobs:
+  # Fails a tag whose committed versions drift from it within seconds, instead
+  # of after the full test job. Runs on every event so jobs can `needs:` it;
+  # the check itself is tag-only (a dispatch stamps its version at build time).
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        if: startsWith(github.ref, 'refs/tags/')
+      - name: Tag matches the committed versions (app.json, wails.json)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node scripts/set-version.mjs --check "${GITHUB_REF_NAME#v}"
+
   # Gate the release on the desktop-facing suites. Full-repo quality is
   # already gated by test.yml on every push to main; this re-checks the
   # pieces a desktop binary embeds before any signing happens.
@@ -51,7 +63,8 @@ jobs:
         run: cd apps/desktop && go vet ./... && xvfb-run -a go test ./...
 
   # Single place that decides what version ships and whether shipping is
-  # allowed at all. build-desktop never runs if this fails.
+  # allowed at all (the tag/committed-version match is version-check's job).
+  # build-desktop never runs if this fails.
   preflight:
     needs: test
     runs-on: ubuntu-latest
@@ -93,9 +106,6 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "build_version=$BUILD_VERSION" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION build_version=$BUILD_VERSION"
-      - name: Tag matches the committed versions (app.json, wails.json)
-        if: startsWith(github.ref, 'refs/tags/')
-        run: node scripts/set-version.mjs --check "${{ steps.version.outputs.version }}"
       - name: Signing secrets present, or explicitly waived for a dry run
         shell: bash
         run: |
@@ -110,8 +120,11 @@ jobs:
           echo "::error::MACOS_CERT_P12 is not set. A tag never publishes an unsigned macOS build. Add the five notarization secrets (MACOS_CERT_P12, MACOS_CERT_PASSWORD, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD; see docs/release/store-readiness.md) or, for a dry run only, dispatch this workflow with allow_unsigned=true."
           exit 1
 
+  # Builds, signs and packages each platform, then only uploads the artifacts.
+  # Nothing is published here: the publish job does that once, after every
+  # leg is green, so /releases/latest never points at a partial release.
   build-desktop:
-    needs: preflight
+    needs: [version-check, preflight]
     strategy:
       fail-fast: false
       matrix:
@@ -240,26 +253,63 @@ jobs:
           cd apps/desktop/build/bin
           tar -czf "calendium_${BUILD_VERSION}_linux_${{ matrix.arch }}.tar.gz" Calendium calendium.desktop calendium.png README.txt
           tar -tzf "calendium_${BUILD_VERSION}_linux_${{ matrix.arch }}.tar.gz"
-      # Rule: a tag can never publish unsigned; dispatch only uploads artifacts.
-      # Gate on the event, not just the ref: a dispatch run with a tag selected
-      # as its ref uploads to the run and never publishes a GitHub Release.
-      - name: Upload artifacts (dry run)
-        if: github.event_name == 'workflow_dispatch'
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: calendium-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
           path: |
             apps/desktop/build/bin/*.dmg
             apps/desktop/build/bin/*-setup.exe
             apps/desktop/build/bin/*.zip
             apps/desktop/build/bin/*.tar.gz
+
+  # Creates the GitHub Release once, with every platform's artifacts. It
+  # `needs:` every build leg, so one failed leg (e.g. notarization) means no
+  # release at all, and the update banner never points users at a release
+  # without their platform's download.
+  # Rule: a tag can never publish unsigned; dispatch only uploads artifacts.
+  # Gate on the event, not just the ref: a dispatch run with a tag selected
+  # as its ref never publishes.
+  publish:
+    needs: [version-check, preflight, build-desktop]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    env:
+      HAS_MACOS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' }}
+      BUILD_VERSION: ${{ needs.preflight.outputs.build_version }}
+    steps:
+      - name: Signed build only
+        # preflight already refuses a tag without the signing secrets; this
+        # re-checks at the one step that makes a build public.
+        run: |
+          if [[ "$HAS_MACOS_SIGNING" != "true" ]]; then
+            echo "::error::MACOS_CERT_P12 is not set; a tag never publishes an unsigned build."
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: calendium-*
+          merge-multiple: true
+          path: dist
+      - name: Every platform artifact is present
+        run: |
+          set -euo pipefail
+          cd dist
+          for f in \
+            "calendium_${BUILD_VERSION}_darwin_universal.dmg" \
+            "calendium_${BUILD_VERSION}_windows_amd64-setup.exe" \
+            "calendium_${BUILD_VERSION}_windows_amd64.zip" \
+            "calendium_${BUILD_VERSION}_linux_amd64.tar.gz"; do
+            test -s "$f" || { echo "::error::missing release artifact $f"; exit 1; }
+          done
+          ls -l
       - name: Publish GitHub Release
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            apps/desktop/build/bin/*.dmg
-            apps/desktop/build/bin/*-setup.exe
-            apps/desktop/build/bin/*.zip
-            apps/desktop/build/bin/*.tar.gz
+            dist/*.dmg
+            dist/*-setup.exe
+            dist/*.zip
+            dist/*.tar.gz
