@@ -139,9 +139,12 @@ func (s *server) userLimited(l *rateLimiter, next http.HandlerFunc) http.Handler
 	}
 }
 
-// routeOptions tunes one authed route; see limitClass.
+// routeOptions tunes one authed route; see limitClass, deadline and
+// noDeadline.
 type routeOptions struct {
-	class string
+	class      string
+	deadline   time.Duration
+	noDeadline bool
 }
 
 type routeOption func(*routeOptions)
@@ -150,6 +153,17 @@ type routeOption func(*routeOptions)
 // the general user bucket.
 func limitClass(name string) routeOption {
 	return func(o *routeOptions) { o.class = name }
+}
+
+// deadline overrides the per-handler context deadline for one route.
+func deadline(d time.Duration) routeOption {
+	return func(o *routeOptions) { o.deadline = d }
+}
+
+// noDeadline marks a streaming route (SSE) that must run until the client
+// disconnects or the server drains.
+func noDeadline() routeOption {
+	return func(o *routeOptions) { o.noDeadline = true }
 }
 
 // routeClasses reports the limiter class of every authed pattern registered

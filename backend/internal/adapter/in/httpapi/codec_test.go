@@ -45,6 +45,7 @@ func TestSafeMessage(t *testing.T) {
 		want string
 	}{
 		{"validation_failed", "The request was invalid."},
+		{"timeout", "The request took too long to complete. Please try again."},
 		{"unauthorized", "Authentication is required or has failed."},
 		{"forbidden", "You do not have permission to perform this action."},
 		{"payment_required", "An active subscription is required."},

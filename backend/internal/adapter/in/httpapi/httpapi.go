@@ -177,14 +177,19 @@ func build(deps Deps) (*server, http.Handler) {
 	mux.HandleFunc("GET /v1/shared/threads/{token}/stream", s.rateLimited(publicRead, s.handleSharedThreadStream))
 
 	// Authenticated surface. Chain: requireAuth → userLimited(class) →
-	// withActAs → handler, so the ACTOR is charged, never the principal.
+	// withActAs → deadline → handler, so the ACTOR is charged, never the
+	// principal.
 	authed := func(pattern string, h http.HandlerFunc, opts ...routeOption) {
-		o := routeOptions{class: classUser}
+		o := routeOptions{class: classUser, deadline: defaultHandlerDeadline}
 		for _, opt := range opts {
 			opt(&o)
 		}
 		s.classOf[pattern] = o.class
-		inner := s.withActAs(h)
+		inner := h
+		if !o.noDeadline {
+			inner = s.withDeadline(o.deadline, inner)
+		}
+		inner = s.withActAs(inner)
 		inner = s.userLimited(s.limits[o.class], inner)
 		mux.Handle(pattern, s.requireAuth(inner))
 	}
@@ -243,7 +248,7 @@ func build(deps Deps) (*server, http.Handler) {
 	authed("GET /v1/mail/opens", s.handleListOpens)
 	authed("GET /v1/mail/send-suggestion", s.handleSendSuggestion)
 	authed("GET /v1/mail/attachments", s.handleSearchAttachments, limitClass(classSearch))
-	authed("GET /v1/mail/attachments/{id}/content", s.handleGetAttachmentContent)
+	authed("GET /v1/mail/attachments/{id}/content", s.handleGetAttachmentContent, deadline(attachmentHandlerDeadline))
 	authed("GET /v1/mail/contacts/{email}", s.handleGetContact)
 	authed("POST /v1/mail/messages/{id}/reactions", s.handleReactToMessage)
 	authed("DELETE /v1/mail/messages/{id}/reactions/{emoji}", s.handleRemoveReaction)
@@ -365,7 +370,7 @@ func build(deps Deps) (*server, http.Handler) {
 	authed("GET /v1/teams/{id}/availability", s.handleTeamAvailability)
 
 	// M2.7: realtime collaboration stream (SSE) and team thread-comments.
-	authed("GET /v1/collab/stream", s.handleCollabStream)
+	authed("GET /v1/collab/stream", s.handleCollabStream, noDeadline())
 	authed("GET /v1/mail/threads/{id}/comments", s.handleListComments)
 	authed("POST /v1/mail/threads/{id}/comments", s.handleAddComment)
 	authed("PATCH /v1/comments/{id}", s.handleUpdateComment)

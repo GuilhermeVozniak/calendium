@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -103,6 +104,10 @@ func statusFor(err error) (int, string) {
 		return http.StatusServiceUnavailable, "ai_unavailable"
 	case errors.Is(err, domain.ErrRateLimited):
 		return http.StatusTooManyRequests, "rate_limited"
+	case errors.Is(err, context.DeadlineExceeded):
+		// The per-handler deadline (deadline.go) expired inside a service
+		// call that surfaced it as an error.
+		return http.StatusGatewayTimeout, "timeout"
 	default:
 		return http.StatusInternalServerError, "internal"
 	}
@@ -137,6 +142,8 @@ func safeMessage(code string) string {
 		return "AI features are not available on this deployment."
 	case "rate_limited":
 		return "You have exceeded the usage limit. Please try again later."
+	case "timeout":
+		return "The request took too long to complete. Please try again."
 	case "already_subscribed":
 		return "You already have an active subscription. Manage it from billing."
 	case "no_billing_profile":

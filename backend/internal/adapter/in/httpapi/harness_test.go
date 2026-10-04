@@ -68,6 +68,8 @@ func (f *fakeVerifier) Verify(ctx context.Context, jwt string) (port.Identity, e
 // --- UserService -------------------------------------------------------------
 
 type fakeUserService struct {
+	// prefsBlock, when set, runs at the start of GetPreferences (deadline tests).
+	prefsBlock  func(context.Context)
 	ensureRet   domain.User
 	ensureErr   error
 	ensureCalls int
@@ -93,6 +95,12 @@ func (f *fakeUserService) GetUser(ctx context.Context, userID string) (domain.Us
 	return f.getRet, f.getErr
 }
 func (f *fakeUserService) GetPreferences(ctx context.Context, userID string) (port.UserPreferences, error) {
+	if f.prefsBlock != nil {
+		f.prefsBlock(ctx)
+		if err := ctx.Err(); err != nil {
+			return port.UserPreferences{}, err
+		}
+	}
 	return f.prefsRet, f.prefsErr
 }
 func (f *fakeUserService) UpdatePreferences(ctx context.Context, userID string, p port.UserPreferences) (port.UserPreferences, error) {
@@ -219,6 +227,8 @@ func (f *fakeAccountService) SetAutoBcc(ctx context.Context, userID, accountID s
 // --- MailService -------------------------------------------------------------
 
 type fakeMailService struct {
+	// attachmentBlock, when set, runs at the start of GetAttachmentContent.
+	attachmentBlock func(context.Context)
 	// ListThreads
 	listPage      domain.Page[domain.Thread]
 	listErr       error
@@ -473,6 +483,9 @@ func (f *fakeMailService) SearchAttachments(ctx context.Context, userID string, 
 	return f.searchAttachmentsRet, f.searchAttachmentsErr
 }
 func (f *fakeMailService) GetAttachmentContent(ctx context.Context, userID, attachmentID string) ([]byte, string, string, error) {
+	if f.attachmentBlock != nil {
+		f.attachmentBlock(ctx)
+	}
 	f.gotGetAttachmentContentUser, f.gotGetAttachmentContentID = userID, attachmentID
 	return f.getAttachmentContentData, f.getAttachmentContentMimeType, f.getAttachmentContentFilename, f.getAttachmentContentErr
 }
