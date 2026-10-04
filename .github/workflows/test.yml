@@ -30,6 +30,11 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # Same -X symbol release images use (backend/Dockerfile ARG VERSION);
+      # keeps the ldflags path exercised on every push.
+      - name: Build with release ldflags
+        run: go build -ldflags "-X calendium/backend/internal/adapter/in/httpapi.Version=ci" ./cmd/api ./cmd/worker
+
       - name: Vet
         run: go vet ./...
 
@@ -143,6 +148,40 @@ jobs:
 
       - name: Test apps/mobile
         run: bun run test:mobile
+
+      - name: Test scripts/
+        run: bun run test:scripts
+
+  mobile-doctor:
+    name: Expo doctor (apps/mobile)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          # Same Bun as the web image (apps/web/Dockerfile, oven/bun:1.3).
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        working-directory: .
+        run: bun install --frozen-lockfile
+
+      # Acceptance: 18/18. Duplicate react copies or SDK patch drift fail here
+      # before they fail inside an EAS build.
+      - name: expo-doctor
+        run: bunx expo-doctor
+
+      - name: expo install --check
+        run: bunx expo install --check
+
+      - name: expo config resolves (app.json + app.config.js)
+        run: bunx expo config --type public > /dev/null
 
   e2e:
     name: Playwright e2e (apps/web, demo mode)
