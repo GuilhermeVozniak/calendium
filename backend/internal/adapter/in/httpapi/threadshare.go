@@ -130,6 +130,8 @@ func (s *server) handleSharedThreadStream(w http.ResponseWriter, r *http.Request
 
 	for {
 		select {
+		case <-s.deps.Drain:
+			return // server draining: EventSource reconnects against the next replica
 		case <-r.Context().Done():
 			return
 		case ev, open := <-events:

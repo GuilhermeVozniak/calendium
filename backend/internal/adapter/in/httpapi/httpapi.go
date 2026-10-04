@@ -5,6 +5,7 @@
 package httpapi
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -96,6 +97,11 @@ type Deps struct {
 	TrustedProxyCIDRs []netip.Prefix
 	// RateLimits is the per-class budget; zero means DefaultRateLimits.
 	RateLimits RateLimits
+	// Drain is closed by the composition root when shutdown begins: /readyz
+	// turns 503 and the SSE streams return so Shutdown can finish. nil = never.
+	Drain <-chan struct{}
+	// Ready pings the primary dependency (DB) for /readyz; nil = always ready.
+	Ready func(context.Context) error
 }
 
 type server struct {
@@ -152,6 +158,7 @@ func build(deps Deps) (*server, http.Handler) {
 
 	// Unauthenticated surface.
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /v1/instance", s.handleInstance)
 	mux.HandleFunc("POST /v1/webhooks/paddle", s.handlePaddleWebhook)
 	mux.HandleFunc("GET /v1/accounts/callback/{provider}", s.handleAccountCallback)
