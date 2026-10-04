@@ -26,15 +26,20 @@
     "lint": "bun run lint:js && bun run lint:go",
     "lint:js": "biome check .",
     "lint:go": "cd backend && golangci-lint run ./... && cd ../apps/desktop && golangci-lint run ./...",
+    "version:set": "node scripts/set-version.mjs",
+    "assets:gen": "node scripts/gen-mobile-assets.mjs",
     "prepare": "lefthook install"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.2",
     "lefthook": "^2.1.9",
     "prettier": "^3.6.2",
+    "sharp": "^0.34.5",
     "vitest": "^4.1.10"
   },
   "overrides": {
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
     "@types/react": "~19.1.10"
   }
 }
