@@ -6,10 +6,10 @@ two ways to run it:
 
 - **Self-hosted (free).** You run the backend + Postgres + web app on your own
   hardware (a VPS, home server, or a cloud VM) and point the desktop and mobile
-  apps at *your* server. No Stripe, no paywall, **every feature unlocked**.
+  apps at *your* server. No Paddle, no paywall, **every feature unlocked**.
 - **Calendium Cloud ($50/year).** We run and operate everything for you — the
   Go API, Postgres, the web app (Better Auth built in), push infrastructure — and
-  bill through Stripe. See
+  bill through Paddle. See
   [`../payments.md`](../payments.md).
 
 Self-hosting is free the way a puppy is free: you own the backups, upgrades, and
@@ -32,7 +32,7 @@ differ only in *who runs it*.
 | Support | Community (issues, docs) | Email support |
 | Data location | Wherever you host it | Our managed region |
 | Setup effort | ~15 minutes + DNS | One tap |
-| Billing | Disabled — everything unlocked | Stripe ($50/yr) |
+| Billing | Disabled — everything unlocked | Paddle ($50/yr) |
 
 You are **not locked in**. Both tiers speak the same REST API and data model, so
 you can start on Cloud and move to self-host later (or the reverse) — the same
@@ -241,7 +241,7 @@ migrations across one release.
 
 ## FAQ
 
-**Is anything feature-gated in self-host?** No. Leaving `STRIPE_*` unset (and
+**Is anything feature-gated in self-host?** No. Leaving `PADDLE_*` unset (and
 `SELF_HOSTED=true`) disables the paywall and unlocks everything. The billing
 endpoints return `501 self_hosted` and `GET /v1/billing/subscription` reports an
 active annual plan so clients treat you as fully entitled.
@@ -250,7 +250,7 @@ active annual plan so clients treat you as fully entitled.
 repo-root [`LICENSE`](../../LICENSE)) — the same choice as Plausible, Grafana,
 and others using a free-self-host + paid-cloud model. You can self-host, modify,
 and redistribute; if you run a modified version as a network service you must
-offer users its source. Cloud-only operational code (Stripe wiring, provisioning)
+offer users its source. Cloud-only operational code (Paddle wiring, provisioning)
 is not part of what you must distribute.
 
 **Can I use my own domain?** Yes — set `DOMAIN` (and `ACME_EMAIL`) in `.env` and
