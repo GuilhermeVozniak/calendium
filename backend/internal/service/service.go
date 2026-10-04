@@ -76,8 +76,9 @@ type SystemClock struct{}
 func (SystemClock) Now() time.Time { return time.Now().UTC() }
 
 // entitlement enforces the subscription paywall shared by all gated
-// use-cases (docs/payments.md): access requires trialing, active, or
-// past_due within the 7-day grace window; anything else is 402.
+// use-cases (docs/payments.md): access is decided by
+// domain.Subscription.HasAccess at the current time; a denial is a
+// *domain.PaymentRequiredError carrying the 402 details.
 type entitlement struct {
 	subs  port.SubscriptionRepo
 	clock port.Clock
@@ -93,13 +94,13 @@ func (e entitlement) require(ctx context.Context, userID string) error {
 	}
 	sub, err := e.subs.GetByUserID(ctx, userID)
 	if errors.Is(err, domain.ErrNotFound) {
-		return fmt.Errorf("%w: no subscription", domain.ErrPaymentRequired)
+		return &domain.PaymentRequiredError{Reason: domain.DenialNone}
 	}
 	if err != nil {
 		return err
 	}
-	if !sub.HasAccess(e.clock.Now()) {
-		return fmt.Errorf("%w: subscription status %s", domain.ErrPaymentRequired, sub.Status)
+	if now := e.clock.Now(); !sub.HasAccess(now) {
+		return domain.NewPaymentRequiredError(sub, now)
 	}
 	return nil
 }
