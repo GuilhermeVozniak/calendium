@@ -1,10 +1,11 @@
 import type React from 'react';
 import { createContext, useCallback, useEffect, useState } from 'react';
 import { unregisterPushDevice } from '@/hooks/use-push-registration';
+import { api } from '@/lib/api';
 import type { AuthUser } from '@/lib/auth-client';
 import { clearOfflineState } from '@/lib/offline';
 import { queryClient } from '@/lib/query-client';
-import { useServerConfig } from '@/lib/server-config';
+import { useServerConfig, verifyEmailCallbackUrl } from '@/lib/server-config';
 import { Alert } from 'react-native';
 import { useAssertedContext } from './use-aserted-context';
 
@@ -18,13 +19,44 @@ const DEMO_USER: AuthUser = {
   image: null,
 };
 
+const VERIFY_FIRST_MESSAGE = 'Verify your email first — we sent a new link.';
+
+/** Shared wording for Better Auth client errors (mirrors the web app and desktop). */
+function describeAuthError(
+  error: { status?: number; code?: string; message?: string },
+  fallback: string,
+  retryAfter: string | null
+): string {
+  if (error.status === 429) {
+    const n = Number(retryAfter);
+    return `Too many attempts, try again in ${Number.isFinite(n) && n > 0 ? Math.ceil(n) : 60} s`;
+  }
+  if (error.code === 'EMAIL_NOT_VERIFIED') return VERIFY_FIRST_MESSAGE;
+  return error.message ?? fallback;
+}
+
+/** Captures X-Retry-After from a Better Auth client call's onError hook. */
+function retryAfterCapture() {
+  let value: string | null = null;
+  return {
+    fetchOptions: {
+      onError: (ctx: { response: Response }) => {
+        value = ctx.response.headers.get('x-retry-after');
+      },
+    },
+    get value() {
+      return value;
+    },
+  };
+}
+
 interface AuthContextType {
   user: AuthUser | null;
   loading: boolean;
   isAuthenticated: boolean;
   signInWithOAuth: (provider: SocialProvider) => Promise<void>;
   signInWithEmail: (email: string, password: string) => Promise<void>;
-  signUpWithEmail: (name: string, email: string, password: string) => Promise<void>;
+  signUpWithEmail: (name: string, email: string, password: string) => Promise<{ verificationRequired: boolean }>;
   signOut: () => Promise<void>;
 }
 
@@ -110,25 +142,37 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       Alert.alert('Connect a server', 'Choose a Calendium server before signing in.');
       return;
     }
-    const { error } = await authClient.signIn.email({ email, password });
+    const retry = retryAfterCapture();
+    const { error } = await authClient.signIn.email({ email, password }, retry.fetchOptions);
     if (error) {
-      Alert.alert('Error', error.message ?? 'Sign in failed.');
-      throw new Error(error.message ?? 'Sign in failed.');
+      const message = describeAuthError(error, 'Sign in failed.', retry.value);
+      Alert.alert(error.code === 'EMAIL_NOT_VERIFIED' ? 'Verify your email' : 'Error', message);
+      throw new Error(message);
     }
     await refresh();
   };
 
   const signUpWithEmail = async (name: string, email: string, password: string) => {
-    if (!authClient) {
+    if (!authClient || !config) {
       Alert.alert('Connect a server', 'Choose a Calendium server before signing in.');
-      return;
+      return { verificationRequired: false };
     }
-    const { error } = await authClient.signUp.email({ name, email, password });
+    const retry = retryAfterCapture();
+    const { data, error } = await authClient.signUp.email(
+      { name, email, password, callbackURL: verifyEmailCallbackUrl(config) },
+      retry.fetchOptions
+    );
     if (error) {
-      Alert.alert('Error', error.message ?? 'Sign up failed.');
-      throw new Error(error.message ?? 'Sign up failed.');
+      const message = describeAuthError(error, 'Sign up failed.', retry.value);
+      Alert.alert('Error', message);
+      throw new Error(message);
     }
+    // With SMTP configured the server never signs a new account in (and
+    // answers the same for an existing address): token === null means the
+    // user must open the emailed link before signing in.
+    if (data && data.token === null) return { verificationRequired: true };
     await refresh();
+    return { verificationRequired: false };
   };
 
   const signOut = async () => {
@@ -149,6 +193,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Drop the previous account's cached mail/calendar so the next sign-in
       // on this device never briefly renders someone else's data — and the
       // durable offline outbox, so queued actions never replay as the next user.
+      // …and the cached API JWT, so the next account never rides this one's token.
+      api.invalidateAccessToken();
       queryClient.clear();
       await clearOfflineState();
     }

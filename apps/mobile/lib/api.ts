@@ -6,7 +6,7 @@ import { ApiClient } from '@calendium/shared';
  * The base URL comes from runtime server discovery (lib/server-config) and is
  * updated in place via `configureApi`, so every screen that imported `api`
  * keeps talking to the currently-connected server. Authenticates with a
- * short-lived Better Auth JWT (minted per request); screens fall back to mock
+ * short-lived Better Auth JWT (cached by ApiClient until 60 s before expiry); screens fall back to mock
  * data (lib/mock.ts) when the API is unreachable.
  */
 
@@ -51,4 +51,6 @@ export const api = new ApiClient(options);
 /** Point the shared API client at a server base URL discovered at runtime. */
 export function configureApi(baseUrl: string): void {
   options.baseUrl = baseUrl.replace(/\/+$/, '') || DEFAULT_BASE;
+  // A JWT minted for the previous server must never be sent to the next one.
+  api.invalidateAccessToken();
 }

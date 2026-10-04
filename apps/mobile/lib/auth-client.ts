@@ -59,8 +59,9 @@ export function configureAuthClient(authBaseUrl: string): AuthClient | null {
 /**
  * Mints a short-lived Better Auth JWT (EdDSA/Ed25519) for the Go API. The
  * jwt() plugin exposes `GET ${authBaseUrl}/token`; native clients authenticate
- * it with the session cookie the expo adapter persists. Minted per request
- * (default 15m expiry), never cached. Returns null when signed out/unreachable.
+ * it with the session cookie the expo adapter persists. Minted on demand
+ * (default 15m expiry); ApiClient caches the result until 60 s before
+ * expiry and drops it on sign-out or server switch. Returns null when signed out/unreachable.
  */
 export async function getBetterAuthToken(): Promise<string | null> {
   if (!client || !currentBaseUrl) return null;
