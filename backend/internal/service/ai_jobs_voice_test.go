@@ -227,3 +227,103 @@ func TestAIJobVoiceProfileEndToEndViaProcessDueAiJobs(t *testing.T) {
 		t.Fatalf("failed = %v, want none", jobs.failed)
 	}
 }
+
+// Background AI off (Settings → AI): a voice_profile job neither calls the
+// model nor re-queues itself, so the 30-day chain stops for users who turned
+// the switch off after their first profile.
+func TestAIJobVoiceProfileBackgroundOffNoAINoRequeue(t *testing.T) {
+	ctx := context.Background()
+	accounts := newAccountRepo()
+	if _, err := accounts.Create(ctx, domain.ConnectedAccount{ID: "a1", UserID: "u1", Email: "alex@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	messages := newMessageRepo()
+	seedSentMessages(messages, "a1", "alex@example.com", 10)
+	voice := newVoiceProfileRepo()
+	jobs := newAiJobRepo()
+	ai := newAI()
+	ai.jsonOut = `{"profile":"should not be reached"}`
+	settings := newUserSettingsRepo()
+	if err := settings.SetAIBackground(ctx, "u1", false); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := newVoiceJobService(accounts, messages, voice, jobs, ai, newClock(time.Now()))
+	svc.d.UserSettings = settings
+
+	j := domain.AiJob{ID: "j1", UserID: "u1", AccountID: "a1", Kind: domain.AiJobVoiceProfile}
+	if err := svc.runVoiceProfile(ctx, j); err != nil {
+		t.Fatalf("runVoiceProfile() error = %v, want nil", err)
+	}
+	if len(jobs.queue) != 0 {
+		t.Fatalf("jobs.queue = %v, want empty (no re-queue with background AI off)", jobs.queue)
+	}
+	if ai.lastSystem != "" {
+		t.Fatal("AI.CompleteJSON was called, want skipped (background AI off)")
+	}
+	if _, ok := voice.byUser["u1"]; ok {
+		t.Fatal("VoiceProfiles.Upsert was called, want skipped (background AI off)")
+	}
+}
+
+// A voice_profile job already queued for a user whose switch is off is
+// completed by the runner without calling the AI.
+func TestProcessDueAiJobsSkipsVoiceProfileWhenBackgroundOff(t *testing.T) {
+	ctx := context.Background()
+	accounts := newAccountRepo()
+	if _, err := accounts.Create(ctx, domain.ConnectedAccount{ID: "a1", UserID: "u1", Email: "alex@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	messages := newMessageRepo()
+	seedSentMessages(messages, "a1", "alex@example.com", 10)
+	voice := newVoiceProfileRepo()
+	jobs := newAiJobRepo()
+	ai := newAI()
+	ai.jsonOut = `{"profile":"should not be reached"}`
+	settings := newUserSettingsRepo()
+	if err := settings.SetAIBackground(ctx, "u1", false); err != nil {
+		t.Fatal(err)
+	}
+	svc := newVoiceJobService(accounts, messages, voice, jobs, ai, newClock(time.Now()))
+	svc.d.UserSettings = settings
+	_ = jobs.Enqueue(ctx, domain.AiJob{ID: "j1", UserID: "u1", AccountID: "a1", Kind: domain.AiJobVoiceProfile})
+
+	if err := svc.ProcessDueAiJobs(ctx); err != nil {
+		t.Fatalf("ProcessDueAiJobs() error = %v", err)
+	}
+	if len(jobs.completed) != 1 || jobs.completed[0] != "j1" {
+		t.Fatalf("completed = %v, want [j1]", jobs.completed)
+	}
+	if len(jobs.failed) != 0 {
+		t.Fatalf("failed = %v, want none", jobs.failed)
+	}
+	if ai.lastSystem != "" {
+		t.Fatal("AI.CompleteJSON was called, want skipped (background AI off)")
+	}
+	if len(jobs.queue) != 0 {
+		t.Fatalf("jobs.queue = %v, want empty", jobs.queue)
+	}
+}
+
+// Background AI on (explicitly): unchanged behaviour, the chain continues.
+func TestAIJobVoiceProfileBackgroundOnRequeues(t *testing.T) {
+	ctx := context.Background()
+	accounts := newAccountRepo()
+	if _, err := accounts.Create(ctx, domain.ConnectedAccount{ID: "a1", UserID: "u1", Email: "alex@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	messages := newMessageRepo()
+	seedSentMessages(messages, "a1", "alex@example.com", 10)
+	jobs := newAiJobRepo()
+	ai := newAI()
+	ai.jsonOut = `{"profile":"Short and warm."}`
+	svc := newVoiceJobService(accounts, messages, newVoiceProfileRepo(), jobs, ai, newClock(time.Now()))
+	svc.d.UserSettings = newUserSettingsRepo() // default: on
+
+	if err := svc.runVoiceProfile(ctx, domain.AiJob{ID: "j1", UserID: "u1", AccountID: "a1", Kind: domain.AiJobVoiceProfile}); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.queue) != 1 {
+		t.Fatalf("jobs.queue len = %d, want 1 (re-queue with background AI on)", len(jobs.queue))
+	}
+}
