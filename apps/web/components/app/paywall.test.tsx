@@ -1,7 +1,7 @@
 import type { BillingPortalUrls, InstanceInfo, Subscription } from '@calendium/shared';
 import { ApiRequestError } from '@calendium/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -46,7 +46,7 @@ const PORTAL: BillingPortalUrls = { overviewUrl: 'https://p/o', cancelUrl: 'http
 
 function renderWithQuery(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+  return { qc, ...render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>) };
 }
 
 beforeEach(() => {
@@ -196,6 +196,19 @@ describe('BillingGate', () => {
     // settling into the error state, so allow more than findBy's 1s default.
     expect(await screen.findByTestId('app', {}, { timeout: 4000 })).toBeInTheDocument();
     expect(fetchSubscriptionMock).toHaveBeenCalledTimes(2);
+  });
+
+  // Fail open only when no subscription was ever loaded: a failed background
+  // refetch must not lift a paywall that a successful fetch already showed.
+  it('keeps the paywall when a background refetch fails after a denial', async () => {
+    fetchSubscriptionMock.mockResolvedValueOnce(sub('canceled'));
+    const { qc } = renderWithQuery(<BillingGate>{child}</BillingGate>);
+    expect(await screen.findByRole('heading', { name: 'Your subscription has ended' })).toBeInTheDocument();
+    fetchSubscriptionMock.mockRejectedValue(new Error('network down'));
+    await act(() => qc.refetchQueries({ queryKey: ['subscription'] }));
+    await waitFor(() => expect(qc.getQueryState(['subscription'])?.status).toBe('error'));
+    expect(screen.getByRole('heading', { name: 'Your subscription has ended' })).toBeInTheDocument();
+    expect(screen.queryByTestId('app')).not.toBeInTheDocument();
   });
 
   it('shows the trial banner above children in the last 3 days', async () => {

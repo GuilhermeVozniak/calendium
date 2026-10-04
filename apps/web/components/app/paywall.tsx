@@ -188,8 +188,9 @@ export function BillingTrialBanner() {
  * grants the signup trial server-side) before rendering the shell; deny →
  * a full-screen PaywallScreen and nothing else; grant → the shell, with the
  * subscription published for BillingTrialBanner. Fails OPEN when discovery
- * or the subscription request errors — an unreachable billing API must
- * never lock a paying user out.
+ * errors or no subscription was ever loaded — an unreachable billing API
+ * must never lock a paying user out — but a denial already observed from a
+ * successful fetch survives a failed background refetch.
  */
 export function BillingGate({ children }: { children: React.ReactNode }) {
   const instance = useInstance();
@@ -210,7 +211,10 @@ export function BillingGate({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
-  const granted = billing && !subscription.isError && subscription.data ? subscription.data : null;
+  // Fail open only when no subscription was ever loaded: after a failed
+  // background refetch React Query keeps the last good `data`, so an
+  // observed denial keeps the paywall (and an observed grant keeps the app).
+  const granted = billing && subscription.data ? subscription.data : null;
   const reason = granted ? subscriptionDenialReason(granted) : null;
   if (reason) return <PaywallScreen reason={reason} className="h-svh" />;
   // Always the same element type around the shell, so a fail-open → granted
