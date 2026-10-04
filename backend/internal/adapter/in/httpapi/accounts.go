@@ -5,7 +5,6 @@ import (
 	"html"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"calendium/backend/internal/domain"
 )
@@ -32,8 +31,14 @@ func (s *server) handleConnectAccount(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.url("redirectUrl", in.RedirectURL)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	authURL, err := s.deps.Accounts.BeginConnect(
-		r.Context(), userFrom(r).ID, provider, in.RedirectURL, requestBaseURL(r))
+		r.Context(), userFrom(r).ID, provider, in.RedirectURL, s.requestBaseURL(r))
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -47,6 +52,12 @@ func (s *server) handleSetVipSenders(w http.ResponseWriter, r *http.Request) {
 		VipSenders []string `json:"vipSenders"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.emails("vipSenders", in.VipSenders)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -70,6 +81,12 @@ func (s *server) handleSetSignature(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.text("signatureHtml", in.SignatureHTML)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	account, err := s.deps.Accounts.SetSignature(r.Context(), userFrom(r).ID, r.PathValue("id"), sanitizeSignatureHTML(in.SignatureHTML))
 	if err != nil {
 		s.writeError(w, r, err)
@@ -84,6 +101,12 @@ func (s *server) handleSetAutoBcc(w http.ResponseWriter, r *http.Request) {
 		AutoBcc []string `json:"autoBcc"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.emails("autoBcc", in.AutoBcc)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -109,7 +132,7 @@ func (s *server) handleAccountCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	_, redirect, cerr := s.deps.Accounts.CompleteConnect(
-		r.Context(), provider, q.Get("state"), q.Get("code"), requestBaseURL(r))
+		r.Context(), provider, q.Get("state"), q.Get("code"), s.requestBaseURL(r))
 	if cerr != nil {
 		status, code := statusFor(cerr)
 		if status == http.StatusInternalServerError {
@@ -129,27 +152,6 @@ func (s *server) handleAccountCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, withStatusParam(redirect, "connected"), http.StatusFound)
-}
-
-// requestBaseURL derives the API's public origin (scheme://host) from the
-// incoming request, honoring the X-Forwarded-Proto/Host set by a reverse
-// proxy. Used to build the provider redirect_uri when PUBLIC_API_URL is unset.
-func requestBaseURL(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
-		scheme = strings.TrimSpace(strings.Split(p, ",")[0])
-	}
-	host := r.Host
-	if h := r.Header.Get("X-Forwarded-Host"); h != "" {
-		host = strings.TrimSpace(strings.Split(h, ",")[0])
-	}
-	if host == "" {
-		return ""
-	}
-	return scheme + "://" + host
 }
 
 // withStatusParam appends ?status=<status> to the client redirect URL.

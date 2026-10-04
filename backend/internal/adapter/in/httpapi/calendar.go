@@ -26,6 +26,12 @@ func (s *server) handleUpdateCalendar(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.optTitle("color", patch.Color)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	cal, err := s.deps.Calendars.UpdateCalendar(r.Context(), userFrom(r).ID, r.PathValue("id"), patch)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -63,6 +69,17 @@ func (s *server) handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.title("title", in.Title)
+	fc.text("description", in.Description)
+	fc.title("location", in.Location)
+	fc.title("recurrenceRule", in.RecurrenceRule)
+	fc.emails("attendeeEmails", in.AttendeeEmails)
+	fc.list("reminderMinutes", len(in.ReminderMinutes))
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	event, err := s.deps.Calendars.CreateEvent(r.Context(), userFrom(r).ID, in)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -74,6 +91,21 @@ func (s *server) handleCreateEvent(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleUpdateEvent(w http.ResponseWriter, r *http.Request) {
 	var patch domain.EventPatch
 	if err := decodeJSON(w, r, &patch); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.optTitle("title", patch.Title)
+	fc.optText("description", patch.Description)
+	fc.optTitle("location", patch.Location)
+	fc.optTitle("recurrenceRule", patch.RecurrenceRule)
+	if patch.AttendeeEmails != nil {
+		fc.emails("attendeeEmails", *patch.AttendeeEmails)
+	}
+	if patch.ReminderMinutes != nil {
+		fc.list("reminderMinutes", len(*patch.ReminderMinutes))
+	}
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -99,6 +131,12 @@ func (s *server) handleRsvp(w http.ResponseWriter, r *http.Request) {
 		Comment  string `json:"comment"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.text("comment", in.Comment)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -136,6 +174,13 @@ func (s *server) handlePutEventNote(w http.ResponseWriter, r *http.Request) {
 		Links  []string `json:"links"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.text("bodyMd", in.BodyMD)
+	fc.urls("links", in.Links)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -215,6 +260,18 @@ func (s *server) handleCreateEventTemplate(w http.ResponseWriter, r *http.Reques
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.title("name", in.Name)
+	fc.title("title", in.Title)
+	fc.text("description", in.Description)
+	fc.title("location", in.Location)
+	fc.emails("attendeeEmails", in.AttendeeEmails)
+	fc.list("reminderMinutes", len(in.ReminderMinutes))
+	fc.optTitle("recurrenceRule", in.RecurrenceRule)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	template, err := s.deps.Calendars.CreateEventTemplate(r.Context(), userFrom(r).ID, in)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -226,6 +283,18 @@ func (s *server) handleCreateEventTemplate(w http.ResponseWriter, r *http.Reques
 func (s *server) handleUpdateEventTemplate(w http.ResponseWriter, r *http.Request) {
 	var in domain.EventTemplateInput
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.title("name", in.Name)
+	fc.title("title", in.Title)
+	fc.text("description", in.Description)
+	fc.title("location", in.Location)
+	fc.emails("attendeeEmails", in.AttendeeEmails)
+	fc.list("reminderMinutes", len(in.ReminderMinutes))
+	fc.optTitle("recurrenceRule", in.RecurrenceRule)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -270,6 +339,13 @@ func (s *server) handleCreateCalendarSet(w http.ResponseWriter, r *http.Request)
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.title("name", in.Name)
+	fc.list("calendarIds", len(in.CalendarIDs))
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	set, err := s.deps.Calendars.CreateCalendarSet(r.Context(), userFrom(r).ID, in)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -281,6 +357,13 @@ func (s *server) handleCreateCalendarSet(w http.ResponseWriter, r *http.Request)
 func (s *server) handleUpdateCalendarSet(w http.ResponseWriter, r *http.Request) {
 	var in domain.CalendarSetInput
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.title("name", in.Name)
+	fc.list("calendarIds", len(in.CalendarIDs))
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}

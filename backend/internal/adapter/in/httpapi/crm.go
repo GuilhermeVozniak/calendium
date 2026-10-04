@@ -60,6 +60,14 @@ func (s *server) handleCrmLog(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.email("contactEmail", in.ContactEmail)
+	fc.title("subject", in.Subject)
+	fc.text("bodyText", in.BodyText)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	if err := svc.LogEmail(r.Context(), userFrom(r).ID, in); err != nil {
 		s.writeError(w, r, err)
 		return

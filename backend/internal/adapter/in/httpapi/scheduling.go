@@ -1,8 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -22,22 +20,12 @@ const publicBodyLimit = 16 << 10
 const maxPublicSlotsSpan = 31 * 24 * time.Hour
 
 // decodePublicJSON decodes a public (unauthenticated) POST body capped at
-// publicBodyLimit. An oversized body is rejected with 413 directly, rather
-// than folded into the generic 400 validation mapping, so clients get an
-// accurate signal. Reports whether decoding succeeded; on failure the error
-// response has already been written.
+// publicBodyLimit: oversized → 413 payload_too_large, malformed → 400.
+// Reports whether decoding succeeded; on failure the error response has
+// already been written.
 func (s *server) decodePublicJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, publicBodyLimit)
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeJSON(w, http.StatusRequestEntityTooLarge, errorBody{Error: errorDetail{
-				Code:    "request_too_large",
-				Message: "request body too large",
-			}})
-			return false
-		}
-		s.writeError(w, r, fmt.Errorf("%w: invalid JSON body: %v", domain.ErrValidation, err))
+	if err := decodeJSONLimit(w, r, dst, publicBodyLimit); err != nil {
+		s.writeError(w, r, err)
 		return false
 	}
 	return true
@@ -84,6 +72,15 @@ func (s *server) handlePublicBook(w http.ResponseWriter, r *http.Request) {
 	if !s.decodePublicJSON(w, r, &req) {
 		return
 	}
+	var fc fieldCheck
+	fc.title("inviteeName", req.InviteeName)
+	fc.email("inviteeEmail", req.InviteeEmail)
+	fc.title("inviteeTimeZone", req.InviteeTZ)
+	fc.text("note", req.Note)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	booking, err := s.deps.Scheduling.Book(r.Context(), r.PathValue("slug"), req)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -108,6 +105,14 @@ func (s *server) handlePublicPoll(w http.ResponseWriter, r *http.Request) {
 func (s *server) handlePublicPollVote(w http.ResponseWriter, r *http.Request) {
 	var ballot port.PollBallot
 	if !s.decodePublicJSON(w, r, &ballot) {
+		return
+	}
+	var fc fieldCheck
+	fc.email("voterEmail", ballot.VoterEmail)
+	fc.title("voterName", ballot.VoterName)
+	fc.list("choices", len(ballot.Choices))
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
 		return
 	}
 	poll, err := s.deps.Scheduling.VotePoll(r.Context(), r.PathValue("token"), ballot)
@@ -144,6 +149,17 @@ func (s *server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.title("slug", in.Slug)
+	fc.title("title", in.Title)
+	fc.text("description", in.Description)
+	fc.title("timeZone", in.TimeZone)
+	fc.list("windows", len(in.Windows))
+	fc.list("memberUserIds", len(in.MemberUserIDs))
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	link, err := s.deps.Scheduling.CreateLink(r.Context(), userFrom(r).ID, in)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -155,6 +171,17 @@ func (s *server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleUpdateLink(w http.ResponseWriter, r *http.Request) {
 	var in port.BookingLinkInput
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.title("slug", in.Slug)
+	fc.title("title", in.Title)
+	fc.text("description", in.Description)
+	fc.title("timeZone", in.TimeZone)
+	fc.list("windows", len(in.Windows))
+	fc.list("memberUserIds", len(in.MemberUserIDs))
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -210,6 +237,14 @@ func (s *server) handleCreatePoll(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.title("title", in.Title)
+	fc.text("description", in.Description)
+	fc.list("options", len(in.Options))
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	poll, err := s.deps.Scheduling.CreatePoll(r.Context(), userFrom(r).ID, in)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -223,6 +258,12 @@ func (s *server) handleConfirmPoll(w http.ResponseWriter, r *http.Request) {
 		OptionID string `json:"optionId"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.title("optionId", in.OptionID)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -247,6 +288,12 @@ func (s *server) handleDeletePoll(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleProposeTime(w http.ResponseWriter, r *http.Request) {
 	var in port.TimeProposalInput
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.text("note", in.Note)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -292,6 +339,12 @@ func (s *server) handleGuestFreeBusy(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.emails("emails", req.Emails)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	if len(req.Emails) == 0 || len(req.Emails) > maxFreeBusyEmails {
 		s.writeError(w, r, fmt.Errorf("%w: emails must include between 1 and %d addresses", domain.ErrValidation, maxFreeBusyEmails))
 		return
@@ -326,6 +379,14 @@ func (s *server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var in domain.UserSettings
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.title("timeZone", in.TimeZone)
+	fc.list("workingHours", len(in.WorkingHours))
+	fc.title("workingLocation", in.WorkingLocation)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}

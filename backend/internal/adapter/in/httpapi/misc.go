@@ -54,6 +54,13 @@ func (s *server) handleAiCompose(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.text("prompt", req.Prompt)
+	fc.title("tone", req.Tone)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	res, err := s.deps.AI.Compose(r.Context(), userFrom(r).ID, req)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -65,6 +72,12 @@ func (s *server) handleAiCompose(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleAiAsk(w http.ResponseWriter, r *http.Request) {
 	var req domain.AiAskRequest
 	if err := decodeJSON(w, r, &req); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.text("question", req.Question)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -107,6 +120,13 @@ func (s *server) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 		Token    string `json:"token"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.title("platform", in.Platform)
+	fc.title("token", in.Token)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}

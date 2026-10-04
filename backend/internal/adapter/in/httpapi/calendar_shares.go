@@ -42,6 +42,14 @@ func (s *server) handleShareCalendar(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	var fc fieldCheck
+	fc.title("granteeUserId", in.GranteeUserID)
+	fc.title("granteeTeamId", in.GranteeTeamID)
+	fc.title("permission", in.Permission)
+	if err := fc.err(); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
 	share, err := svc.ShareCalendar(r.Context(), userFrom(r).ID, r.PathValue("id"), in)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -59,6 +67,12 @@ func (s *server) handleUpdateCalendarShare(w http.ResponseWriter, r *http.Reques
 		Permission string `json:"permission"`
 	}
 	if err := decodeJSON(w, r, &in); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	var fc fieldCheck
+	fc.title("permission", in.Permission)
+	if err := fc.err(); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
