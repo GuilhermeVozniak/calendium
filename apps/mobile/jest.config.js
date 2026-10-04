@@ -1,18 +1,10 @@
 const path = require('node:path');
 
-// react-native, react-test-renderer, and @testing-library/react-native are
-// only ever hoisted to the workspace root (no nested copy), but apps/mobile
-// pins an EXACT `react` version to match its Expo SDK build (required for
-// real react-native compatibility — do not loosen that pin). When some other
-// workspace package's looser `react` range resolves to a newer version, bun
-// gives apps/mobile its own nested node_modules/react so the app keeps using
-// the exact pin. That's correct for the shipped app, but under Jest it means
-// react-native's hooks/contexts (root's react copy) and this package's own
-// components (nested copy) are two different React instances — components
-// using context (e.g. components/ui/text.tsx's TextClassContext) then crash.
-// Force every `react` import inside Jest to the same, root-hoisted copy that
-// react-native/react-test-renderer already use; this only affects the test
-// run, not Metro's bundling of the real app.
+// Belt-and-braces: the root package.json `overrides` pin react/react-dom to
+// 19.1.0 so there is exactly one hoisted copy (expo-doctor's duplicate check
+// passes). The moduleNameMapper entries below still force every `react`
+// import to that copy, so a future looser range elsewhere in the workspace
+// cannot reintroduce two React instances under Jest.
 const ROOT_NODE_MODULES = path.join(__dirname, '..', '..', 'node_modules');
 
 /** @type {import('jest').Config} */

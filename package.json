@@ -14,27 +14,33 @@
     "build:web": "bun run --cwd apps/web build",
     "build:desktop": "cd apps/desktop && wails build",
     "build:api": "cd backend && go build ./...",
-    "test": "bun run test:api && bun run test:shared && bun run test:web && bun run test:mobile && bun run test:desktop",
+    "test": "bun run test:api && bun run test:shared && bun run test:web && bun run test:mobile && bun run test:desktop && bun run test:scripts",
     "test:api": "cd backend && go test ./...",
     "test:shared": "bun run --cwd packages/shared test",
     "test:web": "bun run --cwd apps/web test",
     "test:mobile": "bun run --cwd apps/mobile test",
     "test:desktop": "bun run --cwd apps/desktop/frontend test",
     "test:e2e": "bun run --cwd apps/web e2e",
+    "test:scripts": "vitest run --root scripts",
     "typecheck": "bun run --cwd apps/web typecheck && bun run --cwd packages/shared typecheck",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,css}\"",
     "lint": "bun run lint:js && bun run lint:go",
     "lint:js": "biome check .",
     "lint:go": "cd backend && golangci-lint run ./... && cd ../apps/desktop && golangci-lint run ./...",
+    "version:set": "node scripts/set-version.mjs",
+    "assets:gen": "node scripts/gen-mobile-assets.mjs",
     "prepare": "lefthook install"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.2",
     "lefthook": "^2.1.9",
     "prettier": "^3.6.2",
+    "sharp": "^0.34.5",
     "vitest": "^4.1.10"
   },
   "overrides": {
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
     "@types/react": "~19.1.10"
   }
 }

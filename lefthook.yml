@@ -36,3 +36,6 @@ pre-push:
 
     - name: test:mobile
       run: bun run test:mobile
+
+    - name: test:scripts
+      run: bun run test:scripts
