@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"runtime/debug"
@@ -164,18 +165,37 @@ func (s *server) logRequests(next http.Handler) http.Handler {
 		// This pointer is the one ServeMux mutates (r.Pattern), so keep it.
 		r = r.WithContext(context.WithValue(r.Context(), logFieldsKey{}, fields))
 		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+		completed := false
+		// Deferred so a panicking request still gets its access line; the
+		// panic keeps unwinding to recoverPanics, which answers 500.
+		defer func() {
+			status := rw.status
+			if !completed && !rw.wrote {
+				status = http.StatusInternalServerError // what recoverPanics will answer
+			}
+			route := routeOf(r)
+			attrs := []any{
+				"request_id", requestIDFrom(r.Context()),
+				"method", r.Method,
+				"route", route,
+				"status", status,
+				"duration_ms", time.Since(start).Milliseconds(),
+				"bytes", rw.bytes,
+				"client_ip", s.clientIP(r),
+				"user_id", fields.UserID,
+				"actor_id", fields.ActorID,
+			}
+			if !completed {
+				attrs = append(attrs, "panic", true)
+			}
+			level := slog.LevelInfo
+			if route == "/healthz" || route == "/readyz" {
+				level = slog.LevelDebug // probes run every few seconds
+			}
+			s.deps.Logger.Log(r.Context(), level, "http", attrs...)
+		}()
 		next.ServeHTTP(rw, r)
-		s.deps.Logger.Info("http",
-			"request_id", requestIDFrom(r.Context()),
-			"method", r.Method,
-			"route", routeOf(r),
-			"status", rw.status,
-			"duration_ms", time.Since(start).Milliseconds(),
-			"bytes", rw.bytes,
-			"client_ip", s.clientIP(r),
-			"user_id", fields.UserID,
-			"actor_id", fields.ActorID,
-		)
+		completed = true
 	})
 }
 

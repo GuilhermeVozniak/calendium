@@ -95,7 +95,8 @@ type Deps struct {
 	// TrustedProxyCIDRs (TRUSTED_PROXY_CIDRS) is the proxy allowlist; the
 	// config package supplies the default loopback/RFC1918/ULA set.
 	TrustedProxyCIDRs []netip.Prefix
-	// RateLimits is the per-class budget; zero means DefaultRateLimits.
+	// RateLimits is the per-class budget; a zero class is disabled (the zero
+	// value disables API rate limiting).
 	RateLimits RateLimits
 	// Drain is closed by the composition root when shutdown begins: /readyz
 	// turns 503 and the SSE streams return so Shutdown can finish. nil = never.
@@ -127,9 +128,6 @@ func newServer(deps Deps) *server {
 		classOf: map[string]string{},
 	}
 	rl := deps.RateLimits
-	if rl == (RateLimits{}) {
-		rl = DefaultRateLimits()
-	}
 	s.limits = map[string]*rateLimiter{
 		classUser:        newClassLimiter(rl.UserPerMin, rl.UserPerMin),
 		classMutateHeavy: newClassLimiter(rl.MutateHeavyPerMin, rl.MutateHeavyPerMin),

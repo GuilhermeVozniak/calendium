@@ -17,6 +17,33 @@ func TestDefaultRateLimits(t *testing.T) {
 	}
 }
 
+// TestZeroRateLimitsDisableEveryClass: a zero RateLimits is "every class
+// disabled" (config already resolved unset → default), not a sentinel for
+// the defaults.
+func TestZeroRateLimitsDisableEveryClass(t *testing.T) {
+	h := newHarness(t)
+	h.deps.RateLimits = RateLimits{}
+	s := h.server()
+	if s.publicRead != nil || s.publicWrite != nil {
+		t.Fatal("public limiters should be disabled")
+	}
+	for class, l := range s.limits {
+		if l != nil {
+			t.Fatalf("class %s should be disabled", class)
+		}
+	}
+	handler := h.handler()
+	for i := 0; i < 20; i++ { // publicWrite default is 5/min
+		req := httptest.NewRequest(http.MethodPost, "/v1/public/polls/tok/votes", strings.NewReader(`{}`))
+		req.RemoteAddr = "198.51.100.1:1"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
+			t.Fatalf("request %d rate limited with every class disabled", i+1)
+		}
+	}
+}
+
 func authedReq(method, target, body string) *http.Request {
 	var req *http.Request
 	if body == "" {

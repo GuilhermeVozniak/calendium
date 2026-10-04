@@ -2,9 +2,10 @@
 // adapter that dials user-supplied hosts (icsfeed subscriptions, RFC 8058
 // unsubscribe POSTs): an address may be dialled only when it is public
 // global unicast and outside every private, loopback, link-local, ULA,
-// unspecified, multicast, CGNAT (100.64.0.0/10) and NAT64 (64:ff9b::/96)
-// range. Nothing in Calendium needs NAT64, so the whole prefix is refused
-// rather than translated and re-checked.
+// unspecified, multicast, CGNAT (100.64.0.0/10) and NAT64 (64:ff9b::/96,
+// plus the local-use 64:ff9b:1::/48) range. Nothing in Calendium needs
+// NAT64, so both prefixes are refused rather than translated and
+// re-checked.
 package netguard
 
 import (
@@ -15,8 +16,9 @@ import (
 )
 
 var blocked = []netip.Prefix{
-	netip.MustParsePrefix("100.64.0.0/10"), // CGNAT, RFC 6598
-	netip.MustParsePrefix("64:ff9b::/96"),  // NAT64, RFC 6052
+	netip.MustParsePrefix("100.64.0.0/10"),  // CGNAT, RFC 6598
+	netip.MustParsePrefix("64:ff9b::/96"),   // NAT64, RFC 6052
+	netip.MustParsePrefix("64:ff9b:1::/48"), // local-use NAT64, RFC 8215
 }
 
 // IsPublic reports whether ip may be dialled. IPv4-mapped IPv6 is unmapped

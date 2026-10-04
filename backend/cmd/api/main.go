@@ -69,9 +69,8 @@ func run() error {
 		logger.Warn(w)
 	}
 	logger.Info("api: config", cfg.Summary()...)
-	if cfg.RateLimits == (config.RateLimits{}) {
-		// httpapi reads an all-zero RateLimits as "use the defaults".
-		logger.Warn("api: every RATE_LIMIT_* is 0; httpapi applies the default budgets (disable classes individually)")
+	if cfg.RateLimits.Disabled() {
+		logger.Warn("api: every RATE_LIMIT_* is 0; API rate limiting is disabled")
 	}
 
 	// Fail fast on a guaranteed-broken auth configuration instead of booting

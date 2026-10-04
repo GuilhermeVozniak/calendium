@@ -110,9 +110,14 @@ func (p proxyTrust) firstForwarded(r *http.Request, h string) string {
 }
 
 // forwardedProto returns the first X-Forwarded-Proto value, lower-cased,
-// only when the peer is a trusted proxy; "" otherwise.
+// only when the peer is a trusted proxy and the value is http or https;
+// "" otherwise.
 func (p proxyTrust) forwardedProto(r *http.Request) string {
-	return strings.ToLower(p.firstForwarded(r, "X-Forwarded-Proto"))
+	switch v := strings.ToLower(p.firstForwarded(r, "X-Forwarded-Proto")); v {
+	case "http", "https":
+		return v
+	}
+	return ""
 }
 
 // forwardedHost returns the first X-Forwarded-Host value only when the peer
