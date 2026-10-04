@@ -1,3 +1,4 @@
+import { type AccessTokenCache, createAccessTokenCache } from './access-token-cache';
 import type {
   AiAskRequest,
   AiAskResponse,
@@ -122,6 +123,12 @@ export interface ApiClientOptions {
   /** Returns the current Better Auth access token (JWT) or null when signed out. */
   getAccessToken: () => Promise<string | null>;
   fetch?: typeof fetch;
+  /**
+   * Shared JWT cache (internal). ApiClient creates one over getAccessToken
+   * when absent; the web app passes its own so sign-out and the 401 retry
+   * invalidate the single copy every caller uses.
+   */
+  accessTokens?: AccessTokenCache;
 }
 
 export class ApiRequestError extends Error {
@@ -149,10 +156,20 @@ export class ApiRequestError extends Error {
  * Used by web, desktop, and mobile apps.
  */
 export class ApiClient {
-  constructor(private readonly opts: ApiClientOptions) {}
+  constructor(private readonly opts: ApiClientOptions) {
+    // Attach the cache to the SAME options object — never copy opts: desktop
+    // passes a live `baseUrl` getter and mobile mutates `baseUrl` in place.
+    opts.accessTokens ??= createAccessTokenCache(() => opts.getAccessToken());
+  }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const token = await this.opts.getAccessToken();
+  /** Drops the cached JWT so the next request mints a fresh one (sign-out, server switch). */
+  invalidateAccessToken(): void {
+    this.opts.accessTokens?.invalidate();
+  }
+
+  private async request<T>(method: string, path: string, body?: unknown, retried = false): Promise<T> {
+    const tokens = this.opts.accessTokens;
+    const token = tokens ? await tokens.get() : await this.opts.getAccessToken();
     const doFetch = this.opts.fetch ?? fetch;
     const res = await doFetch(`${this.opts.baseUrl}${path}`, {
       method,
@@ -162,6 +179,12 @@ export class ApiClient {
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
+    if (res.status === 401 && token && tokens && !retried) {
+      // A cached JWT may have been revoked (password reset) or just expired:
+      // drop it, re-mint once, and retry once. A second 401 surfaces as-is.
+      tokens.invalidate();
+      return this.request<T>(method, path, body, true);
+    }
     if (res.status === 204) return undefined as T;
     const json = await res.json().catch(() => null);
     if (!res.ok) {
@@ -672,7 +695,7 @@ export class ApiClient {
       `/v1/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(userId)}`
     );
   }
-  /** Admin+; emails an invite link through the inviter's own connected account. */
+  /** Admin+; emails the invite from the inviter's connected mailbox, else the instance SMTP sender, else returns delivery "link" with inviteUrl to share by hand. */
   invite(teamId: string, email: string, role: TeamRole) {
     return this.request<TeamInvitation>(
       'POST',

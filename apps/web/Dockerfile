@@ -62,6 +62,9 @@ RUN addgroup -S nodejs && adduser -S -G nodejs nextjs
 COPY --from=build --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
 COPY --from=build --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/.next/static
 COPY --from=build --chown=nextjs:nodejs /app/apps/web/public ./apps/web/public
+# Operator CLI (self-host password reset without SMTP); runs against the
+# traced node_modules next to the standalone server.
+COPY --from=build --chown=nextjs:nodejs /app/apps/web/scripts ./apps/web/scripts
 
 USER nextjs
 EXPOSE 3000

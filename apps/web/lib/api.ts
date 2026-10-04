@@ -1,7 +1,7 @@
 import { ApiClient } from '@calendium/shared';
 
 import { getActingAs } from '@/lib/act-as';
-import { getAccessToken } from '@/lib/auth-client';
+import { accessTokens, getAccessToken } from '@/lib/auth-client';
 import { env } from '@/lib/env';
 
 let client: ApiClient | undefined;
@@ -32,7 +32,7 @@ const notifyingFetch = (async (input: RequestInfo | URL, init?: RequestInit) => 
 
 /**
  * Browser-side Calendium API client (see packages/shared/src/client.ts).
- * Mints a fresh Better Auth JWT (GET /api/auth/token) per request and sends it
+ * Reuses the cached Better Auth JWT (lib/auth-client.ts; GET /api/auth/token until 60 s before expiry) and sends it
  * as the Bearer credential; lazily constructed singleton, safe to call from
  * components, hooks, and queries.
  *
@@ -45,6 +45,9 @@ export function getApiClient(): ApiClient {
   client ??= new ApiClient({
     baseUrl: env.apiUrl,
     getAccessToken,
+    // One JWT cache for the whole tab: ApiClient's 401 retry and sign-out
+    // both invalidate the same copy (lib/auth-client.ts).
+    accessTokens,
     fetch: notifyingFetch,
   });
   const principalId = getActingAs();

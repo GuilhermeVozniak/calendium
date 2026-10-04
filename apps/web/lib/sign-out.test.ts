@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const signOutMock = vi.fn();
+const invalidateMock = vi.fn();
 vi.mock('@/lib/auth-client', () => ({
   signOut: (...args: unknown[]) => signOutMock(...args),
+  invalidateAccessToken: () => invalidateMock(),
 }));
 
 const clearActingAsMock = vi.fn();
@@ -30,6 +32,7 @@ describe('performSignOut', () => {
   it('ends the session, clears acting-as, detaches tour scope, and clears offline state', async () => {
     await performSignOut();
     expect(signOutMock).toHaveBeenCalledTimes(1);
+    expect(invalidateMock).toHaveBeenCalledTimes(1);
     expect(clearActingAsMock).toHaveBeenCalledTimes(1);
     expect(resetTourSessionMock).toHaveBeenCalledTimes(1);
     expect(clearOfflineStateMock).toHaveBeenCalledTimes(1);
