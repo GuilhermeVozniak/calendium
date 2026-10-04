@@ -17,7 +17,7 @@ worked top to bottom.
 - [ ] Base images updated on a schedule
 - [ ] Backups encrypted and stored off-box
 - [ ] Managed Postgres reached with `sslmode=require` (or stricter)
-- [ ] `web` behind your proxy with `TRUST_PROXY=true`, and the proxy overwrites `X-Forwarded-For`
+- [ ] `web` behind your proxy with `TRUST_PROXY=true`, and the proxy's address inside `TRUSTED_PROXY_CIDRS`
 - [ ] `ALLOW_DEV_ORIGINS` blank (false) in production
 - [ ] SMTP configured over TLS (verification + password reset), or users know to ask you for a reset
 
@@ -212,22 +212,38 @@ every `web` replica.
 Over the limit → `429` with `X-Retry-After: <seconds>`; the apps say
 "Too many attempts, try again in N s".
 
-### Client IP: `TRUST_PROXY`
+### Client IP: `TRUST_PROXY` and `TRUSTED_PROXY_CIDRS`
 
-The web server cannot see the TCP peer, so it derives the client IP from
-headers and stamps it into a server-only header (`x-calendium-client-ip`,
-overwritten on every request — a client-supplied value is discarded):
+The web app stamps the client IP into a server-only header
+(`x-calendium-client-ip`) and overwrites it on every request, so a value the
+client sends is discarded. The client IP is the **right-most `X-Forwarded-For`
+entry that is not a trusted proxy**. The right-most entry is always the
+immediate peer: the Next.js server appends the address it received the
+connection from.
 
-- `TRUST_PROXY=true` — the first `X-Forwarded-For` hop. Correct **only** behind
-  a proxy that overwrites the header: the bundled Caddy profile does; nginx needs
-  `proxy_set_header X-Forwarded-For $remote_addr;` in the web `location /` (the
-  [sample](../../deploy/nginx/calendium.conf) does). Behind an appending proxy a
-  client can forge the first hop and choose its own bucket.
-- `TRUST_PROXY=false` (default) — `X-Forwarded-For` only when it holds exactly
-  one address; anything else lands in one shared bucket. A client that reaches
-  `web:3000` directly can send its own single-valued header and get its own
-  bucket, which is why production logs a warning. The supported production shape
-  is Caddy (or nginx as above) + `TRUST_PROXY=true`.
+- `TRUST_PROXY=false` (default): no proxy is trusted, so only the immediate peer
+  is used. A client-supplied `X-Forwarded-For` is never trusted. Behind a reverse
+  proxy the immediate peer is the proxy, so every client shares the proxy's
+  bucket. That is why production logs a warning.
+- `TRUST_PROXY=true`: entries inside `TRUSTED_PROXY_CIDRS` are skipped from the
+  right, and the first entry outside them is the client. The default is
+  `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7`
+  (loopback and private ranges). It covers the bundled Caddy on the Compose
+  network and nginx on the host in front of the published port. A client can
+  prepend whatever it likes, but it cannot get past the entry its proxy added.
+  Appending proxies (`$proxy_add_x_forwarded_for`, cloud load balancers) and
+  overwriting ones (Caddy, nginx with `$remote_addr`) both work, as long as
+  every proxy hop is inside `TRUSTED_PROXY_CIDRS`. Add a CDN's public ranges
+  if one sits in front. If untrusted clients can reach `web:3000` from a
+  private range, narrow the list to your proxy's own address.
+
+The supported production shape is Caddy (or nginx) + `TRUST_PROXY=true`.
+
+The Go API rate-limits only its public endpoints (booking pages, polls and
+shared threads: reads 60/min with a burst of 30, writes 5/min with a burst
+of 5). It keys those limits on the TCP peer address (`RemoteAddr`). It reads
+neither `X-Forwarded-For` nor `TRUST_PROXY`, so behind a proxy all callers of
+those endpoints share the proxy's bucket.
 
 ### Origins
 
@@ -236,10 +252,13 @@ Better Auth accepts state-changing requests only from trusted origins:
 WebView origins (`wails://wails`, `wails://wails.localhost`,
 `http(s)://wails.localhost`), the mobile scheme `calendium://`, and
 `https://appleid.apple.com` (Apple's `form_post`; never reflected in CORS).
-`http://localhost:*` / `http://127.0.0.1:*` are trusted only in development or
-with `ALLOW_DEV_ORIGINS=true`, and the Go API's CORS applies the same rule.
-Keep `ALLOW_DEV_ORIGINS` blank in production (setting it logs a warning). The
-packaged desktop app needs no configuration.
+The Go API's CORS always allows the desktop WebView origins plus
+`CORS_ALLOWED_ORIGINS`, `PUBLIC_WEB_URL` and `BETTER_AUTH_URL`.
+`http://localhost:*`, `http://127.0.0.1:*` and `[::1]` origins are allowed by
+the API **only** with `ALLOW_DEV_ORIGINS=true`, in every environment. Better
+Auth trusts `localhost` / `127.0.0.1` with `ALLOW_DEV_ORIGINS=true` and also
+under `next dev`. Keep `ALLOW_DEV_ORIGINS` blank in production (setting it
+makes `web` log a warning). The packaged desktop app needs no configuration.
 
 ### Email verification and passwords
 

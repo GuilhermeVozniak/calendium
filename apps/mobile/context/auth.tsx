@@ -74,7 +74,9 @@ AuthContext.displayName = 'AuthContext';
  * until the user connects to a server; every auth call guards on it. Session
  * state is derived by asking Better Auth for the current session and re-reading
  * it after each auth action (the @better-auth/expo adapter persists the session
- * in expo-secure-store, so it survives restarts).
+ * in expo-secure-store, so it survives restarts). Every successful sign-in
+ * (and sign-out) invalidates the cached API JWT, so no token minted for a
+ * previous session is ever reused by the new one.
  */
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { authClient, config, clear: clearServer } = useServerConfig();
@@ -128,6 +130,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         Alert.alert('Error', error.message ?? 'Sign in failed.');
         throw new Error(error.message ?? 'Sign in failed.');
       }
+      api.invalidateAccessToken();
       await refresh();
     } catch (error) {
       console.error('OAuth sign in error:', error);
@@ -149,6 +152,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       Alert.alert(error.code === 'EMAIL_NOT_VERIFIED' ? 'Verify your email' : 'Error', message);
       throw new Error(message);
     }
+    api.invalidateAccessToken();
     await refresh();
   };
 
@@ -171,6 +175,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // answers the same for an existing address): token === null means the
     // user must open the emailed link before signing in.
     if (data && data.token === null) return { verificationRequired: true };
+    api.invalidateAccessToken();
     await refresh();
     return { verificationRequired: false };
   };

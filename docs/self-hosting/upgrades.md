@@ -128,12 +128,16 @@ bunx @better-auth/cli generate
   `web`. If you run the web app another way (for example `bun run dev:web` with
   `apps/web/.env`), add `SELF_HOSTED=true` for a self-hosted instance, or it
   boots in cloud mode and stops with the SMTP error.
-- **localhost origins are no longer trusted in production.** If a browser client
+- **localhost origins now need `ALLOW_DEV_ORIGINS=true`.** The API allows
+  `http://localhost:*` / `http://127.0.0.1:*` origins only with it, in every
+  environment. `web` also trusts them under `next dev`. If a browser client
   served from `http://localhost:<port>` talks to a production server, add that
-  origin to `CORS_ALLOWED_ORIGINS` (or set `ALLOW_DEV_ORIGINS=true`, which logs a
+  origin to `CORS_ALLOWED_ORIGINS`, or set `ALLOW_DEV_ORIGINS=true` (which logs a
   warning). The desktop app is unaffected.
-- **Behind a proxy, set `TRUST_PROXY=true`** (and make nginx overwrite
-  `X-Forwarded-For`, see [Reverse proxy](./reverse-proxy-tls.md)); otherwise every
+- **Behind a proxy, set `TRUST_PROXY=true`** and keep the proxy's address inside
+  `TRUSTED_PROXY_CIDRS` (the default covers loopback and private ranges; see
+  [Security → Client IP](./security.md#client-ip-trust_proxy-and-trusted_proxy_cidrs)).
+  With `TRUST_PROXY=false` only the immediate peer, the proxy, is used, so every
   client shares one sign-in rate-limit bucket.
 
 ---

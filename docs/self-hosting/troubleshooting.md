@@ -337,11 +337,14 @@ configured (`curl -s https://your-domain/v1/instance | jq .features.email` is
 
 **Cause:** the per-IP sign-in limits ([Security → Rate limits](./security.md#rate-limits-postgres-backed)).
 If *everyone* hits them at once, the web app cannot tell clients apart and they
-share one bucket: the `web` log shows
-`TRUST_PROXY is not true in production: …` at startup.
+share one bucket. With `TRUST_PROXY=false` it uses only the immediate peer,
+which behind a proxy is the proxy itself, and the `web` log shows
+`TRUST_PROXY is not true in production: …` at startup. With `TRUST_PROXY=true`
+the same happens when a proxy hop is outside `TRUSTED_PROXY_CIDRS`, for example
+a CDN with public addresses.
 
-**Fix:** behind Caddy, or nginx overwriting `X-Forwarded-For`, set
-`TRUST_PROXY=true` and restart `web`. To clear the counters (for example after a
+**Fix:** behind a proxy, set `TRUST_PROXY=true`, add any public proxy ranges to
+`TRUSTED_PROXY_CIDRS`, and restart `web`. To clear the counters (for example after a
 load test): `docker compose exec db psql -U calendium -d calendium -c 'DELETE FROM "rateLimit";'`.
 
 ---
@@ -355,7 +358,8 @@ API calls with a CORS error.
 **Cause:** the request's `Origin` is not trusted. Production trusts
 `BETTER_AUTH_URL`, `PUBLIC_WEB_URL`, `CORS_ALLOWED_ORIGINS`, the desktop WebView
 origins, `calendium://` and `https://appleid.apple.com`; `localhost` /
-`127.0.0.1` origins only with `ALLOW_DEV_ORIGINS=true`.
+`127.0.0.1` origins only with `ALLOW_DEV_ORIGINS=true`. The API's CORS applies
+that localhost rule in every environment, including development.
 
 **Fix:** make `BETTER_AUTH_URL` and `PUBLIC_WEB_URL` exactly your public origin
 (scheme, host and port; no trailing slash), add any other web origin to

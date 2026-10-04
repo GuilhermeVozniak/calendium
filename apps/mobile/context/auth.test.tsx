@@ -121,6 +121,47 @@ describe('AuthProvider (piece 2)', () => {
     expect(Alert.alert).toHaveBeenCalledWith('Error', 'Too many attempts, try again in 42 s');
   });
 
+  it('signInWithEmail invalidates the cached API JWT before re-reading the session', async () => {
+    signIn.email.mockResolvedValue({ data: { token: 'sess' }, error: null });
+    const { result } = await mountAuth();
+    getSession.mockClear();
+    await act(async () => {
+      await result.current.signInWithEmail('ada@example.test', 'correct-horse-battery');
+    });
+    expect(mockInvalidate).toHaveBeenCalledTimes(1);
+    expect(mockInvalidate.mock.invocationCallOrder[0]).toBeLessThan(getSession.mock.invocationCallOrder[0]);
+  });
+
+  it('a failed signInWithEmail leaves the cached API JWT alone', async () => {
+    signIn.email.mockResolvedValue({ data: null, error: { status: 401, message: 'Invalid email or password' } });
+    const { result } = await mountAuth();
+    await expect(result.current.signInWithEmail('ada@example.test', 'wrong')).rejects.toThrow();
+    expect(mockInvalidate).not.toHaveBeenCalled();
+  });
+
+  it('signUpWithEmail with a session invalidates the cached API JWT; verification-required does not', async () => {
+    signUp.email.mockResolvedValueOnce({ data: { token: null, user: { id: 'u1' } }, error: null });
+    signUp.email.mockResolvedValueOnce({ data: { token: 'sess', user: { id: 'u1' } }, error: null });
+    const { result } = await mountAuth();
+    await act(async () => {
+      await result.current.signUpWithEmail('Ada', 'ada@example.test', 'correct-horse-battery');
+    });
+    expect(mockInvalidate).not.toHaveBeenCalled();
+    await act(async () => {
+      await result.current.signUpWithEmail('Ada', 'ada@example.test', 'correct-horse-battery');
+    });
+    expect(mockInvalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it('signInWithOAuth invalidates the cached API JWT on success', async () => {
+    signIn.social.mockResolvedValue({ data: {}, error: null });
+    const { result } = await mountAuth();
+    await act(async () => {
+      await result.current.signInWithOAuth('google');
+    });
+    expect(mockInvalidate).toHaveBeenCalledTimes(1);
+  });
+
   it('signOut invalidates the cached API JWT', async () => {
     signOutMock.mockResolvedValue({});
     const { result } = await mountAuth();
