@@ -28,6 +28,7 @@ import { type ReactNode, useEffect, useState } from 'react';
 
 import { api, apiConfigured, orMock } from '@/lib/api';
 import { clearStoredToken, signOut } from '@/lib/auth';
+import { deepLinkTo } from '@/lib/links';
 import { clearOfflineState } from '@/lib/offline';
 import { htmlToText, toHtml } from '@/lib/compose';
 import {
@@ -586,10 +587,11 @@ export function SettingsView() {
   useEffect(
     () =>
       onDeepLink((url) => {
-        if (!url.startsWith('calendium://accounts')) return;
+        const link = deepLinkTo(url, 'accounts');
+        if (!link) return;
         let status = '';
         try {
-          status = new URL(url).searchParams.get('status') ?? '';
+          status = new URL(link).searchParams.get('status') ?? '';
         } catch {
           // Ignore malformed deep links.
         }

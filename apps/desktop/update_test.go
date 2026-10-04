@@ -180,8 +180,10 @@ func TestResolveUpdateURL(t *testing.T) {
 	if got := resolveUpdateURL(""); got != defaultUpdateURL {
 		t.Errorf("empty -> %q, want default", got)
 	}
-	if got := resolveUpdateURL("off"); got != "" {
-		t.Errorf("off -> %q, want disabled", got)
+	for _, off := range []string{"off", "OFF", "Off", " oFf "} {
+		if got := resolveUpdateURL(off); got != "" {
+			t.Errorf("%q -> %q, want disabled (case-insensitive)", off, got)
+		}
 	}
 	if got := resolveUpdateURL(" https://mirror.example/latest "); got != "https://mirror.example/latest" {
 		t.Errorf("override -> %q", got)
@@ -264,6 +266,8 @@ func TestParseSemverAndNewer(t *testing.T) {
 		{"1.2", false, semver{}},
 		{"1.02.3", false, semver{}},
 		{"1.2.3-", false, semver{}},
+		{"1.+5.0", false, semver{}}, // strconv.Atoi alone would accept a sign
+		{"-1.2.3", false, semver{}},
 		{"", false, semver{}},
 	}
 	for _, tc := range parse {
@@ -334,7 +338,9 @@ func TestUpdateRun_WaitsWhilePausedAndChecksOnResume(t *testing.T) {
 	}
 	c.setPaused(false)
 	deadline := time.Now().Add(2 * time.Second)
-	for hits.Load() == 0 && time.Now().Before(deadline) {
+	// Wait for the check to finish (request, fsync'd cache write, apply), not
+	// just for the request to land.
+	for !c.status().Available && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if n := hits.Load(); n != 1 {
@@ -349,5 +355,181 @@ func TestUpdateRun_WaitsWhilePausedAndChecksOnResume(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("run did not return after its context was cancelled")
+	}
+}
+
+// The Download URL reaches OpenExternal, so only https with a host is trusted.
+var unsafeReleaseURLs = []string{
+	"http://github.com/GuilhermeVozniak/calendium/releases/tag/v1.3.0",
+	"javascript:alert(1)",
+	"ms-settings:privacy",
+	"calendium://auth/callback?ott=x",
+	"https://",
+	"https:///releases/tag/v1.3.0",
+	"//github.com/GuilhermeVozniak/calendium",
+	"/releases/tag/v1.3.0",
+	"",
+}
+
+func TestSafeReleaseURL(t *testing.T) {
+	for _, ok := range []string{
+		"https://github.com/GuilhermeVozniak/calendium/releases/tag/v1.3.0",
+		"HTTPS://github.com/GuilhermeVozniak/calendium/releases/tag/v1.3.0",
+		"https://mirror.example:8443/calendium/v1.3.0",
+	} {
+		if !safeReleaseURL(ok) {
+			t.Errorf("safeReleaseURL(%q) = false, want true", ok)
+		}
+	}
+	for _, bad := range unsafeReleaseURLs {
+		if safeReleaseURL(bad) {
+			t.Errorf("safeReleaseURL(%q) = true, want false", bad)
+		}
+	}
+}
+
+func TestUpdateCheck_UnsafeHTMLURLIsNeitherCachedNorEmitted(t *testing.T) {
+	for _, bad := range unsafeReleaseURLs {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("ETag", `"etag-1"`)
+			_, _ = fmt.Fprintf(w, `{"tag_name":"v1.3.0","html_url":%q,"draft":false,"prerelease":false}`, bad)
+		}))
+		c, emitted := newTestChecker(t, "1.2.3", srv.URL)
+		info, err := c.check(context.Background())
+		srv.Close()
+		if err == nil {
+			t.Errorf("html_url %q: expected an error", bad)
+		}
+		if info.Available || info.URL != "" || len(*emitted) != 0 {
+			t.Errorf("html_url %q: info=%+v emitted=%+v", bad, info, *emitted)
+		}
+		if _, statErr := os.Stat(c.cachePath); !errors.Is(statErr, os.ErrNotExist) {
+			t.Errorf("html_url %q: cache must not be written, stat err = %v", bad, statErr)
+		}
+	}
+}
+
+func TestUpdateApply_UnsafeURLIsNeverAvailable(t *testing.T) {
+	for _, bad := range unsafeReleaseURLs {
+		c, emitted := newTestChecker(t, "1.2.3", "")
+		info := c.apply(githubRelease{TagName: "v1.3.0", HTMLURL: bad})
+		if info.Available || info.URL != "" || len(*emitted) != 0 || c.status().URL != "" {
+			t.Errorf("apply(%q): info=%+v status=%+v emitted=%+v", bad, info, c.status(), *emitted)
+		}
+	}
+}
+
+// A cache that parses but lacks what the conditional request relies on (a
+// release tag, a safe htmlUrl, an etag) is no cache: no If-None-Match, and the
+// fresh 200 rewrites it. Otherwise a 304 would replay a bad or empty release.
+func TestUpdateCheck_IncompleteCacheIsTreatedAsNone(t *testing.T) {
+	const good = "https://github.com/GuilhermeVozniak/calendium/releases/tag/v1.3.0"
+	caches := map[string]string{
+		"etag only":       `{"etag":"\"etag-1\""}`,
+		"empty tag":       `{"etag":"\"etag-1\"","tagName":"","htmlUrl":"` + good + `"}`,
+		"non-semver tag":  `{"etag":"\"etag-1\"","tagName":"nightly","htmlUrl":"` + good + `"}`,
+		"prerelease tag":  `{"etag":"\"etag-1\"","tagName":"v1.3.0-rc.1","htmlUrl":"` + good + `"}`,
+		"missing htmlUrl": `{"etag":"\"etag-1\"","tagName":"v1.3.0"}`,
+		"javascript url":  `{"etag":"\"etag-1\"","tagName":"v1.3.0","htmlUrl":"javascript:alert(1)"}`,
+		"http url":        `{"etag":"\"etag-1\"","tagName":"v1.3.0","htmlUrl":"http://github.com/x"}`,
+		"missing etag":    `{"tagName":"v1.3.0","htmlUrl":"` + good + `"}`,
+		"json null":       `null`,
+		"json array":      `[]`,
+	}
+	for name, body := range caches {
+		t.Run(name, func(t *testing.T) {
+			var sawConditional atomic.Bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("If-None-Match") != "" {
+					sawConditional.Store(true)
+					w.WriteHeader(http.StatusNotModified)
+					return
+				}
+				w.Header().Set("ETag", `"etag-2"`)
+				_, _ = fmt.Fprintf(w, `{"tag_name":"v1.3.0","html_url":%q,"draft":false,"prerelease":false}`, good)
+			}))
+			t.Cleanup(srv.Close)
+			c, emitted := newTestChecker(t, "1.2.3", srv.URL)
+			if err := os.WriteFile(c.cachePath, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			info, err := c.check(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sawConditional.Load() {
+				t.Error("an incomplete cache must not produce an If-None-Match header")
+			}
+			if !info.Available || info.URL != good || len(*emitted) != 1 {
+				t.Fatalf("info=%+v emitted=%+v", info, *emitted)
+			}
+			b, _ := os.ReadFile(c.cachePath)
+			if !strings.Contains(string(b), `"etag":"\"etag-2\""`) {
+				t.Fatalf("cache not rewritten with the fresh ETag: %s", b)
+			}
+		})
+	}
+}
+
+func TestWriteCache_AtomicReplaceWith0600AndNoTempLeftovers(t *testing.T) {
+	c, _ := newTestChecker(t, "1.2.3", "")
+	want := updateCache{ETag: `"etag-9"`, TagName: "v1.9.0", HTMLURL: "https://github.com/x", CheckedAt: c.now()}
+	c.writeCache(updateCache{ETag: `"etag-1"`, TagName: "v1.3.0", HTMLURL: "https://github.com/x", CheckedAt: c.now()})
+	c.writeCache(want)
+	if got := c.readCache(); got != want {
+		t.Fatalf("readCache = %+v, want %+v", got, want)
+	}
+	fi, err := os.Stat(c.cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("cache mode = %o, want 600", perm)
+	}
+	entries, err := os.ReadDir(filepath.Dir(c.cachePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(c.cachePath) {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("cache dir holds %v, want only %s (no temp leftovers)", names, filepath.Base(c.cachePath))
+	}
+}
+
+// A write that cannot complete must leave the previous cache readable rather
+// than truncated: the new bytes go to a temp file that is renamed into place.
+func TestWriteCache_FailedWriteLeavesOldCacheIntact(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	c, _ := newTestChecker(t, "1.2.3", "")
+	old := updateCache{ETag: `"etag-1"`, TagName: "v1.3.0", HTMLURL: "https://github.com/x", CheckedAt: c.now()}
+	c.writeCache(old)
+	before, err := os.ReadFile(c.cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(c.cachePath)
+	// Read-only dir: the existing 0600 file stays writable in place, but no
+	// temp file can be created next to it, so an atomic writer must give up.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	c.writeCache(updateCache{ETag: `"etag-2"`, TagName: "v1.4.0", HTMLURL: "https://github.com/y", CheckedAt: c.now()})
+
+	after, err := os.ReadFile(c.cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("failed write changed the cache:\n before %s\n after  %s", before, after)
+	}
+	if got := c.readCache(); got != old {
+		t.Fatalf("readCache = %+v, want the old cache %+v", got, old)
 	}
 }

@@ -26,6 +26,7 @@ const getMeMock = vi.hoisted(() => vi.fn());
 const getSettingsMock = vi.hoisted(() => vi.fn());
 const updateSettingsMock = vi.hoisted(() => vi.fn());
 const toastMock = vi.hoisted(() => vi.fn());
+const deepLink = vi.hoisted(() => ({ handlers: [] as Array<(url: string) => void> }));
 
 const setSignatureMock = vi.fn();
 const setAutoBccMock = vi.fn();
@@ -118,7 +119,12 @@ const setGlobalShortcutsEnabledMock = vi.hoisted(() => vi.fn(() => Promise.resol
 vi.mock('@/lib/wails', () => ({
   desktop: { GetAppVersion: () => Promise.resolve('0.1.0'), OpenExternal: (...args: unknown[]) => openExternalMock(...args) },
   isDesktop: false,
-  onDeepLink: () => () => {},
+  onDeepLink: (handler: (url: string) => void) => {
+    deepLink.handlers.push(handler);
+    return () => {
+      deepLink.handlers = deepLink.handlers.filter((h) => h !== handler);
+    };
+  },
   globalShortcutsEnabled: () => true,
   setGlobalShortcutsEnabled: setGlobalShortcutsEnabledMock,
 }));
@@ -168,6 +174,30 @@ function renderSettings() {
     </QueryClientProvider>
   );
 }
+
+describe('SettingsView — mailbox-connect deep link', () => {
+  beforeEach(() => {
+    deepLink.handlers = [];
+    toastMock.mockReset();
+  });
+
+  it('handles calendium://accounts in any scheme case', async () => {
+    renderSettings();
+    await screen.findByText('Appearance');
+    for (const h of deepLink.handlers) h('CALENDIUM://accounts/connected?status=error');
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ title: 'Connection failed' }));
+  });
+
+  it.each(['https://evil.example/accounts?status=ok', 'calendiumx://accounts?status=ok', 'calendium://auth/callback'])(
+    'ignores %j',
+    async (url) => {
+      renderSettings();
+      await screen.findByText('Appearance');
+      for (const h of deepLink.handlers) h(url);
+      expect(toastMock).not.toHaveBeenCalled();
+    }
+  );
+});
 
 describe('SettingsView — named theme picker', () => {
   beforeEach(() => {

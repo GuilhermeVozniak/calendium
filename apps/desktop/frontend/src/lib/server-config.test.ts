@@ -23,6 +23,7 @@ import {
   DEMO_CONFIG,
   discoverServer,
   envUrl,
+  forgotPasswordUrl,
   getActiveServerConfig,
   isDemoMode,
   normalizeServerUrl,
@@ -297,5 +298,19 @@ describe('webOrigin prefers the advertised webUrl', () => {
   it('falls back to the authBaseUrl origin when webUrl is empty or invalid', () => {
     expect(webOrigin(base)).toBe('https://api.example.com');
     expect(webOrigin({ ...base, webUrl: 'not a url' })).toBe('https://api.example.com');
+  });
+
+  it.each(['javascript:alert(1)', 'mailto:ops@example.com', 'file:///etc/passwd', 'calendium://auth', 'ftp://example.com'])(
+    'ignores the non-http(s) webUrl %j instead of yielding "null"',
+    (webUrl) => {
+      const config = { ...base, webUrl };
+      expect(webOrigin(config)).toBe('https://api.example.com');
+      expect(billingWebOrigin(config)).toBe('https://api.example.com');
+      expect(forgotPasswordUrl(config)).toBe('https://api.example.com/forgot-password');
+    }
+  );
+
+  it('accepts a plain-http webUrl (self-host on a LAN)', () => {
+    expect(webOrigin({ ...base, webUrl: 'http://calendium.lan:3000/' })).toBe('http://calendium.lan:3000');
   });
 });

@@ -26,10 +26,10 @@ import (
 // do — so that half is intentionally left uncovered.
 //
 // What IS covered below is the runtime-independent half: the pendingURL
-// buffer/flag logic in handleURL and startup. There is no separate
-// URL-parsing step to unit test either — handleURL treats the deep link as
-// an opaque string throughout (buffered, then forwarded verbatim); the tests
-// below confirm it round-trips a realistic calendium:// URL unchanged.
+// buffer/flag logic in handleURL and startup. Beyond lower-casing the scheme
+// (normalizeDeepLink) handleURL treats the deep link as an opaque string
+// (buffered, then forwarded verbatim); the tests below confirm it round-trips
+// a realistic calendium:// URL unchanged.
 
 func TestHandleURL_BuffersBeforeStartup(t *testing.T) {
 	a := NewApp()
@@ -159,7 +159,9 @@ func TestDeepLinkFromArgs_PicksTheFirstCalendiumURLFromMixedArgv(t *testing.T) {
 	}{
 		{"url after flags", []string{"--no-sandbox", "calendium://auth/callback?ott=abc123"}, "calendium://auth/callback?ott=abc123"},
 		{"first of two", []string{"calendium://first", "calendium://second"}, "calendium://first"},
-		{"scheme is case-insensitive", []string{"CALENDIUM://accounts/connected?status=ok"}, "CALENDIUM://accounts/connected?status=ok"},
+		{"scheme is case-insensitive and normalized", []string{"CALENDIUM://accounts/connected?status=ok"}, "calendium://accounts/connected?status=ok"},
+		{"mixed-case scheme", []string{"Calendium://auth/callback?ott=AbC"}, "calendium://auth/callback?ott=AbC"},
+		{"other schemes rejected", []string{"calendiumx://auth", "https://calendium://x", "javascript:calendium://x"}, ""},
 		{"no link", []string{"https://example.com", "-x"}, ""},
 		{"embedded, not a bare arg", []string{"--url=calendium://x"}, ""},
 		{"nil", nil, ""},
@@ -199,5 +201,26 @@ func TestOnSecondInstance_ForwardsTheLinkAndIgnoresPlainRelaunches(t *testing.T)
 	defer b.mu.Unlock()
 	if b.pendingURL != "" {
 		t.Fatalf("a relaunch without a link must not buffer anything, got %q", b.pendingURL)
+	}
+}
+
+func TestHandleURL_NormalizesTheSchemeAndDropsOtherSchemes(t *testing.T) {
+	a := NewApp()
+	a.handleURL("CALENDIUM://auth/callback?ott=AbC")
+	a.mu.Lock()
+	got := a.pendingURL
+	a.mu.Unlock()
+	if got != "calendium://auth/callback?ott=AbC" {
+		t.Fatalf("pendingURL = %q, want the scheme lower-cased and the rest verbatim", got)
+	}
+
+	b := NewApp()
+	for _, other := range []string{"https://example.com", "javascript:alert(1)", "calendiumx://auth", ""} {
+		b.handleURL(other)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.pendingURL != "" {
+		t.Fatalf("a non-calendium URL must be dropped, got %q", b.pendingURL)
 	}
 }

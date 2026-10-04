@@ -2,6 +2,7 @@ import { Loader2 } from 'lucide-react';
 import { type FormEvent, useEffect, useState } from 'react';
 
 import { signInEmail, signUpEmail, verifyOtt } from '@/lib/auth';
+import { deepLinkTo } from '@/lib/links';
 import { forgotPasswordUrl, useServerConfig, webOrigin } from '@/lib/server-config';
 import { desktop, onDeepLink } from '@/lib/wails';
 import { Button } from '@/ui/button';
@@ -81,10 +82,11 @@ export function SignInView() {
   useEffect(
     () =>
       onDeepLink((url) => {
-        if (!url.startsWith('calendium://auth')) return;
+        const link = deepLinkTo(url, 'auth');
+        if (!link) return;
         let ott = '';
         try {
-          ott = new URL(url).searchParams.get('ott') ?? '';
+          ott = new URL(link).searchParams.get('ott') ?? '';
         } catch {
           // Ignore malformed deep links.
         }

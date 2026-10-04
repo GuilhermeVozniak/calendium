@@ -110,6 +110,26 @@ describe('App update banner and update-check gate', () => {
     expect(SetUpdateChecksEnabled).not.toHaveBeenCalledWith(true);
     expect(screen.queryByTestId('update-banner')).not.toBeInTheDocument();
   });
+
+  it('handles a failing SetUpdateChecksEnabled binding (no unhandled rejection)', async () => {
+    // The spy itself subscribes to the promise it returns (mock.settledResults),
+    // so an unhandled rejection cannot surface here; record the app's own
+    // rejection handler instead.
+    let handled = false;
+    const failing = Promise.reject(new Error('binding gone'));
+    failing.catch = ((onRejected) => {
+      handled = true;
+      return Promise.prototype.catch.call(failing, onRejected);
+    }) as typeof failing.catch;
+    serverState.billing = false;
+    SetUpdateChecksEnabled.mockReturnValueOnce(failing);
+    renderApp();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(SetUpdateChecksEnabled).toHaveBeenCalledWith(true);
+    expect(handled).toBe(true);
+  });
 });
 
 describe('App billing gate', () => {

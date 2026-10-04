@@ -1,6 +1,7 @@
 import { Download, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
+import { isSafeDownloadUrl } from '@/lib/links';
 import { desktop, onUpdateAvailable, type UpdateInfo } from '@/lib/wails';
 import { Button } from '@/ui/button';
 
@@ -35,9 +36,14 @@ export function UpdateBanner() {
 
   useEffect(() => {
     let active = true;
-    void desktop.GetUpdateStatus().then((status) => {
-      if (active && status.available) setInfo(status);
-    });
+    desktop
+      .GetUpdateStatus()
+      .then((status) => {
+        if (active && status.available) setInfo(status);
+      })
+      .catch(() => {
+        // No status: the banner stays hidden until an update-available event.
+      });
     const off = onUpdateAvailable((next) => {
       if (active) setInfo(next);
     });
@@ -47,7 +53,9 @@ export function UpdateBanner() {
     };
   }, []);
 
-  if (!info?.available || info.latest === dismissed) return null;
+  // The host only sends https URLs; re-check here since this one reaches
+  // OpenExternal.
+  if (!info?.available || info.latest === dismissed || !isSafeDownloadUrl(info.url)) return null;
 
   return (
     <div
