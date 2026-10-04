@@ -196,3 +196,22 @@ func verifyES256JWT(t *testing.T, token string, pub *ecdsa.PublicKey, wantKid, w
 		t.Fatal("ES256 provider-token signature invalid")
 	}
 }
+
+// The default topic must equal the shipped iOS bundle id (apps/mobile/app.json
+// ios.bundleIdentifier); APNs rejects pushes whose topic does not match.
+func TestDefaultAPNsTopic_IsTheMobileBundleID(t *testing.T) {
+	if defaultAPNsTopic != "app.calendium.mobile" {
+		t.Fatalf("defaultAPNsTopic = %q, want app.calendium.mobile", defaultAPNsTopic)
+	}
+	t.Setenv("APNS_TOPIC", "")
+	if s := newAPNsSender(config.APNs{}, nil); s.topic != "app.calendium.mobile" {
+		t.Fatalf("topic = %q, want the default", s.topic)
+	}
+}
+
+func TestAPNsTopic_EnvOverrideWins(t *testing.T) {
+	t.Setenv("APNS_TOPIC", "com.example.custom")
+	if s := newAPNsSender(config.APNs{}, nil); s.topic != "com.example.custom" {
+		t.Fatalf("topic = %q, want com.example.custom", s.topic)
+	}
+}

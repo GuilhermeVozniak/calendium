@@ -24,9 +24,19 @@ const DEFAULT_FEATURES: InstanceFeatures = {
   email: false,
 };
 
-/** Calendium Cloud — our managed, paid server (docs/payments.md). */
+/** Resolves a build-time VITE_* host override: blank/unset falls back, else normalized. */
+export function envUrl(value: string | undefined, fallback: string): string {
+  const normalized = normalizeServerUrl(value ?? '');
+  return normalized || fallback;
+}
+
+/**
+ * Calendium Cloud — our managed, paid server (docs/payments.md). Bootstrap URL
+ * only: after discovery the client follows `authBaseUrl` / `webUrl` from
+ * /v1/instance. White-label hosts override it at build time.
+ */
 export const CLOUD_PRESET = {
-  serverUrl: 'https://api.calendium.app',
+  serverUrl: envUrl(import.meta.env.VITE_CLOUD_API_URL as string | undefined, 'https://api.calendium.app'),
 } as const;
 
 export interface ServerConfig {
@@ -63,9 +73,20 @@ export const DEMO_CONFIG: ServerConfig = {
   webUrl: '',
 };
 
-/** Web origin (scheme://host) of a server's Better Auth base URL, or null. */
+/**
+ * Web origin (scheme://host) for billing / browser sign-in: the server's
+ * advertised `webUrl` when present, else the Better Auth base URL's origin.
+ */
 export function webOrigin(config: ServerConfig | null): string | null {
-  if (!config?.authBaseUrl) return null;
+  if (!config) return null;
+  if (config.webUrl) {
+    try {
+      return new URL(config.webUrl).origin;
+    } catch {
+      // Fall through to the authBaseUrl origin.
+    }
+  }
+  if (!config.authBaseUrl) return null;
   try {
     return new URL(config.authBaseUrl).origin;
   } catch {

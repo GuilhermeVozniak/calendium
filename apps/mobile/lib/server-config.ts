@@ -17,9 +17,23 @@ import * as React from 'react';
 
 const STORAGE_KEY = 'calendium.serverConfig';
 
-/** Calendium Cloud — our managed, paid server (docs/payments.md). */
+/**
+ * Resolves a build-time EXPO_PUBLIC_* host override: blank/unset falls back,
+ * anything else is normalized like a user-entered URL (scheme added,
+ * trailing slash dropped).
+ */
+export function envUrl(value: string | undefined, fallback: string): string {
+  const normalized = normalizeServerUrl(value ?? '');
+  return normalized || fallback;
+}
+
+/**
+ * Calendium Cloud — our managed, paid server (docs/payments.md). This is only
+ * the bootstrap URL: after discovery the client follows `authBaseUrl` and
+ * `webUrl` from /v1/instance. White-label hosts override it at build time.
+ */
 export const CLOUD_PRESET = {
-  serverUrl: 'https://api.calendium.app',
+  serverUrl: envUrl(process.env.EXPO_PUBLIC_CLOUD_API_URL, 'https://api.calendium.app'),
 } as const;
 
 export interface ServerConfig {
@@ -51,14 +65,17 @@ export interface ServerConfig {
   demoMode?: boolean;
 }
 
+/** Demo label only — demo never dials out (lib/mock); configurable for white-label hosts. */
+const DEMO_SERVER_URL = envUrl(process.env.EXPO_PUBLIC_DEMO_SERVER_URL, 'https://demo.calendium.app');
+
 /**
  * Ready-made config for the offline "Try the demo" experience. It points at no
  * real server — every screen reads the mock data in lib/mock and auth is
  * short-circuited to a demo user. This is the ONLY place mock data is enabled.
  */
 export const DEMO_CONFIG: ServerConfig = {
-  serverUrl: 'https://demo.calendium.app',
-  authBaseUrl: 'https://demo.calendium.app/api/auth',
+  serverUrl: DEMO_SERVER_URL,
+  authBaseUrl: `${DEMO_SERVER_URL}/api/auth`,
   mode: 'cloud',
   name: 'Calendium Demo',
   authProviders: ['email', 'google', 'apple'],
