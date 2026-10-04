@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"log"
+	"strings"
 	"sync"
 
+	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -80,6 +82,46 @@ func (a *App) handleURL(url string) {
 	}
 	a.mu.Unlock()
 	runtime.EventsEmit(ctx, deepLinkEvent, url)
+}
+
+// deepLinkScheme prefixes every URL the OS hands us for the calendium scheme.
+const deepLinkScheme = "calendium://"
+
+// deepLinkFromArgs returns the first bare calendium:// argument. Windows (NSIS
+// registers "Calendium.exe" "%1") and Linux (.desktop Exec=Calendium %u) pass
+// the opened URL as argv; macOS delivers it via OnUrlOpen and never does.
+func deepLinkFromArgs(args []string) string {
+	for _, arg := range args {
+		if strings.HasPrefix(strings.ToLower(arg), deepLinkScheme) {
+			return arg
+		}
+	}
+	return ""
+}
+
+// consumeArgs handles a cold launch via URL: main() calls it before wails.Run,
+// so the link lands in pendingURL and startup flushes it once the WebView is up.
+func (a *App) consumeArgs(args []string) {
+	if u := deepLinkFromArgs(args); u != "" {
+		a.handleURL(u)
+	}
+}
+
+// onSecondInstance is the SingleInstanceLock callback: the OS started a second
+// Calendium process (typically to open a calendium:// URL). Forward the link
+// to this running instance and bring its window forward; a plain relaunch
+// with no link just surfaces the window.
+func (a *App) onSecondInstance(data options.SecondInstanceData) {
+	if u := deepLinkFromArgs(data.Args); u != "" {
+		a.handleURL(u)
+	}
+	a.mu.Lock()
+	ctx := a.ctx
+	a.mu.Unlock()
+	if ctx != nil {
+		runtime.WindowUnminimise(ctx)
+		runtime.WindowShow(ctx)
+	}
 }
 
 // OpenExternal opens the given URL in the system default browser.

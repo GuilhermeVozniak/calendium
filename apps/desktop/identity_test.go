@@ -66,3 +66,33 @@ func TestWailsJSON_CarriesCompanyCopyrightAndNumericVersion(t *testing.T) {
 		t.Errorf("protocols = %+v, want exactly the calendium scheme", cfg.Info.Protocols)
 	}
 }
+
+func TestLinuxDesktopEntry_RegistersTheSchemeAndMatchesTheBinary(t *testing.T) {
+	b, err := os.ReadFile("build/linux/calendium.desktop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	for _, line := range []string{
+		"[Desktop Entry]",
+		"Type=Application",
+		"Name=Calendium",
+		"Exec=Calendium %u",
+		"Icon=calendium",
+		"MimeType=x-scheme-handler/calendium;",
+		"StartupWMClass=Calendium",
+	} {
+		if !strings.Contains(s, line+"\n") {
+			t.Errorf("calendium.desktop missing line %q", line)
+		}
+	}
+	readme, err := os.ReadFile("build/linux/README.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"install -Dm755 Calendium", "install -Dm644 calendium.desktop", "xdg-mime default calendium.desktop x-scheme-handler/calendium"} {
+		if !strings.Contains(string(readme), want) {
+			t.Errorf("README.txt missing %q", want)
+		}
+	}
+}
