@@ -54,6 +54,13 @@ func (c *fieldCheck) text(field, v string) {
 	}
 }
 
+// textUpTo is text with a route-specific byte limit.
+func (c *fieldCheck) textUpTo(field, v string, limit int) {
+	if len(v) > limit {
+		c.fail(field, limit)
+	}
+}
+
 func (c *fieldCheck) email(field, v string) {
 	if utf8.RuneCountInString(v) > maxEmailRunes {
 		c.fail(field, maxEmailRunes)

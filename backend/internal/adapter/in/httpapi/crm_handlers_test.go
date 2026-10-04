@@ -131,6 +131,39 @@ func TestCrmLogForwardsPayload(t *testing.T) {
 	}
 }
 
+// TestCrmLogBodyLimit: logging a long email (quoted history, newsletters)
+// sends the full synced bodyText, so the route takes a body up to the 1 MiB
+// cap rather than the 64 KiB long-text field limit (whole-branch final
+// review M5). Over the cap is still 413.
+func TestCrmLogBodyLimit(t *testing.T) {
+	logOfSize := func(n int) string {
+		const frame = `{"contactEmail":"ada@northwind.com","subject":"Renewal","bodyText":""}`
+		return `{"contactEmail":"ada@northwind.com","subject":"Renewal","bodyText":"` +
+			strings.Repeat("x", n-len(frame)) + `"}`
+	}
+	t.Run("1 MiB - 1 accepted", func(t *testing.T) {
+		crm := &fakeCrmService{}
+		h := newHarness(t)
+		h.deps.Crm = crm
+		body := logOfSize((1 << 20) - 1)
+		rec := h.authed(http.MethodPost, "/v1/crm/log", strings.NewReader(body))
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204 (body=%.300s)", rec.Code, rec.Body.String())
+		}
+		if got, want := len(crm.gotLog.BodyText), len(body)-len(`{"contactEmail":"ada@northwind.com","subject":"Renewal","bodyText":""}`); got != want {
+			t.Fatalf("bodyText len = %d, want %d", got, want)
+		}
+	})
+	t.Run("1 MiB + 1 is 413", func(t *testing.T) {
+		h := newHarness(t)
+		h.deps.Crm = &fakeCrmService{}
+		rec := h.authed(http.MethodPost, "/v1/crm/log", strings.NewReader(logOfSize((1<<20)+1)))
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413", rec.Code)
+		}
+	})
+}
+
 // TestCrmRoutesUnauthenticated401 pins that both CRM routes sit behind
 // requireAuth: no bearer token means 401 before the service is ever reached.
 func TestCrmRoutesUnauthenticated401(t *testing.T) {
