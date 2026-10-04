@@ -98,6 +98,12 @@ internet**:
   LAN box without any proxy set `API_BIND=0.0.0.0` / `WEB_BIND=0.0.0.0` in
   `.env` **and** `TRUST_PROXY=false`, otherwise any LAN client could spoof
   `X-Forwarded-For` and share (or dodge) another client's rate-limit bucket.
+  The default `TRUSTED_PROXY_CIDRS` includes `172.16.0.0/12`, Docker's own
+  bridge gateway: docker-proxy, rootless Docker and Docker Desktop can
+  source-NAT direct clients to it, so with `TRUST_PROXY=true` every LAN client
+  would count as a trusted proxy and could forge `X-Forwarded-For` (and, on the
+  API, `X-Forwarded-Host` / `X-Request-Id`). If a proxy must stay trusted
+  while the ports are open, narrow `TRUSTED_PROXY_CIDRS` to its own address.
 - **`TRUST_PROXY=true` is set on `api` and `web` by the compose file**
   (`${TRUST_PROXY:-true}`). Both then take the client IP — and the API also the
   scheme and host — from `X-Forwarded-*`, but only when the socket peer is
@@ -166,10 +172,16 @@ web origin(s) — nothing broader. Built-in defaults already cover localhost and
 
 ## 7. Keep base images current
 
-Every base image is **pinned by digest** (`image:tag@sha256:…`, with the tag and
-resolution date in a comment above each `FROM`), and
+The app images (`calendium-backend` for `api`/`worker`, `calendium-web` for
+`web`) build from base images **pinned by digest** (`image:tag@sha256:…`, with
+the tag and resolution date in a comment above each `FROM`).
+`postgres` and `caddy`, which Compose pulls as-is, are **pinned by tag only**
+(`postgres:16-alpine`, `caddy:2-alpine`), so `docker compose pull` picks up
+rebuilds of those tags.
 [`.github/dependabot.yml`](../../.github/dependabot.yml) opens a weekly PR when a
-pinned digest has a newer build. CI builds both images on every push
+pinned digest has a newer build or a compose image has a newer tag (Postgres
+major versions are skipped: they need a manual `pg_upgrade`, see
+[Upgrades](./upgrades.md)). CI builds both app images on every push
 (`docker-build` job) so a rotten pin fails before it reaches you.
 
 | Image | Used by |
@@ -252,17 +264,18 @@ on a host), start it the same way, `node -r ./scripts/forwarded-for-peer.cjs`,
 or a client could forge the right-most entry; production logs a warning when
 the preload is missing.
 
-The API reads `X-Forwarded-For` straight from the request: it is used only
-when the socket peer itself is inside `TRUSTED_PROXY_CIDRS`; otherwise the
-socket peer is the client.
+The API reads `X-Forwarded-For` straight from the request (Go sees the socket
+peer directly, so it needs no preload). Both tiers then apply the same rule:
+`X-Forwarded-For` is used only when the socket peer itself is inside
+`TRUSTED_PROXY_CIDRS`; otherwise the socket peer is the client.
 
 - `TRUST_PROXY=true` (the default under Docker Compose): entries inside
   `TRUSTED_PROXY_CIDRS` are skipped from the right, and the first entry outside
   them is the client. Entries that are not a bare IP address (`garbage`,
   `203.0.113.5:4321`, `[2001:db8::1]`) are skipped. When every entry is inside
-  them (a LAN or VPN client behind the proxy), the web app takes the left-most
-  entry (a forged left entry cannot win, because every hop to its right is a
-  trusted proxy) and the API takes the socket peer. Behind the
+  them (a LAN or VPN client behind the proxy), both tiers take the left-most
+  valid entry (a forged left entry cannot win, because every hop to its right
+  is a trusted proxy); the peer only when it is the sole valid entry. Behind the
   bundled Caddy each client therefore gets its own bucket. The default
   `TRUSTED_PROXY_CIDRS` is `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7`
   (loopback and private ranges). It covers the bundled Caddy on the Compose
@@ -273,7 +286,9 @@ socket peer is the client.
   every proxy hop is inside `TRUSTED_PROXY_CIDRS`. Add a CDN's public ranges
   if one sits in front. If untrusted clients can reach `web:3000` or
   `api:8080` from a private range, narrow the list to your proxy's own
-  address. An invalid entry stops the service at boot.
+  address (a bare IP such as `192.168.1.2` means that one host). Entries are
+  trimmed and empty ones ignored; an invalid entry stops the service at boot,
+  even with `TRUST_PROXY=false`.
 - `TRUST_PROXY=false` (the default when `web` or `api` runs outside Compose):
   no proxy is trusted, so only the immediate peer is used. A client-supplied
   `X-Forwarded-For` is never trusted, and the API ignores

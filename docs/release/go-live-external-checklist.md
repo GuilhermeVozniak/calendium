@@ -73,6 +73,11 @@ Services ID `com.calendium.app.service`, Key ID `8MX6Q9WW35`, the `.p8`
       no-access.
 - [ ] Sandbox verification before go-live: the plan's last task, needs the
       sandbox values in the local `.env`.
+- [ ] Flip `CSP_REPORT_ONLY=false` (enforce the web CSP) after a clean
+      sandbox checkout: no `csp_violation` lines in the `web` log.
+- [ ] Watch the `web` logs for `csp_violation` on the first live checkout:
+      Paddle loads ProfitWell (`public.profitwell.com`) only in live mode, so
+      sandbox cannot exercise it.
 
 ## 4. Microsoft (Outlook / Microsoft 365)
 

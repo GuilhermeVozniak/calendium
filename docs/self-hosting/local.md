@@ -25,19 +25,24 @@ email + password works out of the box. See
 
 ## 1. LAN only, no public domain
 
-The published host ports let you reach Calendium directly over your LAN, no proxy
-or certificate required. Start the stack **without** the Caddy profile:
+Publish the host ports on the LAN to reach Calendium directly, no proxy or
+certificate required. Start the stack **without** the Caddy profile:
 
 ```bash
 make self-host-up PROFILE=            # PROFILE= disables the caddy proxy
 # equivalently: docker compose up -d --build
 ```
 
-This publishes `web` on port `3000` and `api` on port `8080` on the host. Say the
-machine's LAN IP is `192.168.1.50` — set these in `.env` **before** starting (the
-`NEXT_PUBLIC_*` values are baked into the web bundle at build time):
+This publishes `web` on port `3000` and `api` on port `8080` on the host —
+on loopback only unless you open them. Say the machine's LAN IP is
+`192.168.1.50` — set these in `.env` **before** starting (the `NEXT_PUBLIC_*`
+values are baked into the web bundle at build time):
 
 ```dotenv
+# Listen on the LAN, and trust no proxy (there is none).
+API_BIND=0.0.0.0
+WEB_BIND=0.0.0.0
+TRUST_PROXY=false
 NEXT_PUBLIC_API_URL=http://192.168.1.50:8080
 APP_URL=http://192.168.1.50:3000
 PUBLIC_WEB_URL=http://192.168.1.50:3000
@@ -47,6 +52,11 @@ OAUTH_ALLOWED_REDIRECT_URIS=http://192.168.1.50:3000
 Then open `http://192.168.1.50:3000`. Verify the API with
 `curl http://192.168.1.50:8080/healthz`. (Change `WEB_PORT`/`API_PORT` in `.env` if
 `3000`/`8080` clash with something else.)
+
+Keep `TRUST_PROXY=false` here: the default `TRUSTED_PROXY_CIDRS` includes
+Docker's `172.16.0.0/12` bridge gateway, which Docker can NAT direct LAN
+clients to, so with `true` any client could forge `X-Forwarded-For` and pick
+its own rate-limit bucket.
 
 **Want HTTPS on the LAN?** Keep the Caddy profile and let Caddy mint a
 locally-trusted certificate. Either set `DOMAIN=localhost` (works on the box
@@ -73,13 +83,13 @@ client machines to avoid browser warnings.
 ## 2. Behind an existing reverse proxy
 
 If you already run **nginx**, **Traefik**, **Nginx Proxy Manager**, or **pfSense**,
-don't run Calendium's Caddy. Bind the app ports to **loopback** so only your proxy
-(on the same host) can reach them, then point the proxy at them. In `.env`:
-
-```dotenv
-API_PORT=127.0.0.1:8080
-WEB_PORT=127.0.0.1:3000
-```
+don't run Calendium's Caddy. The compose file already publishes the app ports on
+**loopback** (`API_BIND` / `WEB_BIND` default to `127.0.0.1`), so only a proxy on
+the same host can reach them — point the proxy at them; no `.env` change needed.
+If the proxy runs on another machine (pfSense, a separate Nginx Proxy Manager
+box), set `API_BIND` / `WEB_BIND` to an address it can reach and narrow
+`TRUSTED_PROXY_CIDRS` to the proxy's IP (e.g. `TRUSTED_PROXY_CIDRS=192.168.1.2`),
+since the default also trusts Docker's `172.16.0.0/12` gateway.
 
 ```bash
 make self-host-up PROFILE=            # start without Caddy
@@ -154,8 +164,8 @@ Set `NEXT_PUBLIC_API_URL=https://calendium.example.com` and
 
 ### Tailscale
 
-Best for private (tailnet-only) access. Bind the app ports to loopback as in §2
-(`API_PORT=127.0.0.1:8080`, `WEB_PORT=127.0.0.1:3000`), then expose them from the
+Best for private (tailnet-only) access. Keep the app ports on loopback as in §2
+(the default `API_BIND` / `WEB_BIND=127.0.0.1`), then expose them from the
 host's Tailscale node with path routing:
 
 ```bash

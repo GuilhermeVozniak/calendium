@@ -70,7 +70,7 @@ DATABASE_URL=postgres://calendium:<pw>@<endpoint>:5432/calendium?sslmode=verify-
 (Mount it via a small override — see the `volumes:` in the external-DB override
 below.) Keep the other required vars (`SELF_HOSTED=true`, `TOKEN_ENCRYPTION_KEY`,
 `DOMAIN`, `ACME_EMAIL`, Better Auth (`BETTER_AUTH_SECRET`/`BETTER_AUTH_URL`),
-provider OAuth, and the loopback `API_PORT`/`WEB_PORT`) exactly as in the
+provider OAuth, and the loopback `API_BIND`/`WEB_BIND` defaults) exactly as in the
 [VPS guide](./vps.md#step-6--clone-and-configure).
 
 ### A6. Skip the bundled Postgres
