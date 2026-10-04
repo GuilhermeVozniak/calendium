@@ -256,7 +256,7 @@ export default function SignInPage() {
         </div>
 
         <p className="text-muted-foreground mt-8 text-center text-xs text-balance">
-          14-day free trial, then $50/year. By continuing you agree to the{' '}
+          {instance?.features.billing ? '14-day free trial, then $50/year. ' : ''}By continuing you agree to the{' '}
           <Link href="/terms" className="hover:text-foreground underline underline-offset-2">
             Terms
           </Link>{' '}
