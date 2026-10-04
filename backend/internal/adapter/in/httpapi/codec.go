@@ -20,8 +20,12 @@ type errorBody struct {
 type errorDetail struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// RequestID is the X-Request-Id of the failed request so users can quote
+	// it to support; absent when the middleware is not in the chain.
+	RequestID string `json:"requestId,omitempty"`
 	// Details carries structured, client-safe context for specific codes
-	// (402 payment_required); omitted otherwise.
+	// (402 payment_required; field limits fill {"field","limit"}); omitted
+	// otherwise.
 	Details any `json:"details,omitempty"`
 }
 
@@ -150,14 +154,17 @@ func safeMessage(code string) string {
 // clients. A *domain.PaymentRequiredError adds the typed 402 details.
 func (s *server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	status, code := statusFor(err)
+	reqID := requestIDFrom(r.Context())
 	if status >= http.StatusInternalServerError {
 		s.deps.Logger.Error("request failed",
-			"method", r.Method, "path", r.URL.Path, "status", status, "error", err)
+			"method", r.Method, "route", routeOf(r), "request_id", reqID,
+			"status", status, "error", err)
 	} else {
 		s.deps.Logger.Info("request rejected",
-			"method", r.Method, "path", r.URL.Path, "status", status, "code", code, "error", err)
+			"method", r.Method, "route", routeOf(r), "request_id", reqID,
+			"status", status, "code", code, "error", err)
 	}
-	detail := errorDetail{Code: code, Message: safeMessage(code)}
+	detail := errorDetail{Code: code, Message: safeMessage(code), RequestID: reqID}
 	var pr *domain.PaymentRequiredError
 	if errors.As(err, &pr) {
 		detail.Details = paymentRequiredDetails{Reason: string(pr.Reason), TrialEndsAt: pr.TrialEndsAt, CurrentPeriodEnd: pr.CurrentPeriodEnd}

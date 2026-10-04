@@ -361,6 +361,7 @@ func New(deps Deps) http.Handler {
 	var h http.Handler = mux
 	h = corsMiddleware(h, deps.CORSAllowedOrigins, deps.AllowDevOrigins)
 	h = s.logRequests(h)
+	h = s.requestID(h)
 	h = s.recoverPanics(h)
 	return h
 }
