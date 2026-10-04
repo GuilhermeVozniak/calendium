@@ -54,9 +54,12 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := config.FromEnv()
+	cfg, warnings, err := config.FromEnv()
 	if err != nil {
 		return err
+	}
+	for _, w := range warnings {
+		logger.Warn("api: config", "warning", w)
 	}
 
 	// Fail fast on a guaranteed-broken auth configuration instead of booting

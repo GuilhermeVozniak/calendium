@@ -30,6 +30,12 @@ var configEnvKeys = []string{
 	"SELF_HOSTED", "OAUTH_ALLOWED_REDIRECT_URIS", "CORS_ALLOWED_ORIGINS",
 	"OPEN_METEO_URL",
 	"SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "SMTP_FROM", "SMTP_SECURE", "ALLOW_DEV_ORIGINS",
+	"TRUST_PROXY", "TRUSTED_PROXY_CIDRS",
+	"RATE_LIMIT_PUBLIC_READ_PER_MIN", "RATE_LIMIT_PUBLIC_WRITE_PER_MIN", "RATE_LIMIT_USER_PER_MIN",
+	"RATE_LIMIT_MUTATE_HEAVY_PER_MIN", "RATE_LIMIT_SEARCH_PER_MIN",
+	"SHUTDOWN_TIMEOUT", "SHUTDOWN_DRAIN_DELAY", "LOG_FORMAT", "LOG_LEVEL",
+	"TODOIST_CLIENT_ID", "TODOIST_CLIENT_SECRET", "HUBSPOT_CLIENT_ID", "HUBSPOT_CLIENT_SECRET",
+	"MAPS_NOMINATIM_URL", "MAPS_OSRM_URL",
 }
 
 // clearEnv blanks every config env var for the duration of the test; t.Setenv
@@ -42,11 +48,14 @@ func clearEnv(t *testing.T) {
 }
 
 // withBase returns a copy of the two required-valid vars merged with extra, so
-// a success-path case can override a single knob and still boot.
+// a success-path case can override a single knob and still boot. It runs in
+// self-host mode: cloud mode additionally requires PUBLIC_WEB_URL, so a case
+// that sets SELF_HOSTED=false must also set PUBLIC_WEB_URL.
 func withBase(extra map[string]string) map[string]string {
 	m := map[string]string{
 		"DATABASE_URL":         "postgres://localhost:5432/calendium",
 		"TOKEN_ENCRYPTION_KEY": validKeyHex,
+		"SELF_HOSTED":          "true",
 	}
 	for k, v := range extra {
 		m[k] = v
@@ -177,7 +186,7 @@ func TestFromEnv(t *testing.T) {
 		// ---- SELF_HOSTED ----
 		{
 			name:  "SELF_HOSTED default false",
-			env:   withBase(nil),
+			env:   withBase(map[string]string{"SELF_HOSTED": "", "PUBLIC_WEB_URL": "https://app.example.com"}),
 			check: func(t *testing.T, c Config) { assertBool(t, "SelfHosted", c.Instance.SelfHosted, false) },
 		},
 		{
@@ -187,7 +196,7 @@ func TestFromEnv(t *testing.T) {
 		},
 		{
 			name:  "SELF_HOSTED false",
-			env:   withBase(map[string]string{"SELF_HOSTED": "false"}),
+			env:   withBase(map[string]string{"SELF_HOSTED": "false", "PUBLIC_WEB_URL": "https://app.example.com"}),
 			check: func(t *testing.T, c Config) { assertBool(t, "SelfHosted", c.Instance.SelfHosted, false) },
 		},
 		{
@@ -355,7 +364,7 @@ func TestFromEnv(t *testing.T) {
 			for k, v := range tt.env {
 				t.Setenv(k, v)
 			}
-			c, err := FromEnv()
+			c, _, err := FromEnv()
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("FromEnv() error = nil, want non-nil")
@@ -383,7 +392,7 @@ func TestFromEnvJoinsMultipleErrors(t *testing.T) {
 	t.Setenv("TOKEN_ENCRYPTION_KEY", "nothex")
 	t.Setenv("UNDO_SEND_SECONDS", "abc")
 
-	c, err := FromEnv()
+	c, _, err := FromEnv()
 	if err == nil {
 		t.Fatalf("FromEnv() error = nil, want non-nil (joined)")
 	}
@@ -409,7 +418,7 @@ func TestWeatherFromEnv(t *testing.T) {
 		// clearEnv blanked OPEN_METEO_URL (registering the restore); genuinely
 		// unset it so the LookupEnv "unset means default" path is exercised.
 		_ = os.Unsetenv("OPEN_METEO_URL")
-		c, err := FromEnv()
+		c, _, err := FromEnv()
 		if err != nil {
 			t.Fatalf("FromEnv() unexpected error: %v", err)
 		}
@@ -419,7 +428,7 @@ func TestWeatherFromEnv(t *testing.T) {
 	t.Run("OPEN_METEO_URL overrides the origin and trims", func(t *testing.T) {
 		setBase(t)
 		t.Setenv("OPEN_METEO_URL", " https://meteo.internal/ ")
-		c, err := FromEnv()
+		c, _, err := FromEnv()
 		if err != nil {
 			t.Fatalf("FromEnv() unexpected error: %v", err)
 		}
@@ -429,7 +438,7 @@ func TestWeatherFromEnv(t *testing.T) {
 	t.Run("explicitly empty disables weather", func(t *testing.T) {
 		setBase(t)
 		t.Setenv("OPEN_METEO_URL", "")
-		c, err := FromEnv()
+		c, _, err := FromEnv()
 		if err != nil {
 			t.Fatalf("FromEnv() unexpected error: %v", err)
 		}
@@ -447,8 +456,9 @@ func TestFromEnvIntegrationVendors(t *testing.T) {
 	t.Setenv("TODOIST_CLIENT_SECRET", "td-secret")
 	t.Setenv("HUBSPOT_CLIENT_ID", "hs-id")
 	t.Setenv("HUBSPOT_CLIENT_SECRET", "hs-secret")
+	t.Setenv("SELF_HOSTED", "true")
 
-	c, err := FromEnv()
+	c, _, err := FromEnv()
 	if err != nil {
 		t.Fatalf("FromEnv() error = %v", err)
 	}
@@ -462,8 +472,9 @@ func TestFromEnvIntegrationVendorsDefaultEmpty(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("DATABASE_URL", "postgres://localhost/db")
 	t.Setenv("TOKEN_ENCRYPTION_KEY", validKeyHex)
+	t.Setenv("SELF_HOSTED", "true")
 
-	c, err := FromEnv()
+	c, _, err := FromEnv()
 	if err != nil {
 		t.Fatalf("FromEnv() error = %v", err)
 	}
@@ -546,7 +557,7 @@ func TestPaddleFromEnv(t *testing.T) {
 			for k, v := range tt.env {
 				t.Setenv(k, v)
 			}
-			c, err := FromEnv()
+			c, _, err := FromEnv()
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("FromEnv() error = nil, want non-nil")
@@ -667,7 +678,7 @@ func TestSMTPFromEnv(t *testing.T) {
 			for k, v := range tt.env {
 				t.Setenv(k, v)
 			}
-			c, err := FromEnv()
+			c, _, err := FromEnv()
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("FromEnv() error = %v, want containing %q", err, tt.wantErr)
@@ -742,10 +753,11 @@ func TestBooleanEnvParsing(t *testing.T) {
 			for _, v := range values {
 				t.Run(fmt.Sprintf("%s=%q is %v", name, v, want), func(t *testing.T) {
 					clearEnv(t)
-					for k, val := range withBase(map[string]string{name: v}) {
+					// PUBLIC_WEB_URL keeps a falsy SELF_HOSTED (cloud mode) bootable.
+					for k, val := range withBase(map[string]string{name: v, "PUBLIC_WEB_URL": "https://app.example.com"}) {
 						t.Setenv(k, val)
 					}
-					c, err := FromEnv()
+					c, _, err := FromEnv()
 					if err != nil {
 						t.Fatalf("FromEnv() unexpected error: %v", err)
 					}
@@ -759,7 +771,7 @@ func TestBooleanEnvParsing(t *testing.T) {
 				for k, val := range withBase(map[string]string{name: v}) {
 					t.Setenv(k, val)
 				}
-				_, err := FromEnv()
+				_, _, err := FromEnv()
 				want := fmt.Sprintf("%s must be true or false (also 1/0, yes/no), got %q", name, v)
 				if err == nil || !strings.Contains(err.Error(), want) {
 					t.Fatalf("FromEnv() error = %v, want containing %q", err, want)

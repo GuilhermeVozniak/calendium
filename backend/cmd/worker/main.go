@@ -74,9 +74,12 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := config.FromEnv()
+	cfg, warnings, err := config.FromEnv()
 	if err != nil {
 		return err
+	}
+	for _, w := range warnings {
+		logger.Warn("worker: config", "warning", w)
 	}
 	if err := cfg.ValidateCloudBilling(); err != nil {
 		return err
