@@ -47,8 +47,9 @@ var DefaultTrustedProxyCIDRs = []string{
 }
 
 // RateLimits are the per-class request budgets per minute (RATE_LIMIT_*);
-// 0 disables a class. Mirrors httpapi.RateLimits (the composition root
-// copies field by field so httpapi never imports config).
+// unset means the default, 0 disables a class, and all five 0 disables API
+// rate limiting. Mirrors httpapi.RateLimits (the composition root copies
+// field by field so httpapi never imports config).
 type RateLimits struct {
 	PublicReadPerMin  int // RATE_LIMIT_PUBLIC_READ_PER_MIN (default 60)
 	PublicWritePerMin int // RATE_LIMIT_PUBLIC_WRITE_PER_MIN (default 5)
@@ -56,6 +57,14 @@ type RateLimits struct {
 	MutateHeavyPerMin int // RATE_LIMIT_MUTATE_HEAVY_PER_MIN (default 30)
 	SearchPerMin      int // RATE_LIMIT_SEARCH_PER_MIN (default 120)
 }
+
+// DefaultRateLimits are the RATE_LIMIT_* defaults (the spec table).
+func DefaultRateLimits() RateLimits {
+	return RateLimits{PublicReadPerMin: 60, PublicWritePerMin: 5, UserPerMin: 600, MutateHeavyPerMin: 30, SearchPerMin: 120}
+}
+
+// Disabled reports whether every class is 0, i.e. API rate limiting is off.
+func (r RateLimits) Disabled() bool { return r == RateLimits{} }
 
 // Shutdown tunes graceful shutdown for api and worker.
 type Shutdown struct {
@@ -417,14 +426,12 @@ func FromEnv(opts ...Option) (Config, []string, error) {
 
 	if cfg.DB.URL == "" {
 		errs = append(errs, errors.New("DATABASE_URL is required"))
-	} else if u, err := url.Parse(cfg.DB.URL); err == nil && u.User != nil {
-		if pw, _ := u.User.Password(); pw == "change-me-please" || pw == "calendium" {
-			const msg = "DATABASE_URL uses a default password; set POSTGRES_PASSWORD"
-			if cfg.Instance.SelfHosted {
-				warnings = append(warnings, msg)
-			} else {
-				errs = append(errs, errors.New(msg))
-			}
+	} else if usesDefaultDBPassword(cfg.DB.URL) {
+		const msg = "DATABASE_URL uses a default password; set POSTGRES_PASSWORD"
+		if cfg.Instance.SelfHosted {
+			warnings = append(warnings, msg)
+		} else {
+			errs = append(errs, errors.New(msg))
 		}
 	}
 
@@ -591,24 +598,14 @@ func FromEnv(opts ...Option) (Config, []string, error) {
 // limits, shutdown timing and logging.
 func parseHardening(cfg *Config, errs *[]error) {
 	cfg.HTTP.TrustProxy = envBool("TRUST_PROXY", errs)
-	cidrs := DefaultTrustedProxyCIDRs
-	if v := os.Getenv("TRUSTED_PROXY_CIDRS"); strings.TrimSpace(v) != "" {
-		cidrs = strings.Split(v, ",")
-	}
-	for _, raw := range cidrs {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			continue
-		}
-		p, err := netip.ParsePrefix(raw)
-		if err != nil {
-			*errs = append(*errs, fmt.Errorf("TRUSTED_PROXY_CIDRS entry %q is not a CIDR", raw))
-			continue
-		}
-		cfg.HTTP.TrustedProxyCIDRs = append(cfg.HTTP.TrustedProxyCIDRs, p)
+	if ps, err := ParseTrustedProxyCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS")); err != nil {
+		*errs = append(*errs, err)
+	} else {
+		cfg.HTTP.TrustedProxyCIDRs = ps
 	}
 
-	cfg.RateLimits = RateLimits{PublicReadPerMin: 60, PublicWritePerMin: 5, UserPerMin: 600, MutateHeavyPerMin: 30, SearchPerMin: 120}
+	// Unset (or blank) means the default; 0 disables that class.
+	cfg.RateLimits = DefaultRateLimits()
 	for _, rl := range []struct {
 		name string
 		dst  *int
@@ -672,10 +669,197 @@ func parseHardening(cfg *Config, errs *[]error) {
 	}
 }
 
-// RedactURL renders a DSN/URL with its password replaced by *** so it can
-// be logged. Anything that does not parse is replaced wholesale — an
-// unparseable DSN may still contain a secret.
+// ParseTrustedProxyCIDRs parses TRUSTED_PROXY_CIDRS exactly like the web
+// tier (apps/web/lib/client-ip.ts proxyTrustFromEnv): comma-separated,
+// whitespace trimmed, blank entries ignored (none left = the defaults); an
+// entry is an IP (a single host, /32 or /128) or IP/bits with decimal bits
+// no larger than the family allows. Addresses are lower-cased, a zone is
+// dropped and IPv4-mapped IPv6 is unmapped. Anything else is an error.
+func ParseTrustedProxyCIDRs(v string) ([]netip.Prefix, error) {
+	var entries []string
+	for _, e := range strings.Split(v, ",") {
+		if e = strings.TrimSpace(e); e != "" {
+			entries = append(entries, e)
+		}
+	}
+	if len(entries) == 0 {
+		entries = DefaultTrustedProxyCIDRs
+	}
+	out := make([]netip.Prefix, 0, len(entries))
+	for _, e := range entries {
+		p, ok := parseProxyEntry(e)
+		if !ok {
+			return nil, fmt.Errorf("TRUSTED_PROXY_CIDRS: %q is not a valid IP or CIDR", e)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func parseProxyEntry(e string) (netip.Prefix, bool) {
+	addrText, bitsText, hasBits := strings.Cut(e, "/")
+	addrText = strings.ToLower(strings.TrimSpace(addrText))
+	if i := strings.IndexByte(addrText, '%'); i >= 0 {
+		addrText = addrText[:i]
+	}
+	addr, err := netip.ParseAddr(addrText)
+	if err != nil {
+		return netip.Prefix{}, false
+	}
+	addr = addr.Unmap()
+	bits := addr.BitLen()
+	if hasBits {
+		if bitsText == "" || strings.Trim(bitsText, "0123456789") != "" {
+			return netip.Prefix{}, false // also rejects a second '/'
+		}
+		n, err := strconv.Atoi(bitsText)
+		if err != nil || n > bits {
+			return netip.Prefix{}, false
+		}
+		bits = n
+	}
+	return netip.PrefixFrom(addr, bits).Masked(), true
+}
+
+// defaultDBPasswords are the shipped placeholder passwords (.env.example,
+// compose) that must never reach a cloud deployment.
+var defaultDBPasswords = map[string]bool{"change-me-please": true, "calendium": true}
+
+// usesDefaultDBPassword reports whether any password in the DSN — URL
+// userinfo, a password= query parameter or a libpq keyword/value pair — is
+// a shipped default.
+func usesDefaultDBPassword(dsn string) bool {
+	for _, pw := range dsnPasswords(dsn) {
+		if defaultDBPasswords[pw] {
+			return true
+		}
+	}
+	return false
+}
+
+// dsnPasswords returns every password value carried by a URL or libpq
+// keyword/value DSN; unparseable input yields none.
+func dsnPasswords(dsn string) []string {
+	var out []string
+	if strings.Contains(dsn, "://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return nil
+		}
+		if pw, ok := u.User.Password(); ok {
+			out = append(out, pw)
+		}
+		for k, vs := range u.Query() {
+			if strings.EqualFold(k, "password") {
+				out = append(out, vs...)
+			}
+		}
+		return out
+	}
+	pairs, ok := parseKeywordDSN(dsn)
+	if !ok {
+		return nil
+	}
+	for _, p := range pairs {
+		if strings.EqualFold(p.key, "password") {
+			out = append(out, p.value)
+		}
+	}
+	return out
+}
+
+// isSecretKey matches the DSN parameters whose value is a secret
+// (password, sslpassword, …).
+func isSecretKey(k string) bool { return strings.Contains(strings.ToLower(k), "password") }
+
+// dsnPair is one libpq keyword/value pair; start:end is the value's span in
+// the source string, quotes included.
+type dsnPair struct {
+	key, value string
+	start, end int
+}
+
+// parseKeywordDSN tokenises a libpq keyword/value connection string
+// ("host=db password='a b'"): spaces around '=' allowed, values plain (a
+// backslash escapes the next byte) or single-quoted (\' and \\ escapes).
+// ok is false on anything libpq itself would reject.
+func parseKeywordDSN(s string) (pairs []dsnPair, ok bool) {
+	isSpace := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v' }
+	i, n := 0, len(s)
+	skip := func() {
+		for i < n && isSpace(s[i]) {
+			i++
+		}
+	}
+	for skip(); i < n; skip() {
+		ks := i
+		for i < n && s[i] != '=' && !isSpace(s[i]) {
+			i++
+		}
+		key := s[ks:i]
+		skip()
+		if key == "" || i >= n || s[i] != '=' {
+			return nil, false
+		}
+		i++
+		skip()
+		vs := i
+		var val strings.Builder
+		if i < n && s[i] == '\'' {
+			i++
+			closed := false
+			for i < n {
+				if s[i] == '\\' && i+1 < n {
+					val.WriteByte(s[i+1])
+					i += 2
+					continue
+				}
+				if s[i] == '\'' {
+					i++
+					closed = true
+					break
+				}
+				val.WriteByte(s[i])
+				i++
+			}
+			if !closed {
+				return nil, false
+			}
+		} else {
+			for i < n && !isSpace(s[i]) {
+				if s[i] == '\\' && i+1 < n {
+					i++
+				}
+				val.WriteByte(s[i])
+				i++
+			}
+		}
+		pairs = append(pairs, dsnPair{key: key, value: val.String(), start: vs, end: i})
+	}
+	return pairs, len(pairs) > 0
+}
+
+// RedactURL renders a DSN so it can be logged: every password — URL
+// userinfo, a password-like query parameter, or a libpq keyword/value pair
+// (plain or quoted) — becomes ***. Input that does not parse is replaced
+// wholesale: an unparseable DSN may still contain a secret.
 func RedactURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		pairs, ok := parseKeywordDSN(raw)
+		if !ok {
+			return "[unparseable dsn]"
+		}
+		out := raw
+		for i := len(pairs) - 1; i >= 0; i-- { // back to front keeps spans valid
+			if p := pairs[i]; isSecretKey(p.key) {
+				out = out[:p.start] + "***" + out[p.end:]
+			}
+		}
+		return out
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "[unparseable url]"
@@ -685,9 +869,33 @@ func RedactURL(raw string) string {
 			u.User = url.UserPassword(u.User.Username(), "***")
 		}
 	}
+	if u.RawQuery != "" {
+		params := strings.Split(u.RawQuery, "&")
+		for i, p := range params {
+			k, _, _ := strings.Cut(p, "=")
+			if dk, err := url.QueryUnescape(k); err != nil || isSecretKey(dk) {
+				params[i] = k + "=***"
+			}
+		}
+		u.RawQuery = strings.Join(params, "&")
+	}
 	// url.URL.String percent-encodes '*' in userinfo; un-escape the marker so
 	// the log line reads user:***@host.
 	return strings.Replace(u.String(), ":%2A%2A%2A@", ":***@", 1)
+}
+
+// loggableURL is a non-secret URL (public web/API origin, JWKS) as the boot
+// summary logs it: userinfo, query and fragment dropped.
+func loggableURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "[unparseable url]"
+	}
+	u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
+	return u.String()
 }
 
 // Summary is the one startup log line: names, booleans and redacted URLs
@@ -698,9 +906,9 @@ func (c Config) Summary() []any {
 		"instance_name", c.Instance.Name,
 		"http_addr", c.HTTP.Addr,
 		"database", RedactURL(c.DB.URL),
-		"public_web_url", c.Instance.PublicWebURL,
-		"public_api_url", c.Instance.PublicAPIURL,
-		"jwks_url", c.Auth.JWKSURL,
+		"public_web_url", loggableURL(c.Instance.PublicWebURL),
+		"public_api_url", loggableURL(c.Instance.PublicAPIURL),
+		"jwks_url", loggableURL(c.Auth.JWKSURL),
 		"trust_proxy", c.HTTP.TrustProxy,
 		"trusted_proxy_cidrs", len(c.HTTP.TrustedProxyCIDRs),
 		"allow_dev_origins", c.HTTP.AllowDevOrigins,

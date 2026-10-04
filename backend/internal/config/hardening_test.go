@@ -44,6 +44,38 @@ func TestDefaultPasswordRefusedInCloudWarnedOnSelfHost(t *testing.T) {
 			}
 		})
 	}
+	// The same rule for every DSN shape pgx accepts: a ?password= query
+	// parameter and libpq keyword/value strings (plain and quoted).
+	for _, dsn := range []string{
+		"postgres://calendium@db:5432/calendium?sslmode=disable&password=calendium",
+		"postgres://db/calendium?PASSWORD=change-me-please",
+		"host=db user=calendium password=calendium dbname=calendium",
+		"host=db user=calendium password='change-me-please' dbname=calendium",
+	} {
+		t.Run(dsn+" cloud", func(t *testing.T) {
+			setBaseEnv(t, map[string]string{"DATABASE_URL": dsn, "SELF_HOSTED": "false", "PUBLIC_WEB_URL": "https://app.example.com"})
+			if _, _, err := FromEnv(); err == nil || !strings.Contains(err.Error(), msg) {
+				t.Fatalf("err = %v, want the default-password error", err)
+			}
+		})
+		t.Run(dsn+" self-host", func(t *testing.T) {
+			setBaseEnv(t, map[string]string{"DATABASE_URL": dsn, "SELF_HOSTED": "true", "PUBLIC_WEB_URL": "https://app.example.com"})
+			_, warnings, err := FromEnv()
+			if err != nil || !containsStr(warnings, msg) {
+				t.Fatalf("err=%v warnings=%v", err, warnings)
+			}
+		})
+	}
+	t.Run("strong keyword-DSN password boots in cloud", func(t *testing.T) {
+		setBaseEnv(t, map[string]string{
+			"DATABASE_URL":   "host=db user=calendium password='s3cr3t long' dbname=calendium",
+			"SELF_HOSTED":    "false",
+			"PUBLIC_WEB_URL": "https://app.example.com",
+		})
+		if _, warnings, err := FromEnv(); err != nil || len(warnings) != 0 {
+			t.Fatalf("err=%v warnings=%v", err, warnings)
+		}
+	})
 	t.Run("strong password is silent", func(t *testing.T) {
 		setBaseEnv(t, map[string]string{
 			"DATABASE_URL":   "postgres://calendium:s3cr3t-long-value@db:5432/calendium",
@@ -140,10 +172,103 @@ func TestProxyTrustParsing(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	})
+	t.Run("blank entries only means defaults", func(t *testing.T) {
+		for _, v := range []string{",", " , ,", "  "} {
+			setBaseEnv(t, map[string]string{"SELF_HOSTED": "true", "TRUSTED_PROXY_CIDRS": v})
+			c, _, err := FromEnv()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(c.HTTP.TrustedProxyCIDRs) != len(DefaultTrustedProxyCIDRs) {
+				t.Fatalf("TRUSTED_PROXY_CIDRS=%q → %v, want the defaults", v, c.HTTP.TrustedProxyCIDRs)
+			}
+		}
+	})
 	t.Run("bad TRUST_PROXY is a boot error", func(t *testing.T) {
 		setBaseEnv(t, map[string]string{"SELF_HOSTED": "true", "TRUST_PROXY": "yes-please"})
 		if _, _, err := FromEnv(); err == nil || !strings.Contains(err.Error(), "TRUST_PROXY") {
 			t.Fatalf("err = %v", err)
+		}
+	})
+}
+
+// TestParseTrustedProxyCIDRs mirrors apps/web/lib/client-ip.ts
+// proxyTrustFromEnv entry for entry: a bare IP is a single host (/32 or
+// /128), blank entries are ignored, whitespace is trimmed, IPv4-mapped
+// addresses are unmapped, a zone is dropped, and anything else refuses to
+// boot.
+func TestParseTrustedProxyCIDRs(t *testing.T) {
+	valid := []struct{ in, want string }{
+		{"", strings.Join(DefaultTrustedProxyCIDRs, ",")},
+		{" , ,", strings.Join(DefaultTrustedProxyCIDRs, ",")},
+		{" 203.0.113.0/24 , ::1/128 ", "203.0.113.0/24,::1/128"},
+		{"172.18.0.5", "172.18.0.5/32"},
+		{"2001:db8::7", "2001:db8::7/128"},
+		{"10.0.0.0/8,,172.18.0.5", "10.0.0.0/8,172.18.0.5/32"},
+		{"10.1.2.3/8", "10.0.0.0/8"},
+		{"::ffff:10.0.0.1", "10.0.0.1/32"},
+		{"::FFFF:10.0.0.0/8", "10.0.0.0/8"},
+		{"FE80::1%eth0", "fe80::1/128"},
+		{"10.0.0.0/08", "10.0.0.0/8"},
+		{"0.0.0.0/0", "0.0.0.0/0"},
+	}
+	for _, tc := range valid {
+		ps, err := ParseTrustedProxyCIDRs(tc.in)
+		if err != nil {
+			t.Errorf("ParseTrustedProxyCIDRs(%q) error: %v", tc.in, err)
+			continue
+		}
+		got := make([]string, 0, len(ps))
+		for _, p := range ps {
+			got = append(got, p.String())
+		}
+		if strings.Join(got, ",") != tc.want {
+			t.Errorf("ParseTrustedProxyCIDRs(%q) = %v, want %s", tc.in, got, tc.want)
+		}
+	}
+	for _, in := range []string{
+		"not-a-cidr", "10.0.0.0/8,not-a-cidr", "10.0.0.0/33", "::1/129", "::ffff:10.0.0.0/104",
+		"10.0.0.0/", "10.0.0.0/-1", "10.0.0.0/+8", "10.0.0.0/8/8", "/8", "10.0.0.0/ 8", "host.example",
+	} {
+		if _, err := ParseTrustedProxyCIDRs(in); err == nil || !strings.Contains(err.Error(), "TRUSTED_PROXY_CIDRS") {
+			t.Errorf("ParseTrustedProxyCIDRs(%q) err = %v, want a TRUSTED_PROXY_CIDRS error", in, err)
+		}
+	}
+}
+
+func TestRateLimitsZeroAndUnset(t *testing.T) {
+	all := map[string]string{
+		"RATE_LIMIT_PUBLIC_READ_PER_MIN": "0", "RATE_LIMIT_PUBLIC_WRITE_PER_MIN": "0", "RATE_LIMIT_USER_PER_MIN": "0",
+		"RATE_LIMIT_MUTATE_HEAVY_PER_MIN": "0", "RATE_LIMIT_SEARCH_PER_MIN": "0", "SELF_HOSTED": "true",
+	}
+	t.Run("all five 0 disables API rate limiting", func(t *testing.T) {
+		setBaseEnv(t, all)
+		c, _, err := FromEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.RateLimits != (RateLimits{}) || !c.RateLimits.Disabled() {
+			t.Fatalf("RateLimits = %+v, want every class disabled", c.RateLimits)
+		}
+	})
+	t.Run("one class 0 disables only that class", func(t *testing.T) {
+		setBaseEnv(t, map[string]string{"SELF_HOSTED": "true", "RATE_LIMIT_PUBLIC_WRITE_PER_MIN": "0"})
+		c, _, err := FromEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.RateLimits != (RateLimits{PublicReadPerMin: 60, UserPerMin: 600, MutateHeavyPerMin: 30, SearchPerMin: 120}) || c.RateLimits.Disabled() {
+			t.Fatalf("RateLimits = %+v", c.RateLimits)
+		}
+	})
+	t.Run("unset or blank means default", func(t *testing.T) {
+		setBaseEnv(t, map[string]string{"SELF_HOSTED": "true", "RATE_LIMIT_USER_PER_MIN": ""})
+		c, _, err := FromEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.RateLimits != DefaultRateLimits() {
+			t.Fatalf("RateLimits = %+v, want the defaults", c.RateLimits)
 		}
 	})
 }
@@ -203,15 +328,81 @@ func TestRateLimitShutdownLogParsing(t *testing.T) {
 }
 
 func TestRedactURL(t *testing.T) {
-	cases := map[string]string{
-		"postgres://calendium:hunter2@db:5432/calendium?sslmode=disable": "postgres://calendium:***@db:5432/calendium?sslmode=disable",
-		"postgres://calendium@db:5432/calendium":                         "postgres://calendium@db:5432/calendium",
-		"postgres://db:5432/calendium":                                   "postgres://db:5432/calendium",
-		"://not a url":                                                   "[unparseable url]",
+	cases := []struct{ in, want string }{
+		{"postgres://calendium:hunter2@db:5432/calendium?sslmode=disable", "postgres://calendium:***@db:5432/calendium?sslmode=disable"},
+		{"postgres://calendium@db:5432/calendium", "postgres://calendium@db:5432/calendium"},
+		{"postgres://db:5432/calendium", "postgres://db:5432/calendium"},
+		{"://not a url", "[unparseable url]"},
+		{"", ""},
+		// password= query parameter (any case, any position; order kept).
+		{"postgres://db:5432/calendium?password=hunter2", "postgres://db:5432/calendium?password=***"},
+		{"postgresql://calendium@db/calendium?sslmode=disable&PassWord=hunter2&application_name=api", "postgresql://calendium@db/calendium?sslmode=disable&PassWord=***&application_name=api"},
+		{"postgres://u:hunter2@db/c?password=hunter2", "postgres://u:***@db/c?password=***"},
+		{"postgres://db/c?sslpassword=hunter2", "postgres://db/c?sslpassword=***"},
+		{"postgres://db/c?pass%77ord=hunter2", "postgres://db/c?pass%77ord=***"},
+		// libpq keyword/value DSNs, plain and quoted values.
+		{"host=db user=calendium password=hunter2 dbname=calendium", "host=db user=calendium password=*** dbname=calendium"},
+		{"host=db password = hunter2 sslmode=disable", "host=db password = *** sslmode=disable"},
+		{"host=db password='hunter2 with spaces' dbname=calendium", "host=db password=*** dbname=calendium"},
+		{`host=db password='it\'s hunter2' dbname=calendium`, "host=db password=*** dbname=calendium"},
+		{`host=db PASSWORD=hunter2\ x dbname=c`, "host=db PASSWORD=*** dbname=c"},
+		{"password=hunter2", "password=***"},
+		{"host=db user=calendium dbname=calendium", "host=db user=calendium dbname=calendium"},
+		// Anything that does not tokenise may hide a secret: placeholder.
+		{"host=db password='hunter2", "[unparseable dsn]"},
+		{"hunter2", "[unparseable dsn]"},
+		{"host=db hunter2", "[unparseable dsn]"},
 	}
-	for in, want := range cases {
-		if got := RedactURL(in); got != want {
-			t.Errorf("RedactURL(%q) = %q, want %q", in, got, want)
+	for _, tc := range cases {
+		got := RedactURL(tc.in)
+		if got != tc.want {
+			t.Errorf("RedactURL(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		if strings.Contains(got, "hunter2") {
+			t.Errorf("RedactURL(%q) leaks the secret: %q", tc.in, got)
+		}
+	}
+}
+
+func TestLoggableURL(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"https://app.example.com", "https://app.example.com"},
+		{"https://admin:hunter2@app.example.com/base", "https://app.example.com/base"},
+		{"https://auth.example.com/api/auth/jwks?token=hunter2#frag", "https://auth.example.com/api/auth/jwks"},
+		{"https://hunter2@api.example.com?", "https://api.example.com"},
+		{"://hunter2 not a url", "[unparseable url]"},
+	}
+	for _, tc := range cases {
+		got := loggableURL(tc.in)
+		if got != tc.want {
+			t.Errorf("loggableURL(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		if strings.Contains(got, "hunter2") {
+			t.Errorf("loggableURL(%q) leaks the secret: %q", tc.in, got)
+		}
+	}
+}
+
+// TestSummaryRedactsEveryDSNAndURLForm proves no password reaches the boot
+// summary whatever shape DATABASE_URL takes, and that the public URLs lose
+// their userinfo and query.
+func TestSummaryRedactsEveryDSNAndURLForm(t *testing.T) {
+	for _, dsn := range []string{
+		"postgres://calendium:hunter2@db:5432/calendium",
+		"postgres://db:5432/calendium?password=hunter2",
+		"host=db user=calendium password=hunter2 dbname=calendium",
+		"host=db password='hunter2 x' dbname=calendium",
+	} {
+		c := Config{}
+		c.DB.URL = dsn
+		c.Instance.PublicWebURL = "https://u:hunter2@app.example.com"
+		c.Instance.PublicAPIURL = "https://api.example.com/?key=hunter2"
+		c.Auth.JWKSURL = "https://auth.example.com/jwks?access_token=hunter2"
+		var buf bytes.Buffer
+		NewLogger(&buf, Log{Format: "json", Level: slog.LevelInfo}).Info("api: config", c.Summary()...)
+		if strings.Contains(buf.String(), "hunter2") {
+			t.Errorf("summary leaks the secret for %q: %s", dsn, buf.String())
 		}
 	}
 }
