@@ -94,6 +94,95 @@ describe('createAccessTokenCache', () => {
     expect(mint).toHaveBeenCalledTimes(2);
   });
 
+  it('a mint that started before invalidate() is never cached nor handed to later callers', async () => {
+    const stale = jwt((T0 + 900_000) / 1000, { sub: 'old-user' });
+    const freshToken = jwt((T0 + 900_000) / 1000, { sub: 'new-user' });
+    const resolvers: Array<(t: string | null) => void> = [];
+    const mint = vi.fn(() => new Promise<string | null>((r) => resolvers.push(r)));
+    const cache = createAccessTokenCache(mint, () => T0);
+
+    const before = cache.get(); // generation 0 mint in flight
+    cache.invalidate(); // sign-out / user change
+    const after = cache.get(); // generation 1 must NOT join the old mint
+    expect(mint).toHaveBeenCalledTimes(2);
+
+    resolvers[0]?.(stale); // the old mint lands late
+    expect(await before).toBe(stale); // its own (old-generation) caller still gets it
+    resolvers[1]?.(freshToken);
+    expect(await after).toBe(freshToken);
+    expect(await cache.get()).toBe(freshToken); // the stale token was never cached
+    expect(mint).toHaveBeenCalledTimes(2);
+  });
+
+  it('an old-generation mint finishing last neither caches nor clears the newer in-flight mint', async () => {
+    const stale = jwt((T0 + 900_000) / 1000, { sub: 'old-user' });
+    const freshToken = jwt((T0 + 900_000) / 1000, { sub: 'new-user' });
+    const resolvers: Array<(t: string | null) => void> = [];
+    const mint = vi.fn(() => new Promise<string | null>((r) => resolvers.push(r)));
+    const cache = createAccessTokenCache(mint, () => T0);
+
+    const before = cache.get();
+    cache.invalidate();
+    const after = cache.get();
+    resolvers[1]?.(freshToken);
+    expect(await after).toBe(freshToken);
+    resolvers[0]?.(stale);
+    expect(await before).toBe(stale);
+    expect(await cache.get()).toBe(freshToken);
+    expect(mint).toHaveBeenCalledTimes(2);
+  });
+
+  it('invalidate(failedToken) drops only that token — a sibling 401 cannot discard a fresher one', async () => {
+    const t1 = jwt((T0 + 900_000) / 1000, { n: 1 });
+    const t2 = jwt((T0 + 900_000) / 1000, { n: 2 });
+    const mint = vi.fn<() => Promise<string | null>>().mockResolvedValueOnce(t1).mockResolvedValueOnce(t2);
+    const cache = createAccessTokenCache(mint, () => T0);
+
+    expect(await cache.get()).toBe(t1);
+    // Request A's 401 on t1: drop it and re-mint t2.
+    cache.invalidate(t1);
+    expect(await cache.get()).toBe(t2);
+    // Request B's 401 on the SAME stale t1 arrives late: t2 must survive.
+    cache.invalidate(t1);
+    expect(await cache.get()).toBe(t2);
+    expect(mint).toHaveBeenCalledTimes(2);
+  });
+
+  it('concurrent 401s on one token while the re-mint is in flight share that one re-mint', async () => {
+    const t1 = jwt((T0 + 900_000) / 1000, { n: 1 });
+    const t2 = jwt((T0 + 900_000) / 1000, { n: 2 });
+    let resolveRemint!: (t: string | null) => void;
+    const mint = vi
+      .fn<() => Promise<string | null>>()
+      .mockResolvedValueOnce(t1)
+      .mockImplementationOnce(() => new Promise((r) => { resolveRemint = r; }));
+    const cache = createAccessTokenCache(mint, () => T0);
+
+    expect(await cache.get()).toBe(t1);
+    cache.invalidate(t1); // A
+    const a = cache.get();
+    cache.invalidate(t1); // B: t1 is already gone — must not orphan A's re-mint
+    const b = cache.get();
+    resolveRemint(t2);
+    expect(await a).toBe(t2);
+    expect(await b).toBe(t2);
+    expect(await cache.get()).toBe(t2);
+    expect(mint).toHaveBeenCalledTimes(2);
+  });
+
+  it('recovers when mint throws synchronously', async () => {
+    const ok = jwt((T0 + 900_000) / 1000);
+    const mint = vi
+      .fn<() => Promise<string | null>>()
+      .mockImplementationOnce(() => {
+        throw new Error('sync boom');
+      })
+      .mockResolvedValueOnce(ok);
+    const cache = createAccessTokenCache(mint, () => T0);
+    await expect(cache.get()).rejects.toThrow('sync boom');
+    expect(await cache.get()).toBe(ok);
+  });
+
   it('propagates a mint rejection to every waiter and recovers afterwards', async () => {
     const mint = vi.fn<() => Promise<string | null>>().mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce(null);
     const cache = createAccessTokenCache(mint, () => T0);

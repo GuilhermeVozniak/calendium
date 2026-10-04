@@ -13,8 +13,13 @@ export const ACCESS_TOKEN_REFRESH_MARGIN_MS = 60_000;
 export interface AccessTokenCache {
   /** The cached token while fresh, else the result of one shared mint. */
   get(): Promise<string | null>;
-  /** Drops the cached token (401 retry, sign-out, server switch). */
-  invalidate(): void;
+  /**
+   * Drops the cached token and discards any mint already in flight (sign-out,
+   * user change, server switch). With `failedToken` (a 401 retry) it only
+   * acts when that exact token is still the cached one, so concurrent 401s on
+   * one stale token cost one re-mint, never a sibling's fresh token.
+   */
+  invalidate(failedToken?: string): void;
 }
 
 const B64URL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
@@ -73,12 +78,20 @@ export function decodeJwtExp(token: string): number | null {
   }
 }
 
+/**
+ * Generations: every invalidate() that drops a token starts a new generation.
+ * A mint is tagged with the generation it started in; when it lands in a
+ * newer generation (sign-out, user switch, server switch happened meanwhile)
+ * its token goes back to its own callers only — it is never cached and never
+ * shared with callers of the newer generation, who get a fresh mint.
+ */
 export function createAccessTokenCache(
   mint: () => Promise<string | null>,
   now: () => number = () => Date.now()
 ): AccessTokenCache {
   let cached: { token: string; expMs: number } | null = null;
-  let inflight: Promise<string | null> | null = null;
+  let generation = 0;
+  let inflight: { generation: number; promise: Promise<string | null> } | null = null;
 
   return {
     get() {
@@ -86,25 +99,39 @@ export function createAccessTokenCache(
         return Promise.resolve(cached.token);
       }
       cached = null;
-      if (inflight) return inflight;
-      inflight = (async () => {
-        try {
-          const token = await mint();
-          if (token) {
+      if (inflight && inflight.generation === generation) return inflight.promise;
+      const started = generation;
+      // A mint that throws synchronously still becomes a rejection, so
+      // `inflight` is always assigned before the chain below settles.
+      let minted: Promise<string | null>;
+      try {
+        minted = Promise.resolve(mint());
+      } catch (err) {
+        minted = Promise.reject(err);
+      }
+      const promise = minted
+        .then((token) => {
+          if (token && started === generation) {
             const expMs = decodeJwtExp(token);
             if (expMs !== null && now() < expMs - ACCESS_TOKEN_REFRESH_MARGIN_MS) {
               cached = { token, expMs };
             }
           }
           return token;
-        } finally {
-          inflight = null;
-        }
-      })();
-      return inflight;
+        })
+        .finally(() => {
+          if (inflight?.promise === promise) inflight = null;
+        });
+      inflight = { generation: started, promise };
+      return promise;
     },
-    invalidate() {
+    invalidate(failedToken) {
+      // A 401 names the token it was sent with: if that token is no longer
+      // the cached one (a sibling request already dropped it and re-minted),
+      // there is nothing to drop and the fresher token survives.
+      if (failedToken !== undefined && cached?.token !== failedToken) return;
       cached = null;
+      generation += 1;
     },
   };
 }
