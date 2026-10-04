@@ -1,8 +1,9 @@
 import type { BillingPortalUrls, InstanceInfo, Subscription } from '@calendium/shared';
 import { ApiRequestError } from '@calendium/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { format } from 'date-fns';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fetchSubscriptionMock = vi.fn();
@@ -23,10 +24,18 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: replaceMock, pu
 const signOutMock = vi.fn(async () => {});
 vi.mock('@/lib/sign-out', () => ({ performSignOut: () => signOutMock() }));
 
+const paymentRequiredListeners = new Set<() => void>();
+vi.mock('@/lib/api', () => ({
+  onPaymentRequired: (listener: () => void) => {
+    paymentRequiredListeners.add(listener);
+    return () => paymentRequiredListeners.delete(listener);
+  },
+}));
+
 const toastError = vi.fn();
 vi.mock('sonner', () => ({ toast: { error: (...a: unknown[]) => toastError(...a), success: vi.fn(), info: vi.fn() } }));
 
-import { BillingGate, PaywallScreen, TrialBanner } from './paywall';
+import { BillingGate, BillingTrialBanner, PaywallScreen, TrialBanner } from './paywall';
 
 const assignMock = vi.fn();
 
@@ -46,7 +55,7 @@ const PORTAL: BillingPortalUrls = { overviewUrl: 'https://p/o', cancelUrl: 'http
 
 function renderWithQuery(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+  return { qc, ...render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>) };
 }
 
 beforeEach(() => {
@@ -72,6 +81,12 @@ describe('PaywallScreen', () => {
     expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: action })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Sign out/ })).toBeInTheDocument();
+  });
+
+  it('moves focus to the heading on mount and announces the status politely', () => {
+    renderWithQuery(<PaywallScreen reason="canceled" />);
+    expect(screen.getByRole('heading', { name: 'Your subscription has ended' })).toHaveFocus();
+    expect(screen.getByText(/Resubscribe any time/).closest('[aria-live="polite"]')).not.toBeNull();
   });
 
   it('past_due shows a secondary Manage billing action', () => {
@@ -145,9 +160,26 @@ describe('TrialBanner', () => {
     renderWithQuery(<TrialBanner subscription={sub('trialing', { trialEndsAt: twoDays })} />);
     await userEvent.click(screen.getByRole('button', { name: 'Dismiss for today' }));
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
-    expect(window.localStorage.getItem('calendium.trial-banner.dismissed')).toBe(new Date().toISOString().slice(0, 10));
+    expect(window.localStorage.getItem('calendium.trial-banner.dismissed')).toBe(format(new Date(), 'yyyy-MM-dd'));
     renderWithQuery(<TrialBanner subscription={sub('trialing', { trialEndsAt: twoDays })} />);
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  // The dismissal resets at LOCAL midnight, not UTC midnight.
+  it('keys the dismissal by the local calendar day', async () => {
+    const prevTz = process.env.TZ;
+    process.env.TZ = 'America/Sao_Paulo'; // UTC-3: 23:30 local is already tomorrow in UTC
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 9, 4, 23, 30));
+    try {
+      const ends = new Date(Date.now() + 2 * 24 * 3600_000).toISOString();
+      renderWithQuery(<TrialBanner subscription={sub('trialing', { trialEndsAt: ends })} />);
+      await userEvent.click(screen.getByRole('button', { name: 'Dismiss for today' }));
+      expect(window.localStorage.getItem('calendium.trial-banner.dismissed')).toBe('2026-10-04');
+    } finally {
+      vi.useRealTimers();
+      process.env.TZ = prevTz;
+    }
   });
 
   it('renders nothing for non-trial subscriptions', () => {
@@ -192,15 +224,47 @@ describe('BillingGate', () => {
   it('fails open when the subscription request errors', async () => {
     fetchSubscriptionMock.mockRejectedValue(new Error('network down'));
     renderWithQuery(<BillingGate>{child}</BillingGate>);
-    // The gate retries once (React Query's default ~1s backoff) before
-    // settling into the error state, so allow more than findBy's 1s default.
+    // The gate retries once (300 ms retryDelay) before settling into the
+    // error state; allow headroom over findBy's 1s default.
     expect(await screen.findByTestId('app', {}, { timeout: 4000 })).toBeInTheDocument();
     expect(fetchSubscriptionMock).toHaveBeenCalledTimes(2);
   });
 
+  // Fail open only when no subscription was ever loaded: a failed background
+  // refetch must not lift a paywall that a successful fetch already showed.
+  it('keeps the paywall when a background refetch fails after a denial', async () => {
+    fetchSubscriptionMock.mockResolvedValueOnce(sub('canceled'));
+    const { qc } = renderWithQuery(<BillingGate>{child}</BillingGate>);
+    expect(await screen.findByRole('heading', { name: 'Your subscription has ended' })).toBeInTheDocument();
+    fetchSubscriptionMock.mockRejectedValue(new Error('network down'));
+    await act(() => qc.refetchQueries({ queryKey: ['subscription'] }));
+    await waitFor(() => expect(qc.getQueryState(['subscription'])?.status).toBe('error'));
+    expect(screen.getByRole('heading', { name: 'Your subscription has ended' })).toBeInTheDocument();
+    expect(screen.queryByTestId('app')).not.toBeInTheDocument();
+  });
+
+  // Mid-session lapse: any 402 from the API client re-evaluates the gate
+  // immediately instead of waiting for the 5-minute poll.
+  it('re-evaluates the subscription when the API client sees a 402', async () => {
+    fetchSubscriptionMock.mockResolvedValueOnce(sub('active'));
+    renderWithQuery(<BillingGate>{child}</BillingGate>);
+    expect(await screen.findByTestId('app')).toBeInTheDocument();
+    fetchSubscriptionMock.mockResolvedValue(sub('canceled'));
+    act(() => {
+      for (const listener of paymentRequiredListeners) listener();
+    });
+    expect(await screen.findByRole('heading', { name: 'Your subscription has ended' })).toBeInTheDocument();
+    expect(screen.queryByTestId('app')).not.toBeInTheDocument();
+  });
+
   it('shows the trial banner above children in the last 3 days', async () => {
     fetchSubscriptionMock.mockResolvedValue(sub('trialing', { trialEndsAt: new Date(Date.now() + 2 * 24 * 3600_000).toISOString() }));
-    renderWithQuery(<BillingGate>{child}</BillingGate>);
+    renderWithQuery(
+      <BillingGate>
+        <BillingTrialBanner />
+        {child}
+      </BillingGate>
+    );
     expect(await screen.findByTestId('app')).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent(/trial ends/);
   });

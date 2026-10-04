@@ -5,21 +5,25 @@ import Link from 'next/link';
 import { CalendarRange, Loader2 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-import { initPaddle, loadPaddleJs } from '@/lib/paddle';
+import { initPaddle, loadPaddleJs, type PaddleJs } from '@/lib/paddle';
 
 type State =
   | { kind: 'loading' }
   | { kind: 'ready' }
   | { kind: 'no-transaction' }
+  | { kind: 'closed' }
   | { kind: 'error'; message: string };
 
 /**
  * Paddle's default payment link points here. Paddle.js opens the overlay
  * for the `_ptxn` transaction created by POST /v1/billing/checkout; the
  * success URL is fixed to /checkout/success (never client-supplied).
+ * Dismissing the overlay (`checkout.closed`) shows a "Checkout closed"
+ * state with Retry (reopens the same transaction) instead of a spinner.
  */
 export function CheckoutClient() {
   const [state, setState] = React.useState<State>({ kind: 'loading' });
+  const session = React.useRef<{ paddle: PaddleJs; txn: string; completed: boolean } | null>(null);
 
   React.useEffect(() => {
     const txn = new URLSearchParams(window.location.search).get('_ptxn');
@@ -39,10 +43,18 @@ export function CheckoutClient() {
     loadPaddleJs()
       .then((paddle) => {
         if (cancelled) return;
+        session.current = { paddle, txn, completed: false };
         initPaddle(paddle, {
           token,
           env: process.env.NEXT_PUBLIC_PADDLE_ENV,
           successUrl: `${window.location.origin}/checkout/success`,
+          eventCallback: (event) => {
+            if (cancelled || !session.current) return;
+            if (event.name === 'checkout.completed') session.current.completed = true;
+            // After a completed payment Paddle redirects to successUrl; a
+            // trailing close must not flash "Checkout closed".
+            if (event.name === 'checkout.closed' && !session.current.completed) setState({ kind: 'closed' });
+          },
         });
         setState({ kind: 'ready' });
       })
@@ -59,6 +71,12 @@ export function CheckoutClient() {
     };
   }, []);
 
+  const retry = () => {
+    if (!session.current) return;
+    setState({ kind: 'ready' });
+    session.current.paddle.Checkout.open({ transactionId: session.current.txn });
+  };
+
   return (
     <main className="flex min-h-svh flex-col items-center justify-center px-6 text-center">
       <div className="bg-primary text-primary-foreground flex size-12 items-center justify-center rounded-xl">
@@ -73,6 +91,20 @@ export function CheckoutClient() {
           <Button asChild className="mt-6">
             <Link href="/mail">Back to Calendium</Link>
           </Button>
+        </>
+      )}
+      {state.kind === 'closed' && (
+        <>
+          <h1 className="mt-6 text-2xl font-semibold tracking-tight">Checkout closed</h1>
+          <p className="text-muted-foreground mt-2 max-w-sm text-sm">
+            No payment was taken. Reopen the checkout to finish subscribing, or head back to billing.
+          </p>
+          <div className="mt-6 flex gap-2">
+            <Button onClick={retry}>Retry</Button>
+            <Button asChild variant="outline">
+              <Link href="/settings?tab=billing">Back to billing</Link>
+            </Button>
+          </div>
         </>
       )}
       {(state.kind === 'loading' || state.kind === 'ready') && (

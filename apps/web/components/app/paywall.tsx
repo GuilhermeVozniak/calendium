@@ -2,7 +2,8 @@
 
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { format } from 'date-fns';
 import { Lock, LogOut, X } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -10,6 +11,7 @@ import type { PaymentRequiredReason, Subscription } from '@calendium/shared';
 import { ApiRequestError, subscriptionDenialReason, TRIAL_BANNER_DAYS, trialDaysLeft } from '@calendium/shared';
 
 import { Button } from '@/components/ui/button';
+import { onPaymentRequired } from '@/lib/api';
 import { fetchSubscription, openBillingPortal, startCheckout } from '@/lib/settings-data';
 import { performSignOut } from '@/lib/sign-out';
 import { useInstance } from '@/lib/use-instance';
@@ -89,6 +91,12 @@ export function PaywallScreen({ reason, className }: { reason: PaymentRequiredRe
   const manage = useBillingPortalMutation('overview');
   const needsPayment = reason === 'past_due' || reason === 'paused';
   const copy = COPY[reason];
+  // The paywall can replace the whole shell mid-session; move focus to its
+  // heading so it is announced instead of focus falling back to <body>.
+  const headingRef = React.useRef<HTMLHeadingElement>(null);
+  React.useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
 
   return (
     <section aria-label="Subscription required" className={cn('flex h-full items-center justify-center p-6', className)}>
@@ -96,8 +104,12 @@ export function PaywallScreen({ reason, className }: { reason: PaymentRequiredRe
         <div className="bg-background flex size-10 items-center justify-center rounded-md border">
           <Lock className="size-5" />
         </div>
-        <h1 className="text-lg font-semibold">{copy.title}</h1>
-        <p className="text-muted-foreground text-sm">{copy.body}</p>
+        <h1 ref={headingRef} tabIndex={-1} className="text-lg font-semibold outline-none">
+          {copy.title}
+        </h1>
+        <p aria-live="polite" className="text-muted-foreground text-sm">
+          {copy.body}
+        </p>
         {needsPayment ? (
           <div className="flex flex-col gap-2 sm:flex-row">
             <Button onClick={() => updatePayment.mutate()} disabled={updatePayment.isPending}>
@@ -128,7 +140,7 @@ export function PaywallScreen({ reason, className }: { reason: PaymentRequiredRe
 }
 
 const TRIAL_BANNER_KEY = 'calendium.trial-banner.dismissed';
-const todayKey = () => new Date().toISOString().slice(0, 10);
+const todayKey = () => format(new Date(), 'yyyy-MM-dd'); // local day, resets at local midnight
 
 /** Last-3-days trial reminder, dismissible once per calendar day. */
 export function TrialBanner({ subscription }: { subscription: Subscription | null | undefined }) {
@@ -174,12 +186,23 @@ export function TrialBanner({ subscription }: { subscription: Subscription | nul
   );
 }
 
+/** The granted subscription, published by BillingGate for BillingTrialBanner. */
+const GrantedSubscriptionContext = React.createContext<Subscription | null>(null);
+
+/** TrialBanner fed by the enclosing BillingGate; the shell places it above the page. */
+export function BillingTrialBanner() {
+  return <TrialBanner subscription={React.useContext(GrantedSubscriptionContext)} />;
+}
+
 /**
- * Gate for the authenticated shell: when the server bills, fetch the
- * subscription (which also grants the signup trial server-side) before
- * rendering the page; deny → PaywallScreen; grant → TrialBanner + page.
- * Fails OPEN when discovery or the subscription request errors — an
- * unreachable billing API must never lock a paying user out.
+ * Gate for the WHOLE authenticated shell (rail, compose, palette, shortcuts,
+ * Ask sidebar): when the server bills, fetch the subscription (which also
+ * grants the signup trial server-side) before rendering the shell; deny →
+ * a full-screen PaywallScreen and nothing else; grant → the shell, with the
+ * subscription published for BillingTrialBanner. Fails OPEN when discovery
+ * errors or no subscription was ever loaded — an unreachable billing API
+ * must never lock a paying user out — but a denial already observed from a
+ * successful fetch survives a failed background refetch.
  */
 export function BillingGate({ children }: { children: React.ReactNode }) {
   const instance = useInstance();
@@ -189,28 +212,39 @@ export function BillingGate({ children }: { children: React.ReactNode }) {
     queryFn: fetchSubscription,
     enabled: billing,
     retry: 1,
+    retryDelay: 300, // short: the gate holds the whole shell's first paint
     staleTime: 60_000,
     refetchInterval: 5 * 60_000,
   });
 
-  // The (app) layout's <main> is a flex column so the banner can sit above
-  // the page; the page keeps its full-height box through this wrapper.
-  const page = <div className="min-h-0 flex-1">{children}</div>;
+  // Any 402 from the API client means the server now denies access (e.g. the
+  // trial ended mid-session): re-evaluate right away instead of waiting for
+  // the poll. cancelRefetch:false joins an in-flight fetch rather than
+  // restarting it, so a burst of 402s (or a 402 from the subscription
+  // endpoint itself) can never loop.
+  const queryClient = useQueryClient();
+  React.useEffect(
+    () =>
+      onPaymentRequired(() => {
+        void queryClient.invalidateQueries({ queryKey: ['subscription'] }, { cancelRefetch: false });
+      }),
+    [queryClient]
+  );
 
   if (instance.isPending || (billing && subscription.isPending)) {
     return (
-      <div role="status" aria-label="Loading" className="flex h-full items-center justify-center">
+      <div role="status" aria-label="Loading" className="flex h-svh items-center justify-center">
         <div className="bg-primary size-8 animate-pulse rounded-lg" />
       </div>
     );
   }
-  if (!billing || subscription.isError || !subscription.data) return page;
-  const reason = subscriptionDenialReason(subscription.data);
-  if (reason) return <PaywallScreen reason={reason} />;
-  return (
-    <>
-      <TrialBanner subscription={subscription.data} />
-      {page}
-    </>
-  );
+  // Fail open only when no subscription was ever loaded: after a failed
+  // background refetch React Query keeps the last good `data`, so an
+  // observed denial keeps the paywall (and an observed grant keeps the app).
+  const granted = billing && subscription.data ? subscription.data : null;
+  const reason = granted ? subscriptionDenialReason(granted) : null;
+  if (reason) return <PaywallScreen reason={reason} className="h-svh" />;
+  // Always the same element type around the shell, so a fail-open → granted
+  // transition never remounts it.
+  return <GrantedSubscriptionContext.Provider value={granted}>{children}</GrantedSubscriptionContext.Provider>;
 }

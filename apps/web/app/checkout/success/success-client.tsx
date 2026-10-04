@@ -25,8 +25,11 @@ export function CheckoutSuccessClient({
   const { data: session, isPending } = authClient.useSession();
   const [status, setStatus] = React.useState<Status>('polling');
 
+  // Keyed on the user id, not the session object: a session refetch must
+  // not restart (or resume) polling.
+  const userId = session?.user.id;
   React.useEffect(() => {
-    if (isPending || !session) return;
+    if (isPending || !userId) return;
     let attempts = 0;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -53,7 +56,7 @@ export function CheckoutSuccessClient({
       stopped = true;
       clearTimeout(timer);
     };
-  }, [isPending, session, pollMs, maxAttempts]);
+  }, [isPending, userId, pollMs, maxAttempts]);
 
   const signedOut = !isPending && !session;
 
@@ -65,24 +68,27 @@ export function CheckoutSuccessClient({
       <h1 className="mt-6 text-2xl font-semibold tracking-tight">
         {status === 'active' ? "You're all set" : 'Payment received'}
       </h1>
-      {signedOut ? (
-        <p className="text-muted-foreground mt-2 max-w-sm text-sm">
-          Return to the app to continue — your subscription activates within a minute.
-        </p>
-      ) : status === 'active' ? (
-        <p className="text-muted-foreground mt-2 flex items-center gap-2 text-sm">
-          <CheckCircle2 className="size-4 text-emerald-500" /> Your Calendium Annual plan is active.
-        </p>
-      ) : status === 'timeout' ? (
-        <p className="text-muted-foreground mt-2 max-w-sm text-sm">
-          Activation is taking longer than usual. It will finish in the background — open the app and
-          refresh in a minute.
-        </p>
-      ) : (
-        <p className="text-muted-foreground mt-2 flex items-center gap-2 text-sm">
-          <Loader2 className="size-4 animate-spin" /> Activating your subscription…
-        </p>
-      )}
+      {/* Persistent polite live region: "Activating…" → active / timeout is announced. */}
+      <div aria-live="polite" className="flex flex-col items-center">
+        {signedOut ? (
+          <p className="text-muted-foreground mt-2 max-w-sm text-sm">
+            Return to the app to continue — your subscription activates within a minute.
+          </p>
+        ) : status === 'active' ? (
+          <p className="text-muted-foreground mt-2 flex items-center gap-2 text-sm">
+            <CheckCircle2 className="size-4 text-emerald-500" /> Your Calendium Annual plan is active.
+          </p>
+        ) : status === 'timeout' ? (
+          <p className="text-muted-foreground mt-2 max-w-sm text-sm">
+            Activation is taking longer than usual. It will finish in the background — open the app and
+            refresh in a minute.
+          </p>
+        ) : (
+          <p className="text-muted-foreground mt-2 flex items-center gap-2 text-sm">
+            <Loader2 className="size-4 animate-spin" /> Activating your subscription…
+          </p>
+        )}
+      </div>
       {(signedOut || status !== 'polling') && (
         <Button asChild className="mt-6">
           <Link href="/mail">Open Calendium</Link>
