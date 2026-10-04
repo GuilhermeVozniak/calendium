@@ -16,7 +16,11 @@ import { CLIENT_IP_HEADER, type EnvLike } from '@/lib/auth-env';
  * - TRUST_PROXY === 'true' and the peer is inside TRUSTED_PROXY_CIDRS
  *   (default: loopback + private ranges): walk X-Forwarded-For right to
  *   left, skipping hops that do not parse or are trusted proxies; the first
- *   other hop is the client. No such hop → the peer itself.
+ *   other hop is the client. No such hop (every hop is trusted: a LAN or VPN
+ *   client behind the proxy) → the left-most parseable entry, i.e. the
+ *   client as the all-trusted chain reported it; the peer only when it is
+ *   the sole parseable entry. A forged left entry cannot win while any
+ *   untrusted hop sits to its right.
  * - No parseable peer → '' (Better Auth's shared `no-trusted-ip` bucket).
  *
  * Server-only (node:net); lib/auth-env.ts stays importable by client pages.
@@ -91,11 +95,18 @@ export function clientIpFor(headers: Headers, trust: ProxyTrust): string {
   const peer = canonicalIp(hops.pop() ?? '');
   if (!peer) return '';
   if (!trust.enabled || !isTrusted(trust, peer)) return peer;
+  // Right to left: the first untrusted hop is the client. Every hop passed on
+  // the way is a trusted proxy, so when none is untrusted the left-most valid
+  // entry is the client as the trusted chain reported it (a LAN/VPN client
+  // behind Caddy) — never the proxy's own address shared by everyone.
+  let leftmost = peer;
   for (let i = hops.length - 1; i >= 0; i--) {
     const hop = canonicalIp(hops[i] ?? '');
-    if (hop && !isTrusted(trust, hop)) return hop;
+    if (!hop) continue;
+    if (!isTrusted(trust, hop)) return hop;
+    leftmost = hop;
   }
-  return peer;
+  return leftmost;
 }
 
 /** A copy of `req` whose CLIENT_IP_HEADER is always the server-resolved value (forged values are overwritten). */
