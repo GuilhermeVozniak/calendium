@@ -42,6 +42,13 @@ jobs:
         # passing CI with zero postgres coverage.
         env:
           REQUIRE_DOCKER: "1"
+          # The postgres and pgbus packages each start a container in parallel
+          # test binaries that share one Ryuk reaper session; on the runner the
+          # reaper intermittently killed the postgres package's container when
+          # the pgbus binary exited (connection reset ~14 s in, every later test
+          # failing). Runners are ephemeral, so nothing needs reaping here; each
+          # package still terminates its own container in TestMain.
+          TESTCONTAINERS_RYUK_DISABLED: "true"
         run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
 
       - name: Coverage summary
