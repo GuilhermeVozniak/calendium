@@ -27,10 +27,10 @@ import (
 	"calendium/backend/internal/adapter/out/nominatim"
 	"calendium/backend/internal/adapter/out/openmeteo"
 	"calendium/backend/internal/adapter/out/openrouter"
+	"calendium/backend/internal/adapter/out/paddle"
 	"calendium/backend/internal/adapter/out/pgbus"
 	"calendium/backend/internal/adapter/out/postgres"
 	"calendium/backend/internal/adapter/out/push"
-	"calendium/backend/internal/adapter/out/stripeapi"
 	"calendium/backend/internal/adapter/out/todoist"
 	"calendium/backend/internal/adapter/out/unsubscribe"
 	"calendium/backend/internal/config"
@@ -66,6 +66,10 @@ func run(logger *slog.Logger) error {
 	if cfg.Instance.PublicWebURL == "" {
 		return errors.New("PUBLIC_WEB_URL (or APP_URL) is required: GET /v1/instance must advertise an absolute Better Auth base URL")
 	}
+	// Cloud mode must never boot without a biller or with a forgeable webhook.
+	if err := cfg.ValidateCloudBilling(); err != nil {
+		return err
+	}
 
 	// --- Postgres + migrations ---
 	db, err := sql.Open("pgx", cfg.DB.URL)
@@ -94,7 +98,12 @@ func run(logger *slog.Logger) error {
 	hc := &http.Client{Timeout: 30 * time.Second}
 
 	verifier := authjwt.NewVerifier(cfg.Auth.JWKSURL, cfg.Auth.Issuer, hc)
-	stripe := stripeapi.NewClient(cfg.Stripe.SecretKey, cfg.Stripe.WebhookSecret, cfg.Stripe.AnnualPriceID, hc)
+	payments := paddle.NewClient(paddle.Config{
+		Env:           cfg.Paddle.Env,
+		APIKey:        cfg.Paddle.APIKey,
+		WebhookSecret: cfg.Paddle.WebhookSecret,
+		AnnualPriceID: cfg.Paddle.AnnualPriceID,
+	}, hc)
 	ai := openrouter.NewClient(cfg.OpenRouter.APIKey, cfg.OpenRouter.Model, hc)
 
 	oauth := map[domain.Provider]port.OAuthGateway{}
@@ -146,7 +155,16 @@ func run(logger *slog.Logger) error {
 	activityRepo := postgres.NewTeamThreadActivityRepo(store)
 
 	users := service.NewUserService(store.Users(), store.UserPreferences(), clock)
-	billing := service.NewBillingService(store.Users(), store.Subscriptions(), store.StripeEvents(), stripe, clock, store, cfg.Instance.SelfHosted)
+	billing := service.NewBillingService(service.BillingServiceDeps{
+		Users:      store.Users(),
+		Subs:       store.Subscriptions(),
+		Events:     store.BillingEvents(),
+		Payments:   payments,
+		Clock:      clock,
+		Tx:         store,
+		SelfHosted: cfg.Instance.SelfHosted,
+		Logger:     logger,
+	})
 	accounts := service.NewAccountService(store.Accounts(), store.OAuthStates(), store.SyncStates(), oauth, cfg.OAuth.AllowedRedirectURIs, cfg.Instance.PublicAPIURL, clock)
 	integrations := service.NewIntegrationService(
 		postgres.NewIntegrationRepo(store), store.OAuthStates(), integrationOAuth,
@@ -412,6 +430,7 @@ func run(logger *slog.Logger) error {
 		Version:         httpapi.Version,
 		AuthBaseURL:     authBaseURL,
 		AuthProviders:   authProviders,
+		WebURL:          strings.TrimRight(cfg.Instance.PublicWebURL, "/"),
 		UndoSendSeconds: int(cfg.Mail.UndoSendGrace / time.Second),
 		VapidPublicKey:  vapidPublicKey,
 		Features: httpapi.InstanceFeatures{
@@ -447,6 +466,7 @@ func run(logger *slog.Logger) error {
 		"crm", crmSvc != nil,
 		"insights", insightsSvc != nil,
 		"push", pushSender != nil,
+		"billing_env", cfg.Paddle.Env,
 	)
 
 	// --- HTTP server ---
@@ -467,7 +487,6 @@ func run(logger *slog.Logger) error {
 		Scheduling:     scheduling,
 		Settings:       settingsSvc,
 		Collab:         collab,
-		Payments:       stripe,
 		// M2.7 collaboration: team service + in-process SSE fan-out. The
 		// stream scopes each subscriber to user:<id> plus the caller's real
 		// team:<id> memberships resolved through Teams.

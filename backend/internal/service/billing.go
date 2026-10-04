@@ -4,154 +4,245 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
+	"log/slog"
+	"sync"
+	"time"
 
 	"calendium/backend/internal/domain"
 	"calendium/backend/internal/port"
 )
 
-// trialDays is granted to first-time subscribers at checkout.
-const trialDays = 14
+// inlineReconcileEvery throttles the best-effort reconcile performed by
+// GetSubscription for an active row past its period end (per user, in
+// memory, per process).
+const inlineReconcileEvery = 10 * time.Minute
 
-// BillingService implements port.BillingService (docs/payments.md — the
-// $50/yr Spotify-model Stripe flow; webhooks drive all state).
-type BillingService struct {
-	users    port.UserRepo
-	subs     port.SubscriptionRepo
-	events   port.StripeEventRepo
-	payments port.Payments
-	clock    port.Clock
-	tx       port.TxRunner
-	// selfHosted disables Stripe entirely: GetSubscription reports an active
-	// annual plan and the checkout/portal/webhook operations return
+// BillingServiceDeps wires BillingService (docs/payments.md).
+type BillingServiceDeps struct {
+	Users    port.UserRepo
+	Subs     port.SubscriptionRepo
+	Events   port.BillingEventRepo
+	Payments port.Payments
+	Clock    port.Clock
+	Tx       port.TxRunner
+	// SelfHosted disables billing entirely: GetSubscription reports an
+	// active annual plan and checkout/portal/webhook return
 	// domain.ErrSelfHosted (open-core self-hosted mode).
+	SelfHosted bool
+	Logger     *slog.Logger // optional; defaults to slog.Default()
+}
+
+// BillingService implements port.BillingService: the $50/yr Paddle flow
+// where webhooks drive all state and reconciliation covers lost webhooks.
+type BillingService struct {
+	users      port.UserRepo
+	subs       port.SubscriptionRepo
+	events     port.BillingEventRepo
+	payments   port.Payments
+	clock      port.Clock
+	tx         port.TxRunner
 	selfHosted bool
+	logger     *slog.Logger
+
+	mu         sync.Mutex
+	lastInline map[string]time.Time // user id -> last inline reconcile attempt
 }
 
 var _ port.BillingService = (*BillingService)(nil)
 
-func NewBillingService(users port.UserRepo, subs port.SubscriptionRepo, events port.StripeEventRepo, payments port.Payments, clock port.Clock, tx port.TxRunner, selfHosted bool) *BillingService {
-	return &BillingService{users: users, subs: subs, events: events, payments: payments, clock: clock, tx: tx, selfHosted: selfHosted}
+func NewBillingService(d BillingServiceDeps) *BillingService {
+	if d.Logger == nil {
+		d.Logger = slog.Default()
+	}
+	return &BillingService{
+		users: d.Users, subs: d.Subs, events: d.Events, payments: d.Payments,
+		clock: d.Clock, tx: d.Tx, selfHosted: d.SelfHosted, logger: d.Logger,
+		lastInline: map[string]time.Time{},
+	}
 }
 
+func selfHostedSubscription(userID string) domain.Subscription {
+	// No biller on self-hosted instances: report an active annual plan (nil
+	// period) so clients treat the user as fully entitled.
+	return domain.Subscription{
+		UserID:   userID,
+		Status:   domain.SubscriptionActive,
+		Plan:     domain.PlanAnnual,
+		PriceUSD: domain.PriceUSDAnnual,
+	}
+}
+
+// GetSubscription returns the user's row, granting the signup trial when
+// none exists yet, and best-effort reconciling an active row that is past
+// its period end (throttled per user).
 func (s *BillingService) GetSubscription(ctx context.Context, userID string) (domain.Subscription, error) {
 	if s.selfHosted {
-		// No biller on self-hosted instances: report an active annual plan
-		// (nil period) so clients treat the user as fully entitled.
-		return domain.Subscription{
-			UserID:   userID,
-			Status:   domain.SubscriptionActive,
-			Plan:     domain.PlanAnnual,
-			PriceUSD: domain.PriceUSDAnnual,
-		}, nil
+		return selfHostedSubscription(userID), nil
 	}
 	sub, err := s.subs.GetByUserID(ctx, userID)
 	if errors.Is(err, domain.ErrNotFound) {
-		return domain.Subscription{
-			UserID:   userID,
-			Status:   domain.SubscriptionNone,
-			Plan:     domain.PlanAnnual,
-			PriceUSD: domain.PriceUSDAnnual,
-		}, nil
+		sub, err = s.grantTrial(ctx, userID)
 	}
-	return sub, err
+	if err != nil {
+		return domain.Subscription{}, err
+	}
+	// Best-effort inline reconcile: an active row past its period end with a
+	// provider subscription is re-read at most once per 10 minutes per user.
+	now := s.clock.Now()
+	if sub.Status == domain.SubscriptionActive && sub.BillingSubscriptionID != "" &&
+		sub.CurrentPeriodEnd != nil && !now.Before(*sub.CurrentPeriodEnd) &&
+		s.claimInlineReconcile(userID, now) {
+		fresh, err := s.reconcileOne(ctx, sub, now)
+		if err != nil {
+			s.logger.Warn("billing: inline reconcile failed", "user_id", userID, "error", err)
+		} else {
+			sub = fresh
+		}
+	}
+	return sub, nil
 }
 
-func (s *BillingService) CreateCheckoutSession(ctx context.Context, userID, successURL, cancelURL string) (string, error) {
-	if s.selfHosted {
-		return "", fmt.Errorf("%w: billing is disabled on self-hosted instances", domain.ErrSelfHosted)
-	}
-	if successURL == "" || cancelURL == "" {
-		return "", fmt.Errorf("%w: successUrl and cancelUrl are required", domain.ErrValidation)
-	}
+// grantTrial anchors the 14-day trial to users.created_at (signup, since
+// the users row is provisioned on the first authenticated call). EnsureTrial
+// is ON CONFLICT DO NOTHING, so concurrent first calls both read back the
+// same row.
+func (s *BillingService) grantTrial(ctx context.Context, userID string) (domain.Subscription, error) {
 	user, err := s.users.GetByID(ctx, userID)
 	if err != nil {
-		return "", err
+		return domain.Subscription{}, err
+	}
+	if err := s.subs.EnsureTrial(ctx, userID, user.CreatedAt.Add(domain.TrialLength)); err != nil {
+		return domain.Subscription{}, err
+	}
+	return s.subs.GetByUserID(ctx, userID)
+}
+
+// CreateCheckout starts the hosted checkout: grants the trial row if
+// missing, refuses a second live subscription, ensures the provider
+// customer (persisting its id), then creates the transaction. No URLs are
+// accepted from clients; Paddle returns the checkout url.
+func (s *BillingService) CreateCheckout(ctx context.Context, userID string) (string, error) {
+	if s.selfHosted {
+		return "", fmt.Errorf("%w: billing is disabled on self-hosted instances", domain.ErrSelfHosted)
 	}
 	sub, err := s.GetSubscription(ctx, userID)
 	if err != nil {
 		return "", err
 	}
-	if sub.StripeCustomerID == "" {
-		customerID, err := s.payments.EnsureCustomer(ctx, user)
+	if sub.BillingSubscriptionID != "" {
+		switch sub.Status {
+		case domain.SubscriptionActive, domain.SubscriptionPastDue, domain.SubscriptionPaused:
+			return "", fmt.Errorf("%w: subscription %s is %s", domain.ErrAlreadySubscribed, sub.BillingSubscriptionID, sub.Status)
+		}
+	}
+	if sub.BillingCustomerID == "" {
+		user, err := s.users.GetByID(ctx, userID)
 		if err != nil {
 			return "", err
 		}
-		sub.StripeCustomerID = customerID
+		customerID, err := s.payments.EnsureCustomer(ctx, user)
+		if err != nil {
+			return "", billingUnavailable("ensure customer", err)
+		}
+		sub.BillingCustomerID = customerID
+		if sub.LastEventAt == nil {
+			// Every service write leaves a non-zero last_event_at: the trial
+			// row EnsureTrial created has none, and ListForReconciliation
+			// exempts NULL (controller ruling, Track A review).
+			now := s.clock.Now()
+			sub.LastEventAt = &now
+		}
 		if err := s.subs.Upsert(ctx, sub); err != nil {
 			return "", err
 		}
 	}
-	trial := 0
-	if sub.StripeSubscriptionID == "" {
-		trial = trialDays // 14-day trial for first-time subscribers only
+	url, err := s.payments.CreateCheckout(ctx, port.CheckoutParams{UserID: userID, CustomerID: sub.BillingCustomerID})
+	if err != nil {
+		return "", billingUnavailable("create checkout", err)
 	}
-	return s.payments.CreateCheckoutSession(ctx, port.CheckoutParams{
-		CustomerID: sub.StripeCustomerID,
-		UserID:     userID,
-		SuccessURL: successURL,
-		CancelURL:  cancelURL,
-		TrialDays:  trial,
-	})
+	return url, nil
 }
 
-func (s *BillingService) CreatePortalSession(ctx context.Context, userID, returnURL string) (string, error) {
+// CreatePortalSession returns temporary portal links. Cancellation and
+// payment-method updates happen in Paddle's portal and flow back by webhook.
+func (s *BillingService) CreatePortalSession(ctx context.Context, userID string) (port.PortalURLs, error) {
 	if s.selfHosted {
-		return "", fmt.Errorf("%w: billing is disabled on self-hosted instances", domain.ErrSelfHosted)
-	}
-	if returnURL == "" {
-		return "", fmt.Errorf("%w: returnUrl is required", domain.ErrValidation)
+		return port.PortalURLs{}, fmt.Errorf("%w: billing is disabled on self-hosted instances", domain.ErrSelfHosted)
 	}
 	sub, err := s.subs.GetByUserID(ctx, userID)
-	if errors.Is(err, domain.ErrNotFound) || (err == nil && sub.StripeCustomerID == "") {
-		return "", fmt.Errorf("%w: no billing profile yet; start a checkout first", domain.ErrValidation)
+	if errors.Is(err, domain.ErrNotFound) || (err == nil && sub.BillingCustomerID == "") {
+		return port.PortalURLs{}, fmt.Errorf("%w: no billing profile yet; start a checkout first", domain.ErrNoBillingProfile)
 	}
 	if err != nil {
-		return "", err
+		return port.PortalURLs{}, err
 	}
-	return s.payments.CreatePortalSession(ctx, sub.StripeCustomerID, returnURL)
+	urls, err := s.payments.CreatePortalSession(ctx, sub.BillingCustomerID, sub.BillingSubscriptionID)
+	if err != nil {
+		return port.PortalURLs{}, billingUnavailable("create portal session", err)
+	}
+	if sub.BillingSubscriptionID == "" {
+		urls.Cancel, urls.UpdatePayment = "", ""
+	}
+	return urls, nil
 }
 
+// billingUnavailable wraps a provider failure for the HTTP layer (502).
+func billingUnavailable(op string, err error) error {
+	return fmt.Errorf("%w: %s: %v", domain.ErrBillingUnavailable, op, err)
+}
+
+// HandleWebhook runs the pipeline: verify (401) → ignore non-subscription
+// types (200) → one tx { record notification id (replay → 200) → resolve
+// user → ordering guard → upsert }. The marker commits only if the update
+// commits, so a transient failure rolls both back and Paddle's retry
+// re-drives the event.
 func (s *BillingService) HandleWebhook(ctx context.Context, payload []byte, sigHeader string) error {
 	if s.selfHosted {
 		return fmt.Errorf("%w: billing is disabled on self-hosted instances", domain.ErrSelfHosted)
 	}
-	ev, err := s.payments.ParseWebhook(payload, sigHeader)
+	ev, err := s.payments.ParseWebhook(payload, sigHeader, s.clock.Now())
 	if err != nil {
+		if errors.Is(err, domain.ErrValidation) {
+			return err
+		}
 		return fmt.Errorf("%w: webhook signature verification failed: %v", domain.ErrUnauthorized, err)
 	}
-	// Record the idempotency marker and apply the state change in one
-	// transaction: the marker commits only if the update commits, so a transient
-	// failure rolls both back and Stripe's retry re-drives the event
-	// (record-after-success, not record-before-processing).
+	if ev.Ignored {
+		return nil
+	}
 	return s.tx.RunInTx(ctx, func(ctx context.Context) error {
-		first, err := s.events.Record(ctx, ev.ID, ev.Type)
+		first, err := s.events.Record(ctx, ev)
 		if err != nil {
 			return err
 		}
 		if !first {
-			return nil // already processed; replays are no-ops
+			return nil // already processed; duplicate deliveries are no-ops
 		}
-		return s.applyWebhookEvent(ctx, ev)
+		return s.applyEvent(ctx, ev, false)
 	})
 }
 
-func (s *BillingService) applyWebhookEvent(ctx context.Context, ev port.WebhookEvent) error {
-	if ev.Status == "" && ev.SubscriptionID == "" {
-		return nil // event carries no subscription state (e.g. unrelated type)
-	}
-
-	// Resolve the Calendium user: metadata.user_id first, then the customer.
+// applyEvent resolves the user (custom_data.user_id, else the stored
+// customer id), drops events older than the mirrored LastEventAt unless
+// force (reconciliation), and upserts the mirror. A provider subscription
+// existing clears trial_ends_at; otherwise the stored trial end is passed
+// through, because the Postgres Upsert writes trial_ends_at verbatim. An
+// event without occurred_at is stamped with now so last_event_at is never
+// NULL (ListForReconciliation exempts NULL) — both controller rulings from
+// the Track A review.
+func (s *BillingService) applyEvent(ctx context.Context, ev port.SubscriptionEvent, force bool) error {
 	userID := ev.UserID
 	var existing domain.Subscription
 	var err error
 	if userID == "" {
 		if ev.CustomerID == "" {
+			s.logger.Warn("billing: event carries neither user id nor customer id", "event_id", ev.EventID, "type", ev.Type)
 			return nil
 		}
-		existing, err = s.subs.GetByStripeCustomerID(ctx, ev.CustomerID)
+		existing, err = s.subs.GetByBillingCustomerID(ctx, ev.CustomerID)
 		if errors.Is(err, domain.ErrNotFound) {
-			return nil // customer unknown to us; ignore
+			s.logger.Warn("billing: event for unknown customer", "event_id", ev.EventID, "customer_id", ev.CustomerID, "type", ev.Type)
+			return nil
 		}
 		if err != nil {
 			return err
@@ -164,38 +255,33 @@ func (s *BillingService) applyWebhookEvent(ctx context.Context, ev port.WebhookE
 		}
 	}
 
-	// Stripe does not guarantee event ordering. Only customer.subscription.*
-	// events carry the authoritative lifecycle status/period, so only they are
-	// ordered against each other: drop one older than the newest lifecycle event
-	// already applied, preventing a delayed/re-delivered event from reverting a
-	// canceled/past_due subscription back to active.
-	isSubEvent := strings.HasPrefix(ev.Type, "customer.subscription.")
-	if isSubEvent && ev.Created != nil && existing.LastEventAt != nil && ev.Created.Before(*existing.LastEventAt) {
+	// An event with no occurred_at (not produced by the Paddle parser, but
+	// never written as NULL) is treated as happening now.
+	occurred := ev.OccurredAt
+	if occurred.IsZero() {
+		occurred = s.clock.Now()
+	}
+
+	// Paddle does not guarantee delivery order: an event older than the
+	// newest applied one is dropped (strict <, so same-instant replays apply).
+	if !force && existing.LastEventAt != nil && occurred.Before(*existing.LastEventAt) {
 		return nil
 	}
 
-	// invoice.* and checkout.session.completed do not carry period/cancel/trial
-	// data (webhook.go leaves them zero); preserve the mirrored values so they
-	// are not clobbered. Only subscription.* events overwrite them below.
 	sub := domain.Subscription{
-		UserID:               userID,
-		Status:               ev.Status,
-		Plan:                 domain.PlanAnnual,
-		PriceUSD:             domain.PriceUSDAnnual,
-		CurrentPeriodEnd:     existing.CurrentPeriodEnd,
-		CancelAtPeriodEnd:    existing.CancelAtPeriodEnd,
-		TrialEndsAt:          existing.TrialEndsAt,
-		StripeCustomerID:     firstNonEmpty(ev.CustomerID, existing.StripeCustomerID),
-		StripeSubscriptionID: firstNonEmpty(ev.SubscriptionID, existing.StripeSubscriptionID),
-		LastEventAt:          existing.LastEventAt,
+		UserID:                userID,
+		Status:                ev.Status,
+		Plan:                  domain.PlanAnnual,
+		PriceUSD:              domain.PriceUSDAnnual,
+		CurrentPeriodEnd:      ev.CurrentPeriodEnd,
+		CancelAtPeriodEnd:     ev.CancelAtPeriodEnd,
+		TrialEndsAt:           existing.TrialEndsAt,
+		BillingCustomerID:     firstNonEmpty(ev.CustomerID, existing.BillingCustomerID),
+		BillingSubscriptionID: firstNonEmpty(ev.SubscriptionID, existing.BillingSubscriptionID),
+		LastEventAt:           &occurred,
 	}
-	if isSubEvent {
-		sub.CurrentPeriodEnd = ev.CurrentPeriodEnd
-		sub.CancelAtPeriodEnd = ev.CancelAtPeriodEnd
-		sub.TrialEndsAt = ev.TrialEndsAt
-		if ev.Created != nil && (sub.LastEventAt == nil || ev.Created.After(*sub.LastEventAt)) {
-			sub.LastEventAt = ev.Created
-		}
+	if sub.BillingSubscriptionID != "" {
+		sub.TrialEndsAt = nil // a provider subscription supersedes the signup trial
 	}
 	if sub.Status == "" {
 		sub.Status = existing.Status
@@ -204,6 +290,61 @@ func (s *BillingService) applyWebhookEvent(ctx context.Context, ev port.WebhookE
 		sub.Status = domain.SubscriptionNone
 	}
 	return s.subs.Upsert(ctx, sub)
+}
+
+// ReconcileSubscriptions re-reads every stale row from Paddle and applies
+// it as a synthetic event at now (so it always wins). Provider errors are
+// logged and skipped; the loop never fails as a whole.
+func (s *BillingService) ReconcileSubscriptions(ctx context.Context) error {
+	if s.selfHosted {
+		return nil
+	}
+	now := s.clock.Now()
+	rows, err := s.subs.ListForReconciliation(ctx, now)
+	if err != nil {
+		return err
+	}
+	for _, sub := range rows {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if _, err := s.reconcileOne(ctx, sub, now); err != nil {
+			s.logger.Warn("billing: reconcile failed", "user_id", sub.UserID, "subscription_id", sub.BillingSubscriptionID, "error", err)
+		}
+	}
+	return nil
+}
+
+// reconcileOne fetches the live subscription and applies it through the
+// webhook upsert path with OccurredAt = now and force = true (the adapter's
+// GetSubscription returns a zero OccurredAt by design, and the read must
+// never be dropped as stale).
+func (s *BillingService) reconcileOne(ctx context.Context, sub domain.Subscription, now time.Time) (domain.Subscription, error) {
+	ev, err := s.payments.GetSubscription(ctx, sub.BillingSubscriptionID)
+	if err != nil {
+		return sub, err
+	}
+	ev.UserID = sub.UserID
+	ev.OccurredAt = now
+	if ev.SubscriptionID == "" {
+		ev.SubscriptionID = sub.BillingSubscriptionID
+	}
+	if err := s.applyEvent(ctx, ev, true); err != nil {
+		return sub, err
+	}
+	return s.subs.GetByUserID(ctx, sub.UserID)
+}
+
+// claimInlineReconcile reserves the per-user inline slot. It is claimed
+// before the provider call so a failing provider is not hammered.
+func (s *BillingService) claimInlineReconcile(userID string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if last, ok := s.lastInline[userID]; ok && now.Sub(last) < inlineReconcileEvery {
+		return false
+	}
+	s.lastInline[userID] = now
+	return true
 }
 
 func (s *BillingService) RequireActive(ctx context.Context, userID string) error {

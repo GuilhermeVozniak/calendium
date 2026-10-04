@@ -95,7 +95,7 @@ func newTestStore(t *testing.T) (*Store, *sql.DB) {
 func truncateAll(t *testing.T) {
 	t.Helper()
 	_, err := sharedDB.Exec(`TRUNCATE
-		users, subscriptions, stripe_events, connected_accounts, oauth_states,
+		users, subscriptions, billing_events, connected_accounts, oauth_states,
 		labels, threads, thread_labels, messages, attachments, drafts, snippets,
 		calendars, events, devices, sync_state, user_prefs, event_templates, calendar_sets,
 		ai_jobs, ai_classifiers, voice_profiles, ai_usage,

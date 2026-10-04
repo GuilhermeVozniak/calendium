@@ -71,10 +71,14 @@ var _ port.UserRepo = (*fakeUserRepo)(nil)
 // --- subscription repo -------------------------------------------------------
 
 // fakeSubscriptionRepo indexes every upserted row by BOTH UserID and
-// StripeCustomerID so GetByUserID / GetByStripeCustomerID stay consistent.
+// BillingCustomerID so GetByUserID / GetByBillingCustomerID stay consistent.
+// Upsert mirrors the Postgres COALESCE: empty billing ids never clobber
+// stored ones. EnsureTrial is idempotent and counts calls.
 type fakeSubscriptionRepo struct {
-	byUser     map[string]domain.Subscription
-	byCustomer map[string]domain.Subscription
+	byUser           map[string]domain.Subscription
+	byCustomer       map[string]domain.Subscription
+	ensureTrialCalls int
+	upsertCalls      int
 }
 
 func newSubscriptionRepo() *fakeSubscriptionRepo {
@@ -92,7 +96,7 @@ func (r *fakeSubscriptionRepo) GetByUserID(_ context.Context, userID string) (do
 	return s, nil
 }
 
-func (r *fakeSubscriptionRepo) GetByStripeCustomerID(_ context.Context, customerID string) (domain.Subscription, error) {
+func (r *fakeSubscriptionRepo) GetByBillingCustomerID(_ context.Context, customerID string) (domain.Subscription, error) {
 	s, ok := r.byCustomer[customerID]
 	if !ok {
 		return domain.Subscription{}, domain.ErrNotFound
@@ -101,11 +105,56 @@ func (r *fakeSubscriptionRepo) GetByStripeCustomerID(_ context.Context, customer
 }
 
 func (r *fakeSubscriptionRepo) Upsert(_ context.Context, s domain.Subscription) error {
+	r.upsertCalls++
+	if prev, ok := r.byUser[s.UserID]; ok {
+		if s.BillingCustomerID == "" {
+			s.BillingCustomerID = prev.BillingCustomerID
+		}
+		if s.BillingSubscriptionID == "" {
+			s.BillingSubscriptionID = prev.BillingSubscriptionID
+		}
+	}
 	r.byUser[s.UserID] = s
-	if s.StripeCustomerID != "" {
-		r.byCustomer[s.StripeCustomerID] = s
+	if s.BillingCustomerID != "" {
+		r.byCustomer[s.BillingCustomerID] = s
 	}
 	return nil
+}
+
+func (r *fakeSubscriptionRepo) EnsureTrial(_ context.Context, userID string, trialEndsAt time.Time) error {
+	r.ensureTrialCalls++
+	if _, ok := r.byUser[userID]; ok {
+		return nil
+	}
+	end := trialEndsAt
+	r.byUser[userID] = domain.Subscription{
+		UserID:      userID,
+		Status:      domain.SubscriptionTrialing,
+		Plan:        domain.PlanAnnual,
+		PriceUSD:    domain.PriceUSDAnnual,
+		TrialEndsAt: &end,
+	}
+	return nil
+}
+
+func (r *fakeSubscriptionRepo) ListForReconciliation(_ context.Context, now time.Time) ([]domain.Subscription, error) {
+	var out []domain.Subscription
+	for _, s := range r.byUser {
+		if s.BillingSubscriptionID == "" {
+			continue
+		}
+		stale := s.LastEventAt != nil && s.LastEventAt.Before(now.Add(-7*24*time.Hour))
+		lapsed := false
+		switch s.Status {
+		case domain.SubscriptionActive, domain.SubscriptionPastDue, domain.SubscriptionPaused:
+			lapsed = s.CurrentPeriodEnd != nil && s.CurrentPeriodEnd.Before(now.Add(-time.Hour))
+		}
+		if stale || lapsed {
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
+	return out, nil
 }
 
 var _ port.SubscriptionRepo = (*fakeSubscriptionRepo)(nil)
@@ -1059,27 +1108,27 @@ func (r *fakeSyncStateRepo) DeleteByAccount(_ context.Context, accountID string)
 
 var _ port.SyncStateRepo = (*fakeSyncStateRepo)(nil)
 
-// --- stripe-event repo -------------------------------------------------------
+// --- billing-event repo ------------------------------------------------------
 
-// fakeStripeEventRepo is faithfully set-backed: Record returns firstTime=true
-// the first time an id is seen, false on every replay.
-type fakeStripeEventRepo struct {
-	seen map[string]string // id -> type
+// fakeBillingEventRepo is set-backed by notification id: Record returns
+// first=true the first time an id is seen, false on every repeat.
+type fakeBillingEventRepo struct {
+	seen map[string]port.SubscriptionEvent
 }
 
-func newStripeEventRepo() *fakeStripeEventRepo {
-	return &fakeStripeEventRepo{seen: map[string]string{}}
+func newBillingEventRepo() *fakeBillingEventRepo {
+	return &fakeBillingEventRepo{seen: map[string]port.SubscriptionEvent{}}
 }
 
-func (r *fakeStripeEventRepo) Record(_ context.Context, eventID, eventType string) (bool, error) {
-	if _, ok := r.seen[eventID]; ok {
+func (r *fakeBillingEventRepo) Record(_ context.Context, ev port.SubscriptionEvent) (bool, error) {
+	if _, ok := r.seen[ev.NotificationID]; ok {
 		return false, nil
 	}
-	r.seen[eventID] = eventType
+	r.seen[ev.NotificationID] = ev
 	return true, nil
 }
 
-var _ port.StripeEventRepo = (*fakeStripeEventRepo)(nil)
+var _ port.BillingEventRepo = (*fakeBillingEventRepo)(nil)
 
 // --- oauth-state repo --------------------------------------------------------
 
@@ -1435,25 +1484,34 @@ var _ port.CalendarProvider = (*fakeCalendarProvider)(nil)
 
 // --- payments ----------------------------------------------------------------
 
-// fakePayments serves a programmable customer id, checkout/portal URLs and a
-// parsed webhook event, recording the calls billing.go makes.
+// fakePayments serves programmable results for every port.Payments
+// operation and records the arguments billing.go passes.
 type fakePayments struct {
 	// programmable
 	customerID      string
-	checkoutURL     string
-	portalURL       string
-	webhookEvent    port.WebhookEvent
-	parseWebhookErr error
 	ensureErr       error
+	checkoutURL     string
 	checkoutErr     error
+	portalURLs      port.PortalURLs
 	portalErr       error
+	webhookEvent    port.SubscriptionEvent
+	parseWebhookErr error
+	getSubEvent     port.SubscriptionEvent
+	getSubErr       error
+	cancelErr       error
 
 	// recording
-	ensureCustomerCalls  int
-	lastEnsureUser       domain.User
-	lastCheckoutParams   port.CheckoutParams
-	lastPortalCustomerID string
-	lastPortalReturnURL  string
+	ensureCustomerCalls      int
+	lastEnsureUser           domain.User
+	lastCheckoutParams       port.CheckoutParams
+	lastPortalCustomerID     string
+	lastPortalSubscriptionID string
+	lastParseNow             time.Time
+	getSubCalls              int
+	lastGetSubID             string
+	cancelCalls              int
+	lastCancelID             string
+	lastCancelImmediately    bool
 }
 
 func newPayments() *fakePayments { return &fakePayments{} }
@@ -1464,19 +1522,33 @@ func (p *fakePayments) EnsureCustomer(_ context.Context, user domain.User) (stri
 	return p.customerID, p.ensureErr
 }
 
-func (p *fakePayments) CreateCheckoutSession(_ context.Context, params port.CheckoutParams) (string, error) {
+func (p *fakePayments) CreateCheckout(_ context.Context, params port.CheckoutParams) (string, error) {
 	p.lastCheckoutParams = params
 	return p.checkoutURL, p.checkoutErr
 }
 
-func (p *fakePayments) CreatePortalSession(_ context.Context, customerID, returnURL string) (string, error) {
+func (p *fakePayments) CreatePortalSession(_ context.Context, customerID, subscriptionID string) (port.PortalURLs, error) {
 	p.lastPortalCustomerID = customerID
-	p.lastPortalReturnURL = returnURL
-	return p.portalURL, p.portalErr
+	p.lastPortalSubscriptionID = subscriptionID
+	return p.portalURLs, p.portalErr
 }
 
-func (p *fakePayments) ParseWebhook(payload []byte, sigHeader string) (port.WebhookEvent, error) {
+func (p *fakePayments) ParseWebhook(_ []byte, _ string, now time.Time) (port.SubscriptionEvent, error) {
+	p.lastParseNow = now
 	return p.webhookEvent, p.parseWebhookErr
+}
+
+func (p *fakePayments) GetSubscription(_ context.Context, subscriptionID string) (port.SubscriptionEvent, error) {
+	p.getSubCalls++
+	p.lastGetSubID = subscriptionID
+	return p.getSubEvent, p.getSubErr
+}
+
+func (p *fakePayments) CancelSubscription(_ context.Context, subscriptionID string, immediately bool) error {
+	p.cancelCalls++
+	p.lastCancelID = subscriptionID
+	p.lastCancelImmediately = immediately
+	return p.cancelErr
 }
 
 var _ port.Payments = (*fakePayments)(nil)

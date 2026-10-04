@@ -78,11 +78,26 @@ type HubSpot struct {
 	ClientSecret string // HUBSPOT_CLIENT_SECRET
 }
 
-// Stripe configures billing (docs/payments.md).
-type Stripe struct {
-	SecretKey     string // STRIPE_SECRET_KEY
-	WebhookSecret string // STRIPE_WEBHOOK_SECRET
-	AnnualPriceID string // STRIPE_PRICE_ID_ANNUAL
+// Paddle environment values (PADDLE_ENV).
+const (
+	PaddleEnvSandbox = "sandbox"
+	PaddleEnvLive    = "live"
+)
+
+// Paddle configures billing (docs/payments.md). Cloud only: with
+// SELF_HOSTED=false every field but Env is mandatory (ValidateCloudBilling).
+type Paddle struct {
+	Env           string // PADDLE_ENV: sandbox (default) | live
+	APIKey        string // PADDLE_API_KEY
+	WebhookSecret string // PADDLE_WEBHOOK_SECRET (notification destination secret)
+	AnnualPriceID string // PADDLE_PRICE_ID_ANNUAL
+}
+
+// Billing holds billing tunables.
+type Billing struct {
+	// ReconcileInterval paces the worker's subscription reconciliation loop
+	// (BILLING_RECONCILE_INTERVAL, default 6h).
+	ReconcileInterval time.Duration
 }
 
 // APNs configures Apple push (HTTP/2 + ES256 JWT).
@@ -175,7 +190,7 @@ type Instance struct {
 	// SelfHosted (SELF_HOSTED, default false) marks a free self-hosted
 	// deployment: entitlement gating becomes a no-op (all features unlocked)
 	// and the billing endpoints return domain.ErrSelfHosted instead of
-	// calling Stripe.
+	// calling the payments provider.
 	SelfHosted bool
 	// Name (INSTANCE_NAME, default "Calendium") is shown to clients.
 	Name string
@@ -202,7 +217,8 @@ type Config struct {
 	Microsoft  Microsoft
 	Todoist    Todoist
 	HubSpot    HubSpot
-	Stripe     Stripe
+	Paddle     Paddle
+	Billing    Billing
 	Push       Push
 	OpenRouter OpenRouter
 	Crypto     Crypto
@@ -247,10 +263,11 @@ func FromEnv() (Config, error) {
 			ClientID:     os.Getenv("HUBSPOT_CLIENT_ID"),
 			ClientSecret: os.Getenv("HUBSPOT_CLIENT_SECRET"),
 		},
-		Stripe: Stripe{
-			SecretKey:     os.Getenv("STRIPE_SECRET_KEY"),
-			WebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"),
-			AnnualPriceID: os.Getenv("STRIPE_PRICE_ID_ANNUAL"),
+		Paddle: Paddle{
+			Env:           os.Getenv("PADDLE_ENV"),
+			APIKey:        os.Getenv("PADDLE_API_KEY"),
+			WebhookSecret: os.Getenv("PADDLE_WEBHOOK_SECRET"),
+			AnnualPriceID: os.Getenv("PADDLE_PRICE_ID_ANNUAL"),
 		},
 		Push: Push{
 			APNs: APNs{
@@ -325,6 +342,24 @@ func FromEnv() (Config, error) {
 		}
 	}
 
+	switch cfg.Paddle.Env {
+	case "":
+		cfg.Paddle.Env = PaddleEnvSandbox
+	case PaddleEnvSandbox, PaddleEnvLive:
+	default:
+		errs = append(errs, fmt.Errorf("PADDLE_ENV must be %q or %q, got %q", PaddleEnvSandbox, PaddleEnvLive, cfg.Paddle.Env))
+	}
+
+	cfg.Billing.ReconcileInterval = 6 * time.Hour
+	if v := os.Getenv("BILLING_RECONCILE_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			errs = append(errs, fmt.Errorf("BILLING_RECONCILE_INTERVAL must be a positive Go duration (e.g. 6h), got %q", v))
+		} else {
+			cfg.Billing.ReconcileInterval = d
+		}
+	}
+
 	cfg.Instance.Name = os.Getenv("INSTANCE_NAME")
 	if cfg.Instance.Name == "" {
 		cfg.Instance.Name = "Calendium"
@@ -386,4 +421,28 @@ func FromEnv() (Config, error) {
 		return Config{}, errors.Join(errs...)
 	}
 	return cfg, nil
+}
+
+// ValidateCloudBilling enforces the cloud startup rule (docs/payments.md):
+// with SELF_HOSTED=false the Paddle credentials are mandatory, so a cloud
+// deployment can never boot with a forgeable webhook or no biller. Both
+// cmd/api and cmd/worker call it right after FromEnv.
+func (c Config) ValidateCloudBilling() error {
+	if c.Instance.SelfHosted {
+		return nil
+	}
+	var missing []string
+	if c.Paddle.APIKey == "" {
+		missing = append(missing, "PADDLE_API_KEY")
+	}
+	if c.Paddle.WebhookSecret == "" {
+		missing = append(missing, "PADDLE_WEBHOOK_SECRET")
+	}
+	if c.Paddle.AnnualPriceID == "" {
+		missing = append(missing, "PADDLE_PRICE_ID_ANNUAL")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("cloud mode (SELF_HOSTED=false) requires %s; set them, or run with SELF_HOSTED=true", strings.Join(missing, ", "))
+	}
+	return nil
 }

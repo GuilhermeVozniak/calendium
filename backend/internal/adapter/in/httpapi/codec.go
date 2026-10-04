@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"calendium/backend/internal/domain"
 )
@@ -19,6 +20,16 @@ type errorBody struct {
 type errorDetail struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// Details carries structured, client-safe context for specific codes
+	// (402 payment_required); omitted otherwise.
+	Details any `json:"details,omitempty"`
+}
+
+// paymentRequiredDetails is the 402 `details` body (docs/payments.md).
+type paymentRequiredDetails struct {
+	Reason           string     `json:"reason"`
+	TrialEndsAt      *time.Time `json:"trialEndsAt,omitempty"`
+	CurrentPeriodEnd *time.Time `json:"currentPeriodEnd,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -68,6 +79,12 @@ func statusFor(err error) (int, string) {
 		return http.StatusPaymentRequired, "payment_required"
 	case errors.Is(err, domain.ErrNotFound):
 		return http.StatusNotFound, "not_found"
+	case errors.Is(err, domain.ErrAlreadySubscribed):
+		return http.StatusConflict, "already_subscribed"
+	case errors.Is(err, domain.ErrNoBillingProfile):
+		return http.StatusBadRequest, "no_billing_profile"
+	case errors.Is(err, domain.ErrBillingUnavailable):
+		return http.StatusBadGateway, "billing_unavailable"
 	case errors.Is(err, domain.ErrConflict):
 		return http.StatusConflict, "conflict"
 	case errors.Is(err, domain.ErrUnprocessable):
@@ -116,14 +133,21 @@ func safeMessage(code string) string {
 		return "AI features are not available on this deployment."
 	case "rate_limited":
 		return "You have exceeded the usage limit. Please try again later."
+	case "already_subscribed":
+		return "You already have an active subscription. Manage it from billing."
+	case "no_billing_profile":
+		return "No billing profile yet. Start a checkout first."
+	case "billing_unavailable":
+		return "The billing service is temporarily unavailable. Please try again."
 	default:
 		return "Internal server error."
 	}
 }
 
-// writeError renders the `{ "error": { code, message } }` envelope with a
-// stable per-code message. Every failure is logged server-side with full
-// detail; the wrapped error text is never echoed to clients.
+// writeError renders the `{ "error": { code, message, details? } }`
+// envelope with a stable per-code message. Every failure is logged
+// server-side with full detail; the wrapped error text is never echoed to
+// clients. A *domain.PaymentRequiredError adds the typed 402 details.
 func (s *server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	status, code := statusFor(err)
 	if status >= http.StatusInternalServerError {
@@ -133,5 +157,10 @@ func (s *server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		s.deps.Logger.Info("request rejected",
 			"method", r.Method, "path", r.URL.Path, "status", status, "code", code, "error", err)
 	}
-	writeJSON(w, status, errorBody{Error: errorDetail{Code: code, Message: safeMessage(code)}})
+	detail := errorDetail{Code: code, Message: safeMessage(code)}
+	var pr *domain.PaymentRequiredError
+	if errors.As(err, &pr) {
+		detail.Details = paymentRequiredDetails{Reason: string(pr.Reason), TrialEndsAt: pr.TrialEndsAt, CurrentPeriodEnd: pr.CurrentPeriodEnd}
+	}
+	writeJSON(w, status, errorBody{Error: detail})
 }

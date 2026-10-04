@@ -28,7 +28,7 @@ func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 // Typed accessors — one per driven repo port.
 func (s *Store) Users() port.UserRepo                   { return userRepo{s} }
 func (s *Store) Subscriptions() port.SubscriptionRepo   { return subscriptionRepo{s} }
-func (s *Store) StripeEvents() port.StripeEventRepo     { return stripeEventRepo{s} }
+func (s *Store) BillingEvents() port.BillingEventRepo   { return billingEventRepo{s} }
 func (s *Store) Accounts() port.AccountRepo             { return accountRepo{s} }
 func (s *Store) OAuthStates() port.OAuthStateRepo       { return oauthStateRepo{s} }
 func (s *Store) SyncStates() port.SyncStateRepo         { return syncStateRepo{s} }
@@ -62,7 +62,7 @@ var (
 	_ port.TxRunner            = (*Store)(nil)
 	_ port.UserRepo            = userRepo{}
 	_ port.SubscriptionRepo    = subscriptionRepo{}
-	_ port.StripeEventRepo     = stripeEventRepo{}
+	_ port.BillingEventRepo    = billingEventRepo{}
 	_ port.AccountRepo         = accountRepo{}
 	_ port.OAuthStateRepo      = oauthStateRepo{}
 	_ port.SyncStateRepo       = syncStateRepo{}
@@ -94,7 +94,7 @@ var (
 type (
 	userRepo            struct{ *Store }
 	subscriptionRepo    struct{ *Store }
-	stripeEventRepo     struct{ *Store }
+	billingEventRepo    struct{ *Store }
 	accountRepo         struct{ *Store }
 	oauthStateRepo      struct{ *Store }
 	syncStateRepo       struct{ *Store }

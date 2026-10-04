@@ -37,11 +37,11 @@ func TestEntitlementSelfHostBypass(t *testing.T) {
 }
 
 // TestBillingSelfHost verifies the billing surface under SELF_HOSTED: an
-// active annual subscription is reported and every Stripe operation returns
+// active annual subscription is reported and every billing operation returns
 // domain.ErrSelfHosted. nil repos/gateways prove none are reached.
 func TestBillingSelfHost(t *testing.T) {
 	ctx := context.Background()
-	b := NewBillingService(nil, nil, nil, nil, SystemClock{}, nil, true)
+	b := NewBillingService(BillingServiceDeps{Clock: SystemClock{}, SelfHosted: true})
 
 	sub, err := b.GetSubscription(ctx, "u1")
 	if err != nil {
@@ -57,14 +57,17 @@ func TestBillingSelfHost(t *testing.T) {
 		t.Fatalf("self-host subscription should grant access")
 	}
 
-	if _, err := b.CreateCheckoutSession(ctx, "u1", "s", "c"); !errors.Is(err, domain.ErrSelfHosted) {
+	if _, err := b.CreateCheckout(ctx, "u1"); !errors.Is(err, domain.ErrSelfHosted) {
 		t.Fatalf("checkout: expected ErrSelfHosted, got %v", err)
 	}
-	if _, err := b.CreatePortalSession(ctx, "u1", "r"); !errors.Is(err, domain.ErrSelfHosted) {
+	if _, err := b.CreatePortalSession(ctx, "u1"); !errors.Is(err, domain.ErrSelfHosted) {
 		t.Fatalf("portal: expected ErrSelfHosted, got %v", err)
 	}
 	if err := b.HandleWebhook(ctx, nil, ""); !errors.Is(err, domain.ErrSelfHosted) {
 		t.Fatalf("webhook: expected ErrSelfHosted, got %v", err)
+	}
+	if err := b.ReconcileSubscriptions(ctx); err != nil {
+		t.Fatalf("reconcile must be a silent no-op on self-host, got %v", err)
 	}
 	if err := b.RequireActive(ctx, "u1"); err != nil {
 		t.Fatalf("RequireActive self-host: %v", err)
